@@ -1,4 +1,4 @@
-ParsecWebTurn v0.9.0 (dev)
+ParsecWebTurn v0.9.1-dev.1 — Native client preview
 
 This development build brings custom connection servers, live statistics and a
 clearer Settings page to the native Windows client.
@@ -9,6 +9,10 @@ with native video, Opus audio, keyboard and mouse support.
 
 ## What's new
 
+- **More responsive controls:** mouse and keyboard input wakes processing immediately instead of waiting for the next regular tick. Local testing showed a substantial reduction in input processing time; results depend on your system and connection.
+- **Precompiled Parsec core:** startup loads the bundled, precompiled core directly. There is no startup download or compilation.
+- **Cleaner GPU list:** virtual display-only adapters no longer appear as duplicate graphics cards.
+- **A correctly named stats window:** its Windows title bar now reads Connection stats.
 - **Video GPU choice:** select the adapter for stream decoding and rendering in
   Settings, or keep Automatic. The choice is saved for the next connection.
 - **Less repeated video work:** disable automatic driver picture processing and

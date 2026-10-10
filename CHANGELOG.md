@@ -3,6 +3,15 @@
 User-facing changes are listed below. Native versions marked **dev** are development
 builds, not published stable releases.
 
+## 0.9.1-dev.1 — Faster startup and more responsive controls (2026-10-10)
+
+- Mouse and keyboard input now wakes processing immediately instead of waiting for the next regular tick. Local testing showed substantially shorter input processing times; actual responsiveness depends on your system and connection.
+- The bundled Parsec core is precompiled during the build, so the app no longer compiles it at startup.
+- The GPU selector filters out virtual display-only adapters that could appear as duplicate graphics cards.
+- The statistics window now has the title **Connection stats** in its Windows title bar.
+
+This first published native preview also includes the connection settings, live statistics and other native-client features listed under 0.9.0 and 0.8.0 below.
+
 ## 0.9.0 — More connection options and live stats (dev, 2026-10-10)
 
 ### New

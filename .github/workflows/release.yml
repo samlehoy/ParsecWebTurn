@@ -38,5 +38,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
-          gh release create $tag ParsecWebTurn.exe "dist/ParsecWebTurn-$tag-win64.zip" dist/SHA256SUMS.txt --verify-tag --title "ParsecWebTurn $tag" --notes-file RELEASE_NOTES.md
+          $releaseOptions = @()
+          if ($tag.Contains('-')) { $releaseOptions = @('--prerelease', '--latest=false') }
+          gh release create $tag ParsecWebTurn.exe "dist/ParsecWebTurn-$tag-win64.zip" dist/SHA256SUMS.txt --verify-tag --title "ParsecWebTurn $tag" --notes-file RELEASE_NOTES.md @releaseOptions
           if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }

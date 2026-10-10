@@ -40,7 +40,12 @@ fn main() {
         .trim_start_matches(r"\\?\")
         .replace('\\', "\\\\");
     let version = env::var("CARGO_PKG_VERSION").unwrap();
-    let tuple = version.replace('.', ",");
+    let tuple = format!(
+        "{},{},{}",
+        env::var("CARGO_PKG_VERSION_MAJOR").unwrap(),
+        env::var("CARGO_PKG_VERSION_MINOR").unwrap(),
+        env::var("CARGO_PKG_VERSION_PATCH").unwrap()
+    );
     let resource = format!(
         r#"1 ICON "{icon}"
 1 VERSIONINFO

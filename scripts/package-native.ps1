@@ -4,7 +4,7 @@ $taskRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $taskRoot
 try {
     $taskVersion = (Get-Content VERSION -Raw).Trim()
-    if ($taskVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid VERSION' }
+    if ($taskVersion -notmatch '^\d+\.\d+\.\d+(?:-dev\.[1-9]\d*)?$') { throw 'Invalid VERSION' }
     $taskManifestVersion = [regex]::Match((Get-Content src-native/Cargo.toml -Raw), '(?m)^version = "([^"]+)"\r?$').Groups[1].Value
     if ($taskManifestVersion -ne $taskVersion) { throw 'Native version mismatch' }
     $taskBinary = [IO.File]::ReadAllBytes((Join-Path $taskRoot 'src-native/target/x86_64-pc-windows-msvc/release/parsec-web-turn.exe'))
