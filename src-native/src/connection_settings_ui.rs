@@ -1262,11 +1262,7 @@ mod tests {
     // Optional CI-only visual fixtures. This cannot capture an account, stream
     // or production profile: the fixture above owns only synthetic controls.
     unsafe fn capture(hwnd: HWND, name: &str) {
-        let Some(directory) = std::env::var_os("PARSEC_SETTINGS_SCREENSHOTS") else {
-            return;
-        };
-        let directory = std::path::PathBuf::from(directory);
-        std::fs::create_dir_all(&directory).unwrap();
+        // Visual assertions also need a painted window when PNG export is off.
         ShowWindow(GetParent(hwnd), SW_SHOWNOACTIVATE);
         RedrawWindow(
             GetParent(hwnd),
@@ -1274,6 +1270,11 @@ mod tests {
             null_mut(),
             RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW,
         );
+        let Some(directory) = std::env::var_os("PARSEC_SETTINGS_SCREENSHOTS") else {
+            return;
+        };
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).unwrap();
         let (width, height, rgba) = snapshot(hwnd, false);
         image::save_buffer(
             directory.join(format!("{name}.png")),

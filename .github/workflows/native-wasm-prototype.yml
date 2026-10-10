@@ -60,6 +60,12 @@ jobs:
           name: Native-client-debug-win64
           path: src-native/target/x86_64-pc-windows-msvc/debug/parsec-web-turn.exe
           if-no-files-found: error
+      - name: Verify Settings UI without screenshot export
+        shell: pwsh
+        run: |
+          Remove-Item Env:PARSEC_SETTINGS_SCREENSHOTS -ErrorAction SilentlyContinue
+          cargo test --locked --manifest-path src-native/Cargo.toml connection_settings_ui::tests::native_controls_save_and_reopen_without_guest_or_real_profile -- --exact
+          if ($LASTEXITCODE -ne 0) { throw 'Settings UI without screenshot export failed' }
       - name: Validate independent Rust host
         shell: pwsh
         env:
