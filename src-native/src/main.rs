@@ -48,8 +48,6 @@ mod http;
 mod http_probe;
 mod input;
 mod lifecycle;
-#[cfg(any(windows, test))]
-mod local_latency;
 mod media_ingress;
 #[cfg(windows)]
 mod media_scheduling;

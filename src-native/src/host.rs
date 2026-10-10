@@ -9,9 +9,6 @@ use wasmtime::{Caller, Val};
 
 #[derive(Serialize)]
 pub struct HostState {
-    // Temporary dev input timing; scoped to one native input callback.
-    #[serde(skip)]
-    pub input_started: Option<Instant>,
     pub audio_output: crate::audio::Output,
     #[cfg(any(test, feature = "diagnostics"))]
     pub execution_stage: Option<&'static str>,
@@ -62,7 +59,6 @@ pub struct HostState {
 impl HostState {
     pub fn new(memory: GuestMemory) -> Self {
         Self {
-            input_started: None,
             audio_output: Default::default(),
             #[cfg(any(test, feature = "diagnostics"))]
             execution_stage: None,
@@ -798,7 +794,7 @@ fn backend_call(
                             b.native_attempt
                                 .as_ref()
                                 .context("native control attempt missing")?
-                                .send_input(frame, caller.data().input_started)?;
+                                .send_binary(0, frame)?;
                         }
                     } else {
                         b.discard_idle_message()?;

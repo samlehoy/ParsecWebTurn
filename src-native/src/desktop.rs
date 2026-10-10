@@ -193,19 +193,6 @@ pub fn run_worker(store: &mut Store<HostState>, instance: &Instance) -> Result<(
     run_loop(store, instance, false)
 }
 
-fn input_export(
-    store: &mut Store<HostState>,
-    instance: &Instance,
-    name: &'static str,
-    args: &[Val],
-    started: Option<Instant>,
-) -> Result<()> {
-    store.data_mut().input_started = started;
-    let result = export(store, instance, name, args);
-    store.data_mut().input_started = None;
-    result
-}
-
 struct CallbackCadence {
     next: Instant,
     period: Duration,
@@ -279,31 +266,31 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
                     let events = &window.events;
                     match step {
                         0 => {
-                            events.push(Event::Focus(true).into());
-                            events.push(Event::Motion(x, email_y).into());
-                            events.push(Event::Button(true, 0, x, email_y).into());
+                            events.push(Event::Focus(true));
+                            events.push(Event::Motion(x, email_y));
+                            events.push(Event::Button(true, 0, x, email_y));
                         }
-                        1 => events.push(Event::Button(false, 0, x, email_y).into()),
+                        1 => events.push(Event::Button(false, 0, x, email_y)),
                         2 => {
                             for c in "native-audit@example.invalid".chars() {
-                                events.push(Event::Text(c as u32).into());
+                                events.push(Event::Text(c as u32));
                             }
                         }
-                        3 => events.push(Event::Key(true, "Tab", 0).into()),
-                        4 => events.push(Event::Key(false, "Tab", 0).into()),
+                        3 => events.push(Event::Key(true, "Tab", 0)),
+                        4 => events.push(Event::Key(false, "Tab", 0)),
                         5 => {
-                            events.push(Event::Key(true, "ControlLeft", 2).into());
-                            events.push(Event::Key(true, "KeyV", 2).into());
+                            events.push(Event::Key(true, "ControlLeft", 2));
+                            events.push(Event::Key(true, "KeyV", 2));
                         }
                         6 => {
-                            events.push(Event::Key(false, "KeyV", 2).into());
-                            events.push(Event::Key(false, "ControlLeft", 0).into());
+                            events.push(Event::Key(false, "KeyV", 2));
+                            events.push(Event::Key(false, "ControlLeft", 0));
                         }
                         7 => {
-                            events.push(Event::Motion(x, login_y).into());
-                            events.push(Event::Button(true, 0, x, login_y).into());
+                            events.push(Event::Motion(x, login_y));
+                            events.push(Event::Button(true, 0, x, login_y));
                         }
-                        8 => events.push(Event::Button(false, 0, x, login_y).into()),
+                        8 => events.push(Event::Button(false, 0, x, login_y)),
                         _ => unreachable!(),
                     }
                     script_frame = frames;
@@ -313,8 +300,7 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
             let app = store.data().app_pointer.context("app pointer missing")? as i32;
             let events = window.events.drain();
             for event in events {
-                let input_started = event.input_started;
-                let (name, values) = match event.event {
+                let (name, values) = match event {
                     Event::Fullscreen(active) => {
                         ("mty_window_update_fullscreen", vec![app, active as i32])
                     }
@@ -370,12 +356,11 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
                         )
                     }
                 };
-                input_export(
+                export(
                     store,
                     instance,
                     name,
                     &values.into_iter().map(Val::I32).collect::<Vec<_>>(),
-                    input_started,
                 )?;
             }
         }
@@ -435,44 +420,5 @@ mod tests {
         assert!(cadence.due(late));
         assert_eq!(cadence.next, late + period);
         assert!(!cadence.due(late));
-    }
-}
-
-#[cfg(test)]
-mod timing_tests {
-    use super::*;
-    use wasmtime::{Config, Engine, Linker, MemoryType, Module, SharedMemory};
-
-    #[test]
-    fn input_correlation_cannot_leak_into_later_callbacks_even_after_traps() {
-        let mut config = Config::new();
-        config.wasm_threads(true);
-        let engine = Engine::new(&config).unwrap();
-        let memory = SharedMemory::new(&engine, MemoryType::shared(1, 1)).unwrap();
-        let mut store = Store::new(&engine, HostState::new(crate::memory::GuestMemory(memory)));
-        let module = Module::new(
-            &engine,
-            r#"(module
-            (import "test" "observe" (func $observe (param i32)))
-            (func (export "input") i32.const 1 call $observe)
-            (func (export "trap") i32.const 1 call $observe unreachable)
-            (func (export "later") i32.const 0 call $observe))"#,
-        )
-        .unwrap();
-        let mut linker = Linker::new(&engine);
-        linker
-            .func_wrap(
-                "test",
-                "observe",
-                |caller: Caller<'_, HostState>, expected: i32| {
-                    assert_eq!(caller.data().input_started.is_some(), expected != 0);
-                },
-            )
-            .unwrap();
-        let instance = linker.instantiate(&mut store, &module).unwrap();
-        input_export(&mut store, &instance, "input", &[], Some(Instant::now())).unwrap();
-        export(&mut store, &instance, "later", &[]).unwrap();
-        assert!(input_export(&mut store, &instance, "trap", &[], Some(Instant::now())).is_err());
-        export(&mut store, &instance, "later", &[]).unwrap();
     }
 }

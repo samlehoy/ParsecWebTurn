@@ -75,10 +75,6 @@ separate window. Unknown measurements stay unknown. Traffic shows actual usage,
 not your maximum connection speed. Audio format remains visible during silence;
 the host's configured audio bitrate is not exposed. Network packet loss is not
 available for this client's SCTP video transport; local dropped frames are separate.
-For input responsiveness testing, dev builds temporarily show input-to-send
-average, p95 and maximum times while the stats window is visible. These use the
-same boundaries as the previous measurement build and exclude network latency.
-The row will be removed after verification.
 Hardware decode shows **Likely (D3D11 decoder surface)** when the decoded frame
 uses a decoder-specific GPU surface. This is evidence from the actual output,
 not a guarantee of hardware execution. A plain GPU surface is insufficient;

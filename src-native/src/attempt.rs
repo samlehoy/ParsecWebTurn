@@ -184,8 +184,6 @@ struct Progress {
 
 struct Completion {
     #[cfg(windows)]
-    input_latency: crate::local_latency::Window,
-    #[cfg(windows)]
     telemetry: Option<(Arc<crate::stats::Shared>, u64)>,
     started_at: std::time::Instant,
     closing: bool,
@@ -213,22 +211,6 @@ impl Drop for Completion {
     }
 }
 impl Completion {
-    #[cfg(windows)]
-    fn record_input_latency(
-        &mut self,
-        started: Option<std::time::Instant>,
-        ended: std::time::Instant,
-    ) {
-        if self
-            .telemetry
-            .as_ref()
-            .is_some_and(|(bus, _)| bus.requested())
-        {
-            if let Some(started) = started {
-                self.input_latency.record(started, ended);
-            }
-        }
-    }
     fn elapsed_ms(&self) -> u64 {
         u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
@@ -328,7 +310,7 @@ enum Command {
     Begin(Credentials),
     Candidate(Candidate),
     Sync,
-    Send(u16, Bytes, Option<std::time::Instant>),
+    Send(u16, Bytes),
     Disconnect,
 }
 
@@ -406,8 +388,6 @@ impl Attempt {
             video_stream.configure(config.video_protocol.clone());
         }
         let completion = Arc::new(Mutex::new(Completion {
-            #[cfg(windows)]
-            input_latency: Default::default(),
             #[cfg(windows)]
             telemetry: None,
             started_at: std::time::Instant::now(),
@@ -642,13 +622,7 @@ impl Attempt {
         if channel > 2 || payload.len() > MAX_CHANNEL_MESSAGE {
             bail!("invalid native channel/message size");
         }
-        self.command(&self.id, Command::Send(channel, payload, None))
-    }
-    pub fn send_input(&self, payload: Bytes, started: Option<std::time::Instant>) -> Result<()> {
-        if payload.len() > MAX_CHANNEL_MESSAGE {
-            bail!("invalid native channel/message size");
-        }
-        self.command(&self.id, Command::Send(0, payload, started))
+        self.command(&self.id, Command::Send(channel, payload))
     }
     pub fn pop_event(&self) -> Option<serde_json::Value> {
         self.completion
@@ -807,7 +781,7 @@ fn worker(
                 else {
                     continue;
                 };
-                let mut input_latency = {
+                {
                     let s = state.lock().unwrap_or_else(|e| e.into_inner());
                     if s.cancelled || s.closing {
                         break;
@@ -816,9 +790,7 @@ fn worker(
                     sample.audio_ready = s.audio_stream.is_some();
                     sample.video = s.video_output.as_ref().map(|v| v.snapshot());
                     sample.profile = s.video_stream.snapshot().sps_profile_idc;
-                    s.input_latency.clone()
-                };
-                sample.input_latency = input_latency.snapshot(std::time::Instant::now());
+                }
                 bus.publish(generation, sample);
             }
         });
@@ -1022,16 +994,11 @@ fn worker(
                                 });
                             }
                         }
-                        Command::Send(id,payload,input_started)=>{
+                        Command::Send(id,payload)=>{
                             let channel=&channels[usize::from(id)];
                             if channel.ready_state()!=RTCDataChannelState::Open { return Err(FailureStage::ChannelSend.into()); }
                             channel.send(&payload).await.context(FailureStage::ChannelSend)?;
-                            let sent_at = std::time::Instant::now();
-                            #[cfg(not(windows))]
-                            let _ = (input_started, sent_at);
                             let mut state=shared.lock().unwrap_or_else(|e|e.into_inner());
-                            #[cfg(windows)]
-                            state.record_input_latency(input_started, sent_at);
                             state.progress.last_send_elapsed_ms=Some(state.elapsed_ms());
                             state.progress.last_sent_control_kind=if id==0 { payload.get(12).copied() } else { None };
                         }
@@ -1267,8 +1234,6 @@ mod tests {
     fn empty_completion() -> Completion {
         Completion {
             #[cfg(windows)]
-            input_latency: Default::default(),
-            #[cfg(windows)]
             telemetry: None,
             started_at: std::time::Instant::now(),
             closing: false,
@@ -1285,27 +1250,6 @@ mod tests {
             video_output: None,
             audio_stream: None,
         }
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn temporary_input_timing_requires_visible_stats_and_correlation() {
-        let mut state = empty_completion();
-        let bus = Arc::new(crate::stats::Shared::default());
-        state.telemetry = Some((bus.clone(), bus.begin()));
-        let end = std::time::Instant::now();
-        let start = end - Duration::from_millis(3);
-        state.record_input_latency(Some(start), end);
-        assert_eq!(state.input_latency.snapshot(end).count, 0);
-        bus.visible.store(true, Ordering::Release);
-        state.record_input_latency(None, end);
-        assert_eq!(state.input_latency.snapshot(end).count, 0);
-        state.record_input_latency(Some(start), end);
-        assert_eq!(state.input_latency.snapshot(end).mean_ms, 3.0);
-        bus.visible.store(false, Ordering::Release);
-        state.record_input_latency(Some(start), end);
-        assert_eq!(state.input_latency.snapshot(end).count, 1);
-        assert_eq!(empty_completion().input_latency.snapshot(end).count, 0);
     }
 
     #[test]
