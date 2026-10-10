@@ -26,7 +26,6 @@ pub struct Sample {
     pub audio_ready: bool,
     pub video: Option<crate::video_output::Snapshot>,
     pub profile: Option<u8>,
-    pub local_latency: [crate::local_latency::Summary; 3],
 }
 impl Default for Sample {
     fn default() -> Self {
@@ -48,7 +47,6 @@ impl Default for Sample {
             audio_ready: false,
             video: None,
             profile: None,
-            local_latency: Default::default(),
         }
     }
 }

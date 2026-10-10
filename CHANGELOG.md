@@ -7,7 +7,6 @@ builds, not published stable releases.
 
 ### New
 
-- **Local latency measurements:** Connection stats now shows how long input takes to reach the local sender and how long received video/audio messages take to reach their processing queues. Includes average, p95 and maximum times; measurement runs while the stats window is visible. These values exclude the network journey and decoding.
 - **Video GPU selector:** choose the graphics adapter used for native stream decoding and rendering in Settings. The choice is saved and applies to your next connection; Automatic keeps the Windows default.
 - **Choose your own connection servers.** Configure custom STUN servers and TURN relays, including Cloudflare, coturn, eturnal and ExpressTURN. TURN connections support UDP, TCP and encrypted TLS, including servers on port 443.
 - **STUN-only mode for LAN/VPN use.** Discover a direct connection without offering a TURN relay. Leave the STUN field empty to use Parsec's default server.
