@@ -40,8 +40,18 @@ try {
     }
     $taskFixture = [IO.File]::ReadAllBytes((Join-Path $taskRoot 'src-native/fixtures/synthetic-1920x1080.h264'))
     if ($taskBinaryText.Contains([Text.Encoding]::Latin1.GetString($taskFixture))) { throw 'Synthetic video fixture in normal executable' }
-    $taskCore = [IO.File]::ReadAllBytes((Join-Path $taskRoot 'src-native/vendor/parsecd.wasm'))
-    if (!$taskBinaryText.Contains([Text.Encoding]::Latin1.GetString($taskCore))) { throw 'Pinned WASM is not embedded in the executable' }
+    # build.rs verifies the original WASM hash before compiling. The normal
+    # EXE now embeds its build-generated native artifact, not the raw WASM.
+    $taskCompiledCores = @(Get-ChildItem -Path (Join-Path $taskRoot 'src-native/target/x86_64-pc-windows-msvc/release/build/parsec-web-turn-*/out/parsecd.cwasm') -File)
+    $taskEmbeddedCore = $false
+    foreach ($taskCompiledCore in $taskCompiledCores) {
+        $taskCore = [IO.File]::ReadAllBytes($taskCompiledCore.FullName)
+        if ($taskCore.Length -gt 0 -and $taskBinaryText.Contains([Text.Encoding]::Latin1.GetString($taskCore))) {
+            $taskEmbeddedCore = $true
+            break
+        }
+    }
+    if (!$taskEmbeddedCore) { throw 'Build-generated precompiled Parsec core is not embedded in the executable' }
     Copy-Item src-native/target/x86_64-pc-windows-msvc/release/parsec-web-turn.exe ParsecWebTurn.exe -Force
     $taskStaging = Join-Path $taskRoot ('dist/native-package-' + [guid]::NewGuid().ToString('N'))
     $taskPackageName = "ParsecWebTurn-v$taskVersion-win64"

@@ -86,11 +86,14 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          cargo build --locked --release --manifest-path src-native/Cargo.toml
+          $buildMessages = cargo build --locked --release --manifest-path src-native/Cargo.toml --message-format=json-render-diagnostics
           if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
-          $runtimeDependencies = cargo tree --locked --manifest-path src-native/Cargo.toml --edges normal --prefix none
-          if ($LASTEXITCODE -ne 0) { throw 'Runtime dependency inspection failed' }
-          if ($runtimeDependencies -match '^wasmtime-internal-cranelift ') { throw 'The normal runtime must not link the WASM compiler' }
+          # Inspect actual target artifacts, not Cargo tree's feature-unified
+          # view, which can include compiler features needed only by build.rs.
+          $runtimeArtifacts = @($buildMessages | Where-Object { $_.StartsWith('{') } | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and ($_.filenames -match '[\\/]x86_64-pc-windows-msvc[\\/]release[\\/]') })
+          $runtimeEngine = @($runtimeArtifacts | Where-Object { $_.target.name -eq 'wasmtime' })
+          if ($runtimeEngine.Count -ne 1 -or $runtimeEngine[0].features -contains 'cranelift' -or $runtimeEngine[0].features -contains 'winch') { throw 'The normal runtime must use a compiler-free Wasmtime build' }
+          if ($runtimeArtifacts.target.name -contains 'wasmtime_internal_cranelift') { throw 'The normal runtime must not link the WASM compiler' }
           New-Item -ItemType Directory -Path src-native/artifacts -Force | Out-Null
           Copy-Item src-native/target/x86_64-pc-windows-msvc/release/parsec-web-turn.exe src-native/artifacts/ParsecWebTurn.exe
           ./scripts/package-native.ps1
