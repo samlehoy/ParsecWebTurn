@@ -58,6 +58,52 @@ AOT/JIT comparisons isolate the effect of executing compilation; both diagnostic
 paths still link the compiler. A later runtime-only production build could omit
 it entirely, but that saving is not established by this comparison alone.
 
+## Local results (2026-10-10)
+
+Measured the optimized diagnostic executable from `3b5f57e` on the local AMD
+Radeon 780M system. Eight fresh offline UI processes were run, alternating order:
+four JIT, four AOT. Every run rendered 14 UI frames, reported no execution error,
+and released its native window. No real account, clipboard or Parsec host was
+used. The AOT artifact uses the portable Windows target; the JIT path retains
+the normal host CPU configuration. This is not a throughput or latency benchmark.
+
+- Core loading: JIT 1,145–1,218 ms; AOT 3–5 ms. Timing excludes file reading and
+  hashing and includes creating the engine and loading/compiling the module.
+- Guest linear-memory extent after UI initialization: **106.0625 MiB** for both
+  loading paths. This is accessible linear-memory size, not a measurement of
+  how many of its pages are physically resident.
+- Retained overlay CPU payload: three textures, **20,141,664 bytes (19.21 MiB)**;
+  buffers 19,528 bytes; frame vertices 46,440 bytes. Texture references shared
+  between batches are counted once.
+- Immediately after core loading in the first four runs, private commit was
+  20.83–22.09 MiB for JIT and 12.89–12.90 MiB for AOT. That modest difference did
+  not establish an equivalent reduction in the fully initialized UI.
+
+The UI is event driven and presented only 14 frames, so sampling once per 60
+frames does not provide steady-state coverage. Four additional runs used an
+external process counter every 250 ms and averaged samples between seconds 4
+and 7. Each row contains 11 samples; raw counters are preserved alongside the
+local JSON reports in `dist/native-memory-investigation/` (ignored build data).
+
+| Loading path / order | Private commit, MiB | Total working set, MiB |
+| --- | ---: | ---: |
+| AOT / 1 | 396.80 | 288.52 |
+| JIT / 2 | 398.21 | 278.20 |
+| JIT / 3 | 383.71 | 257.57 |
+| AOT / 4 | 379.08 | 258.65 |
+
+Run-to-run variation is larger than the observed difference between loading
+paths. These values include driver/runtime allocations and are not Task
+Manager's private working set. They do **not** prove a material steady-state
+RAM reduction from AOT. The local build still links the compiler in both modes;
+omitting it from the normal binary remains a separate experiment.
+
+Conclusion: AOT is strongly supported as a startup improvement, not as a
+demonstrated solution to the roughly 200 MB baseline. Atlas storage has a
+measurable 19.21 MiB payload worth examining for compact formats, but it cannot
+account for the entire baseline. Neither the normal loader nor native video
+resources were changed by this investigation.
+
 ## Decision criteria
 
 - Prefer AOT if the measured improvement justifies its embedded native-code
