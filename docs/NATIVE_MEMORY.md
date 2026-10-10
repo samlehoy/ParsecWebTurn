@@ -42,6 +42,10 @@ allocator and cleanly shut down. Neither loads the user's profile or enables
 account networking. The WASM path is hash-checked even in AOT mode; it is never
 treated as a serialized native artifact.
 
+CI has no accelerated OpenGL pixel format. It uses the separate
+`allocator-memory-jit` and `allocator-memory-aot` modes to validate loading and
+the real WASM allocator without a window. Those are not UI memory measurements.
+
 Reports include module loading time, process working set and private committed
 bytes before/after loading, bounded samples while rendering, current guest
 linear-memory size, and CPU atlas/buffer/frame-vertex byte counts. Working set

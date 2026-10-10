@@ -148,9 +148,10 @@ fn run() -> Result<()> {
         println!("{json}");
         return Ok(());
     }
-    let memory_mode = matches!(mode.as_str(), "window-memory-jit" | "window-memory-aot");
-    let ahead_of_time = mode == "window-memory-aot";
-    let mode = if memory_mode { "window-audit".into() } else { mode };
+    let window_memory = matches!(mode.as_str(), "window-memory-jit" | "window-memory-aot");
+    let memory_mode = window_memory || matches!(mode.as_str(), "allocator-memory-jit" | "allocator-memory-aot");
+    let ahead_of_time = memory_mode && mode.ends_with("-aot");
+    let mode = if window_memory { "window-audit".into() } else if memory_mode { "allocator".into() } else { mode };
     let account_mode = matches!(mode.as_str(), "account" | "account-network-audit");
     let live_mode = account_mode || mode == "session-audit";
     let window_mode =
