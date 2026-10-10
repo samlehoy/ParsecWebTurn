@@ -109,6 +109,21 @@ Unused-code and unused-direct-dependency warnings are enabled; both build
 variants, including unit-test targets, must pass strict Clippy.
 Historical implementation evidence is under `docs/NATIVE_*.md`.
 
+## Native input scheduling
+
+Native input uses a bounded 256-event FIFO and Rust's documented `Condvar`
+waiting API. An event wakes the input instance immediately; it does not wait for
+the next 60 Hz regular callback. The existing pinned WASM input exports still
+prepare/send control messages, on the same owning thread and in FIFO order.
+No new worker calls into a Wasmtime store concurrently. The regular callback
+keeps its 60 Hz deadline, independently of input wakes, and overdue ticks do not
+cause a catch-up burst. The render worker and video/audio queues are unchanged.
+Idle input waits on the condition variable until an event or callback deadline;
+shutdown wakes the same waiter. Queue state and its stop predicate share one
+mutex, preventing lost notifications around the transition to sleep. The earlier
+queue capacity/drop policy is retained. Local-latency measurement UI, timestamps
+and sample storage have been removed; this change makes no fixed latency promise.
+
 ## Native connection statistics
 
 Connection stats (Ctrl+Shift+S) opens a separate, modeless Win32 window. A bounded

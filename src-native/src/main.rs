@@ -31,6 +31,8 @@ mod cursor;
 mod data_only_policy_tests;
 #[cfg(windows)]
 mod desktop;
+#[cfg(any(windows, test))]
+mod event_queue;
 #[cfg(any(test, feature = "diagnostics"))]
 mod execution_diagnostics;
 mod filesystem;

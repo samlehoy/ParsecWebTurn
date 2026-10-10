@@ -34,7 +34,7 @@ pub struct Window {
     pub hwnd: AtomicUsize,
     pub closing: AtomicBool,
     pub active_contexts: AtomicUsize,
-    pub events: Mutex<std::collections::VecDeque<Event>>,
+    pub events: crate::event_queue::Queue<Event>,
     pub dimensions: Mutex<(i32, i32)>,
     pub overlay: Mutex<crate::overlay::Shared>,
     pub graphics: Mutex<Option<crate::graphics::GraphicsReport>>,
@@ -394,6 +394,7 @@ impl Window {
     pub fn request_stop(&self) {
         self.set_relative_mouse(false);
         self.closing.store(true, Ordering::Release);
+        self.events.stop();
         self.stop.stop();
     }
     pub fn set_cursor(&self, request: crate::cursor::Request) {
@@ -459,10 +460,7 @@ impl Window {
         }
     }
     fn push(&self, event: Event) {
-        let mut queue = self.events.lock().unwrap_or_else(|e| e.into_inner());
-        if queue.len() < 256 {
-            queue.push_back(event);
-        }
+        self.events.push(event);
     }
 }
 

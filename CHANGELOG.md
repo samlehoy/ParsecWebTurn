@@ -17,6 +17,7 @@ builds, not published stable releases.
 
 ### Improved
 
+- **More responsive input:** mouse and keyboard events now wake their processing loop immediately instead of waiting for its next regular tick. The regular interface callback and video presentation keep their existing pacing. Actual latency improvement depends on system load and the Parsec core.
 - **Faster startup:** the bundled Parsec core is compiled during the build and loaded directly when you open the app. No download or compilation is needed at startup.
 - The Video GPU selector excludes virtual display-only adapters that can appear under the same name as a real GPU. Separate real GPUs remain selectable, even when their names match.
 - Disable the video driver's automatic extra picture processing and reuse GPU video views and stream-format details. Cached views are released when the stream changes or the window is resized. Presentation queue behavior is unchanged.
