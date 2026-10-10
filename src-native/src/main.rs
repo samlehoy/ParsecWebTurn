@@ -105,7 +105,7 @@ use std::{
     sync::{atomic::Ordering, Arc},
     time::Duration,
 };
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 use wasmtime::Config;
 use wasmtime::{Engine, ExternType, Func, Instance, Linker, Module, SharedMemory, Store};
 #[cfg(feature = "diagnostics")]
