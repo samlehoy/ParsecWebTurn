@@ -31,9 +31,6 @@ struct ImportInfo {
 }
 #[derive(Serialize)]
 struct Report {
-    #[cfg(windows)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    memory_profile: Option<memory_probe::Profile>,
     schema: u32,
     prototype_version: &'static str,
     wasm_sha256: String,
@@ -148,10 +145,6 @@ fn run() -> Result<()> {
         println!("{json}");
         return Ok(());
     }
-    let window_memory = matches!(mode.as_str(), "window-memory-jit" | "window-memory-aot");
-    let memory_mode = window_memory || matches!(mode.as_str(), "allocator-memory-jit" | "allocator-memory-aot");
-    let ahead_of_time = memory_mode && mode.ends_with("-aot");
-    let mode = if window_memory { "window-audit".into() } else if memory_mode { "allocator".into() } else { mode };
     let account_mode = matches!(mode.as_str(), "account" | "account-network-audit");
     let live_mode = account_mode || mode == "session-audit";
     let window_mode =
@@ -282,8 +275,6 @@ fn run() -> Result<()> {
                   parsec-native-wasm guest-thread-probe [report.json]\n\
                   parsec-native-wasm guest-platform-probe [report.json]\n\
                   parsec-native-wasm window-audit <parsecd.wasm> [report.json]\n\
-                  parsec-native-wasm window-memory-jit <parsecd.wasm> [report.json]\n\
-                  parsec-native-wasm window-memory-aot <parsecd.wasm> [report.json]\n\
                   parsec-native-wasm login-audit <parsecd.wasm> [report.json]\n\
                   parsec-native-wasm account <parsecd.wasm> [report.json] [--cloudflare-stun] [--legacy-rsa-1024]\n\
                   parsec-native-wasm account-network-audit <parsecd.wasm> [report.json] [--cloudflare-stun] [--legacy-rsa-1024]\n\
@@ -336,29 +327,9 @@ fn run() -> Result<()> {
     if hash != PINNED_SHA256 {
         bail!("WASM SHA-256 mismatch; audit a new binary before changing the pin");
     }
-    #[cfg(windows)]
-    let before_load = memory_mode.then(memory_probe::snapshot).flatten();
-    let load_started = std::time::Instant::now();
-    let config: Config = core_config::config();
-    let engine = Engine::new(&config)?;
-    let module = if ahead_of_time {
-        // SAFETY: this immutable embedded artifact is produced by our build.rs,
-        // from the SHA-256-verified core using the same locked Wasmtime version
-        // and shared configuration. Never deserialize the user-supplied path.
-        unsafe { Module::deserialize(&engine, include_bytes!(concat!(env!("OUT_DIR"), "/parsecd.cwasm"))) }
-            .context("loading our embedded precompiled core")?
-    } else {
-        Module::new(&engine, &bytes).context("compiling the original WASM")?
-    };
+    let engine = Engine::new(&core_config::config())?;
+    let module = core_runtime::load(&engine)?;
     let mut report = Report {
-        #[cfg(windows)]
-        memory_profile: memory_mode.then(|| memory_probe::Profile {
-            ahead_of_time,
-            module_load_ms: load_started.elapsed().as_millis(),
-            before_load,
-            after_load: memory_probe::snapshot(),
-            guest_linear_bytes: 0,
-        }),
         schema: 3,
         prototype_version: env!("CARGO_PKG_VERSION"),
         wasm_sha256: hash,
@@ -469,10 +440,6 @@ fn run() -> Result<()> {
         #[cfg(not(windows))]
         let (mut store, instance) = instantiate(&engine, &module)?;
         report.instantiated = true;
-        #[cfg(windows)]
-        if let Some(profile) = &mut report.memory_profile {
-            profile.guest_linear_bytes = store.data().memory.0.data_size();
-        }
         allocator_roundtrip(&mut store, &instance)?;
         report.allocator_roundtrip = true;
         {
@@ -546,9 +513,6 @@ fn run() -> Result<()> {
                 && std::time::Instant::now() < until
             {
                 std::thread::sleep(Duration::from_millis(10));
-            }
-            if let Some(profile) = &mut report.memory_profile {
-                profile.guest_linear_bytes = store.data().memory.0.data_size();
             }
             report.graphics = window
                 .graphics

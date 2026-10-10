@@ -5,7 +5,7 @@ presentation queue or audio buffers. The user's observed baseline is about
 200 MB, with roughly 50 MB added during a stream. These observations are not
 attributed to individual components without measurement.
 
-## Current architecture
+## Architecture before the investigation
 
 The normal EXE embeds the SHA-256-pinned Parsec WASM; it does not fetch it at
 startup. Wasmtime compiles it locally on each launch. The imported shared linear
@@ -21,42 +21,19 @@ The D3D11 overlay cache already removes obsolete atlas versions after drawing.
 Deleting the CPU atlases unconditionally would break subsequent partial updates
 or the overlay. Readback from OpenGL is not a suitable replacement.
 
-## Isolated comparison
+## Implemented scope
 
-The `diagnostics` build generates an AOT artifact with the same locked Wasmtime
-version and execution configuration, using a portable target rather than CPU
-features detected on the build machine. Only that immutable embedded artifact
-is deserialized. User-supplied serialized native code is never accepted. The
-normal client's loading path remains unchanged for this investigation.
+The normal client now embeds the build-generated AOT artifact and loads it
+directly, without a runtime compiler. Only the hash-verified original core is
+compiled, with the locked Wasmtime version, shared execution settings and a
+portable target. Fuel and epoch limits are preserved and tested. No external
+serialized native code is accepted.
 
-Run separate fresh processes on the same machine, alternating order and
-repeating each path:
-
-```powershell
-./parsec-native-memory-diagnostics.exe window-memory-jit ./parsecd.wasm ./jit.json
-./parsec-native-memory-diagnostics.exe window-memory-aot ./parsecd.wasm ./aot.json
-```
-
-Both render the same offline login UI for a bounded interval, verify the guest
-allocator and cleanly shut down. Neither loads the user's profile or enables
-account networking. The WASM path is hash-checked even in AOT mode; it is never
-treated as a serialized native artifact.
-
-CI has no accelerated OpenGL pixel format. It uses the separate
-`allocator-memory-jit` and `allocator-memory-aot` modes to validate loading and
-the real WASM allocator without a window. Those are not UI memory measurements.
-
-Reports include module loading time, process working set and private committed
-bytes before/after loading, bounded samples while rendering, current guest
-linear-memory size, and CPU atlas/buffer/frame-vertex byte counts. Working set
-includes shared pages; private commit includes memory not currently resident.
-Neither should be mislabeled as Task Manager's active private working set.
-
-UI byte counts cover retained payloads, not allocator overhead, OpenGL driver
-allocations, GPU residency or the WASM guest's original image data. Fresh-process
-AOT/JIT comparisons isolate the effect of executing compilation; both diagnostic
-paths still link the compiler. A later runtime-only production build could omit
-it entirely, but that saving is not established by this comparison alone.
+The temporary memory comparison commands, counters and workflow artifacts were
+removed after the investigation. Existing isolated allocator/bootstrap probes
+now exercise the same embedded AOT loader as the normal client. The measurements
+below describe the historical diagnostic build, which still linked a compiler.
+No UI texture, video or audio optimization was adopted from this investigation.
 
 ## Local results (2026-10-10)
 
@@ -96,24 +73,12 @@ Run-to-run variation is larger than the observed difference between loading
 paths. These values include driver/runtime allocations and are not Task
 Manager's private working set. They do **not** prove a material steady-state
 RAM reduction from AOT. The local build still links the compiler in both modes;
-omitting it from the normal binary remains a separate experiment.
+the normal binary now omits it, but no memory-saving claim is made.
 
 Conclusion: AOT is strongly supported as a startup improvement, not as a
 demonstrated solution to the roughly 200 MB baseline. Atlas storage has a
 measurable 19.21 MiB payload worth examining for compact formats, but it cannot
-account for the entire baseline. Neither the normal loader nor native video
-resources were changed by this investigation.
-
-## Decision criteria
-
-- Prefer AOT if the measured improvement justifies its embedded native-code
-  size and build-time compatibility requirements. Do not weaken fuel, epoch,
-  shared-memory or host-call validation to reduce memory.
-- Optimize atlas representation or lifecycle only if actual retained atlas
-  bytes justify it. Preserve partial updates and the overlay; do not add live
-  GPU readback or change native video buffers.
-- Do not use working-set trimming to manufacture a smaller Task Manager number;
-  paging the same data back in can hurt responsiveness.
+account for the entire baseline. Only AOT loading was adopted; native video resources were not changed.
 
 ## References
 

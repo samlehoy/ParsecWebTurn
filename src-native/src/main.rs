@@ -19,8 +19,10 @@ mod buffers;
 mod connection_settings;
 mod connection_settings_ui;
 mod control;
-#[cfg(feature = "diagnostics")]
+#[cfg(any(windows, feature = "diagnostics"))]
 mod core_config;
+#[cfg(any(windows, feature = "diagnostics"))]
+mod core_runtime;
 #[cfg(test)]
 mod crypto_policy_tests;
 #[cfg(windows)]
@@ -48,8 +50,6 @@ mod media_ingress;
 #[cfg(windows)]
 mod media_scheduling;
 mod memory;
-#[cfg(all(windows, feature = "diagnostics"))]
-mod memory_probe;
 mod network_audit;
 mod network_policy;
 #[cfg(windows)]
@@ -105,13 +105,16 @@ use std::{
     sync::{atomic::Ordering, Arc},
     time::Duration,
 };
-use wasmtime::{Config, Engine, ExternType, Func, Instance, Linker, Module, SharedMemory, Store};
+#[cfg(any(test, feature = "diagnostics"))]
+use wasmtime::Config;
+use wasmtime::{Engine, ExternType, Func, Instance, Linker, Module, SharedMemory, Store};
 #[cfg(feature = "diagnostics")]
 use {
     serde::Serialize,
     sha2::{Digest, Sha256},
     std::{env, fs, path::PathBuf, sync::atomic::AtomicBool},
 };
+#[cfg(feature = "diagnostics")]
 const PINNED_SHA256: &str = "d663dd96df477c65479fb93eb88756c7fcafff581cc93be563625cd195a4b4a6";
 #[cfg(feature = "diagnostics")]
 include!("diagnostic_entry.rs");
@@ -268,7 +271,7 @@ fn instantiate_with_runtime(
     Ok((store, instance))
 }
 
-#[cfg(feature = "diagnostics")]
+#[cfg(any(test, feature = "diagnostics"))]
 fn allocator_roundtrip(store: &mut Store<HostState>, instance: &Instance) -> Result<()> {
     let alloc = instance.get_typed_func::<(i32, i32), i32>(&mut *store, "mty_system_alloc")?;
     let free = instance.get_typed_func::<i32, ()>(&mut *store, "mty_system_free")?;

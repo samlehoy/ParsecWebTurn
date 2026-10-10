@@ -5,9 +5,8 @@ fn main() {
     println!("cargo:rerun-if-changed=../assets/parsec.ico");
     println!("cargo:rerun-if-changed=vendor/parsecd.wasm");
     println!("cargo:rerun-if-changed=src/core_config.rs");
-    // Comparison artifact only. The normal client's loading path is unchanged
-    // until the isolated measurements establish a useful improvement.
-    if env::var_os("CARGO_FEATURE_DIAGNOSTICS").is_some() {
+    // Compile once for the portable target, never the build machine CPU.
+    {
         use sha2::{Digest, Sha256};
         let bytes = fs::read("vendor/parsecd.wasm").expect("Fetch the pinned core first");
         assert_eq!(

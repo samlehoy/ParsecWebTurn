@@ -1,6 +1,5 @@
 //! Normal single-executable entry point. Diagnostic CLI is a separate build feature.
 use crate::*;
-use sha2::{Digest, Sha256};
 pub fn main() {
     let result = std::thread::Builder::new()
         .name("parsec-runtime".into())
@@ -55,17 +54,8 @@ fn run() -> Result<()> {
     let profile = profile::Profile::user()?;
     let mut saved = profile.load()?;
     saved.profile = Some(profile.clone());
-    let bytes = include_bytes!("../vendor/parsecd.wasm");
-    if format!("{:x}", Sha256::digest(bytes)) != PINNED_SHA256 {
-        bail!("Embedded Parsec core mismatch");
-    }
-    let mut config = Config::new();
-    config
-        .wasm_threads(true)
-        .consume_fuel(true)
-        .epoch_interruption(true);
-    let engine = Engine::new(&config)?;
-    let module = Module::new(&engine, bytes)?;
+    let engine = Engine::new(&core_config::config())?;
+    let module = core_runtime::load(&engine)?;
     let window = window::Window::create(false, true, true, false)?;
     window.install_connection_settings(connection_settings.clone());
     let (mut store, instance) = instantiate_mode(&engine, &module, Some(window.clone()))?;

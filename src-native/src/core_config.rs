@@ -1,4 +1,4 @@
-// Shared by the isolated AOT build and its runtime comparison. Keep all
+// Shared by the AOT build and runtime loader. Keep all
 // execution/safety settings identical; AOT changes loading, not guest policy.
 pub fn config() -> wasmtime::Config {
     let mut config = wasmtime::Config::new();
