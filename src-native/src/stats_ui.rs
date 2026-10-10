@@ -86,7 +86,7 @@ pub unsafe fn open(parent: HWND, bus: Arc<Shared>) -> HWND {
     let hwnd = CreateWindowExW(
         0,
         class.as_ptr(),
-        wide("ParsecWebTurn — Connection stats").as_ptr(),
+        wide("Connection stats").as_ptr(),
         WS_OVERLAPPEDWINDOW | WS_VSCROLL,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
@@ -434,7 +434,8 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
             GWLP_USERDATA,
             (*(lp as *const CREATESTRUCTW)).lpCreateParams as isize,
         );
-        return 1;
+        // Let Windows initialize the native caption from CREATESTRUCTW.
+        return DefWindowProcW(hwnd, message, wp, lp);
     }
     let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Page;
     if !ptr.is_null() {
@@ -587,6 +588,12 @@ mod tests {
             );
             let hwnd = open(parent, bus.clone());
             assert!(!hwnd.is_null());
+            let mut title = [0u16; 64];
+            let length = GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32);
+            assert_eq!(
+                String::from_utf16_lossy(&title[..length as usize]),
+                "Connection stats"
+            );
             assert!(bus.requested());
             capture(hwnd, "stats-top");
             SendMessageW(hwnd, WM_VSCROLL, SB_BOTTOM as usize, 0);
