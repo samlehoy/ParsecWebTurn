@@ -121,8 +121,17 @@ cause a catch-up burst. The render worker and video/audio queues are unchanged.
 Idle input waits on the condition variable until an event or callback deadline;
 shutdown wakes the same waiter. Queue state and its stop predicate share one
 mutex, preventing lost notifications around the transition to sleep. The earlier
-queue capacity/drop policy is retained. Local-latency measurement UI, timestamps
-and sample storage have been removed; this change makes no fixed latency promise.
+queue capacity/drop policy is retained. Receive-side timing has been removed.
+For before/after verification only, the dev stats window temporarily retains
+input timing with the same boundaries as the previous measurement build:
+`Window::push`, before its queue lock, through that exact synchronous WASM input
+callback to successful `RTCDataChannel::send` return. This is SCTP acceptance,
+not NIC transmission. Uncorrelated asynchronous sends remain unknown. Numeric
+samples are collected only while the stats window is visible, for the last five
+seconds, capped at 1,024 per session. Average, nearest-rank p95, maximum and sample
+count are shown. Sorting runs outside the transport/media lock. No packet/input
+contents are logged. The input measurement is to be removed after verification;
+this change makes no fixed latency promise.
 
 ## Native connection statistics
 

@@ -274,6 +274,20 @@ fn rows(
     row("APP PERFORMANCE", String::new());
     row("CPU (all cores)", number(cpu.0, "%"));
     row("GPU (busiest engine)", number(cpu.1, "%"));
+    row("INPUT LATENCY (TEMPORARY DEV MEASUREMENT)", String::new());
+    row("Recent samples", "Last 5 s, up to 1,024".into());
+    let timing = s.input_latency;
+    row(
+        "Input → send (sync)",
+        if timing.count == 0 || s.at.elapsed().as_secs() > 4 {
+            "Waiting for samples".into()
+        } else {
+            format!(
+                "avg {:.2} · p95 {:.2} · max {:.2} ms · n={}",
+                timing.mean_ms, timing.p95_ms, timing.max_ms, timing.count
+            )
+        },
+    );
     rows
 }
 unsafe fn text(dc: HDC, font: HFONT, color: u32, s: &str, mut rect: RECT) {
@@ -409,8 +423,8 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
         y += h;
     }
     y += 14;
-    text(memory,page.font,MUTED,"Traffic is measured usage, not available bandwidth. RTT is the active ICE path's round-trip time, not ICMP ping. Local dropped frames are not network packet loss. Missing values remain unknown.",RECT{left,top:y,right,bottom:y+100});
-    y += 110;
+    text(memory,page.font,MUTED,"Traffic is measured usage, not available bandwidth. RTT is the active ICE path's round-trip time, not ICMP ping. Local dropped frames are not network packet loss. Missing values remain unknown. Temporary dev input timing runs while this window is visible, from native event queuing through its synchronous WASM callback to SCTP acceptance. It excludes NIC transmission and network latency; asynchronous sends without proven input correlation remain unknown.",RECT{left,top:y,right,bottom:y+160});
+    y += 170;
     page.height = y + page.scroll;
     let info = SCROLLINFO {
         cbSize: std::mem::size_of::<SCROLLINFO>() as u32,

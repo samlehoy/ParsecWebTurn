@@ -4,6 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
 };
+use std::time::Instant;
 use windows_sys::Win32::{
     Foundation::*,
     Graphics::{Gdi::*, OpenGL::*},
@@ -26,6 +27,19 @@ pub enum Event {
     Fullscreen(bool),
 }
 
+pub struct QueuedEvent {
+    pub event: Event,
+    pub input_started: Option<Instant>,
+}
+impl From<Event> for QueuedEvent {
+    fn from(event: Event) -> Self {
+        Self {
+            event,
+            input_started: None,
+        }
+    }
+}
+
 pub struct Window {
     pub stats: Arc<crate::stats::Shared>,
     stats_page: AtomicUsize,
@@ -34,7 +48,7 @@ pub struct Window {
     pub hwnd: AtomicUsize,
     pub closing: AtomicBool,
     pub active_contexts: AtomicUsize,
-    pub events: crate::event_queue::Queue<Event>,
+    pub events: crate::event_queue::Queue<QueuedEvent>,
     pub dimensions: Mutex<(i32, i32)>,
     pub overlay: Mutex<crate::overlay::Shared>,
     pub graphics: Mutex<Option<crate::graphics::GraphicsReport>>,
@@ -460,7 +474,21 @@ impl Window {
         }
     }
     fn push(&self, event: Event) {
-        self.events.push(event);
+        let input_started = (self.stats.requested()
+            && matches!(
+                event,
+                Event::Motion(..)
+                    | Event::RelativeMotion(..)
+                    | Event::Button(..)
+                    | Event::Text(..)
+                    | Event::Key(..)
+                    | Event::Scroll(..)
+            ))
+        .then(Instant::now);
+        self.events.push(QueuedEvent {
+            event,
+            input_started,
+        });
     }
 }
 
