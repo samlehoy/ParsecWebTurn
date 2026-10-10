@@ -274,6 +274,28 @@ fn rows(
     row("APP PERFORMANCE", String::new());
     row("CPU (all cores)", number(cpu.0, "%"));
     row("GPU (busiest engine)", number(cpu.1, "%"));
+    row("LOCAL LATENCY", String::new());
+    row("Recent samples", "Last 5 s, up to 1,024 per path".into());
+    for (label, timing) in [
+        "Input → send (sync)",
+        "Receive → video queue",
+        "Receive → audio queue",
+    ]
+    .into_iter()
+    .zip(s.local_latency)
+    {
+        row(
+            label,
+            if timing.count == 0 || s.at.elapsed().as_secs() > 4 {
+                "Waiting for samples".into()
+            } else {
+                format!(
+                    "avg {:.2} · p95 {:.2} · max {:.2} ms · n={}",
+                    timing.mean_ms, timing.p95_ms, timing.max_ms, timing.count
+                )
+            },
+        );
+    }
     rows
 }
 unsafe fn text(dc: HDC, font: HFONT, color: u32, s: &str, mut rect: RECT) {
@@ -409,8 +431,8 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
         y += h;
     }
     y += 14;
-    text(memory,page.font,MUTED,"Traffic is measured usage, not available bandwidth. RTT is the active ICE path's round-trip time, not ICMP ping. Local dropped frames are not network packet loss. Missing values remain unknown.",RECT{left,top:y,right,bottom:y+100});
-    y += 110;
+    text(memory,page.font,MUTED,"Traffic is measured usage, not bandwidth. RTT is the active ICE path's round-trip time. Local drops are not packet loss. Local timings run while this window is visible. Input timing covers native event queuing and synchronous input callbacks through SCTP acceptance, not NIC transmission. Receive timing starts at a complete data-channel message and ends at an accepted media queue submission; it excludes network reception, reassembly and decoding. Async input without proven correlation stays unknown.",RECT{left,top:y,right,bottom:y+180});
+    y += 190;
     page.height = y + page.scroll;
     let info = SCROLLINFO {
         cbSize: std::mem::size_of::<SCROLLINFO>() as u32,

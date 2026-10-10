@@ -75,6 +75,12 @@ separate window. Unknown measurements stay unknown. Traffic shows actual usage,
 not your maximum connection speed. Audio format remains visible during silence;
 the host's configured audio bitrate is not exposed. Network packet loss is not
 available for this client's SCTP video transport; local dropped frames are separate.
+The **Local latency** section measures input → SCTP acceptance and received
+messages → video/audio queue handoff while the stats window is visible. It shows
+average, p95, maximum and sample count for the last five seconds (up to 1,024
+samples per path). These are local processing times, not network or decode delay.
+Only input callbacks with a proven synchronous send are included; missing samples
+remain unknown.
 Hardware decode shows **Likely (D3D11 decoder surface)** when the decoded frame
 uses a decoder-specific GPU surface. This is evidence from the actual output,
 not a guarantee of hardware execution. A plain GPU surface is insufficient;

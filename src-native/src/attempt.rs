@@ -184,6 +184,8 @@ struct Progress {
 
 struct Completion {
     #[cfg(windows)]
+    latency: [crate::local_latency::Window; 3],
+    #[cfg(windows)]
     telemetry: Option<(Arc<crate::stats::Shared>, u64)>,
     started_at: std::time::Instant,
     closing: bool,
@@ -211,6 +213,24 @@ impl Drop for Completion {
     }
 }
 impl Completion {
+    #[cfg(windows)]
+    fn record_latency(
+        &mut self,
+        kind: usize,
+        started: Option<std::time::Instant>,
+        ended: std::time::Instant,
+    ) {
+        if self
+            .telemetry
+            .as_ref()
+            .is_some_and(|(bus, _)| bus.requested())
+        {
+            if let Some(started) = started {
+                self.latency[kind].record(started, ended);
+            }
+        }
+    }
+
     fn elapsed_ms(&self) -> u64 {
         u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
@@ -230,7 +250,20 @@ impl Completion {
         }
     }
 
+    #[cfg(test)]
     fn receive(&mut self, channel: u16, text: bool, bytes: &[u8]) -> bool {
+        self.receive_timed(channel, text, bytes, None)
+    }
+
+    fn receive_timed(
+        &mut self,
+        channel: u16,
+        text: bool,
+        bytes: &[u8],
+        received_at: Option<std::time::Instant>,
+    ) -> bool {
+        #[cfg(not(windows))]
+        let _ = received_at;
         if self.cancelled || self.closing || self.progress.failed {
             return false;
         }
@@ -262,6 +295,10 @@ impl Completion {
                     discarded = !pipeline.submit(bytes);
                 }
             }
+            #[cfg(windows)]
+            if !discarded {
+                self.record_latency(usize::from(channel), received_at, std::time::Instant::now());
+            }
             self.media_ingress.record(channel, bytes.len(), discarded);
             return true;
         }
@@ -287,13 +324,15 @@ async fn read_channel(
     let mut buffer = vec![0; MAX_CHANNEL_MESSAGE];
     loop {
         let read = channel.read_data_channel(&mut buffer).await;
+        // Complete application message available, before waiting for Completion.
+        let received_at = std::time::Instant::now();
         let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
         let keep_reading = match read {
             Ok((0, _)) => {
                 state.fail_channel(FailureStage::DataChannelClosed, id);
                 false
             }
-            Ok((len, text)) => state.receive(id, text, &buffer[..len]),
+            Ok((len, text)) => state.receive_timed(id, text, &buffer[..len], Some(received_at)),
             Err(_) => {
                 state.fail_channel(FailureStage::DataChannelRead, id);
                 false
@@ -310,7 +349,7 @@ enum Command {
     Begin(Credentials),
     Candidate(Candidate),
     Sync,
-    Send(u16, Bytes),
+    Send(u16, Bytes, Option<std::time::Instant>),
     Disconnect,
 }
 
@@ -388,6 +427,8 @@ impl Attempt {
             video_stream.configure(config.video_protocol.clone());
         }
         let completion = Arc::new(Mutex::new(Completion {
+            #[cfg(windows)]
+            latency: Default::default(),
             #[cfg(windows)]
             telemetry: None,
             started_at: std::time::Instant::now(),
@@ -622,7 +663,13 @@ impl Attempt {
         if channel > 2 || payload.len() > MAX_CHANNEL_MESSAGE {
             bail!("invalid native channel/message size");
         }
-        self.command(&self.id, Command::Send(channel, payload))
+        self.command(&self.id, Command::Send(channel, payload, None))
+    }
+    pub fn send_input(&self, payload: Bytes, started: Option<std::time::Instant>) -> Result<()> {
+        if payload.len() > MAX_CHANNEL_MESSAGE {
+            bail!("invalid native channel/message size");
+        }
+        self.command(&self.id, Command::Send(0, payload, started))
     }
     pub fn pop_event(&self) -> Option<serde_json::Value> {
         self.completion
@@ -781,7 +828,7 @@ fn worker(
                 else {
                     continue;
                 };
-                {
+                let mut latency = {
                     let s = state.lock().unwrap_or_else(|e| e.into_inner());
                     if s.cancelled || s.closing {
                         break;
@@ -790,7 +837,11 @@ fn worker(
                     sample.audio_ready = s.audio_stream.is_some();
                     sample.video = s.video_output.as_ref().map(|v| v.snapshot());
                     sample.profile = s.video_stream.snapshot().sps_profile_idc;
-                }
+                    s.latency.clone()
+                };
+                // Sort numerical samples outside the media/transport lock.
+                let now = std::time::Instant::now();
+                sample.local_latency = std::array::from_fn(|i| latency[i].snapshot(now));
                 bus.publish(generation, sample);
             }
         });
@@ -994,11 +1045,16 @@ fn worker(
                                 });
                             }
                         }
-                        Command::Send(id,payload)=>{
+                        Command::Send(id,payload,input_started)=>{
                             let channel=&channels[usize::from(id)];
                             if channel.ready_state()!=RTCDataChannelState::Open { return Err(FailureStage::ChannelSend.into()); }
                             channel.send(&payload).await.context(FailureStage::ChannelSend)?;
+                            let sent_at = std::time::Instant::now();
+                            #[cfg(not(windows))]
+                            let _ = (input_started, sent_at);
                             let mut state=shared.lock().unwrap_or_else(|e|e.into_inner());
+                            #[cfg(windows)]
+                            state.record_latency(0, input_started, sent_at);
                             state.progress.last_send_elapsed_ms=Some(state.elapsed_ms());
                             state.progress.last_sent_control_kind=if id==0 { payload.get(12).copied() } else { None };
                         }
@@ -1234,6 +1290,8 @@ mod tests {
     fn empty_completion() -> Completion {
         Completion {
             #[cfg(windows)]
+            latency: Default::default(),
+            #[cfg(windows)]
             telemetry: None,
             started_at: std::time::Instant::now(),
             closing: false,
@@ -1250,6 +1308,31 @@ mod tests {
             video_output: None,
             audio_stream: None,
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn timings_require_visible_stats_and_successful_correlated_handoffs() {
+        let mut state = empty_completion();
+        let bus = Arc::new(crate::stats::Shared::default());
+        let generation = bus.begin();
+        state.telemetry = Some((bus.clone(), generation));
+        let end = std::time::Instant::now();
+        let start = end - Duration::from_millis(3);
+        state.record_latency(0, Some(start), end);
+        assert_eq!(state.latency[0].snapshot(end).count, 0);
+        bus.visible.store(true, Ordering::Release);
+        state.record_latency(0, None, end); // Uncorrelated WASM callback.
+        assert_eq!(state.latency[0].snapshot(end).count, 0);
+        state.record_latency(0, Some(start), end);
+        assert_eq!(state.latency[0].snapshot(end).mean_ms, 3.0);
+        state.discard_unavailable_media = true;
+        assert!(state.receive_timed(1, false, b"unavailable-video", Some(start)));
+        assert!(state.receive_timed(2, false, b"unavailable-audio", Some(start)));
+        assert_eq!(state.latency[1].snapshot(end).count, 0);
+        assert_eq!(state.latency[2].snapshot(end).count, 0);
+        // Hidden or absent media is not recorded as a zero-latency handoff.
+        assert_eq!(empty_completion().latency[0].snapshot(end).count, 0);
     }
 
     #[test]
