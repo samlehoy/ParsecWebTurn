@@ -65,10 +65,15 @@ VideoProcessor / DXGI presentation path is reused. No live CPU readback or
 intermediate decoded-frame copy is added. Capability checks do not establish
 actual hardware execution; existing output telemetry retains that distinction.
 
-This is an interoperability experiment: matching native SDK flags and an
-independent host implementation do **not** prove a stock Parsec host will honor
-HEVC on its WebRTC transport. An end-to-end host test is still required. A host
-may send H.264 despite the preference. Local decoder initialization/driver failure
+End-to-end user verification on 2026-10-11 confirmed visible video from a Parsec
+host over this WebRTC path: HEVC Main, 1920x1080, Media Foundation HEVC decoding,
+D3D11 VideoProcessor / DXGI presentation on AMD Radeon 780M Graphics. The supplied
+statistics showed D3D11 decoder-surface output and zero local dropped frames at
+capture time. This establishes interoperability for the tested setup, not
+universal host/driver support, sustained stability or a measured latency claim.
+The hardware status remains "Likely" based on decoder-surface evidence, not an
+execution counter. A host may still send H.264 despite the preference.
+Local decoder initialization/driver failure
 after a HEVC stream starts is reported as video failure; there is no unproven
 automatic renegotiation/reconnect. Disable the option and reconnect in that case.
 
