@@ -718,45 +718,24 @@ fn worker(
         connection_settings,
     } = network;
     if let Some(config) = &mut config {
-        #[cfg(windows)]
-        let mut ten_bit_status = if config.allow_hevc_10bit {
-            "Waiting for local capability check".to_owned()
-        } else {
-            "Disabled for this connection".to_owned()
-        };
-        #[cfg(not(windows))]
-        let ten_bit_status = "Not requested: unsupported platform".to_owned();
         // Capability work stays on this worker, outside the WASM/backend lock.
         #[cfg(windows)]
         {
             let gpu = connection_settings
                 .as_ref()
                 .and_then(|m| m.view().0.video_gpu);
-            config.allow_hevc = config.allow_hevc
-                && crate::video_windows::hevc_support(gpu.as_ref(), false).is_ok();
-            if config.allow_hevc_10bit {
-                if !config.allow_hevc {
-                    ten_bit_status = "Not requested: HEVC disabled or unavailable".into();
-                    config.allow_hevc_10bit = false;
-                } else {
-                    match crate::video_windows::hevc_support(gpu.as_ref(), true) {
-                        Ok(()) => ten_bit_status = "Local check passed; waiting to send".into(),
-                        Err(reason) => {
-                            ten_bit_status = format!("Not requested: {reason}");
-                            config.allow_hevc_10bit = false;
-                        }
-                    }
-                }
-            }
+            config.allow_hevc =
+                config.allow_hevc && crate::video_windows::hevc_available(gpu.as_ref());
         }
         #[cfg(not(windows))]
         {
             config.allow_hevc = false;
-            config.allow_hevc_10bit = false;
         }
-        let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
-        state.video_stream.enable_hevc(config.allow_hevc);
-        state.video_stream.set_hevc_10bit_request(ten_bit_status);
+        shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .video_stream
+            .enable_hevc(config.allow_hevc);
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -833,7 +812,6 @@ fn worker(
                     sample.profile = s.video_stream.snapshot().sps_profile_idc;
                     sample.codec = s.video_stream.snapshot().codec;
                     sample.hevc_advertised = s.video_stream.snapshot().hevc_advertised;
-                    sample.hevc_10bit_request = s.video_stream.snapshot().hevc_10bit_request;
                 }
                 bus.publish(generation, sample);
             }
@@ -940,9 +918,6 @@ fn worker(
                             if sent.is_err() || state.events.len() >= 64 {
                                 state.fail_channel(FailureStage::ControlStartup, id);
                             } else {
-                                if config.allow_hevc_10bit {
-                                    state.video_stream.set_hevc_10bit_request(format!("Sent (startup flags {:#04x})", config.video_flags()));
-                                }
                                 state.progress.control_ready = true;
                                 state.progress.last_send_elapsed_ms = Some(state.elapsed_ms());
                                 state.progress.last_sent_control_kind = Some(11);

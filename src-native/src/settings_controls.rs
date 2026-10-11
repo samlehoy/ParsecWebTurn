@@ -19,50 +19,6 @@ unsafe fn combo_paint(hwnd: HWND, dc: HDC) {
     if GetComboBoxInfo(hwnd, &mut info) == 0 {
         return;
     }
-    let saved = SaveDC(dc);
-    // Paint the selected native list string as well as the chrome. The default
-    // owner-drawn WM_PRINT path can omit it after a control is scrolled into view.
-    // Native list/dropdown handling remains unchanged.
-    let selection = SendMessageW(hwnd, CB_GETCURSEL, 0, 0);
-    let length = if selection >= 0 {
-        SendMessageW(hwnd, CB_GETLBTEXTLEN, selection as usize, 0)
-    } else {
-        -1
-    };
-    if (0..=1024).contains(&length) {
-        let mut label = vec![0u16; length as usize + 1];
-        if SendMessageW(
-            hwnd,
-            CB_GETLBTEXT,
-            selection as usize,
-            label.as_mut_ptr() as isize,
-        ) >= 0
-        {
-            let brush = CreateSolidBrush(FIELD);
-            FillRect(dc, &info.rcItem, brush);
-            DeleteObject(brush);
-            SelectObject(dc, SendMessageW(hwnd, WM_GETFONT, 0, 0) as HFONT);
-            SetBkMode(dc, TRANSPARENT as i32);
-            SetTextColor(
-                dc,
-                if IsWindowEnabled(hwnd) != 0 {
-                    FG
-                } else {
-                    0x00777777
-                },
-            );
-            let mut text = info.rcItem;
-            text.left += 10;
-            text.right -= 10;
-            DrawTextW(
-                dc,
-                label.as_ptr(),
-                length as i32,
-                &mut text,
-                DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS,
-            );
-        }
-    }
     let mut rect: RECT = std::mem::zeroed();
     GetClientRect(hwnd, &mut rect);
     let brush = CreateSolidBrush(FIELD);
@@ -89,7 +45,6 @@ unsafe fn combo_paint(hwnd: HWND, dc: HDC) {
     SelectObject(dc, old_pen);
     SelectObject(dc, old_brush);
     DeleteObject(brush);
-    RestoreDC(dc, saved);
 }
 unsafe extern "system" fn combo_proc(
     hwnd: HWND,

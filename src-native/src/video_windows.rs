@@ -1,4 +1,4 @@
-//! Documented Media Foundation H.264/HEVC -> D3D11 NV12/P010 -> DXGI presentation.
+//! Documented Media Foundation H.264/HEVC -> D3D11 NV12 -> DXGI presentation.
 //! COM and all GPU objects are created, used and released on one worker thread.
 use crate::video_output::{Frame, Queue, Snapshot};
 use std::{
@@ -41,7 +41,7 @@ fn unavailable(stage: &'static str) -> Failure {
 }
 
 // Public MFT discovery, not a hard-coded codec-extension DLL/CLSID.
-unsafe fn create_decoder(codec: crate::video_stream::Codec, ten_bit: bool) -> Result<IMFTransform> {
+unsafe fn create_decoder(codec: crate::video_stream::Codec) -> Result<IMFTransform> {
     if codec == crate::video_stream::Codec::H264 {
         return api(
             "video-decoder-create",
@@ -54,11 +54,7 @@ unsafe fn create_decoder(codec: crate::video_stream::Codec, ten_bit: bool) -> Re
     };
     let output = MFT_REGISTER_TYPE_INFO {
         guidMajorType: MFMediaType_Video,
-        guidSubtype: if ten_bit {
-            MFVideoFormat_P010
-        } else {
-            MFVideoFormat_NV12
-        },
+        guidSubtype: MFVideoFormat_NV12,
     };
     let mut list = std::ptr::null_mut();
     let mut count = 0;
@@ -77,10 +73,9 @@ unsafe fn create_decoder(codec: crate::video_stream::Codec, ten_bit: bool) -> Re
         return Err(unavailable("video-hevc-unavailable"));
     }
     let mut found = None;
-    let mut low_latency = false;
     for index in 0..count {
         let activation = std::ptr::read(list.add(index as usize));
-        if !low_latency {
+        if found.is_none() {
             if let Some(activation) = &activation {
                 if let Ok(decoder) = activation.ActivateObject::<IMFTransform>() {
                     if decoder
@@ -88,11 +83,7 @@ unsafe fn create_decoder(codec: crate::video_stream::Codec, ten_bit: bool) -> Re
                         .and_then(|a| a.GetUINT32(&MF_SA_D3D11_AWARE))
                         .is_ok_and(|v| v != 0)
                     {
-                        let accepted = request_low_latency(&decoder, codec);
-                        if found.is_none() || accepted {
-                            found = Some(decoder);
-                            low_latency = accepted;
-                        }
+                        found = Some(decoder);
                     }
                 }
             }
@@ -103,49 +94,9 @@ unsafe fn create_decoder(codec: crate::video_stream::Codec, ten_bit: bool) -> Re
     found.ok_or_else(|| unavailable("video-hevc-unavailable"))
 }
 
-// Synchronous D3D11-aware MFTs can use DXVA on the selected GPU. Accepting this
-// property is a selection preference, not proof of hardware execution or speed.
-unsafe fn request_low_latency(decoder: &IMFTransform, codec: crate::video_stream::Codec) -> bool {
-    let codec_api_accepted = decoder.cast::<ICodecAPI>().is_ok_and(|codec_api| {
-        let value = VARIANT {
-            Anonymous: VARIANT_0 {
-                Anonymous: ManuallyDrop::new(VARIANT_0_0 {
-                    vt: if codec == crate::video_stream::Codec::H264 {
-                        VT_UI4
-                    } else {
-                        VT_BOOL
-                    },
-                    Anonymous: if codec == crate::video_stream::Codec::H264 {
-                        VARIANT_0_0_0 { ulVal: 1 }
-                    } else {
-                        VARIANT_0_0_0 {
-                            boolVal: windows::Win32::Foundation::VARIANT_TRUE,
-                        }
-                    },
-                    ..Default::default()
-                }),
-            },
-        };
-        codec_api
-            .SetValue(&CODECAPI_AVLowLatencyMode, &value)
-            .is_ok()
-    });
-    // Documented MFT route for transforms without ICodecAPI. MF_LOW_LATENCY
-    // shares the property GUID, but IMFAttributes stores BOOL as UINT32.
-    // Acceptance records a request, not a measured latency guarantee.
-    codec_api_accepted
-        || decoder
-            .GetAttributes()
-            .and_then(|a| a.SetUINT32(&MF_LOW_LATENCY, 1))
-            .is_ok()
-}
-
-/// Check installed D3D11-aware decoder, GPU decode profile and P010 conversion.
-/// This establishes capability, not actual hardware execution.
-pub fn hevc_support(
-    preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
-    ten_bit: bool,
-) -> std::result::Result<(), String> {
+/// Check installed synchronous D3D11-aware decoder and selected GPU's Main/NV12
+/// profile before advertising HEVC. This is capability, not a decoding guarantee.
+pub fn hevc_available(preferred_gpu: Option<&crate::connection_settings::GpuPreference>) -> bool {
     unsafe {
         let probe = || -> Result<()> {
             let _runtime = Runtime::start()?;
@@ -154,48 +105,18 @@ pub fn hevc_support(
             if !api(
                 "video-hevc-profile",
                 video.CheckVideoDecoderFormat(
-                    &if ten_bit {
-                        D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10
-                    } else {
-                        D3D11_DECODER_PROFILE_HEVC_VLD_MAIN
-                    },
-                    if ten_bit {
-                        DXGI_FORMAT_P010
-                    } else {
-                        DXGI_FORMAT_NV12
-                    },
+                    &D3D11_DECODER_PROFILE_HEVC_VLD_MAIN,
+                    DXGI_FORMAT_NV12,
                 ),
             )?
             .as_bool()
             {
                 return Err(unavailable("video-hevc-profile-unavailable"));
             }
-            if ten_bit {
-                let desc = processor_desc((1920, 1080), (1920, 1080));
-                let enumeration = api(
-                    "video-main10-processor",
-                    video.CreateVideoProcessorEnumerator(&desc),
-                )?;
-                check_ten_bit_conversion(&enumeration, 4 | (2 << 4))?;
-                let required = D3D11_FORMAT_SUPPORT_RENDER_TARGET.0
-                    | D3D11_FORMAT_SUPPORT_BLENDABLE.0
-                    | D3D11_FORMAT_SUPPORT_DISPLAY.0;
-                if api(
-                    "video-main10-output",
-                    device.CheckFormatSupport(DXGI_FORMAT_R10G10B10A2_UNORM),
-                )? & required as u32
-                    != required as u32
-                {
-                    return Err(unavailable("video-main10-output-unavailable"));
-                }
-            }
-            let _decoder = create_decoder(crate::video_stream::Codec::Hevc, ten_bit)?;
+            let _decoder = create_decoder(crate::video_stream::Codec::Hevc)?;
             Ok(())
         };
-        probe().map_err(|failure| match failure.hresult {
-            Some(code) => format!("{} ({code})", failure.stage),
-            None => failure.stage.into(),
-        })
+        probe().is_ok()
     }
 }
 
@@ -556,69 +477,7 @@ impl OutputFormat {
     }
 }
 
-fn hevc_ten_bit(config: crate::video_stream::HevcConfiguration) -> Result<bool> {
-    if config.chroma != 1 {
-        return Err(unavailable("video-hevc-requires-420"));
-    }
-    match (config.profile, config.bit_depth) {
-        (1 | 2, 8) => Ok(false),
-        (2, 10) => Ok(true),
-        _ => Err(unavailable("video-hevc-unsupported-profile-depth")),
-    }
-}
-
-fn processor_desc(input: (u32, u32), output: (u32, u32)) -> D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
-    D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
-        InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
-        InputFrameRate: DXGI_RATIONAL {
-            Numerator: 60,
-            Denominator: 1,
-        },
-        InputWidth: input.0,
-        InputHeight: input.1,
-        OutputFrameRate: DXGI_RATIONAL {
-            Numerator: 60,
-            Denominator: 1,
-        },
-        OutputWidth: output.0,
-        OutputHeight: output.1,
-        Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
-    }
-}
-
-fn input_color_space(color: u32) -> DXGI_COLOR_SPACE_TYPE {
-    match (color & 4 != 0, (color >> 4) & 3 == 1) {
-        (true, true) => DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709,
-        (true, false) => DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
-        (false, true) => DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P601,
-        (false, false) => DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601,
-    }
-}
-
-unsafe fn check_ten_bit_conversion(
-    enumeration: &ID3D11VideoProcessorEnumerator,
-    color: u32,
-) -> Result<()> {
-    let enumeration1: ID3D11VideoProcessorEnumerator1 =
-        api("video-main10-enumerator", enumeration.cast())?;
-    if !api(
-        "video-main10-conversion",
-        enumeration1.CheckVideoProcessorFormatConversion(
-            DXGI_FORMAT_P010,
-            input_color_space(color),
-            DXGI_FORMAT_R10G10B10A2_UNORM,
-            DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
-        ),
-    )?
-    .as_bool()
-    {
-        return Err(unavailable("video-main10-conversion-unavailable"));
-    }
-    Ok(())
-}
-
 struct Session {
-    ten_bit: bool,
     low_latency_request_accepted: bool,
     decoder: IMFTransform,
     _manager: IMFDXGIDeviceManager,
@@ -635,13 +494,7 @@ impl Session {
         hevc: Option<crate::video_stream::HevcConfiguration>,
     ) -> Result<Self> {
         let runtime = Runtime::start()?;
-        let ten_bit = match codec {
-            crate::video_stream::Codec::Hevc => {
-                hevc_ten_bit(hevc.ok_or_else(|| unavailable("video-hevc-sps-missing"))?)?
-            }
-            crate::video_stream::Codec::H264 => false,
-        };
-        let mut renderer = Renderer::create(hwnd, preferred_gpu, ten_bit)?;
+        let mut renderer = Renderer::create(hwnd, preferred_gpu)?;
         renderer.verify_synthetic_pixels = verify_synthetic_pixels;
         let mut token = 0;
         let mut manager = None;
@@ -654,7 +507,7 @@ impl Session {
             "video-dxgi-reset",
             manager.ResetDevice(&renderer.device, token),
         )?;
-        let decoder = create_decoder(codec, ten_bit)?;
+        let decoder = create_decoder(codec)?;
         let attrs = api("video-decoder-attributes", decoder.GetAttributes())?;
         if api(
             "video-decoder-d3d11-aware",
@@ -663,7 +516,32 @@ impl Session {
         {
             return Err(unavailable("video-decoder-not-d3d11-aware"));
         }
-        let low_latency_request_accepted = request_low_latency(&decoder, codec);
+        // The documented Microsoft H.264 decoder property uses VT_UI4 (unlike
+        // other codecs' VT_BOOL). Request through ICodecAPI; rejection is optional.
+        let low_latency_request_accepted = decoder.cast::<ICodecAPI>().is_ok_and(|codec_api| {
+            let value = VARIANT {
+                Anonymous: VARIANT_0 {
+                    Anonymous: ManuallyDrop::new(VARIANT_0_0 {
+                        vt: if codec == crate::video_stream::Codec::H264 {
+                            VT_UI4
+                        } else {
+                            VT_BOOL
+                        },
+                        Anonymous: if codec == crate::video_stream::Codec::H264 {
+                            VARIANT_0_0_0 { ulVal: 1 }
+                        } else {
+                            VARIANT_0_0_0 {
+                                boolVal: windows::Win32::Foundation::VARIANT_TRUE,
+                            }
+                        },
+                        ..Default::default()
+                    }),
+                },
+            };
+            codec_api
+                .SetValue(&CODECAPI_AVLowLatencyMode, &value)
+                .is_ok()
+        });
         api(
             "video-decoder-set-manager",
             decoder.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager.as_raw() as usize),
@@ -685,6 +563,9 @@ impl Session {
         )?;
         if codec == crate::video_stream::Codec::Hevc {
             let config = hevc.ok_or_else(|| unavailable("video-hevc-sps-missing"))?;
+            if config.profile != 1 || config.bit_depth != 8 || config.chroma != 1 {
+                return Err(unavailable("video-hevc-requires-main-8bit-420"));
+            }
             api(
                 "video-input-hevc-main",
                 input.SetUINT32(&MF_MT_MPEG2_PROFILE, config.profile),
@@ -701,7 +582,6 @@ impl Session {
         }
         api("video-input-type", decoder.SetInputType(0, &input, 0))?;
         let mut result = Self {
-            ten_bit,
             low_latency_request_accepted,
             decoder,
             _manager: manager,
@@ -730,15 +610,9 @@ impl Session {
                 "video-output-enumerate",
                 self.decoder.GetOutputAvailableType(0, index),
             )?;
-            if api("video-output-subtype", media.GetGUID(&MF_MT_SUBTYPE))?
-                == if self.ten_bit {
-                    MFVideoFormat_P010
-                } else {
-                    MFVideoFormat_NV12
-                }
-            {
+            if api("video-output-subtype", media.GetGUID(&MF_MT_SUBTYPE))? == MFVideoFormat_NV12 {
                 api(
-                    "video-output-set-yuv",
+                    "video-output-set-nv12",
                     self.decoder.SetOutputType(0, &media, 0),
                 )?;
                 // Geometry can remain unspecified until the first decoded sample.
@@ -759,7 +633,7 @@ impl Session {
                 return Ok(());
             }
         }
-        Err(unavailable("video-output-yuv-unavailable"))
+        Err(unavailable("video-output-nv12-unavailable"))
     }
     unsafe fn feed(
         &mut self,
@@ -850,15 +724,6 @@ impl Session {
             // It is evidence of the DXVA path, not an execution counter.
             let mut texture_desc = D3D11_TEXTURE2D_DESC::default();
             texture.GetDesc(&mut texture_desc);
-            if texture_desc.Format
-                != if self.ten_bit {
-                    DXGI_FORMAT_P010
-                } else {
-                    DXGI_FORMAT_NV12
-                }
-            {
-                return Err(unavailable("video-output-unexpected-depth"));
-            }
             let decoder_surface = texture_desc.BindFlags & D3D11_BIND_DECODER.0 as u32 != 0;
             let subresource = api("video-output-subresource", dxgi.GetSubresourceIndex())?;
             if self.output_format.is_none() {
@@ -884,7 +749,6 @@ impl Session {
                 s.height = Some((source.bottom - source.top) as u32);
                 s.color_matrix = matrix;
                 s.nominal_range = nominal;
-                s.bit_depth = Some(if self.ten_bit { 10 } else { 8 });
             });
             let presented =
                 self.renderer
@@ -937,17 +801,15 @@ fn presentation_status(status: windows::core::HRESULT) -> Result<Presentation> {
 struct ProcessorCache {
     enumeration: ID3D11VideoProcessorEnumerator,
     processor: ID3D11VideoProcessor,
-    key: (u32, u32, u32, u32, DXGI_FORMAT, u32),
+    key: (u32, u32, u32, u32),
     inputs: Vec<(ID3D11Texture2D, u32, ID3D11VideoProcessorInputView)>,
     outputs: Vec<(ID3D11Texture2D, ID3D11VideoProcessorOutputView)>,
 }
 
 struct Renderer {
-    ten_bit: bool,
     device: ID3D11Device,
     video_device: ID3D11VideoDevice,
     video_context: ID3D11VideoContext,
-    video_context1: Option<ID3D11VideoContext1>,
     swap: IDXGISwapChain1,
     hwnd: HWND,
     adapter: String,
@@ -962,19 +824,13 @@ impl Renderer {
     unsafe fn create(
         hwnd: HWND,
         preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
-        ten_bit: bool,
     ) -> Result<Self> {
         let (device, context) = create_device(preferred_gpu)?;
         let multithread: ID3D10Multithread = api("video-d3d11-multithread", device.cast())?;
         // Return value is the previous protection state, not success/failure.
         let _ = multithread.SetMultithreadProtected(true);
         let video_device = api("video-d3d11-video-device", device.cast())?;
-        let video_context: ID3D11VideoContext = api("video-d3d11-video-context", context.cast())?;
-        let video_context1 = if ten_bit {
-            Some(api("video-main10-context", video_context.cast())?)
-        } else {
-            None
-        };
+        let video_context = api("video-d3d11-video-context", context.cast())?;
         let dxgi: IDXGIDevice = api("video-dxgi-device", device.cast())?;
         let adapter = api("video-adapter", dxgi.GetAdapter())?;
         let desc = api("video-adapter-desc", adapter.GetDesc())?;
@@ -986,11 +842,7 @@ impl Renderer {
         let desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: size.0,
             Height: size.1,
-            Format: if ten_bit {
-                DXGI_FORMAT_R10G10B10A2_UNORM
-            } else {
-                DXGI_FORMAT_B8G8R8A8_UNORM
-            },
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
@@ -1006,29 +858,14 @@ impl Renderer {
             "video-swapchain",
             factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None),
         )?;
-        if ten_bit {
-            let swap3: IDXGISwapChain3 = api("video-main10-swapchain-interface", swap.cast())?;
-            let color = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
-            if api(
-                "video-main10-color-support",
-                swap3.CheckColorSpaceSupport(color),
-            )? & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT.0 as u32
-                == 0
-            {
-                return Err(unavailable("video-main10-color-unavailable"));
-            }
-            api("video-main10-color-space", swap3.SetColorSpace1(color))?;
-        }
         api(
             "video-disable-dxgi-alt-enter",
             factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER),
         )?;
         Ok(Self {
-            ten_bit,
             device,
             video_device,
             video_context,
-            video_context1,
             swap,
             hwnd,
             adapter: adapter_name,
@@ -1098,12 +935,7 @@ impl Renderer {
         let height = (source.bottom - source.top) as u32;
         let mut td = D3D11_TEXTURE2D_DESC::default();
         texture.GetDesc(&mut td);
-        if td.Format
-            != if self.ten_bit {
-                DXGI_FORMAT_P010
-            } else {
-                DXGI_FORMAT_NV12
-            }
+        if td.Format != DXGI_FORMAT_NV12
             || td.MipLevels != 1
             || td.ArraySize == 0
             || subresource >= td.ArraySize
@@ -1135,16 +967,28 @@ impl Renderer {
             )?;
             self.size = size;
         }
-        let key = (td.Width, td.Height, size.0, size.1, td.Format, color);
+        let key = (td.Width, td.Height, size.0, size.1);
         if self.processor.as_ref().is_none_or(|p| p.key != key) {
-            let desc = processor_desc((td.Width, td.Height), size);
+            let desc = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
+                InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
+                InputFrameRate: DXGI_RATIONAL {
+                    Numerator: 60,
+                    Denominator: 1,
+                },
+                InputWidth: td.Width,
+                InputHeight: td.Height,
+                OutputFrameRate: DXGI_RATIONAL {
+                    Numerator: 60,
+                    Denominator: 1,
+                },
+                OutputWidth: size.0,
+                OutputHeight: size.1,
+                Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
+            };
             let enumeration = api(
                 "video-processor-enumerate",
                 self.video_device.CreateVideoProcessorEnumerator(&desc),
             )?;
-            if self.ten_bit {
-                check_ten_bit_conversion(&enumeration, color)?;
-            }
             let processor = api(
                 "video-processor-create",
                 self.video_device.CreateVideoProcessor(&enumeration, 0),
@@ -1278,13 +1122,6 @@ impl Renderer {
             processor,
             &D3D11_VIDEO_PROCESSOR_COLOR_SPACE { _bitfield: 0 },
         );
-        if let Some(context1) = &self.video_context1 {
-            context1.VideoProcessorSetStreamColorSpace1(processor, 0, input_color_space(color));
-            context1.VideoProcessorSetOutputColorSpace1(
-                processor,
-                DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
-            );
-        }
         let mut stream = D3D11_VIDEO_PROCESSOR_STREAM {
             Enable: true.into(),
             pInputSurface: ManuallyDrop::new(Some(input)),
@@ -1468,49 +1305,6 @@ pub fn probe(sustained: bool) -> anyhow::Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn hevc_depth_follows_sps_and_refuses_444_or_unsupported_profiles() {
-        let mut config = crate::video_stream::HevcConfiguration {
-            width: 1920,
-            height: 1080,
-            profile: 1,
-            chroma: 1,
-            bit_depth: 8,
-        };
-        assert!(!hevc_ten_bit(config).unwrap());
-        config.profile = 2;
-        assert!(!hevc_ten_bit(config).unwrap());
-        config.bit_depth = 10;
-        assert!(hevc_ten_bit(config).unwrap());
-        config.chroma = 3;
-        assert!(hevc_ten_bit(config).is_err());
-        config.chroma = 1;
-        config.profile = 1;
-        assert!(hevc_ten_bit(config).is_err());
-        config.profile = 2;
-        config.bit_depth = 12;
-        assert!(hevc_ten_bit(config).is_err());
-    }
-
-    #[test]
-    fn p010_color_spaces_preserve_matrix_and_nominal_range() {
-        assert_eq!(
-            input_color_space(4 | 32),
-            DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709
-        );
-        assert_eq!(
-            input_color_space(4 | 16),
-            DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709
-        );
-        assert_eq!(
-            input_color_space(32),
-            DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601
-        );
-        assert_eq!(
-            input_color_space(16),
-            DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P601
-        );
-    }
     #[test]
     fn busy_or_occluded_presentation_is_not_a_decoder_failure() {
         assert_eq!(

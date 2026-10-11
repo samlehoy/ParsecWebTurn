@@ -22,7 +22,6 @@ impl Codec {
 pub struct Snapshot {
     pub codec: Option<Codec>,
     pub hevc_advertised: bool,
-    pub hevc_10bit_request: Option<String>,
     pub vps_observed: bool,
     pub metadata_messages: u64,
     pub encoded_messages: u64,
@@ -52,9 +51,6 @@ impl Inspector {
     pub fn enable_hevc(&mut self, enabled: bool) {
         self.snapshot.hevc_advertised = enabled;
     }
-    pub fn set_hevc_10bit_request(&mut self, status: String) {
-        self.snapshot.hevc_10bit_request = Some(status);
-    }
     pub fn configure(&mut self, protocol: VideoProtocol) {
         if self.protocol.as_ref() == Some(&protocol) {
             return;
@@ -68,7 +64,6 @@ impl Inspector {
             snapshot: Snapshot {
                 protocol_changes: changes,
                 hevc_advertised: self.snapshot.hevc_advertised,
-                hevc_10bit_request: self.snapshot.hevc_10bit_request.clone(),
                 ..Default::default()
             },
             ..Default::default()
@@ -520,13 +515,8 @@ mod tests {
         assert!(inspector.receive(HEVC_KEY).is_none());
         assert_eq!(inspector.snapshot().codec, None);
         inspector.enable_hevc(true);
-        inspector.set_hevc_10bit_request("Sent (startup flags 0x11)".into());
         inspector.configure(protocol());
         assert!(inspector.snapshot().hevc_advertised);
-        assert_eq!(
-            inspector.snapshot().hevc_10bit_request.as_deref(),
-            Some("Sent (startup flags 0x11)")
-        );
         let mut with_aud = Inspector::default();
         with_aud.enable_hevc(true);
         let mut aud = vec![0, 0, 0, 1, 0x46, 1, 0x50];

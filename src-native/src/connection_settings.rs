@@ -49,7 +49,6 @@ impl GpuPreference {
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub prefer_hevc: bool,
-    pub prefer_hevc_10bit: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video_gpu: Option<GpuPreference>,
     pub provider: String,
@@ -73,7 +72,6 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             prefer_hevc: false,
-            prefer_hevc_10bit: false,
             video_gpu: None,
             provider: "cloudflare".into(),
             custom_urls: vec![],
@@ -526,7 +524,6 @@ mod tests {
         let s = manager.view().0;
         assert_eq!(s.stun_urls, ["STUN:example.org:3478"]);
         assert_eq!(s.turn_urls, ["turn:example.org:3478"]);
-        assert!(!s.prefer_hevc_10bit);
         manager.save(s, "", "", false, false).unwrap();
         let value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.file()).unwrap()).unwrap();

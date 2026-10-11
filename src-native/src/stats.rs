@@ -28,7 +28,6 @@ pub struct Sample {
     pub profile: Option<u8>,
     pub codec: Option<crate::video_stream::Codec>,
     pub hevc_advertised: bool,
-    pub hevc_10bit_request: Option<String>,
 }
 impl Default for Sample {
     fn default() -> Self {
@@ -52,7 +51,6 @@ impl Default for Sample {
             profile: None,
             codec: None,
             hevc_advertised: false,
-            hevc_10bit_request: None,
         }
     }
 }

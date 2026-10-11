@@ -10,28 +10,16 @@ const LIMIT: usize = 1024 * 1024;
 pub struct Config {
     pub video_protocol: crate::backend::VideoProtocol,
     pub allow_hevc: bool,
-    pub allow_hevc_10bit: bool,
 }
 
 impl Config {
-    pub fn video_flags(&self) -> u32 {
-        if !self.allow_hevc {
-            return 0;
-        }
-        // Experimental Main10 follows stock 150-105c's native declaration:
-        // HEVC (0x01), native base (0x08), ten-bit (0x10). lowlat also adds
-        // the base bit to browser declarations. Its exact role on a stock
-        // WebRTC host still needs live validation; retain older 8-bit flags.
-        1 | if self.allow_hevc_10bit { 0x18 } else { 0 }
-    }
     pub fn startup(&self) -> Result<Bytes> {
         text(
             11,
             0,
-            // HEVC bit 0 is SDK/live verified; Main10 flags are stock/lowlat derived.
-            // Private Parsec contract, not SDP; see docs/hevc-negotiation.md.
-            &json!({"_version":1,"_max_w":60000,"_max_h":60000,"_flags":
-                self.video_flags(),
+            // Native SDK 6.0 advertises HEVC with bit 0 of this private field.
+            // Keep it isolated from WebRTC/SDP; see docs/hevc-negotiation.md.
+            &json!({"_version":1,"_max_w":60000,"_max_h":60000,"_flags":u32::from(self.allow_hevc),
             "resolutionX":1920,"resolutionY":1080,"refreshRate":60,"mediaContainer":0,
             "_VideoProtocolVersion":self.video_protocol.version})
             .to_string(),
@@ -230,7 +218,7 @@ pub fn input_with_viewport(
 mod tests {
     use super::*;
     #[test]
-    fn video_preferences_change_only_init_capability_flags() {
+    fn hevc_changes_only_the_verified_init_capability_bit() {
         let mut config = Config {
             video_protocol: crate::backend::VideoProtocol {
                 version: 0,
@@ -239,7 +227,6 @@ mod tests {
                 flag_offset: 4,
             },
             allow_hevc: false,
-            allow_hevc_10bit: false,
         };
         let avc = config.startup().unwrap();
         config.allow_hevc = true;
@@ -258,16 +245,6 @@ mod tests {
         assert_eq!(hevc["_flags"], 1);
         hevc["_flags"] = json!(0);
         assert_eq!(avc, hevc);
-        config.allow_hevc_10bit = true;
-        let ten_bit = config.startup().unwrap();
-        let mut ten_bit: Value = serde_json::from_slice(&ten_bit[13..ten_bit.len() - 1]).unwrap();
-        assert_eq!(ten_bit["_flags"], 0x19);
-        ten_bit["_flags"] = json!(0);
-        assert_eq!(ten_bit, avc);
-        config.allow_hevc = false;
-        let disabled = config.startup().unwrap();
-        let disabled: Value = serde_json::from_slice(&disabled[13..disabled.len() - 1]).unwrap();
-        assert_eq!(disabled, avc);
     }
     #[test]
     fn absolute_motion_requires_a_real_viewport_and_preserves_control_framing() {

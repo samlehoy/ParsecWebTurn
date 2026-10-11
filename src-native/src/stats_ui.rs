@@ -192,12 +192,6 @@ fn rows(
         if s.hevc_advertised { "Yes" } else { "No" }.into(),
     );
     row(
-        "10-bit HEVC request",
-        s.hevc_10bit_request
-            .clone()
-            .unwrap_or_else(|| "Not reported".into()),
-    );
-    row(
         "Resolution",
         video
             .and_then(|x| x.width.zip(x.height))
@@ -210,13 +204,6 @@ fn rows(
             .and_then(|x| x.decoder)
             .unwrap_or("Not reported")
             .into(),
-    );
-    row(
-        "Decoded color depth",
-        video
-            .and_then(|v| v.bit_depth)
-            .map(|bits| format!("{bits}-bit"))
-            .unwrap_or_else(|| "Not reported".into()),
     );
     row(
         "Renderer",
