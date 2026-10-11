@@ -142,10 +142,10 @@ unsafe fn request_low_latency(decoder: &IMFTransform, codec: crate::video_stream
 
 /// Check installed D3D11-aware decoder, GPU decode profile and P010 conversion.
 /// This establishes capability, not actual hardware execution.
-pub fn hevc_available(
+pub fn hevc_support(
     preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
     ten_bit: bool,
-) -> bool {
+) -> std::result::Result<(), String> {
     unsafe {
         let probe = || -> Result<()> {
             let _runtime = Runtime::start()?;
@@ -192,7 +192,10 @@ pub fn hevc_available(
             let _decoder = create_decoder(crate::video_stream::Codec::Hevc, ten_bit)?;
             Ok(())
         };
-        probe().is_ok()
+        probe().map_err(|failure| match failure.hresult {
+            Some(code) => format!("{} ({code})", failure.stage),
+            None => failure.stage.into(),
+        })
     }
 }
 

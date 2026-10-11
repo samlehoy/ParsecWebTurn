@@ -96,6 +96,13 @@ RGB10 render/blend/display support. A failed capability check retains the 8-bit
 HEVC request. Failures after stream startup are reported rather than claiming
 automatic renegotiation; disable 10-bit and reconnect if needed.
 
+Connection stats distinguishes the 10-bit request from the observed decoded
+depth. `10-bit HEVC request` reports disabled, the failing local API stage and
+HRESULT (when available), or `Sent (startup flags 0x11)` only after the startup
+message has been accepted by the SCTP send API. This does not prove remote
+acceptance. A sent request followed by Main/8-bit output means the received
+stream remains 8-bit; the cause on the remote side is not established.
+
 Actual SPS profile/depth chooses Main/NV12 or Main10/P010, independently of the
 preference. Both HEVC modes prefer synchronous D3D11-aware transforms accepting
 `CODECAPI_AVLowLatencyMode` via ICodecAPI or the documented `MF_LOW_LATENCY`

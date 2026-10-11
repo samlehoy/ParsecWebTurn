@@ -192,6 +192,12 @@ fn rows(
         if s.hevc_advertised { "Yes" } else { "No" }.into(),
     );
     row(
+        "10-bit HEVC request",
+        s.hevc_10bit_request
+            .clone()
+            .unwrap_or_else(|| "Not reported".into()),
+    );
+    row(
         "Resolution",
         video
             .and_then(|x| x.width.zip(x.height))
