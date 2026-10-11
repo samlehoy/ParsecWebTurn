@@ -1,51 +1,23 @@
-ParsecWebTurn v0.9.1-dev.1 — Native client preview
+ParsecWebTurn v0.9.2-dev.1 — H.265 / HEVC video
 
-This development build brings custom connection servers, live statistics and a
-clearer Settings page to the native Windows client.
-
-Compared with the earlier stable WebView2 client, the native app runs from one
-portable EXE without Edge or WebView2. It keeps the familiar Parsec interface,
-with native video, Opus audio, keyboard and mouse support.
+This native Windows development release adds H.265 / HEVC video playback.
+The changes below are compared with v0.9.1-dev.1.
 
 ## What's new
 
-- **More responsive controls:** mouse and keyboard input wakes processing immediately instead of waiting for the next regular tick. Local testing showed a substantial reduction in input processing time; results depend on your system and connection.
-- **Precompiled Parsec core:** startup loads the bundled, precompiled core directly. There is no startup download or compilation.
-- **Cleaner GPU list:** virtual display-only adapters no longer appear as duplicate graphics cards.
-- **A correctly named stats window:** its Windows title bar now reads Connection stats.
-- **Video GPU choice:** select the adapter for stream decoding and rendering in
-  Settings, or keep Automatic. The choice is saved for the next connection.
-- **Less repeated video work:** disable automatic driver picture processing and
-  reuse GPU views and stream-format details, without changing the presentation queue.
-- **Your own STUN/TURN servers:** use Cloudflare or a custom provider, with UDP,
-  TCP and encrypted TLS support. The earlier client's `settings.json` remains
-  compatible. STUN-only mode excludes TURN for LAN/VPN connections.
-- **Connection stats in a separate window:** see delay, traffic, FPS, video/audio
-  details, encryption status and CPU/GPU usage. Confirmed direct/relay routes and
-  the active relay server are shown when available.
-- **Settings that fit the app:** a Parsec-inspired layout, clearer descriptions,
-  dark controls and fixes for overlapping text, scrolling and clipped buttons.
-- **Help with both version numbers:** view the app version and embedded Parsec
-  core version in one place.
-- **Reliable saved preferences and disconnect:** sign-in and preferences survive
-  restarts, and disconnecting notifies the host. The window stays named
-  ParsecWebTurn.
-- **Playback latency improvements:** targeted Windows media scheduling and a
-  shorter device-supported audio period, with automatic compatibility fallback.
-  Actual improvements depend on your device and need live comparison.
+- **Choose HEVC video:** turn on **Prefer H.265 / HEVC** in Settings, save and
+  reconnect. The client checks support on your selected graphics adapter before
+  requesting HEVC. H.264 remains the default; the host can still choose H.264.
+- **Native playback:** 8-bit HEVC uses the Windows decoder and the existing
+  D3D11 video path. Video playback has been verified with a Parsec host.
+- **See what you are receiving:** Connection stats shows the actual video codec
+  and profile, decoder, resolution and graphics adapter.
 
-## Things to know
+## Updating
 
-- This is a development build, not a new stable release.
-- Windows x64 only; Vulkan, D3D12, Linux and Android support are not included.
-- Opus audio is supported; RAW playback is not available.
-- TURN can be selected even when a direct route exists. Use STUN-only mode to
-  exclude relays.
-- Some measurements are unavailable. GPU decoder surfaces indicate likely
-  hardware decoding, not confirmed hardware execution.
-- Client-to-host clipboard paste remains a known issue in the tested Parsec
-  session and also reproduced in standalone Edge.
+Close the app and replace `ParsecWebTurn.exe` in its existing folder. Keep your
+`settings.json`; saved native sign-in and preferences remain in place.
 
-Replace the EXE to update the native app; your saved native sign-in and preferences
-remain in place. Moving from the older WebView2 client requires signing in once
-in the native app.
+This is a Windows x64 development release. HEVC availability depends on the
+host, graphics driver and installed Windows decoder. If an HEVC connection has
+video problems, disable the preference and reconnect using H.264.

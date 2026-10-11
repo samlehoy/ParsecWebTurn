@@ -3,6 +3,12 @@
 User-facing changes are listed below. Native versions marked **dev** are development
 builds, not published stable releases.
 
+## 0.9.2-dev.1 — H.265 / HEVC video (2026-10-11)
+
+- **H.265 / HEVC support:** enable **Prefer H.265 / HEVC** in Settings to request an 8-bit HEVC stream on your next connection. The client checks decoder support on your selected GPU first; H.264 remains the default and is used when HEVC is unavailable or the host chooses H.264.
+- **Native HEVC playback:** HEVC uses the Windows decoder and the existing D3D11 video path. Successful video playback has been verified with a Parsec host.
+- **HEVC details in Connection stats:** see the received codec and profile, decoder, resolution and graphics adapter. These describe the stream actually received, rather than just your selected preference.
+
 ## 0.9.1-dev.1 — Faster startup and more responsive controls (2026-10-10)
 
 - Mouse and keyboard input now wakes processing immediately instead of waiting for the next regular tick. Local testing showed substantially shorter input processing times; actual responsiveness depends on your system and connection.
