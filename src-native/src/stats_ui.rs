@@ -228,7 +228,10 @@ fn rows(
                 "video-d3d11-device" | "video-decoder-not-d3d11-aware" => {
                     "Video GPU unavailable or unsupported; try another GPU.".into()
                 }
-                _ => format!("Video stopped: {stage}"),
+                _ => match video.and_then(|v| v.failure_hresult.as_deref()) {
+                    Some(code) => format!("Video stopped: {stage} ({code})"),
+                    None => format!("Video stopped: {stage}"),
+                },
             },
         );
     }

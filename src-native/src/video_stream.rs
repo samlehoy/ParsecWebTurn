@@ -159,6 +159,7 @@ pub struct PacketInfo {
 struct NalSummary {
     vps: bool,
     sps: Option<[u8; 3]>,
+    hevc_configuration: Option<HevcConfiguration>,
     pps: bool,
     idr: bool,
 }
@@ -196,6 +197,7 @@ fn hevc_annex_b(bytes: &[u8]) -> Option<NalSummary> {
                 // Main/Main10 profile IDs are distinct from AVC profile IDs.
                 let profile = *nal.get(3)? & 31;
                 summary.sps = Some([profile, 0, 0]);
+                summary.hevc_configuration = hevc_sps(nal);
             }
             34 => summary.pps = true,
             16..=21 => summary.idr = true, // BLA, IDR or CRA random access.
@@ -208,6 +210,151 @@ fn hevc_annex_b(bytes: &[u8]) -> Option<NalSummary> {
         offset = end;
     }
     None
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HevcConfiguration {
+    pub width: u32,
+    pub height: u32,
+    pub profile: u32,
+    pub chroma: u32,
+    pub bit_depth: u32,
+}
+
+#[cfg(any(windows, test))]
+pub fn hevc_configuration(bytes: &[u8]) -> Option<HevcConfiguration> {
+    hevc_annex_b(bytes)?.hevc_configuration
+}
+
+// H.265 SPS syntax through bit_depth_chroma_minus8. Read only bounded metadata;
+// emulation-prevention bytes are removed as bits are read, without copying NALs.
+fn hevc_sps(nal: &[u8]) -> Option<HevcConfiguration> {
+    struct Bits<'a> {
+        bytes: &'a [u8],
+        offset: usize,
+        zeros: u8,
+        byte: u8,
+        left: u8,
+    }
+    impl Bits<'_> {
+        fn read(&mut self, count: u32) -> Option<u32> {
+            if count > 32 {
+                return None;
+            }
+            let mut value = 0;
+            for _ in 0..count {
+                if self.left == 0 {
+                    self.byte = *self.bytes.get(self.offset)?;
+                    self.offset += 1;
+                    if self.zeros == 2 && self.byte == 3 {
+                        self.byte = *self.bytes.get(self.offset)?;
+                        self.offset += 1;
+                        if self.byte > 3 {
+                            return None;
+                        }
+                        self.zeros = 0;
+                    }
+                    self.zeros = if self.byte == 0 {
+                        (self.zeros + 1).min(2)
+                    } else {
+                        0
+                    };
+                    self.left = 8;
+                }
+                self.left -= 1;
+                value = (value << 1) | u32::from((self.byte >> self.left) & 1);
+            }
+            Some(value)
+        }
+        fn skip(&mut self, mut count: u32) -> Option<()> {
+            while count != 0 {
+                let step = count.min(32);
+                self.read(step)?;
+                count -= step;
+            }
+            Some(())
+        }
+        fn ue(&mut self) -> Option<u32> {
+            let mut zeros = 0;
+            while self.read(1)? == 0 {
+                zeros += 1;
+                if zeros > 30 {
+                    return None;
+                }
+            }
+            Some(((1u32 << zeros) - 1) + self.read(zeros)?)
+        }
+    }
+    let mut bits = Bits {
+        bytes: nal.get(2..)?,
+        offset: 0,
+        zeros: 0,
+        byte: 0,
+        left: 0,
+    };
+    bits.skip(4)?;
+    let layers = bits.read(3)?;
+    if layers > 6 {
+        return None;
+    }
+    bits.skip(1 + 2 + 1)?;
+    let profile = bits.read(5)?;
+    bits.skip(32 + 48 + 8)?;
+    let mut sub = [(false, false); 6];
+    for item in sub.iter_mut().take(layers as usize) {
+        *item = (bits.read(1)? != 0, bits.read(1)? != 0);
+    }
+    if layers != 0 {
+        bits.skip((8 - layers) * 2)?;
+    }
+    for (profile, level) in sub.into_iter().take(layers as usize) {
+        if profile {
+            bits.skip(88)?;
+        }
+        if level {
+            bits.skip(8)?;
+        }
+    }
+    if bits.ue()? > 15 {
+        return None;
+    }
+    let chroma = bits.ue()?;
+    if chroma > 3 {
+        return None;
+    }
+    let separate = chroma == 3 && bits.read(1)? != 0;
+    let width = bits.ue()?;
+    let height = bits.ue()?;
+    if width == 0 || height == 0 || width > 16384 || height > 16384 {
+        return None;
+    }
+    if bits.read(1)? != 0 {
+        let horizontal = bits.ue()?.checked_add(bits.ue()?)?;
+        let vertical = bits.ue()?.checked_add(bits.ue()?)?;
+        let sub_width = if !separate && (chroma == 1 || chroma == 2) {
+            2
+        } else {
+            1
+        };
+        let sub_height = if !separate && chroma == 1 { 2 } else { 1 };
+        if horizontal.checked_mul(sub_width)? >= width
+            || vertical.checked_mul(sub_height)? >= height
+        {
+            return None;
+        }
+    }
+    let bit_depth = bits.ue()?.checked_add(8)?;
+    let chroma_depth = bits.ue()?.checked_add(8)?;
+    if bit_depth > 16 || bit_depth != chroma_depth {
+        return None;
+    }
+    Some(HevcConfiguration {
+        width,
+        height,
+        profile,
+        chroma,
+        bit_depth,
+    })
 }
 
 // No allocation or payload retention. A bounded linear scan accepts 3/4-byte
@@ -271,6 +418,88 @@ fn annex_b(bytes: &[u8]) -> Option<NalSummary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn sps_fixture(width: u32, height: u32, layers: u32, depth: u32) -> Vec<u8> {
+        fn put(bits: &mut Vec<u8>, value: u32, count: u32) {
+            for shift in (0..count).rev() {
+                bits.push(((value >> shift) & 1) as u8);
+            }
+        }
+        fn ue(bits: &mut Vec<u8>, value: u32) {
+            let value = value + 1;
+            let count = 32 - value.leading_zeros();
+            bits.extend(std::iter::repeat_n(0, (count - 1) as usize));
+            put(bits, value, count);
+        }
+        let mut bits = Vec::new();
+        put(&mut bits, 0, 4);
+        put(&mut bits, layers, 3);
+        put(&mut bits, 1, 1);
+        put(&mut bits, 1, 8); // profile_space=0, tier=0, profile_idc=Main
+        bits.extend([0; 80]);
+        put(&mut bits, 120, 8);
+        for _ in 0..layers {
+            put(&mut bits, 3, 2);
+        }
+        if layers > 0 {
+            bits.extend(std::iter::repeat_n(0, ((8 - layers) * 2) as usize));
+        }
+        for _ in 0..layers {
+            bits.extend([0; 96]);
+        }
+        ue(&mut bits, 0);
+        ue(&mut bits, 1); // SPS id, 4:2:0
+        ue(&mut bits, width);
+        ue(&mut bits, height);
+        put(&mut bits, 0, 1); // no conformance window
+        ue(&mut bits, depth - 8);
+        ue(&mut bits, depth - 8);
+        put(&mut bits, 1, 1);
+        while bits.len() % 8 != 0 {
+            bits.push(0);
+        }
+        let mut nal = vec![0, 0, 0, 1, 0x42, 1];
+        let mut zeros = 0;
+        for chunk in bits.chunks(8) {
+            let byte = chunk.iter().fold(0, |v, b| (v << 1) | b);
+            if zeros == 2 && byte <= 3 {
+                nal.push(3);
+                zeros = 0;
+            }
+            nal.push(byte);
+            zeros = if byte == 0 { zeros + 1 } else { 0 };
+        }
+        nal
+    }
+    #[test]
+    fn hevc_sps_geometry_handles_emulation_prevention_and_sublayers() {
+        for layers in [0, 2, 6] {
+            let bytes = sps_fixture(1920, 1080, layers, 8);
+            assert!(bytes.windows(3).any(|b| b == [0, 0, 3]));
+            assert_eq!(
+                hevc_configuration(&bytes),
+                Some(HevcConfiguration {
+                    width: 1920,
+                    height: 1080,
+                    profile: 1,
+                    chroma: 1,
+                    bit_depth: 8,
+                })
+            );
+            for end in 0..bytes.len() - 1 {
+                assert!(hevc_configuration(&bytes[..end]).is_none());
+            }
+        }
+        assert_eq!(
+            hevc_configuration(&sps_fixture(3840, 2160, 0, 10))
+                .unwrap()
+                .bit_depth,
+            10
+        );
+        for (w, h) in [(0, 1080), (1920, 0), (16385, 1080)] {
+            assert!(hevc_configuration(&sps_fixture(w, h, 0, 8)).is_none());
+        }
+        assert!(hevc_configuration(HEVC_KEY).is_none());
+    }
     const HEVC_KEY: &[u8] = &[
         0, 0, 0, 1, 0x40, 1, 0x80, // VPS
         0, 0, 1, 0x42, 1, 1, 1, 0x80, // SPS, Main profile

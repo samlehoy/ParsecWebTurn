@@ -49,6 +49,15 @@ first codec is fixed for this connection; unannounced codec changes are refused.
 VPS/SPS/PPS and BLA/IDR/CRA are distinguished from delta pictures. The experiment
 requests neither 10-bit nor 4:4:4.
 
+The HEVC input type includes the coded width/height and profile parsed from the
+actual SPS, before output negotiation. A local isolated Media Foundation probe
+reproduced `SetOutputType(NV12)` failing with `0xC00D36E6` without input geometry,
+and succeeding with that geometry supplied. Separate compressed VPS headers are
+retained within a bounded startup buffer until SPS arrives, then submitted in
+their original order. This adds no decoded-frame copy or ongoing frame delay.
+SPS reading handles emulation prevention, sublayer profile/level fields and
+conformance-window bounds; the decoder remains responsible for full validation.
+
 HEVC decoder discovery uses [MFTEnumEx](https://learn.microsoft.com/en-us/windows/win32/api/mfapi/nf-mfapi-mftenumex),
 and the [documented HEVC transform](https://learn.microsoft.com/en-us/windows/win32/medfound/h-265---hevc-video-decoder)
 accepts Annex B elementary stream input. The existing NV12 D3D11 texture /

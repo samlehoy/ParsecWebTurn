@@ -239,6 +239,8 @@ fn run(
     let scheduling = crate::media_scheduling::Registration::video();
     update(shared, |s| s.mmcss_registered = scheduling.is_some());
     let mut session = None;
+    let mut headers = Vec::new();
+    let mut header_bytes = 0usize;
     loop {
         let frame = {
             let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -262,6 +264,24 @@ fn run(
             q.pop().ok_or_else(|| unavailable("video-queue-state"))?
         };
         if session.is_none() {
+            let hevc = if frame.codec == crate::video_stream::Codec::Hevc {
+                let config = crate::video_stream::hevc_configuration(&frame.bytes);
+                if config.is_none() {
+                    // A separate VPS can precede SPS. Retain compressed headers
+                    // until the actual SPS supplies geometry; never guess a size.
+                    header_bytes = header_bytes.saturating_add(frame.bytes.len());
+                    if headers.len() >= crate::video_output::MAX_FRAMES
+                        || header_bytes > crate::video_output::MAX_BYTES
+                    {
+                        return Err(unavailable("video-hevc-sps-missing"));
+                    }
+                    headers.push(frame);
+                    continue;
+                }
+                config
+            } else {
+                None
+            };
             let hwnd = window
                 .ensure_video_surface()
                 .map_err(|_| unavailable("video-surface-create"))?;
@@ -271,6 +291,7 @@ fn run(
                     verify_synthetic_pixels,
                     preferred_gpu,
                     frame.codec,
+                    hevc,
                 )?
             };
             update(shared, |s| {
@@ -285,14 +306,17 @@ fn run(
             });
             session = Some(native);
         }
-        let feed_started = Instant::now();
-        let result = unsafe { session.as_mut().unwrap().feed(&frame, shared, window) };
-        update(shared, |s| {
-            s.decode_feed_max_us = s
-                .decode_feed_max_us
-                .max(feed_started.elapsed().as_micros().min(u64::MAX as u128) as u64)
-        });
-        result?;
+        for frame in headers.drain(..).chain(std::iter::once(frame)) {
+            let feed_started = Instant::now();
+            let result = unsafe { session.as_mut().unwrap().feed(&frame, shared, window) };
+            update(shared, |s| {
+                s.decode_feed_max_us = s
+                    .decode_feed_max_us
+                    .max(feed_started.elapsed().as_micros().min(u64::MAX as u128) as u64)
+            });
+            result?;
+        }
+        header_bytes = 0;
         *window
             .video_report
             .lock()
@@ -467,6 +491,7 @@ impl Session {
         verify_synthetic_pixels: bool,
         preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
         codec: crate::video_stream::Codec,
+        hevc: Option<crate::video_stream::HevcConfiguration>,
     ) -> Result<Self> {
         let runtime = Runtime::start()?;
         let mut renderer = Renderer::create(hwnd, preferred_gpu)?;
@@ -537,9 +562,22 @@ impl Session {
             ),
         )?;
         if codec == crate::video_stream::Codec::Hevc {
+            let config = hevc.ok_or_else(|| unavailable("video-hevc-sps-missing"))?;
+            if config.profile != 1 || config.bit_depth != 8 || config.chroma != 1 {
+                return Err(unavailable("video-hevc-requires-main-8bit-420"));
+            }
             api(
                 "video-input-hevc-main",
-                input.SetUINT32(&MF_MT_MPEG2_PROFILE, 1),
+                input.SetUINT32(&MF_MT_MPEG2_PROFILE, config.profile),
+            )?;
+            // Unlike the H.264 transform, HEVC may enumerate a placeholder NV12
+            // type yet reject SetOutputType without known input geometry.
+            api(
+                "video-input-hevc-size",
+                input.SetUINT64(
+                    &MF_MT_FRAME_SIZE,
+                    (u64::from(config.width) << 32) | u64::from(config.height),
+                ),
             )?;
         }
         api("video-input-type", decoder.SetInputType(0, &input, 0))?;
