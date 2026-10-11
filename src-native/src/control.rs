@@ -13,6 +13,12 @@ pub struct Config {
 }
 
 impl Config {
+    /// Pinned private opcode, corroborated by lowlat's WebRTC client. Preserve
+    /// the negotiated flags; the third argument requests an encoder refresh.
+    #[cfg(windows)]
+    pub fn keyframe_request(&self) -> Bytes {
+        header(13, 0, i32::from(self.allow_hevc), 1)
+    }
     pub fn startup(&self) -> Result<Bytes> {
         text(
             11,
@@ -217,6 +223,29 @@ pub fn input_with_viewport(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn refresh_request_preserves_startup_codec_flags_and_primary_stream() {
+        for allow_hevc in [false, true] {
+            let config = Config {
+                video_protocol: crate::backend::VideoProtocol {
+                    version: 0,
+                    message_size: 11,
+                    version_offset: 0,
+                    flag_offset: 4,
+                },
+                allow_hevc,
+            };
+            assert_eq!(
+                config.keyframe_request(),
+                header(13, 0, i32::from(allow_hevc), 1)
+            );
+            let request = config.keyframe_request();
+            assert_eq!(request.len(), 13);
+            assert_eq!(&request[0..4], &[0; 4]);
+            assert_eq!(&request[8..12], &1i32.to_be_bytes());
+        }
+    }
     #[test]
     fn hevc_changes_only_the_verified_init_capability_bit() {
         let mut config = Config {

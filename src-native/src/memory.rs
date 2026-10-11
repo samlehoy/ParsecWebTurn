@@ -42,6 +42,20 @@ impl GuestMemory {
         Ok(u32::from_le_bytes(self.read(ptr, 4)?.try_into().unwrap()))
     }
 
+    pub fn write_i16_le(&self, ptr: u32, samples: &[i16]) -> Result<()> {
+        let len = samples
+            .len()
+            .checked_mul(2)
+            .context("guest PCM length overflow")?;
+        let range = self.range(ptr, len)?;
+        let data = self.0.data();
+        for (i, byte) in range.zip(samples.iter().flat_map(|sample| sample.to_le_bytes())) {
+            // SAFETY: the whole range is checked; retain atomic shared-memory access.
+            unsafe { AtomicU8::from_ptr(data[i].get()) }.store(byte, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+
     pub fn set_u32(&self, ptr: u32, value: u32) -> Result<()> {
         self.write(ptr, &value.to_le_bytes())
     }
@@ -124,6 +138,16 @@ mod tests {
         config.wasm_threads(true);
         let engine = Engine::new(&config).unwrap();
         GuestMemory(SharedMemory::new(&engine, MemoryType::shared(1, 1)).unwrap())
+    }
+
+    #[test]
+    fn pcm_copy_is_little_endian_and_checks_the_whole_range_before_writing() {
+        let m = memory();
+        m.write_i16_le(32, &[0x1234, -2, i16::MIN]).unwrap();
+        assert_eq!(m.read(32, 6).unwrap(), [0x34, 0x12, 0xfe, 0xff, 0, 0x80]);
+        m.write(65534, &[0xaa, 0xbb]).unwrap();
+        assert!(m.write_i16_le(65534, &[1, 2]).is_err());
+        assert_eq!(m.read(65534, 2).unwrap(), [0xaa, 0xbb]);
     }
 
     #[test]

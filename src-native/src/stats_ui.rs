@@ -218,6 +218,12 @@ fn rows(
             .and_then(|x| x.adapter.clone())
             .unwrap_or_else(|| "Not reported".into()),
     );
+    if video.is_some_and(|v| v.recovering) {
+        row(
+            "Video status",
+            "Recovering; waiting for a new keyframe.".into(),
+        );
+    }
     if let Some(stage) = video.and_then(|x| x.failure_stage) {
         row(
             "Video status",

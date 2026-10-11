@@ -187,14 +187,43 @@ impl Pipeline {
     }
     pub fn submit(&self, bytes: &[u8], info: crate::video_stream::PacketInfo) -> bool {
         let timestamp = i64::try_from(self.started.elapsed().as_nanos() / 100).unwrap_or(i64::MAX);
-        let accepted = self
-            .shared
+        let (mut buffer, generation) = {
+            let mut q = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            if q.stopped || q.report.failure_stage.is_some() {
+                q.report.frames_dropped = q.report.frames_dropped.saturating_add(1);
+                return false;
+            }
+            (q.take_buffer(), q.reset_generation)
+        };
+        buffer.clear();
+        buffer.extend_from_slice(bytes);
+        let accepted = {
+            let mut q = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            if q.reset_generation != generation {
+                q.recycle(buffer);
+                false
+            } else {
+                q.submit_codec(buffer, info.idr, info.parameters, timestamp, info.codec)
+            }
+        };
+        self.shared.1.notify_one();
+        accepted
+    }
+    pub fn take_keyframe_request(&self) -> bool {
+        self.shared
             .0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .submit_codec(bytes, info.idr, info.parameters, timestamp, info.codec);
+            .take_keyframe_request(Instant::now())
+            .is_some()
+    }
+    pub fn recovery_request_failed(&self) {
+        self.shared
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .fail("video-recovery-request-failed", None);
         self.shared.1.notify_one();
-        accepted
     }
     pub fn snapshot(&self) -> Snapshot {
         self.shared
@@ -241,12 +270,15 @@ fn run(
     let mut session = None;
     let mut headers = Vec::new();
     let mut header_bytes = 0usize;
+    let mut generation = 0;
+    let mut parameters = crate::video_stream::ParameterCache::default();
     loop {
-        let frame = {
+        let (next_generation, frame) = {
             let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
             while q.report.queue_depth == 0
                 && !q.stopped
                 && q.report.failure_stage.is_none()
+                && q.reset_generation == generation
                 && !window.closing.load(std::sync::atomic::Ordering::Acquire)
             {
                 q = shared
@@ -254,6 +286,7 @@ fn run(
                     .wait_timeout(q, Duration::from_millis(100))
                     .unwrap_or_else(|e| e.into_inner())
                     .0;
+                q.check_recovery(Instant::now());
             }
             if q.stopped
                 || q.report.failure_stage.is_some()
@@ -261,11 +294,45 @@ fn run(
             {
                 break;
             }
-            q.pop().ok_or_else(|| unavailable("video-queue-state"))?
+            (q.reset_generation, q.pop())
         };
+        if next_generation != generation {
+            generation = next_generation;
+            session = None;
+            headers.clear();
+            header_bytes = 0;
+            window.set_video_ready(false);
+            if let Some(bytes) = parameters.bytes() {
+                let codec = shared
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .report
+                    .codec
+                    .ok_or_else(|| unavailable("video-recovery-codec-missing"))?;
+                header_bytes = bytes.len();
+                headers.push(Frame {
+                    codec,
+                    bytes,
+                    idr: false,
+                    parameters: true,
+                    timestamp_100ns: 0,
+                });
+            }
+        }
+        let Some(frame) = frame else {
+            continue;
+        };
+        if frame.parameters {
+            parameters.observe(&frame.bytes, frame.codec);
+        }
         if session.is_none() {
             let hevc = if frame.codec == crate::video_stream::Codec::Hevc {
-                let config = crate::video_stream::hevc_configuration(&frame.bytes);
+                let config = crate::video_stream::hevc_configuration(&frame.bytes).or_else(|| {
+                    headers
+                        .iter()
+                        .find_map(|f| crate::video_stream::hevc_configuration(&f.bytes))
+                });
                 if config.is_none() {
                     // A separate VPS can precede SPS. Retain compressed headers
                     // until the actual SPS supplies geometry; never guess a size.
@@ -306,17 +373,49 @@ fn run(
             });
             session = Some(native);
         }
+        let mut failure = None;
         for frame in headers.drain(..).chain(std::iter::once(frame)) {
             let feed_started = Instant::now();
+            let decoded_before = shared
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .report
+                .frames_decoded;
             let result = unsafe { session.as_mut().unwrap().feed(&frame, shared, window) };
             update(shared, |s| {
                 s.decode_feed_max_us = s
                     .decode_feed_max_us
                     .max(feed_started.elapsed().as_micros().min(u64::MAX as u128) as u64)
             });
-            result?;
+            let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            q.recycle(frame.bytes);
+            if let Err(error) = result {
+                q.report.frames_dropped = q.report.frames_dropped.saturating_add(1);
+                failure = Some(error);
+                break;
+            }
+            if q.reset_generation == generation
+                && !q.report.waiting_for_idr
+                && q.report.frames_decoded > decoded_before
+            {
+                q.recovered();
+            }
         }
         header_bytes = 0;
+        if let Some(error) = failure {
+            if !matches!(
+                error.stage,
+                "video-process-input" | "video-process-output" | "video-output-iteration-limit"
+            ) {
+                return Err(error);
+            }
+            let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            if q.reset_generation == generation && !q.recover(Instant::now()) {
+                return Err(error);
+            }
+            continue;
+        }
         *window
             .video_report
             .lock()
@@ -1311,6 +1410,75 @@ pub fn probe(sustained: bool) -> anyhow::Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "diagnostics")]
+    #[test]
+    fn decoder_recovers_with_cached_parameters_and_a_headerless_keyframe() {
+        let window = crate::window::Window::create_video_probe().unwrap();
+        let pipeline = Pipeline::start(window.clone());
+        let fixture = include_bytes!("../fixtures/synthetic-1920x1080.h264");
+        let mut starts: Vec<_> = (0..fixture.len().saturating_sub(4))
+            .filter(|&i| fixture[i..].starts_with(&[0, 0, 0, 1]) && fixture[i + 4] & 31 == 9)
+            .collect();
+        starts.push(fixture.len());
+        let mut inspector = crate::video_stream::Inspector::default();
+        let result = (|| -> anyhow::Result<()> {
+            for pair in starts.windows(2) {
+                let bytes = &fixture[pair[0]..pair[1]];
+                anyhow::ensure!(pipeline.submit(bytes, inspector.receive(bytes).unwrap()));
+                std::thread::sleep(Duration::from_millis(40));
+            }
+            let until = Instant::now() + Duration::from_secs(5);
+            while pipeline.snapshot().frames_decoded < 8 && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            anyhow::ensure!(
+                pipeline.snapshot().frames_decoded == 8,
+                "initial synthetic decode"
+            );
+            anyhow::ensure!(pipeline.shared.0.lock().unwrap().recover(Instant::now()));
+            pipeline.shared.1.notify_one();
+            anyhow::ensure!(pipeline.take_keyframe_request());
+            for (index, pair) in starts.windows(2).enumerate() {
+                let mut bytes = &fixture[pair[0]..pair[1]];
+                if index == 0 {
+                    // Omit SPS/PPS deliberately: only the saved parameters can
+                    // initialize the new decoder before this IDR picture.
+                    let idr = (0..bytes.len().saturating_sub(4))
+                        .find(|&i| {
+                            (bytes[i..].starts_with(&[0, 0, 0, 1]) && bytes[i + 4] & 31 == 5)
+                                || (bytes[i..].starts_with(&[0, 0, 1]) && bytes[i + 3] & 31 == 5)
+                        })
+                        .ok_or_else(|| anyhow::anyhow!("synthetic IDR missing"))?;
+                    bytes = &bytes[idr..];
+                }
+                anyhow::ensure!(pipeline.submit(bytes, inspector.receive(bytes).unwrap()));
+                std::thread::sleep(Duration::from_millis(40));
+            }
+            let until = Instant::now() + Duration::from_secs(5);
+            while pipeline.snapshot().frames_decoded < 16 && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let report = pipeline.snapshot();
+            anyhow::ensure!(
+                report.failure_stage.is_none(),
+                "recovery failed: {:?}",
+                report.failure_stage
+            );
+            anyhow::ensure!(
+                report.frames_decoded == 16 && !report.recovering,
+                "recovery did not decode all frames"
+            );
+            Ok(())
+        })();
+        pipeline.stop();
+        let until = Instant::now() + Duration::from_secs(3);
+        while !pipeline.snapshot().worker_finished && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        window.close();
+        result.unwrap();
+        assert!(pipeline.snapshot().resources_released);
+    }
     #[test]
     fn busy_or_occluded_presentation_is_not_a_decoder_failure() {
         assert_eq!(

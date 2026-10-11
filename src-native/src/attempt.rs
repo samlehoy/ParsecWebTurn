@@ -199,7 +199,37 @@ struct Completion {
     video_stream: crate::video_stream::Inspector,
     audio_stream: Option<crate::audio_stream::Pipeline>,
     #[cfg(windows)]
-    video_output: Option<crate::video_windows::Pipeline>,
+    video_output: Option<Arc<crate::video_windows::Pipeline>>,
+}
+
+enum Delivery {
+    Queued,
+    Media {
+        audio: Option<crate::audio_stream::Sender>,
+        #[cfg(windows)]
+        video: Option<(
+            Arc<crate::video_windows::Pipeline>,
+            crate::video_stream::PacketInfo,
+        )>,
+    },
+}
+impl Delivery {
+    fn submit(self, bytes: &[u8]) -> Option<bool> {
+        match self {
+            Self::Queued => None,
+            Self::Media {
+                audio,
+                #[cfg(windows)]
+                video,
+            } => {
+                #[cfg(windows)]
+                if let Some((pipeline, info)) = video {
+                    return Some(!pipeline.submit(bytes, info));
+                }
+                Some(!audio.is_some_and(|sender| sender.submit(bytes)))
+            }
+        }
+    }
 }
 
 impl Drop for Completion {
@@ -230,13 +260,13 @@ impl Completion {
         }
     }
 
-    fn receive(&mut self, channel: u16, text: bool, bytes: &[u8]) -> bool {
+    fn prepare_receive(&mut self, channel: u16, text: bool, bytes: &[u8]) -> Option<Delivery> {
         if self.cancelled || self.closing || self.progress.failed {
-            return false;
+            return None;
         }
         if channel > 2 || text || bytes.len() > MAX_CHANNEL_MESSAGE {
             self.fail_channel(FailureStage::InboundChannel, channel);
-            return false;
+            return None;
         }
         let i = usize::from(channel);
         self.progress.messages_received = self.progress.messages_received.saturating_add(1);
@@ -247,31 +277,46 @@ impl Completion {
         self.progress.channel_max_message_bytes[i] =
             self.progress.channel_max_message_bytes[i].max(bytes.len());
         if channel != 0 && self.discard_unavailable_media {
-            let mut discarded = true;
+            #[cfg(windows)]
+            let mut video = None;
             if channel == 1 {
                 let info = self.video_stream.receive(bytes);
                 #[cfg(windows)]
                 if let (Some(pipeline), Some(info)) = (&self.video_output, info) {
-                    discarded = !pipeline.submit(bytes, info);
+                    video = Some((pipeline.clone(), info));
                 }
                 #[cfg(not(windows))]
                 let _ = info;
             }
-            if channel == 2 {
-                if let Some(pipeline) = &self.audio_stream {
-                    discarded = !pipeline.submit(bytes);
-                }
-            }
-            self.media_ingress.record(channel, bytes.len(), discarded);
-            return true;
+            let audio = if channel == 2 {
+                self.audio_stream.as_ref().and_then(|p| p.sender())
+            } else {
+                None
+            };
+            return Some(Delivery::Media {
+                audio,
+                #[cfg(windows)]
+                video,
+            });
         }
         if self.messages.len() >= 16 || self.message_bytes + bytes.len() > 4 * MAX_CHANNEL_MESSAGE {
             self.fail_channel(FailureStage::InboundQueueFull, channel);
-            return false;
+            return None;
         }
         self.message_bytes += bytes.len();
         self.messages
             .push_back((channel, text, Bytes::copy_from_slice(bytes)));
+        Some(Delivery::Queued)
+    }
+
+    #[cfg(test)]
+    fn receive(&mut self, channel: u16, text: bool, bytes: &[u8]) -> bool {
+        let Some(delivery) = self.prepare_receive(channel, text, bytes) else {
+            return false;
+        };
+        if let Some(discarded) = delivery.submit(bytes) {
+            self.media_ingress.record(channel, bytes.len(), discarded);
+        }
         true
     }
 }
@@ -287,18 +332,34 @@ async fn read_channel(
     let mut buffer = vec![0; MAX_CHANNEL_MESSAGE];
     loop {
         let read = channel.read_data_channel(&mut buffer).await;
-        let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
-        let keep_reading = match read {
+        let len = read.as_ref().map_or(0, |(len, _)| *len);
+        let delivery = match read {
             Ok((0, _)) => {
+                let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                 state.fail_channel(FailureStage::DataChannelClosed, id);
-                false
+                None
             }
-            Ok((len, text)) => state.receive(id, text, &buffer[..len]),
+            Ok((len, text)) => shared
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .prepare_receive(id, text, &buffer[..len]),
             Err(_) => {
+                let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                 state.fail_channel(FailureStage::DataChannelRead, id);
-                false
+                None
             }
         };
+        let keep_reading = delivery.is_some();
+        if let Some(delivery) = delivery {
+            // Copy/submit outside the connection lock. Consume sender handles
+            // before bookkeeping, so cancellation never joins a blocked reader.
+            if let Some(discarded) = delivery.submit(&buffer[..len]) {
+                let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+                if !state.cancelled && !state.closing {
+                    state.media_ingress.record(id, len, discarded);
+                }
+            }
+        }
         wake.notify_all();
         if !keep_reading {
             break;
@@ -488,9 +549,7 @@ impl Attempt {
         if let Some(pipeline) = &state.video_output {
             pipeline.stop();
         }
-        if let Some(mut audio) = state.audio_stream.take() {
-            audio.stop();
-        }
+        let audio = state.audio_stream.take();
         state.events.clear();
         state.messages.clear();
         state.message_bytes = 0;
@@ -500,6 +559,9 @@ impl Attempt {
             }
         }
         drop(state);
+        if let Some(mut audio) = audio {
+            audio.stop();
+        }
         self.commands.take();
         self.wake.notify_all();
     }
@@ -530,7 +592,10 @@ impl Attempt {
             ingress.audio_output = Some(report);
         }
         #[cfg(windows)]
-        if let Some(pipeline) = &state.video_output {
+        let video = state.video_output.clone();
+        drop(state);
+        #[cfg(windows)]
+        if let Some(pipeline) = video {
             let output = pipeline.snapshot();
             ingress.video_decoder_available = output.frames_decoded > 0;
             ingress.video_output = Some(output);
@@ -540,19 +605,25 @@ impl Attempt {
 
     #[cfg(windows)]
     pub fn start_video(&self, window: Arc<crate::window::Window>) {
+        {
+            let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
+            if state.cancelled || state.closing || state.video_output.is_some() {
+                return;
+            }
+        }
         let generation = window.stats.begin();
-        self.completion
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .telemetry = Some((window.stats.clone(), generation));
-        self.completion
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .audio_stream = Some(crate::audio_stream::Pipeline::start());
-        self.completion
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .video_output = Some(crate::video_windows::Pipeline::start(window));
+        let audio = crate::audio_stream::Pipeline::start();
+        let video = Arc::new(crate::video_windows::Pipeline::start(window.clone()));
+        let mut state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
+        if state.cancelled || state.closing || state.video_output.is_some() {
+            drop(state);
+            video.stop();
+            window.stats.finish(generation);
+            return;
+        }
+        state.telemetry = Some((window.stats.clone(), generation));
+        state.audio_stream = Some(audio);
+        state.video_output = Some(video);
     }
 
     pub fn poll_audio(&self, memory: &GuestMemory, pointer: u32, capacity: usize) -> Result<usize> {
@@ -801,18 +872,19 @@ fn worker(
                 else {
                     continue;
                 };
-                {
+                let video = {
                     let s = state.lock().unwrap_or_else(|e| e.into_inner());
                     if s.cancelled || s.closing {
                         break;
                     }
                     sample.audio_bytes = s.progress.channel_bytes_received[2];
                     sample.audio_ready = s.audio_stream.is_some();
-                    sample.video = s.video_output.as_ref().map(|v| v.snapshot());
                     sample.profile = s.video_stream.snapshot().sps_profile_idc;
                     sample.codec = s.video_stream.snapshot().codec;
                     sample.hevc_advertised = s.video_stream.snapshot().hevc_advertised;
-                }
+                    s.video_output.clone()
+                };
+                sample.video = video.map(|v| v.snapshot());
                 bus.publish(generation, sample);
             }
         });
@@ -961,6 +1033,8 @@ fn worker(
             bail!("native offer publication failed or was cancelled");
         }
         let mut deadline = EstablishmentDeadline::new(std::time::Instant::now());
+        #[cfg(windows)]
+        let mut next_video_recovery_check = std::time::Instant::now();
         loop {
             // Read only documented native state enums; never serialize SDP,
             // addresses, certificates or underlying error strings.
@@ -974,6 +1048,35 @@ fn worker(
                     state.progress.connection_established,
                 )?
             };
+            #[cfg(windows)]
+            if std::time::Instant::now() >= next_video_recovery_check {
+                next_video_recovery_check = std::time::Instant::now() + Duration::from_millis(50);
+                let video = {
+                    let state = shared.lock().unwrap_or_else(|e| e.into_inner());
+                    if state.cancelled || state.closing {
+                        break;
+                    }
+                    state.video_output.clone()
+                };
+                if let (Some(video), Some(config)) = (video, &config) {
+                    if video.take_keyframe_request() {
+                        // A failed refresh disables video recovery, not audio or
+                        // control. No change to SCTP reliability or ordering.
+                        let channel = channels[0].clone();
+                        let request = config.keyframe_request();
+                        runtime.spawn(async move {
+                            let sent = tokio::time::timeout(
+                                Duration::from_secs(1),
+                                channel.send(&request),
+                            )
+                            .await;
+                            if !matches!(sent, Ok(Ok(_))) {
+                                video.recovery_request_failed();
+                            }
+                        });
+                    }
+                }
+            }
             let command = match commands.recv_timeout(wait) {
                 Ok(command) => command,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -1272,6 +1375,22 @@ mod tests {
             video_output: None,
             audio_stream: None,
         }
+    }
+
+    #[test]
+    fn captured_audio_delivery_is_safe_after_cancellation_without_holding_connection_lock() {
+        let mut state = empty_completion();
+        state.discard_unavailable_media = true;
+        state.audio_stream = Some(crate::audio_stream::Pipeline::start());
+        let delivery = state
+            .prepare_receive(2, false, &[0xf8, 0xff, 0xfe])
+            .unwrap();
+        let mut audio = state.audio_stream.take().unwrap();
+        state.cancelled = true;
+        audio.stop();
+        assert_eq!(delivery.submit(&[0xf8, 0xff, 0xfe]), Some(true));
+        assert!(audio.snapshot().worker_finished);
+        assert_eq!(audio.snapshot().queued_samples, 0);
     }
 
     #[test]

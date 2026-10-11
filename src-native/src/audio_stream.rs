@@ -8,6 +8,8 @@ use std::{
     thread::JoinHandle,
 };
 const MAX_SAMPLES: usize = 48_000; // 500 ms, interleaved stereo
+const PCM_SAMPLES: usize = 5760 * 2; // RFC maximum 120 ms, stereo
+const RECYCLED_BUFFERS: usize = 32;
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
     pub packets_decoded: u64,
@@ -21,10 +23,49 @@ pub struct Snapshot {
 struct State {
     report: Snapshot,
     pcm: VecDeque<Vec<i16>>,
+    free_pcm: Vec<Vec<i16>>,
+    free_packets: Vec<Vec<u8>>,
+    stopped: bool,
+}
+#[derive(Clone)]
+pub(crate) struct Sender {
+    tx: mpsc::SyncSender<Vec<u8>>,
+    state: Arc<Mutex<State>>,
+}
+impl Sender {
+    pub fn submit(&self, bytes: &[u8]) -> bool {
+        let mut packet = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.stopped || bytes.is_empty() || bytes.len() > 65_536 {
+                state.report.packets_dropped += 1;
+                return false;
+            }
+            state.free_packets.pop().unwrap_or_default()
+        };
+        packet.clear();
+        packet.extend_from_slice(bytes);
+        match self.tx.try_send(packet) {
+            Ok(()) => true,
+            Err(error) => {
+                let packet = match error {
+                    mpsc::TrySendError::Full(packet) | mpsc::TrySendError::Disconnected(packet) => {
+                        packet
+                    }
+                };
+                let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                state.report.packets_dropped += 1;
+                if !state.stopped && state.free_packets.len() < RECYCLED_BUFFERS {
+                    state.free_packets.push(packet);
+                }
+                false
+            }
+        }
+    }
 }
 pub struct Pipeline {
     tx: Option<mpsc::SyncSender<Vec<u8>>>,
     state: Arc<Mutex<State>>,
+    poll_lock: Mutex<()>,
     worker: Option<JoinHandle<()>>,
 }
 struct Decoder(*mut libopus_sys::OpusDecoder);
@@ -38,12 +79,12 @@ impl Decoder {
         }
         Ok(Self(pointer))
     }
-    fn decode(&mut self, packet: &[u8]) -> Result<Vec<i16>> {
+    fn decode_into(&mut self, packet: &[u8], pcm: &mut Vec<i16>) -> Result<()> {
         if packet.is_empty() || packet.len() > 65_536 {
             bail!("invalid Opus packet boundary");
         }
-        let mut pcm = vec![0i16; 5760 * 2]; // RFC maximum 120 ms at 48 kHz
-                                            // SAFETY: both slices remain alive, capacity matches frame_size*channels.
+        pcm.resize(PCM_SAMPLES, 0);
+        // SAFETY: both slices remain alive, capacity matches frame_size*channels.
         let frames = unsafe {
             libopus_sys::opus_decode(
                 self.0,
@@ -58,6 +99,12 @@ impl Decoder {
             bail!("Opus packet rejected");
         }
         pcm.truncate(frames as usize * 2);
+        Ok(())
+    }
+    #[cfg(test)]
+    fn decode(&mut self, packet: &[u8]) -> Result<Vec<i16>> {
+        let mut pcm = Vec::new();
+        self.decode_into(packet, &mut pcm)?;
         Ok(pcm)
     }
 }
@@ -73,17 +120,40 @@ impl Pipeline {
         let shared = state.clone();
         let worker = std::thread::spawn(move || {
             if let Ok(mut decoder) = Decoder::new() {
-                while let Ok(packet) = rx.recv() {
-                    let decoded = decoder.decode(&packet);
+                loop {
+                    if shared.lock().unwrap_or_else(|e| e.into_inner()).stopped {
+                        break;
+                    }
+                    let packet = match rx.recv_timeout(std::time::Duration::from_millis(20)) {
+                        Ok(packet) => packet,
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
+                    let recycled = shared
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .free_pcm
+                        .pop();
+                    let mut pcm = recycled.unwrap_or_else(|| Vec::with_capacity(PCM_SAMPLES));
+                    let decoded = decoder.decode_into(&packet, &mut pcm);
                     let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+                    if !state.stopped && state.free_packets.len() < RECYCLED_BUFFERS {
+                        state.free_packets.push(packet);
+                    }
+                    if state.stopped {
+                        continue;
+                    }
                     match decoded {
-                        Ok(pcm) => {
+                        Ok(()) => {
                             state.report.packets_decoded += 1;
                             // Drop oldest decoded audio on backpressure; never grow latency indefinitely.
                             while state.report.queued_samples + pcm.len() > MAX_SAMPLES {
                                 if let Some(old) = state.pcm.pop_front() {
                                     state.report.queued_samples -= old.len();
                                     state.report.packets_dropped += 1;
+                                    if state.free_pcm.len() < RECYCLED_BUFFERS {
+                                        state.free_pcm.push(old);
+                                    }
                                 } else {
                                     break;
                                 }
@@ -91,7 +161,12 @@ impl Pipeline {
                             state.report.queued_samples += pcm.len();
                             state.pcm.push_back(pcm);
                         }
-                        Err(_) => state.report.decode_errors += 1,
+                        Err(_) => {
+                            state.report.decode_errors += 1;
+                            if state.free_pcm.len() < RECYCLED_BUFFERS {
+                                state.free_pcm.push(pcm);
+                            }
+                        }
                     }
                 }
             } else {
@@ -110,24 +185,19 @@ impl Pipeline {
         Self {
             tx: Some(tx),
             state,
+            poll_lock: Mutex::new(()),
             worker: Some(worker),
         }
     }
+    #[cfg(test)]
     pub fn submit(&self, bytes: &[u8]) -> bool {
-        let accepted = !bytes.is_empty()
-            && bytes.len() <= 65_536
-            && self
-                .tx
-                .as_ref()
-                .is_some_and(|tx| tx.try_send(bytes.to_vec()).is_ok());
-        if !accepted {
-            self.state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .report
-                .packets_dropped += 1;
-        }
-        accepted
+        self.sender().is_some_and(|sender| sender.submit(bytes))
+    }
+    pub(crate) fn sender(&self) -> Option<Sender> {
+        self.tx.as_ref().map(|tx| Sender {
+            tx: tx.clone(),
+            state: self.state.clone(),
+        })
     }
     pub fn poll(
         &self,
@@ -135,6 +205,8 @@ impl Pipeline {
         pointer: u32,
         capacity: usize,
     ) -> Result<usize> {
+        // Serialize guest writes while leaving the decoder's state lock free.
+        let _poll = self.poll_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let Some(pcm) = state.pcm.front() else {
             return Ok(0);
@@ -142,12 +214,18 @@ impl Pipeline {
         if pcm.len() > capacity {
             bail!("guest audio buffer too small");
         }
-        let bytes: Vec<u8> = pcm.iter().flat_map(|v| v.to_le_bytes()).collect();
-        memory.write(pointer, &bytes)?;
+        memory.range(pointer, pcm.len() * 2)?;
         let samples = pcm.len();
-        state.pcm.pop_front();
+        let pcm = state.pcm.pop_front().unwrap();
         state.report.queued_samples -= samples;
+        drop(state);
+        // Bounds were checked before dequeue; shared memory can only grow.
+        memory.write_i16_le(pointer, &pcm)?;
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.report.pcm_frames_polled += samples as u64 / 2;
+        if !state.stopped && state.free_pcm.len() < RECYCLED_BUFFERS {
+            state.free_pcm.push(pcm);
+        }
         Ok(samples / 2)
     }
     pub fn snapshot(&self) -> Snapshot {
@@ -158,12 +236,15 @@ impl Pipeline {
             .clone()
     }
     pub fn stop(&mut self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).stopped = true;
         self.tx.take();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.pcm.clear();
+        state.free_pcm.clear();
+        state.free_packets.clear();
         state.report.queued_samples = 0;
     }
 }
@@ -175,6 +256,25 @@ impl Drop for Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn repeated_decode_reuses_pcm_storage_and_stop_invalidates_sender_handles() {
+        let mut decoder = Decoder::new().unwrap();
+        let mut pcm = Vec::with_capacity(PCM_SAMPLES);
+        let pointer = pcm.as_ptr();
+        for _ in 0..20 {
+            decoder.decode_into(&[0xf8, 0xff, 0xfe], &mut pcm).unwrap();
+            assert_eq!(pcm.len(), 1920);
+            assert_eq!(pcm.as_ptr(), pointer);
+        }
+        let mut pipeline = Pipeline::start();
+        let sender = pipeline.sender().unwrap();
+        pipeline.stop();
+        assert!(pipeline.snapshot().worker_finished);
+        assert!(!sender.submit(&[0xf8, 0xff, 0xfe]));
+        let state = pipeline.state.lock().unwrap();
+        assert!(state.free_packets.is_empty());
+        assert!(state.free_pcm.is_empty());
+    }
     #[test]
     fn reference_decoder_accepts_standard_silence_and_rejects_invalid_packet() {
         let mut decoder = Decoder::new().unwrap();

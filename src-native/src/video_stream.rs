@@ -156,6 +156,80 @@ pub struct PacketInfo {
     pub parameters: bool,
 }
 
+/// Only codec parameter NALs, never pictures. Bounded history preserves the
+/// order of parameter-set updates for a decoder restarted during this session.
+#[derive(Default)]
+pub struct ParameterCache {
+    units: Vec<Vec<u8>>,
+    bytes: usize,
+    overflowed: bool,
+}
+impl ParameterCache {
+    pub fn observe(&mut self, bytes: &[u8], codec: Codec) {
+        if self.overflowed {
+            return;
+        }
+        let valid = match codec {
+            Codec::H264 => annex_b(bytes),
+            Codec::Hevc => hevc_annex_b(bytes, false),
+        };
+        if valid.is_none() {
+            return;
+        }
+        let mut offset = 0;
+        while offset < bytes.len() {
+            while bytes.get(offset) == Some(&0) {
+                offset += 1;
+            }
+            if bytes.get(offset) != Some(&1) {
+                return;
+            }
+            let begin = offset + 1;
+            let mut end = begin;
+            while end < bytes.len()
+                && !bytes[end..].starts_with(&[0, 0, 1])
+                && !bytes[end..].starts_with(&[0, 0, 0, 1])
+            {
+                end += 1;
+            }
+            let nal = &bytes[begin..end];
+            let parameter = match codec {
+                Codec::H264 => matches!(nal[0] & 31, 7 | 8),
+                Codec::Hevc => matches!((nal[0] >> 1) & 63, 32..=34),
+            };
+            if parameter {
+                if let Some(index) = self.units.iter().position(|unit| unit.as_slice() == nal) {
+                    let unit = self.units.remove(index);
+                    self.units.push(unit);
+                } else if self.units.len() < 64
+                    && self.bytes.saturating_add(nal.len() + 4) <= 256 * 1024
+                {
+                    self.bytes += nal.len() + 4;
+                    self.units.push(nal.to_vec());
+                } else {
+                    // A partial cache is not a safe decoder initialization.
+                    self.units.clear();
+                    self.bytes = 0;
+                    self.overflowed = true;
+                    return;
+                }
+            }
+            offset = end;
+        }
+    }
+    pub fn bytes(&self) -> Option<Vec<u8>> {
+        if self.overflowed || self.units.is_empty() {
+            return None;
+        }
+        let mut bytes = Vec::with_capacity(self.bytes);
+        for unit in &self.units {
+            bytes.extend_from_slice(&[0, 0, 0, 1]);
+            bytes.extend_from_slice(unit);
+        }
+        Some(bytes)
+    }
+}
+
 #[derive(Default)]
 struct NalSummary {
     vps: bool,
@@ -421,6 +495,26 @@ fn annex_b(bytes: &[u8]) -> Option<NalSummary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recovery_cache_keeps_parameters_but_never_picture_payloads() {
+        let mut cache = ParameterCache::default();
+        let sps = [0, 0, 0, 1, 0x67, 0x64, 0, 0x28];
+        let pps = [0, 0, 1, 0x68, 0xee];
+        let picture = [0, 0, 1, 0x65, 0x42, 0x43];
+        let packet = [sps.as_slice(), pps.as_slice(), picture.as_slice()].concat();
+        cache.observe(&packet, Codec::H264);
+        let expected = [sps.as_slice(), &[0, 0, 0, 1, 0x68, 0xee]].concat();
+        assert_eq!(cache.bytes().unwrap(), expected);
+        cache.observe(&packet, Codec::H264);
+        assert_eq!(cache.bytes().unwrap(), expected);
+        cache.observe(&[0, 0, 1, 0xff], Codec::H264);
+        assert_eq!(cache.bytes().unwrap(), expected);
+
+        let mut cache = ParameterCache::default();
+        let huge = [sps.as_slice(), vec![2; 256 * 1024].as_slice()].concat();
+        cache.observe(&huge, Codec::H264);
+        assert!(cache.bytes().is_none());
+    }
     fn sps_fixture(width: u32, height: u32, layers: u32, depth: u32) -> Vec<u8> {
         fn put(bits: &mut Vec<u8>, value: u32, count: u32) {
             for shift in (0..count).rev() {
