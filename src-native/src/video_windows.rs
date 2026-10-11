@@ -934,6 +934,16 @@ struct ProcessorCache {
     outputs: Vec<(ID3D11Texture2D, ID3D11VideoProcessorOutputView)>,
 }
 
+// Flush deferred destruction only after the renderer's views/swap chain have
+// been released. Required before recreating a flip swap chain on the same HWND.
+struct ContextCleanup(ID3D11DeviceContext);
+impl Drop for ContextCleanup {
+    fn drop(&mut self) {
+        unsafe {
+            self.0.Flush();
+        }
+    }
+}
 struct Renderer {
     device: ID3D11Device,
     video_device: ID3D11VideoDevice,
@@ -947,6 +957,15 @@ struct Renderer {
     processor: Option<ProcessorCache>,
     overlay: Option<crate::overlay_windows::Renderer>,
     overlay_failed: bool,
+    // Fields drop in declaration order; keep the final flush after all views.
+    cleanup: ContextCleanup,
+}
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        unsafe {
+            self.cleanup.0.ClearState();
+        }
+    }
 }
 impl Renderer {
     unsafe fn create(
@@ -1003,6 +1022,7 @@ impl Renderer {
             processor: None,
             overlay: None,
             overlay_failed: false,
+            cleanup: ContextCleanup(context),
         })
     }
     // Offline synthetic fixture only. Live paths never map/read pixel buffers.

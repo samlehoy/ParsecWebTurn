@@ -34,6 +34,11 @@ readback, display queue policy or codec capability.
   never saved pictures: up to 64 distinct units and 256 KiB, preserving updates.
   An incomplete/overflowed cache is never replayed; fresh stream parameters must
   then arrive before decoding can resume.
+- Renderer teardown unbinds context state, releases its views and swap chain,
+  then flushes deferred destruction before another flip swap chain uses the same
+  window. This follows
+  [Microsoft's replacement rules](https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-flush).
+  The flush is only on teardown, never per frame.
 - There are at most three restart attempts per connection, at most one refresh
   request per second, and five seconds to resume decoded output per attempt.
   Successful output clears the waiting state, without resetting the retry budget.
