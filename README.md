@@ -37,7 +37,8 @@ other client. Performance depends on your computer, graphics driver and stream.
 The native Windows development build currently supports:
 
 - Signing in, browsing your computers and connecting to a Parsec host.
-- H.264 video with a D3D11-based GPU video pipeline.
+- H.264 video and optional H.265 / HEVC Main (8-bit) playback with a D3D11-based
+  GPU video pipeline.
 - Opus audio, keyboard and mouse input.
 - The familiar Parsec stream overlay, including its relative-mouse option.
 - Remembering your sign-in and Parsec preferences between launches.
@@ -94,6 +95,10 @@ If a saved GPU becomes unavailable or cannot be identified uniquely, select
 Automatic or another available GPU before reconnecting. Using a different GPU
 from your display can introduce driver-managed transfers on hybrid systems.
 
+Enable **Prefer H.265 / HEVC** in Settings to advertise HEVC support on your next
+connection. This needs a compatible GPU and an installed Windows HEVC decoder.
+The host may still send H.264; Connection stats shows the codec actually received.
+
 Examples: `turn:turn.example.com:3478?transport=udp`,
 `turn:turn.example.com:3478?transport=tcp`, or
 `turns:turn.example.com:443?transport=tcp`. The last option requires a TLS-enabled
@@ -117,6 +122,7 @@ delivery commitment. There are no fixed release dates for these milestones.
 | --- | --- | --- |
 | Native Rust WebRTC client | Available | Connect to a Parsec host without WebView2, using the existing Parsec WASM core. |
 | Native Windows video, audio and controls | Available | D3D11 video output, H.264 playback, Opus sound, keyboard, mouse and the Parsec overlay. |
+| H.265 / HEVC playback | Available (opt-in) | Request HEVC Main (8-bit), recognize the incoming codec and decode it through Media Foundation with D3D11 GPU presentation. Verified in a live 1080p session; requires compatible GPU/decoder support. H.264 remains the default. |
 | Single executable and saved settings | Available | Run the portable EXE; keep your sign-in and preferences after restarting. |
 | STUN connectivity | Available | Parsec's default STUN server, custom discovery servers and a STUN-only option for LAN/VPN use. |
 | Custom STUN and TURN relay support | Available | Cloudflare or custom TURN servers, including UDP, TCP and TLS server connections. Compatible with the earlier client's server settings file. |
@@ -130,6 +136,28 @@ delivery commitment. There are no fixed release dates for these milestones.
 Vulkan is one part of bringing the client to other platforms. Linux and Android
 also need their own video decoding, audio, window and input integration; adding
 Vulkan alone will not make the Windows client run there.
+
+## The Parsec core, beyond the browser
+
+Although our Parsec core comes from the web client, it runs here inside a native
+Rust application, using an embedded WebAssembly runtime and a precompiled core.
+It does not need a browser or WebView2. Rust supplies the surrounding connection,
+video decoding, sound and input support. Our investigation points to shared
+native foundations with Parsec's official client and SDK, rather than an entirely
+separate browser-only implementation. That does not establish that their code
+or feature sets are identical.
+
+WebRTC acts as the **transport** in this client. Video, audio and control messages
+travel through WebRTC data channels using Parsec's own application protocol;
+they do not use the usual WebRTC audio/video track and RTP playback pipeline.
+The WebRTC connection itself still uses standard ICE, DTLS and SCTP mechanisms.
+
+This lets us rebuild the surrounding client in Rust while retaining the Parsec
+core and host compatibility. We can control native decoding and rendering,
+including the working HEVC path, while keeping WebRTC's connection options:
+direct routes, custom STUN discovery and TURN relays over UDP, TCP or TLS.
+We reuse the core rather than rewriting it, and build our own native integration
+around it.
 
 ## STUN, TURN and restricted networks
 
