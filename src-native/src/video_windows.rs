@@ -542,6 +542,12 @@ impl Session {
                 .SetValue(&CODECAPI_AVLowLatencyMode, &value)
                 .is_ok()
         });
+        // Documented MFT alternative for HEVC decoders that do not accept
+        // ICodecAPI. MF_LOW_LATENCY stores BOOL as UINT32. Preserve the
+        // existing H.264 setup; acceptance is not a latency measurement.
+        let low_latency_request_accepted = low_latency_request_accepted
+            || (codec == crate::video_stream::Codec::Hevc
+                && attrs.SetUINT32(&MF_LOW_LATENCY, 1).is_ok());
         api(
             "video-decoder-set-manager",
             decoder.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager.as_raw() as usize),

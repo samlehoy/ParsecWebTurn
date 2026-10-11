@@ -65,6 +65,15 @@ VideoProcessor / DXGI presentation path is reused. No live CPU readback or
 intermediate decoded-frame copy is added. Capability checks do not establish
 actual hardware execution; existing output telemetry retains that distinction.
 
+HEVC first requests `CODECAPI_AVLowLatencyMode` through ICodecAPI. If that
+interface or property is rejected, it requests
+[MF_LOW_LATENCY](https://learn.microsoft.com/en-us/windows/win32/medfound/mf-low-latency)
+through the transform's attributes as UINT32=1, before setting media types or
+starting the stream. If both routes are rejected, decoding remains available
+and the existing acceptance flag stays false. Acceptance does not establish
+a measured latency improvement. H.264 setup, video queues, GPU presentation
+and eight-bit-only HEVC support remain unchanged.
+
 End-to-end user verification on 2026-10-11 confirmed visible video from a Parsec
 host over this WebRTC path: HEVC Main, 1920x1080, Media Foundation HEVC decoding,
 D3D11 VideoProcessor / DXGI presentation on AMD Radeon 780M Graphics. The supplied
