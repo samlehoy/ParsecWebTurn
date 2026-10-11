@@ -193,10 +193,10 @@ struct Completion {
     events: VecDeque<serde_json::Value>,
     messages: VecDeque<(u16, bool, Bytes)>,
     message_bytes: usize,
-    // Session media has no decoder yet; raw transport probes retain receipts.
+    // Native session media bypasses the receipt queue; transport probes retain it.
     discard_unavailable_media: bool,
     media_ingress: crate::media_ingress::Ingress,
-    video_stream: crate::video_stream::Inspector,
+    video_stream: Arc<Mutex<crate::video_stream::Inspector>>,
     audio_stream: Option<crate::audio_stream::Pipeline>,
     #[cfg(windows)]
     video_output: Option<Arc<crate::video_windows::Pipeline>>,
@@ -204,29 +204,34 @@ struct Completion {
 
 enum Delivery {
     Queued,
-    Media {
-        audio: Option<crate::audio_stream::Sender>,
+    Audio(Option<crate::audio_stream::Sender>),
+    Video {
+        inspector: Arc<Mutex<crate::video_stream::Inspector>>,
         #[cfg(windows)]
-        video: Option<(
-            Arc<crate::video_windows::Pipeline>,
-            crate::video_stream::PacketInfo,
-        )>,
+        pipeline: Option<Arc<crate::video_windows::Pipeline>>,
     },
 }
 impl Delivery {
     fn submit(self, bytes: &[u8]) -> Option<bool> {
         match self {
             Self::Queued => None,
-            Self::Media {
-                audio,
+            Self::Audio(audio) => Some(!audio.is_some_and(|sender| sender.submit(bytes))),
+            Self::Video {
+                inspector,
                 #[cfg(windows)]
-                video,
+                pipeline,
             } => {
+                let info = inspector
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .receive(bytes);
                 #[cfg(windows)]
-                if let Some((pipeline, info)) = video {
+                if let (Some(pipeline), Some(info)) = (pipeline, info) {
                     return Some(!pipeline.submit(bytes, info));
                 }
-                Some(!audio.is_some_and(|sender| sender.submit(bytes)))
+                #[cfg(not(windows))]
+                let _ = info;
+                Some(true)
             }
         }
     }
@@ -277,27 +282,16 @@ impl Completion {
         self.progress.channel_max_message_bytes[i] =
             self.progress.channel_max_message_bytes[i].max(bytes.len());
         if channel != 0 && self.discard_unavailable_media {
-            #[cfg(windows)]
-            let mut video = None;
             if channel == 1 {
-                let info = self.video_stream.receive(bytes);
-                #[cfg(windows)]
-                if let (Some(pipeline), Some(info)) = (&self.video_output, info) {
-                    video = Some((pipeline.clone(), info));
-                }
-                #[cfg(not(windows))]
-                let _ = info;
+                return Some(Delivery::Video {
+                    inspector: self.video_stream.clone(),
+                    #[cfg(windows)]
+                    pipeline: self.video_output.clone(),
+                });
             }
-            let audio = if channel == 2 {
-                self.audio_stream.as_ref().and_then(|p| p.sender())
-            } else {
-                None
-            };
-            return Some(Delivery::Media {
-                audio,
-                #[cfg(windows)]
-                video,
-            });
+            return Some(Delivery::Audio(
+                self.audio_stream.as_ref().and_then(|p| p.sender()),
+            ));
         }
         if self.messages.len() >= 16 || self.message_bytes + bytes.len() > 4 * MAX_CHANNEL_MESSAGE {
             self.fail_channel(FailureStage::InboundQueueFull, channel);
@@ -467,7 +461,7 @@ impl Attempt {
             message_bytes: 0,
             discard_unavailable_media: config.is_some(),
             media_ingress: Default::default(),
-            video_stream,
+            video_stream: Arc::new(Mutex::new(video_stream)),
             #[cfg(windows)]
             video_output: None,
             audio_stream: None,
@@ -585,7 +579,7 @@ impl Attempt {
     pub fn media_ingress(&self) -> crate::media_ingress::Ingress {
         let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
         let mut ingress = state.media_ingress.clone();
-        ingress.video_stream = state.video_stream.snapshot();
+        let inspector = state.video_stream.clone();
         if let Some(audio) = &state.audio_stream {
             let report = audio.snapshot();
             ingress.audio_decoder_available = report.packets_decoded > 0;
@@ -594,6 +588,10 @@ impl Attempt {
         #[cfg(windows)]
         let video = state.video_output.clone();
         drop(state);
+        ingress.video_stream = inspector
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .snapshot();
         #[cfg(windows)]
         if let Some(pipeline) = video {
             let output = pipeline.snapshot();
@@ -635,10 +633,15 @@ impl Attempt {
     }
 
     pub fn configure_video_protocol(&self, protocol: crate::backend::VideoProtocol) {
-        self.completion
+        let inspector = self
+            .completion
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .video_stream
+            .clone();
+        inspector
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .configure(protocol);
     }
 
@@ -802,10 +805,14 @@ fn worker(
         {
             config.allow_hevc = false;
         }
-        shared
+        let inspector = shared
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .video_stream
+            .clone();
+        inspector
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .enable_hevc(config.allow_hevc);
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -872,18 +879,22 @@ fn worker(
                 else {
                     continue;
                 };
-                let video = {
+                let (video, inspector) = {
                     let s = state.lock().unwrap_or_else(|e| e.into_inner());
                     if s.cancelled || s.closing {
                         break;
                     }
                     sample.audio_bytes = s.progress.channel_bytes_received[2];
                     sample.audio_ready = s.audio_stream.is_some();
-                    sample.profile = s.video_stream.snapshot().sps_profile_idc;
-                    sample.codec = s.video_stream.snapshot().codec;
-                    sample.hevc_advertised = s.video_stream.snapshot().hevc_advertised;
-                    s.video_output.clone()
+                    (s.video_output.clone(), s.video_stream.clone())
                 };
+                let framing = inspector
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .snapshot();
+                sample.profile = framing.sps_profile_idc;
+                sample.codec = framing.codec;
+                sample.hevc_advertised = framing.hevc_advertised;
                 sample.video = video.map(|v| v.snapshot());
                 bus.publish(generation, sample);
             }

@@ -568,6 +568,30 @@ mod tests {
         nal
     }
     #[test]
+    fn recovery_cache_preserves_hevc_geometry_and_all_parameter_types() {
+        let sps = sps_fixture(1920, 1080, 0, 8);
+        let vps = [0, 0, 0, 1, 0x40, 1, 2];
+        let pps = [0, 0, 0, 1, 0x44, 1, 2];
+        let idr = [0, 0, 0, 1, 0x26, 1, 2];
+        let packet = [
+            vps.as_slice(),
+            sps.as_slice(),
+            pps.as_slice(),
+            idr.as_slice(),
+        ]
+        .concat();
+        let mut cache = ParameterCache::default();
+        cache.observe(&packet, Codec::Hevc);
+        let parameters = cache.bytes().unwrap();
+        assert_eq!(
+            parameters,
+            [vps.as_slice(), sps.as_slice(), pps.as_slice()].concat()
+        );
+        assert_eq!(hevc_configuration(&parameters), hevc_configuration(&sps));
+        let parsed = hevc_annex_b(&parameters, false).unwrap();
+        assert!(parsed.vps && parsed.pps && !parsed.idr);
+    }
+    #[test]
     fn hevc_sps_geometry_handles_emulation_prevention_and_sublayers() {
         for layers in [0, 2, 6] {
             let bytes = sps_fixture(1920, 1080, layers, 8);

@@ -10,7 +10,7 @@ hold the connection mutex.
 Video reuses **compressed** byte vectors only after the decoder worker has
 copied them into its Media Foundation input sample. Spare vectors are capped at
 32 and 8 MiB in total capacity, separately from the existing 32-frame/8-MiB
-active queue. Input copying, decoder submission and video statistics snapshots
+active queue. NAL inspection, input copying, decoder submission and video statistics snapshots
 run outside the connection mutex. Cancellation invalidates captured senders and
 does not join the audio worker while holding that mutex.
 
