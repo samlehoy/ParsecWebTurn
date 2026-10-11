@@ -40,6 +40,7 @@ const FORGET_PASSWORD: usize = 4113;
 const FORGET_TOKEN: usize = 4114;
 const STATUS: usize = 4115;
 const GPU: usize = 4116;
+const HEVC: usize = 4117;
 const BG: u32 = 0x00282828;
 const FIELD: u32 = 0x00212121;
 const FG: u32 = 0x00eeeeee;
@@ -481,9 +482,22 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         })
         .unwrap_or(0);
     SendMessageW(gpu, CB_SETCURSEL, selected, 0);
+    row_label(hwnd, page, "Video codec", "Try HEVC (8-bit) when supported by this GPU and Windows.\nExperimental; reconnect after changing.", 916, 0, 40);
+    add(
+        hwnd,
+        page,
+        "BUTTON",
+        "Prefer H.265 / HEVC",
+        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+        [420, 916, 400, 36],
+        HEVC,
+        0,
+        page.font,
+    );
+    check(hwnd, HEVC, s.prefer_hevc);
     add(hwnd, page, "STATIC",
         "ICE chooses the route automatically. Enabling TURN may select a relay even when a direct route exists.\nChanges apply to your next connection.",
-        0, [0, 926, 820, 48], NOTICE, 0, page.small);
+        0, [0, 1026, 820, 48], NOTICE, 0, page.small);
     let status = error.unwrap_or_else(|| {
         "Saved in settings.json. Secrets are protected for your Windows user.".into()
     });
@@ -493,7 +507,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         "STATIC",
         &status,
         0,
-        [0, 988, 820, 40],
+        [0, 1088, 820, 40],
         STATUS,
         0,
         page.small,
@@ -504,7 +518,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         "BUTTON",
         "Back",
         BS_OWNERDRAW as u32 | WS_TABSTOP,
-        [550, 1044, 110, 40],
+        [550, 1144, 110, 40],
         BACK,
         0,
         page.font,
@@ -515,7 +529,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         "BUTTON",
         "Save settings",
         BS_OWNERDRAW as u32 | WS_TABSTOP,
-        [676, 1044, 144, 40],
+        [676, 1144, 144, 40],
         SAVE,
         0,
         page.font,
@@ -633,7 +647,7 @@ unsafe fn layout(hwnd: HWND) {
     GetClientRect(hwnd, &mut client);
     let cloudflare = SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1;
     let shift = if cloudflare { 0 } else { 44 };
-    let height = 1110 + HEADER_EXTRA - shift;
+    let height = 1210 + HEADER_EXTRA - shift;
     page.scroll = page.scroll.clamp(0, (height - client.bottom).max(0));
     let info = SCROLLINFO {
         cbSize: size_of::<SCROLLINFO>() as u32,
@@ -783,6 +797,7 @@ unsafe fn update_enabled(hwnd: HWND) {
 }
 unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
     let mut s = page.saved.clone();
+    s.prefer_hevc = checked(hwnd, HEVC);
     let selected = SendMessageW(GetDlgItem(hwnd, GPU as i32), CB_GETCURSEL, 0, 0);
     s.video_gpu = usize::try_from(selected)
         .ok()
@@ -1118,6 +1133,7 @@ mod tests {
                 wide("stun:stun.example.org:3478").as_ptr(),
             );
             check(page, STUN_ONLY, true);
+            check(page, HEVC, true);
             update_enabled(page);
             assert_eq!(IsWindowEnabled(GetDlgItem(page, TURN as i32)), 0);
             let state = &*(GetWindowLongPtrW(page, GWLP_USERDATA) as *const Page);
@@ -1127,10 +1143,12 @@ mod tests {
             SendMessageW(page, WM_COMMAND, SAVE, 0);
             assert!(text(page, STATUS).starts_with("Settings saved"));
             assert_eq!(manager.view().0.video_gpu, expected_gpu);
+            assert!(manager.view().0.prefer_hevc);
             DestroyWindow(page);
             let page = open(parent, manager.clone());
             assert_eq!(text(page, STUN), "stun:stun.example.org:3478");
             assert!(checked(page, STUN_ONLY));
+            assert!(checked(page, HEVC));
             assert_eq!(
                 SendMessageW(GetDlgItem(page, GPU as i32), CB_GETCURSEL, 0, 0),
                 selected as isize

@@ -709,7 +709,7 @@ fn worker(
     wake: &Arc<Condvar>,
     id: &str,
     commands: mpsc::Receiver<Command>,
-    config: Option<crate::control::Config>,
+    mut config: Option<crate::control::Config>,
     network: NetworkOptions,
 ) -> Result<()> {
     let NetworkOptions {
@@ -717,6 +717,26 @@ fn worker(
         legacy_rsa_1024,
         connection_settings,
     } = network;
+    if let Some(config) = &mut config {
+        // Capability work stays on this worker, outside the WASM/backend lock.
+        #[cfg(windows)]
+        {
+            let gpu = connection_settings
+                .as_ref()
+                .and_then(|m| m.view().0.video_gpu);
+            config.allow_hevc =
+                config.allow_hevc && crate::video_windows::hevc_available(gpu.as_ref());
+        }
+        #[cfg(not(windows))]
+        {
+            config.allow_hevc = false;
+        }
+        shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .video_stream
+            .enable_hevc(config.allow_hevc);
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -790,6 +810,8 @@ fn worker(
                     sample.audio_ready = s.audio_stream.is_some();
                     sample.video = s.video_output.as_ref().map(|v| v.snapshot());
                     sample.profile = s.video_stream.snapshot().sps_profile_idc;
+                    sample.codec = s.video_stream.snapshot().codec;
+                    sample.hevc_advertised = s.video_stream.snapshot().hevc_advertised;
                 }
                 bus.publish(generation, sample);
             }

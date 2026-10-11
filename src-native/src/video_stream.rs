@@ -1,10 +1,28 @@
 //! Bounded inspection of pinned Parsec video framing, not a decoder.
-//! Proprietary metadata is separate from H.264 Annex B byte-stream syntax.
+//! Proprietary metadata is separate from H.264/HEVC Annex B byte-stream syntax.
 use crate::backend::VideoProtocol;
 use serde::Serialize;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub enum Codec {
+    #[default]
+    H264,
+    Hevc,
+}
+impl Codec {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::H264 => "H.264",
+            Self::Hevc => "H.265 / HEVC",
+        }
+    }
+}
+
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
+    pub codec: Option<Codec>,
+    pub hevc_advertised: bool,
+    pub vps_observed: bool,
     pub metadata_messages: u64,
     pub encoded_messages: u64,
     pub key_chunks_announced: u64,
@@ -30,6 +48,9 @@ pub struct Inspector {
 }
 
 impl Inspector {
+    pub fn enable_hevc(&mut self, enabled: bool) {
+        self.snapshot.hevc_advertised = enabled;
+    }
     pub fn configure(&mut self, protocol: VideoProtocol) {
         if self.protocol.as_ref() == Some(&protocol) {
             return;
@@ -82,17 +103,33 @@ impl Inspector {
             self.snapshot.delta_chunks_announced =
                 self.snapshot.delta_chunks_announced.saturating_add(1);
         }
-        let Some(summary) = annex_b(bytes) else {
+        // HEVC VPS (type 32) cannot be a valid H.264 NAL (type 0).
+        // Only recognize HEVC after advertising it, and then lock the codec.
+        let hevc = self.snapshot.hevc_advertised
+            && (self.snapshot.codec == Some(Codec::Hevc)
+                || (self.snapshot.codec.is_none() && hevc_annex_b(bytes).is_some_and(|s| s.vps)));
+        let Some(summary) = (if hevc {
+            hevc_annex_b(bytes)
+        } else {
+            annex_b(bytes)
+        }) else {
             self.snapshot.unrecognized_messages =
                 self.snapshot.unrecognized_messages.saturating_add(1);
             return None;
         };
         self.snapshot.annex_b_messages = self.snapshot.annex_b_messages.saturating_add(1);
+        let codec = if hevc { Codec::Hevc } else { Codec::H264 };
+        if summary.sps.is_some() || summary.vps {
+            self.snapshot.codec = Some(codec);
+        }
+        self.snapshot.vps_observed |= summary.vps;
         if let Some([profile, constraints, level]) = summary.sps {
             self.snapshot.sps_observed = true;
             self.snapshot.sps_profile_idc = Some(profile);
-            self.snapshot.sps_constraint_flags = Some(constraints);
-            self.snapshot.sps_level_idc = Some(level);
+            if codec == Codec::H264 {
+                self.snapshot.sps_constraint_flags = Some(constraints);
+                self.snapshot.sps_level_idc = Some(level);
+            }
         }
         self.snapshot.pps_observed |= summary.pps;
         if summary.idr {
@@ -100,25 +137,76 @@ impl Inspector {
         }
         self.snapshot.parameter_sets_and_idr_observed = self.snapshot.sps_observed
             && self.snapshot.pps_observed
-            && self.snapshot.idr_messages != 0;
+            && self.snapshot.idr_messages != 0
+            && (codec != Codec::Hevc || self.snapshot.vps_observed);
         Some(PacketInfo {
+            codec,
             idr: summary.idr,
-            parameters: summary.sps.is_some() || summary.pps,
+            parameters: summary.vps || summary.sps.is_some() || summary.pps,
         })
     }
 }
 
 #[derive(Clone, Copy)]
 pub struct PacketInfo {
+    pub codec: Codec,
     pub idr: bool,
     pub parameters: bool,
 }
 
 #[derive(Default)]
 struct NalSummary {
+    vps: bool,
     sps: Option<[u8; 3]>,
     pps: bool,
     idr: bool,
+}
+
+// ITU-T H.265 Annex B / NAL-unit header. Single-layer Main-profile path.
+// Parameter sets and IRAP are read from syntax, never from the requested codec.
+fn hevc_annex_b(bytes: &[u8]) -> Option<NalSummary> {
+    let mut summary = NalSummary::default();
+    let mut offset = 0;
+    for _ in 0..256 {
+        while bytes.get(offset) == Some(&0) {
+            offset += 1;
+        }
+        if offset < 2 || bytes.get(offset) != Some(&1) {
+            return None;
+        }
+        let begin = offset + 1;
+        let mut end = begin;
+        while end < bytes.len()
+            && !bytes[end..].starts_with(&[0, 0, 1])
+            && !bytes[end..].starts_with(&[0, 0, 0, 1])
+        {
+            end += 1;
+        }
+        let nal = bytes.get(begin..end)?;
+        let header = *nal.first()?;
+        let second = *nal.get(1)?;
+        if header & 0x81 != 0 || second & 0xf8 != 0 || second & 7 == 0 || nal.len() < 3 {
+            return None;
+        }
+        match (header >> 1) & 63 {
+            32 => summary.vps = true,
+            33 => {
+                // profile_tier_level begins after the first SPS RBSP byte.
+                // Main/Main10 profile IDs are distinct from AVC profile IDs.
+                let profile = *nal.get(3)? & 31;
+                summary.sps = Some([profile, 0, 0]);
+            }
+            34 => summary.pps = true,
+            16..=21 => summary.idr = true, // BLA, IDR or CRA random access.
+            0..=31 | 35..=40 => {}
+            _ => return None,
+        }
+        if end == bytes.len() {
+            return Some(summary);
+        }
+        offset = end;
+    }
+    None
 }
 
 // No allocation or payload retention. A bounded linear scan accepts 3/4-byte
@@ -182,6 +270,55 @@ fn annex_b(bytes: &[u8]) -> Option<NalSummary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const HEVC_KEY: &[u8] = &[
+        0, 0, 0, 1, 0x40, 1, 0x80, // VPS
+        0, 0, 1, 0x42, 1, 1, 1, 0x80, // SPS, Main profile
+        0, 0, 1, 0x44, 1, 0x80, // PPS
+        0, 0, 1, 0x26, 1, 0x80, // IDR_W_RADL
+    ];
+    #[test]
+    fn hevc_requires_advertisement_and_observed_parameter_sets() {
+        let mut inspector = Inspector::default();
+        assert!(inspector.receive(HEVC_KEY).is_none());
+        assert_eq!(inspector.snapshot().codec, None);
+        inspector.enable_hevc(true);
+        let mut with_aud = Inspector::default();
+        with_aud.enable_hevc(true);
+        let mut aud = vec![0, 0, 0, 1, 0x46, 1, 0x50];
+        aud.extend_from_slice(HEVC_KEY);
+        assert_eq!(with_aud.receive(&aud).unwrap().codec, Codec::Hevc);
+        let info = inspector.receive(&HEVC_KEY[..7]).unwrap();
+        assert_eq!(info.codec, Codec::Hevc);
+        assert!(info.parameters); // Separate VPS must reach the decoder before IDR.
+        assert!(!info.idr);
+        let info = inspector.receive(&HEVC_KEY[7..]).unwrap();
+        assert!(info.idr && info.parameters);
+        let snapshot = inspector.snapshot();
+        assert_eq!(snapshot.codec, Some(Codec::Hevc));
+        assert_eq!(snapshot.sps_profile_idc, Some(1));
+        assert!(snapshot.vps_observed && snapshot.parameter_sets_and_idr_observed);
+        assert!(inspector.receive(&[0, 0, 1, 0x02, 1, 0x80]).is_some());
+        assert!(inspector.receive(&[0, 0, 1, 0x02, 0, 0x80]).is_none());
+        assert!(inspector.receive(KEY).is_none()); // No ambiguous codec change.
+    }
+    #[test]
+    fn advertising_hevc_still_accepts_host_h264_fallback() {
+        let mut inspector = Inspector::default();
+        inspector.enable_hevc(true);
+        assert_eq!(inspector.receive(KEY).unwrap().codec, Codec::H264);
+        assert_eq!(inspector.snapshot().codec, Some(Codec::H264));
+        assert!(inspector.receive(HEVC_KEY).is_none());
+        for bytes in [
+            &[0, 0, 1, 0x40][..],
+            &[0, 0, 1, 0x40, 0, 0x80],
+            &[0, 0, 1, 0x40, 9, 0x80],
+        ] {
+            let mut unknown = Inspector::default();
+            unknown.enable_hevc(true);
+            assert!(unknown.receive(bytes).is_none());
+            assert_eq!(unknown.snapshot().codec, None);
+        }
+    }
     fn protocol() -> VideoProtocol {
         VideoProtocol {
             version: 0,

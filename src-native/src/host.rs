@@ -682,6 +682,10 @@ fn backend_call(
                         // needs this backend lock or a Wasmtime Store/Caller.
                         let config = b.video_protocol.as_ref().map(|p| crate::control::Config {
                             video_protocol: p.clone(),
+                            allow_hevc: b
+                                .connection_settings
+                                .as_ref()
+                                .is_some_and(|m| m.view().0.prefer_hevc),
                         });
                         match crate::attempt::Attempt::spawn_configured(
                             &id,

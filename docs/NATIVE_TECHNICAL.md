@@ -165,3 +165,8 @@ References: [WebRTC statistics](https://www.w3.org/TR/webrtc-stats/),
 ParsecWebTurn is an independent project. Parsec and its core belong to their
 respective owners. Included Opus and WebRTC license notices must accompany binary
 redistribution.
+
+Experimental native HEVC negotiation is described in
+[HEVC negotiation](hevc-negotiation.md), including its exact control bit,
+Media Foundation prerequisites and unverified host interoperability. Additional
+[research references](NATIVE_REFERENCES.md) include lowlat for future protocol work.

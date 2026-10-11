@@ -48,6 +48,7 @@ impl GpuPreference {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
+    pub prefer_hevc: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video_gpu: Option<GpuPreference>,
     pub provider: String,
@@ -70,6 +71,7 @@ impl Default for Settings {
     // Legacy defaults apply to existing JSON; a new native installation uses fresh().
     fn default() -> Self {
         Self {
+            prefer_hevc: false,
             video_gpu: None,
             provider: "cloudflare".into(),
             custom_urls: vec![],

@@ -40,6 +40,86 @@ fn unavailable(stage: &'static str) -> Failure {
     }
 }
 
+// Public MFT discovery, not a hard-coded codec-extension DLL/CLSID.
+unsafe fn create_decoder(codec: crate::video_stream::Codec) -> Result<IMFTransform> {
+    if codec == crate::video_stream::Codec::H264 {
+        return api(
+            "video-decoder-create",
+            CoCreateInstance(&CMSH264DecoderMFT, None, CLSCTX_INPROC_SERVER),
+        );
+    }
+    let input = MFT_REGISTER_TYPE_INFO {
+        guidMajorType: MFMediaType_Video,
+        guidSubtype: MFVideoFormat_HEVC,
+    };
+    let output = MFT_REGISTER_TYPE_INFO {
+        guidMajorType: MFMediaType_Video,
+        guidSubtype: MFVideoFormat_NV12,
+    };
+    let mut list = std::ptr::null_mut();
+    let mut count = 0;
+    api(
+        "video-hevc-enumeration",
+        MFTEnumEx(
+            MFT_CATEGORY_VIDEO_DECODER,
+            MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_LOCALMFT | MFT_ENUM_FLAG_SORTANDFILTER,
+            Some(&input),
+            Some(&output),
+            &mut list,
+            &mut count,
+        ),
+    )?;
+    if list.is_null() {
+        return Err(unavailable("video-hevc-unavailable"));
+    }
+    let mut found = None;
+    for index in 0..count {
+        let activation = std::ptr::read(list.add(index as usize));
+        if found.is_none() {
+            if let Some(activation) = &activation {
+                if let Ok(decoder) = activation.ActivateObject::<IMFTransform>() {
+                    if decoder
+                        .GetAttributes()
+                        .and_then(|a| a.GetUINT32(&MF_SA_D3D11_AWARE))
+                        .is_ok_and(|v| v != 0)
+                    {
+                        found = Some(decoder);
+                    }
+                }
+            }
+        }
+        drop(activation);
+    }
+    CoTaskMemFree(Some(list.cast()));
+    found.ok_or_else(|| unavailable("video-hevc-unavailable"))
+}
+
+/// Check installed synchronous D3D11-aware decoder and selected GPU's Main/NV12
+/// profile before advertising HEVC. This is capability, not a decoding guarantee.
+pub fn hevc_available(preferred_gpu: Option<&crate::connection_settings::GpuPreference>) -> bool {
+    unsafe {
+        let probe = || -> Result<()> {
+            let _runtime = Runtime::start()?;
+            let (device, _context) = create_device(preferred_gpu)?;
+            let video: ID3D11VideoDevice = api("video-hevc-device", device.cast())?;
+            if !api(
+                "video-hevc-profile",
+                video.CheckVideoDecoderFormat(
+                    &D3D11_DECODER_PROFILE_HEVC_VLD_MAIN,
+                    DXGI_FORMAT_NV12,
+                ),
+            )?
+            .as_bool()
+            {
+                return Err(unavailable("video-hevc-profile-unavailable"));
+            }
+            let _decoder = create_decoder(crate::video_stream::Codec::Hevc)?;
+            Ok(())
+        };
+        probe().is_ok()
+    }
+}
+
 type Shared = Arc<(Mutex<Queue>, Condvar)>;
 pub struct Pipeline {
     shared: Shared,
@@ -112,7 +192,7 @@ impl Pipeline {
             .0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .submit(bytes, info.idr, info.parameters, timestamp);
+            .submit_codec(bytes, info.idr, info.parameters, timestamp, info.codec);
         self.shared.1.notify_one();
         accepted
     }
@@ -186,12 +266,20 @@ fn run(
                 .ensure_video_surface()
                 .map_err(|_| unavailable("video-surface-create"))?;
             let native = unsafe {
-                Session::create(HWND(hwnd as *mut _), verify_synthetic_pixels, preferred_gpu)?
+                Session::create(
+                    HWND(hwnd as *mut _),
+                    verify_synthetic_pixels,
+                    preferred_gpu,
+                    frame.codec,
+                )?
             };
             update(shared, |s| {
                 s.decoder_initialized = true;
                 s.low_latency_request_accepted = native.low_latency_request_accepted;
-                s.decoder = Some("Media Foundation H.264");
+                s.decoder = Some(match frame.codec {
+                    crate::video_stream::Codec::H264 => "Media Foundation H.264",
+                    crate::video_stream::Codec::Hevc => "Media Foundation HEVC",
+                });
                 s.renderer = Some("D3D11 VideoProcessor / DXGI");
                 s.adapter = Some(native.renderer.adapter.clone());
             });
@@ -220,6 +308,48 @@ fn run(
     // Release the transform before the device manager, renderer and MF runtime.
     drop(session);
     Ok(())
+}
+
+// Shared by capability probing and the live renderer; adapter selection is identical.
+unsafe fn create_device(
+    preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
+) -> Result<(ID3D11Device, ID3D11DeviceContext)> {
+    let chosen = if let Some(preferred) = preferred_gpu {
+        let mut adapters = api("video-gpu-enumeration", crate::gpu_windows::enumerate())?;
+        let identities: Vec<_> = adapters.iter().map(|a| a.preference.clone()).collect();
+        let index = crate::gpu_windows::match_index(preferred, &identities).ok_or_else(|| {
+            unavailable("video-selected-gpu-unavailable-select-automatic-in-settings")
+        })?;
+        Some(api(
+            "video-gpu-interface",
+            adapters.swap_remove(index).handle.cast::<IDXGIAdapter>(),
+        )?)
+    } else {
+        None
+    };
+    let mut device = None;
+    let mut context = None;
+    api(
+        "video-d3d11-device",
+        D3D11CreateDevice(
+            chosen.as_ref(),
+            if chosen.is_some() {
+                D3D_DRIVER_TYPE_UNKNOWN
+            } else {
+                D3D_DRIVER_TYPE_HARDWARE
+            },
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
+            D3D11_SDK_VERSION,
+            Some(&mut device),
+            None,
+            Some(&mut context),
+        ),
+    )?;
+    let device = device.ok_or_else(|| unavailable("video-d3d11-null-device"))?;
+    let context = context.ok_or_else(|| unavailable("video-d3d11-null-context"))?;
+    Ok((device, context))
 }
 
 struct Runtime;
@@ -336,6 +466,7 @@ impl Session {
         hwnd: HWND,
         verify_synthetic_pixels: bool,
         preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
+        codec: crate::video_stream::Codec,
     ) -> Result<Self> {
         let runtime = Runtime::start()?;
         let mut renderer = Renderer::create(hwnd, preferred_gpu)?;
@@ -351,10 +482,7 @@ impl Session {
             "video-dxgi-reset",
             manager.ResetDevice(&renderer.device, token),
         )?;
-        let decoder: IMFTransform = api(
-            "video-decoder-create",
-            CoCreateInstance(&CMSH264DecoderMFT, None, CLSCTX_INPROC_SERVER),
-        )?;
+        let decoder = create_decoder(codec)?;
         let attrs = api("video-decoder-attributes", decoder.GetAttributes())?;
         if api(
             "video-decoder-d3d11-aware",
@@ -369,8 +497,16 @@ impl Session {
             let value = VARIANT {
                 Anonymous: VARIANT_0 {
                     Anonymous: ManuallyDrop::new(VARIANT_0_0 {
-                        vt: VT_UI4,
-                        Anonymous: VARIANT_0_0_0 { ulVal: 1 },
+                        vt: if codec == crate::video_stream::Codec::H264 {
+                            VT_UI4
+                        } else {
+                            VT_BOOL
+                        },
+                        Anonymous: if codec == crate::video_stream::Codec::H264 {
+                            VARIANT_0_0_0 { ulVal: 1 }
+                        } else {
+                            VARIANT_0_0_0 { boolVal: -1 }
+                        },
                         ..Default::default()
                     }),
                 },
@@ -387,9 +523,21 @@ impl Session {
             input.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video),
         )?;
         api(
-            "video-input-h264",
-            input.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264),
+            "video-input-codec",
+            input.SetGUID(
+                &MF_MT_SUBTYPE,
+                &match codec {
+                    crate::video_stream::Codec::H264 => MFVideoFormat_H264,
+                    crate::video_stream::Codec::Hevc => MFVideoFormat_HEVC_ES,
+                },
+            ),
         )?;
+        if codec == crate::video_stream::Codec::Hevc {
+            api(
+                "video-input-hevc-main",
+                input.SetUINT32(&MF_MT_MPEG2_PROFILE, 1),
+            )?;
+        }
         api("video-input-type", decoder.SetInputType(0, &input, 0))?;
         let mut result = Self {
             low_latency_request_accepted,
@@ -635,42 +783,7 @@ impl Renderer {
         hwnd: HWND,
         preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
     ) -> Result<Self> {
-        let chosen = if let Some(preferred) = preferred_gpu {
-            let mut adapters = api("video-gpu-enumeration", crate::gpu_windows::enumerate())?;
-            let identities: Vec<_> = adapters.iter().map(|a| a.preference.clone()).collect();
-            let index =
-                crate::gpu_windows::match_index(preferred, &identities).ok_or_else(|| {
-                    unavailable("video-selected-gpu-unavailable-select-automatic-in-settings")
-                })?;
-            Some(api(
-                "video-gpu-interface",
-                adapters.swap_remove(index).handle.cast::<IDXGIAdapter>(),
-            )?)
-        } else {
-            None
-        };
-        let mut device = None;
-        let mut context = None;
-        api(
-            "video-d3d11-device",
-            D3D11CreateDevice(
-                chosen.as_ref(),
-                if chosen.is_some() {
-                    D3D_DRIVER_TYPE_UNKNOWN
-                } else {
-                    D3D_DRIVER_TYPE_HARDWARE
-                },
-                HMODULE::default(),
-                D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
-                D3D11_SDK_VERSION,
-                Some(&mut device),
-                None,
-                Some(&mut context),
-            ),
-        )?;
-        let device = device.ok_or_else(|| unavailable("video-d3d11-null-device"))?;
-        let context = context.ok_or_else(|| unavailable("video-d3d11-null-context"))?;
+        let (device, context) = create_device(preferred_gpu)?;
         let multithread: ID3D10Multithread = api("video-d3d11-multithread", device.cast())?;
         // Return value is the previous protection state, not success/failure.
         let _ = multithread.SetMultithreadProtected(true);

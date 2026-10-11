@@ -9,6 +9,7 @@ pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
+    pub codec: Option<crate::video_stream::Codec>,
     pub enabled: bool,
     pub decoder_initialized: bool,
     pub low_latency_request_accepted: bool,
@@ -59,6 +60,7 @@ impl Snapshot {
 }
 
 pub struct Frame {
+    pub codec: crate::video_stream::Codec,
     pub bytes: Bytes,
     pub idr: bool,
     pub timestamp_100ns: i64,
@@ -84,6 +86,7 @@ impl Default for Queue {
 }
 
 impl Queue {
+    #[cfg(test)]
     pub fn submit(
         &mut self,
         bytes: &[u8],
@@ -91,6 +94,27 @@ impl Queue {
         parameters: bool,
         timestamp_100ns: i64,
     ) -> bool {
+        self.submit_codec(
+            bytes,
+            idr,
+            parameters,
+            timestamp_100ns,
+            crate::video_stream::Codec::H264,
+        )
+    }
+
+    pub fn submit_codec(
+        &mut self,
+        bytes: &[u8],
+        idr: bool,
+        parameters: bool,
+        timestamp_100ns: i64,
+        codec: crate::video_stream::Codec,
+    ) -> bool {
+        if self.report.codec.is_some_and(|previous| previous != codec) {
+            self.fail("video-unexpected-codec-change", None);
+            return false;
+        }
         if self.stopped
             || self.report.failure_stage.is_some()
             || (self.report.waiting_for_idr && !idr && !parameters)
@@ -102,7 +126,7 @@ impl Queue {
             || self.frames.len() >= MAX_FRAMES
             || self.report.queue_bytes.saturating_add(bytes.len()) > MAX_BYTES
         {
-            // Dropping an interdependent H.264 frame invalidates following delta
+            // Dropping an interdependent video frame invalidates following delta
             // pictures. Stop this video attempt rather than silently corrupting it.
             self.fail("video-input-queue-full", None);
             self.report.frames_dropped = self.report.frames_dropped.saturating_add(1);
@@ -112,8 +136,10 @@ impl Queue {
             self.report.waiting_for_idr = false;
         }
         self.report.frames_queued = self.report.frames_queued.saturating_add(1);
+        self.report.codec = Some(codec);
         self.report.queue_bytes += bytes.len();
         self.frames.push_back(Frame {
+            codec,
             bytes: Bytes::copy_from_slice(bytes),
             idr,
             timestamp_100ns,
@@ -152,6 +178,20 @@ impl Queue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn queued_frames_preserve_codec_and_refuse_a_midstream_change() {
+        use crate::video_stream::Codec;
+        let mut q = Queue::default();
+        assert!(q.submit_codec(&[1], false, true, 0, Codec::Hevc));
+        assert_eq!(q.pop().unwrap().codec, Codec::Hevc);
+        assert!(q.submit_codec(&[2], true, false, 1, Codec::Hevc));
+        assert!(!q.submit_codec(&[3], true, false, 2, Codec::H264));
+        assert_eq!(
+            q.report.failure_stage,
+            Some("video-unexpected-codec-change")
+        );
+        assert_eq!(q.report.queue_depth, 0);
+    }
     #[test]
     fn gpu_output_alone_does_not_establish_hardware_decoding() {
         let mut snapshot = Snapshot {

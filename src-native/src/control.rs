@@ -9,6 +9,7 @@ const LIMIT: usize = 1024 * 1024;
 #[derive(Clone)]
 pub struct Config {
     pub video_protocol: crate::backend::VideoProtocol,
+    pub allow_hevc: bool,
 }
 
 impl Config {
@@ -16,7 +17,9 @@ impl Config {
         text(
             11,
             0,
-            &json!({"_version":1,"_max_w":60000,"_max_h":60000,"_flags":0,
+            // Native SDK 6.0 advertises HEVC with bit 0 of this private field.
+            // Keep it isolated from WebRTC/SDP; see docs/hevc-negotiation.md.
+            &json!({"_version":1,"_max_w":60000,"_max_h":60000,"_flags":u32::from(self.allow_hevc),
             "resolutionX":1920,"resolutionY":1080,"refreshRate":60,"mediaContainer":0,
             "_VideoProtocolVersion":self.video_protocol.version})
             .to_string(),
@@ -214,6 +217,35 @@ pub fn input_with_viewport(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hevc_changes_only_the_verified_init_capability_bit() {
+        let mut config = Config {
+            video_protocol: crate::backend::VideoProtocol {
+                version: 0,
+                message_size: 11,
+                version_offset: 0,
+                flag_offset: 4,
+            },
+            allow_hevc: false,
+        };
+        let avc = config.startup().unwrap();
+        config.allow_hevc = true;
+        let hevc = config.startup().unwrap();
+        for frame in [&avc, &hevc] {
+            assert_eq!(frame[12], 11);
+            assert_eq!(
+                i32::from_be_bytes(frame[..4].try_into().unwrap()) as usize,
+                frame.len() - 13
+            );
+            assert_eq!(&frame[4..12], &[0; 8]);
+            assert_eq!(frame.last(), Some(&0));
+        }
+        let avc: Value = serde_json::from_slice(&avc[13..avc.len() - 1]).unwrap();
+        let mut hevc: Value = serde_json::from_slice(&hevc[13..hevc.len() - 1]).unwrap();
+        assert_eq!(hevc["_flags"], 1);
+        hevc["_flags"] = json!(0);
+        assert_eq!(avc, hevc);
+    }
     #[test]
     fn absolute_motion_requires_a_real_viewport_and_preserves_control_framing() {
         let event = json!({"type":4,"relative":false,"x":512,"y":384});

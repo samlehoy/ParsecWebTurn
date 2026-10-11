@@ -160,22 +160,36 @@ fn rows(
     let video = s.video.as_ref();
     row(
         "Codec",
-        if s.profile.is_some() || video.is_some_and(|x| x.decoder_initialized) {
-            "H.264".into()
-        } else {
-            "Not reported".into()
-        },
+        s.codec
+            .or_else(|| video.and_then(|x| x.codec))
+            .map(|c| c.name())
+            .unwrap_or("Not reported")
+            .into(),
     );
     row(
         "Profile",
         s.profile
-            .map(|p| match p {
-                66 => "Baseline".into(),
-                77 => "Main".into(),
-                100 => "High".into(),
-                _ => format!("H.264 profile {p}"),
+            .map(|p| {
+                if s.codec == Some(crate::video_stream::Codec::Hevc) {
+                    match p {
+                        1 => "Main".into(),
+                        2 => "Main 10".into(),
+                        _ => format!("HEVC profile {p}"),
+                    }
+                } else {
+                    match p {
+                        66 => "Baseline".into(),
+                        77 => "Main".into(),
+                        100 => "High".into(),
+                        _ => format!("H.264 profile {p}"),
+                    }
+                }
             })
             .unwrap_or_else(|| "Not reported".into()),
+    );
+    row(
+        "HEVC advertised",
+        if s.hevc_advertised { "Yes" } else { "No" }.into(),
     );
     row(
         "Resolution",
@@ -574,6 +588,7 @@ mod tests {
                     rtt_ms: Some(23.5),
                     audio_ready: true,
                     profile: Some(100),
+                    codec: Some(crate::video_stream::Codec::H264),
                     video: Some(crate::video_output::Snapshot {
                         decoder_initialized: true,
                         decoder: Some("Media Foundation H.264"),
