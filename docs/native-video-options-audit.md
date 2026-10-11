@@ -3,6 +3,10 @@
 Reviewed on 2026-10-11. Research only: no new runtime options or changes to the
 Parsec core are introduced by this audit.
 
+This describes the baseline at commit `13752db`, before the Main10 implementation.
+For the subsequently implemented experimental 10-bit path and local synthetic
+decode verification, see [HEVC negotiation](hevc-negotiation.md#experimental-10-bit-path).
+
 ## Result
 
 | Option | Evidence | Native client today | Next step |
