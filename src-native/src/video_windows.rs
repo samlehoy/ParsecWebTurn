@@ -1,4 +1,4 @@
-//! Documented Media Foundation H.264 -> D3D11 NV12 -> DXGI presentation.
+//! Documented Media Foundation H.264/HEVC -> D3D11 NV12 -> DXGI presentation.
 //! COM and all GPU objects are created, used and released on one worker thread.
 use crate::video_output::{Frame, Queue, Snapshot};
 use std::{
@@ -493,7 +493,7 @@ impl Session {
         }
         // The documented Microsoft H.264 decoder property uses VT_UI4 (unlike
         // other codecs' VT_BOOL). Request through ICodecAPI; rejection is optional.
-        let low_latency_request_accepted = decoder.cast::<ICodecAPI>().is_ok_and(|codec| {
+        let low_latency_request_accepted = decoder.cast::<ICodecAPI>().is_ok_and(|codec_api| {
             let value = VARIANT {
                 Anonymous: VARIANT_0 {
                     Anonymous: ManuallyDrop::new(VARIANT_0_0 {
@@ -505,13 +505,17 @@ impl Session {
                         Anonymous: if codec == crate::video_stream::Codec::H264 {
                             VARIANT_0_0_0 { ulVal: 1 }
                         } else {
-                            VARIANT_0_0_0 { boolVal: -1 }
+                            VARIANT_0_0_0 {
+                                boolVal: windows::Win32::Foundation::VARIANT_TRUE,
+                            }
                         },
                         ..Default::default()
                     }),
                 },
             };
-            codec.SetValue(&CODECAPI_AVLowLatencyMode, &value).is_ok()
+            codec_api
+                .SetValue(&CODECAPI_AVLowLatencyMode, &value)
+                .is_ok()
         });
         api(
             "video-decoder-set-manager",
