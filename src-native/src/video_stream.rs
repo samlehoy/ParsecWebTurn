@@ -108,9 +108,10 @@ impl Inspector {
         // Only recognize HEVC after advertising it, and then lock the codec.
         let hevc = self.snapshot.hevc_advertised
             && (self.snapshot.codec == Some(Codec::Hevc)
-                || (self.snapshot.codec.is_none() && hevc_annex_b(bytes).is_some_and(|s| s.vps)));
+                || (self.snapshot.codec.is_none()
+                    && hevc_annex_b(bytes, false).is_some_and(|s| s.vps)));
         let Some(summary) = (if hevc {
-            hevc_annex_b(bytes)
+            hevc_annex_b(bytes, false)
         } else {
             annex_b(bytes)
         }) else {
@@ -166,7 +167,7 @@ struct NalSummary {
 
 // ITU-T H.265 Annex B / NAL-unit header. Single-layer Main-profile path.
 // Parameter sets and IRAP are read from syntax, never from the requested codec.
-fn hevc_annex_b(bytes: &[u8]) -> Option<NalSummary> {
+fn hevc_annex_b(bytes: &[u8], read_configuration: bool) -> Option<NalSummary> {
     let mut summary = NalSummary::default();
     let mut offset = 0;
     for _ in 0..256 {
@@ -197,7 +198,9 @@ fn hevc_annex_b(bytes: &[u8]) -> Option<NalSummary> {
                 // Main/Main10 profile IDs are distinct from AVC profile IDs.
                 let profile = *nal.get(3)? & 31;
                 summary.sps = Some([profile, 0, 0]);
-                summary.hevc_configuration = hevc_sps(nal);
+                if read_configuration {
+                    summary.hevc_configuration = hevc_sps(nal);
+                }
             }
             34 => summary.pps = true,
             16..=21 => summary.idr = true, // BLA, IDR or CRA random access.
@@ -223,7 +226,7 @@ pub struct HevcConfiguration {
 
 #[cfg(any(windows, test))]
 pub fn hevc_configuration(bytes: &[u8]) -> Option<HevcConfiguration> {
-    hevc_annex_b(bytes)?.hevc_configuration
+    hevc_annex_b(bytes, true)?.hevc_configuration
 }
 
 // H.265 SPS syntax through bit_depth_chroma_minus8. Read only bounded metadata;
