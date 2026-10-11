@@ -63,6 +63,7 @@ impl Inspector {
             protocol: Some(protocol),
             snapshot: Snapshot {
                 protocol_changes: changes,
+                hevc_advertised: self.snapshot.hevc_advertised,
                 ..Default::default()
             },
             ..Default::default()
@@ -282,6 +283,8 @@ mod tests {
         assert!(inspector.receive(HEVC_KEY).is_none());
         assert_eq!(inspector.snapshot().codec, None);
         inspector.enable_hevc(true);
+        inspector.configure(protocol());
+        assert!(inspector.snapshot().hevc_advertised);
         let mut with_aud = Inspector::default();
         with_aud.enable_hevc(true);
         let mut aud = vec![0, 0, 0, 1, 0x46, 1, 0x50];
