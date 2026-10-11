@@ -144,6 +144,11 @@ jobs:
           if ($video.external_requests_enabled -or !$video.native_window_released -or !$video.gpu_resources_released -or !$video.video.worker_finished) { throw 'Native video probe cleanup failed' }
           if ($video.video.frames_presented -gt 0 -and (!$video.video.gpu_surface_output -or !$video.video.synthetic_pixel_variation_verified)) { throw 'GPU presentation proof incomplete' }
           if ($video.video.frames_presented -eq 0 -and !$video.video.failure_stage) { throw 'Missing video output without a diagnostic' }
+          & $exe video-hardware-probe "$artifact/video-recovery.json" --recovery
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic video recovery failed' }
+          $recovery = Get-Content "$artifact/video-recovery.json" -Raw | ConvertFrom-Json
+          if ($recovery.external_requests_enabled -or $recovery.real_account_used) { throw 'Recovery fixture isolation failed' }
+          if ($recovery.supported -and ($recovery.video.frames_decoded -ne 16 -or $recovery.video.recovering -or !$recovery.video.resources_released)) { throw 'Synthetic decoder recovery incomplete' }
           & $exe video-hardware-probe "$artifact/video-sustained.json" --sustained
           if ($LASTEXITCODE -ne 0) { throw 'Sustained video probe did not complete' }
           $sustained = Get-Content "$artifact/video-sustained.json" -Raw | ConvertFrom-Json

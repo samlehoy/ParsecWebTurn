@@ -55,3 +55,8 @@ order, recovery request framing, queue invalidation, request spacing and timeout
 limits. A diagnostics-only synthetic D3D11 test restarts the decoder and supplies
 a keyframe without SPS/PPS to check replay of saved parameters. This test uses
 no account, network or real desktop content and is absent from the normal binary.
+It reports `supported: false` only when the device lacks the D3D11 video
+interface (`E_NOINTERFACE`), as on hosted Windows CI runners. This is not a
+successful decoder recovery. On a machine with that interface, any decode,
+restart or cleanup failure fails the check. The separate diagnostics executable
+can run the same fixture with `video-hardware-probe report.json --recovery`.

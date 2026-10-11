@@ -136,8 +136,12 @@ fn run() -> Result<()> {
     #[cfg(windows)]
     if mode == "video-hardware-probe" {
         let report_path = args.next();
-        let sustained = args.next().as_deref() == Some("--sustained");
-        let report = video_windows::probe(sustained)?;
+        let option = args.next();
+        let report = if option.as_deref() == Some("--recovery") {
+            video_windows::probe_recovery()?
+        } else {
+            video_windows::probe(option.as_deref() == Some("--sustained"))?
+        };
         let json = serde_json::to_string_pretty(&report)?;
         if let Some(path) = report_path {
             fs::write(path, &json)?;
@@ -259,7 +263,7 @@ fn run() -> Result<()> {
         println!(
             "parsec-native-wasm <inspect|allocator|boot> <parsecd.wasm> [report.json]\n\
                   parsec-native-wasm window <parsecd.wasm> [report.json]\n\
-                  parsec-native-wasm video-hardware-probe [report.json] [--sustained]\n\
+                  parsec-native-wasm video-hardware-probe [report.json] [--sustained|--recovery]\n\
                   parsec-native-wasm transport-probe [report.json]\n\
                   parsec-native-wasm signaling-probe [report.json]\n\
                   parsec-native-wasm guest-offer-probe [report.json]\n\

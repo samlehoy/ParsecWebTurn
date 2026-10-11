@@ -1433,77 +1433,109 @@ pub fn probe(sustained: bool) -> anyhow::Result<serde_json::Value> {
     )
 }
 
+#[cfg(feature = "diagnostics")]
+pub fn probe_recovery() -> anyhow::Result<serde_json::Value> {
+    // Hosted Windows runners expose D3D11 without the video interface. Report
+    // this precise capability limitation; never skip an actual decoder failure.
+    let (device, capability_context) = unsafe { create_device(None) }
+        .map_err(|e| anyhow::anyhow!("recovery capability preflight: {}", e.stage))?;
+    if let Err(error) = device.cast::<ID3D11VideoDevice>() {
+        if error.code() == windows::Win32::Foundation::E_NOINTERFACE {
+            return Ok(serde_json::json!({"scope":"synthetic-native-h264-recovery",
+                "supported":false,"reason":"D3D11 video interface unavailable",
+                "external_requests_enabled":false,"real_account_used":false}));
+        }
+        return Err(error.into());
+    }
+    drop((device, capability_context));
+    let window = crate::window::Window::create_video_probe().unwrap();
+    let pipeline = Pipeline::start(window.clone());
+    let fixture = include_bytes!("../fixtures/synthetic-1920x1080.h264");
+    let mut starts: Vec<_> = (0..fixture.len().saturating_sub(4))
+        .filter(|&i| fixture[i..].starts_with(&[0, 0, 0, 1]) && fixture[i + 4] & 31 == 9)
+        .collect();
+    starts.push(fixture.len());
+    let mut inspector = crate::video_stream::Inspector::default();
+    let result = (|| -> anyhow::Result<()> {
+        for pair in starts.windows(2) {
+            let bytes = &fixture[pair[0]..pair[1]];
+            anyhow::ensure!(pipeline.submit(bytes, inspector.receive(bytes).unwrap()));
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        let until = Instant::now() + Duration::from_secs(5);
+        while pipeline.snapshot().frames_decoded < 8 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        anyhow::ensure!(
+            pipeline.snapshot().frames_decoded == 8,
+            "initial synthetic decode"
+        );
+        anyhow::ensure!(pipeline.shared.0.lock().unwrap().recover(Instant::now()));
+        pipeline.shared.1.notify_one();
+        anyhow::ensure!(pipeline.take_keyframe_request());
+        for (index, pair) in starts.windows(2).enumerate() {
+            let mut bytes = &fixture[pair[0]..pair[1]];
+            if index == 0 {
+                // Omit SPS/PPS deliberately: only the saved parameters can
+                // initialize the new decoder before this IDR picture.
+                let idr = (0..bytes.len().saturating_sub(4))
+                    .find(|&i| {
+                        (bytes[i..].starts_with(&[0, 0, 0, 1]) && bytes[i + 4] & 31 == 5)
+                            || (bytes[i..].starts_with(&[0, 0, 1]) && bytes[i + 3] & 31 == 5)
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("synthetic IDR missing"))?;
+                bytes = &bytes[idr..];
+            }
+            anyhow::ensure!(pipeline.submit(bytes, inspector.receive(bytes).unwrap()));
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        let until = Instant::now() + Duration::from_secs(5);
+        while pipeline.snapshot().frames_decoded < 16 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let report = pipeline.snapshot();
+        anyhow::ensure!(
+            report.failure_stage.is_none(),
+            "recovery failed: {:?}",
+            report.failure_stage
+        );
+        anyhow::ensure!(
+            report.frames_decoded == 16 && !report.recovering,
+            "recovery did not decode all frames"
+        );
+        Ok(())
+    })();
+    pipeline.stop();
+    let until = Instant::now() + Duration::from_secs(3);
+    while !pipeline.snapshot().worker_finished && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    window.close();
+    result?;
+    anyhow::ensure!(
+        pipeline.snapshot().resources_released,
+        "recovery resource cleanup"
+    );
+    Ok(
+        serde_json::json!({"scope":"synthetic-native-h264-recovery", "supported":true,
+        "external_requests_enabled":false, "real_account_used":false,
+        "cpu_readback_live_enabled":false, "video":pipeline.snapshot()}),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[cfg(feature = "diagnostics")]
     #[test]
     fn decoder_recovers_with_cached_parameters_and_a_headerless_keyframe() {
-        let window = crate::window::Window::create_video_probe().unwrap();
-        let pipeline = Pipeline::start(window.clone());
-        let fixture = include_bytes!("../fixtures/synthetic-1920x1080.h264");
-        let mut starts: Vec<_> = (0..fixture.len().saturating_sub(4))
-            .filter(|&i| fixture[i..].starts_with(&[0, 0, 0, 1]) && fixture[i + 4] & 31 == 9)
-            .collect();
-        starts.push(fixture.len());
-        let mut inspector = crate::video_stream::Inspector::default();
-        let result = (|| -> anyhow::Result<()> {
-            for pair in starts.windows(2) {
-                let bytes = &fixture[pair[0]..pair[1]];
-                anyhow::ensure!(pipeline.submit(bytes, inspector.receive(bytes).unwrap()));
-                std::thread::sleep(Duration::from_millis(40));
-            }
-            let until = Instant::now() + Duration::from_secs(5);
-            while pipeline.snapshot().frames_decoded < 8 && Instant::now() < until {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            anyhow::ensure!(
-                pipeline.snapshot().frames_decoded == 8,
-                "initial synthetic decode"
-            );
-            anyhow::ensure!(pipeline.shared.0.lock().unwrap().recover(Instant::now()));
-            pipeline.shared.1.notify_one();
-            anyhow::ensure!(pipeline.take_keyframe_request());
-            for (index, pair) in starts.windows(2).enumerate() {
-                let mut bytes = &fixture[pair[0]..pair[1]];
-                if index == 0 {
-                    // Omit SPS/PPS deliberately: only the saved parameters can
-                    // initialize the new decoder before this IDR picture.
-                    let idr = (0..bytes.len().saturating_sub(4))
-                        .find(|&i| {
-                            (bytes[i..].starts_with(&[0, 0, 0, 1]) && bytes[i + 4] & 31 == 5)
-                                || (bytes[i..].starts_with(&[0, 0, 1]) && bytes[i + 3] & 31 == 5)
-                        })
-                        .ok_or_else(|| anyhow::anyhow!("synthetic IDR missing"))?;
-                    bytes = &bytes[idr..];
-                }
-                anyhow::ensure!(pipeline.submit(bytes, inspector.receive(bytes).unwrap()));
-                std::thread::sleep(Duration::from_millis(40));
-            }
-            let until = Instant::now() + Duration::from_secs(5);
-            while pipeline.snapshot().frames_decoded < 16 && Instant::now() < until {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            let report = pipeline.snapshot();
-            anyhow::ensure!(
-                report.failure_stage.is_none(),
-                "recovery failed: {:?}",
-                report.failure_stage
-            );
-            anyhow::ensure!(
-                report.frames_decoded == 16 && !report.recovering,
-                "recovery did not decode all frames"
-            );
-            Ok(())
-        })();
-        pipeline.stop();
-        let until = Instant::now() + Duration::from_secs(3);
-        while !pipeline.snapshot().worker_finished && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(10));
+        let report = probe_recovery().unwrap();
+        if report["supported"] == false {
+            eprintln!("GPU recovery fixture unavailable: {}", report["reason"]);
+            return;
         }
-        window.close();
-        result.unwrap();
-        assert!(pipeline.snapshot().resources_released);
+        assert_eq!(report["video"]["frames_decoded"], 16);
+        assert_eq!(report["video"]["recovering"], false);
     }
     #[test]
     fn busy_or_occluded_presentation_is_not_a_decoder_failure() {
