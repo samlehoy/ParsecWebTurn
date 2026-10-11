@@ -246,6 +246,12 @@ impl Queue {
         self.report.recovering = false;
     }
 
+    pub fn request_failed(&mut self, generation: u64) {
+        if !self.stopped && self.report.recovering && self.reset_generation == generation {
+            self.fail("video-recovery-request-failed", None);
+        }
+    }
+
     pub fn fail(&mut self, stage: &'static str, hresult: Option<String>) {
         if self.report.failure_stage.is_none() {
             self.report.failure_stage = Some(stage);
@@ -277,6 +283,26 @@ impl Queue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn late_refresh_failures_cannot_stop_a_new_or_recovered_generation() {
+        let now = Instant::now();
+        let mut q = Queue::default();
+        assert!(q.submit(&[1], true, false, 0));
+        assert!(q.recover(now));
+        let old = q.reset_generation;
+        assert!(q.recover(now + Duration::from_secs(1)));
+        q.request_failed(old);
+        assert_eq!(q.report.failure_stage, None);
+        q.recovered();
+        q.request_failed(q.reset_generation);
+        assert_eq!(q.report.failure_stage, None);
+        assert!(q.recover(now + Duration::from_secs(2)));
+        q.request_failed(q.reset_generation);
+        assert_eq!(
+            q.report.failure_stage,
+            Some("video-recovery-request-failed")
+        );
+    }
     #[test]
     fn recovery_is_rate_limited_bounded_and_stops_on_timeout_or_cancellation() {
         let now = Instant::now();

@@ -1070,7 +1070,7 @@ fn worker(
                     state.video_output.clone()
                 };
                 if let (Some(video), Some(config)) = (video, &config) {
-                    if video.take_keyframe_request() {
+                    if let Some(generation) = video.take_keyframe_request() {
                         // A failed refresh disables video recovery, not audio or
                         // control. No change to SCTP reliability or ordering.
                         let channel = channels[0].clone();
@@ -1082,7 +1082,7 @@ fn worker(
                             )
                             .await;
                             if !matches!(sent, Ok(Ok(_))) {
-                                video.recovery_request_failed();
+                                video.recovery_request_failed(generation);
                             }
                         });
                     }

@@ -209,20 +209,17 @@ impl Pipeline {
         self.shared.1.notify_one();
         accepted
     }
-    pub fn take_keyframe_request(&self) -> bool {
-        self.shared
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take_keyframe_request(Instant::now())
-            .is_some()
+    pub fn take_keyframe_request(&self) -> Option<u64> {
+        let mut q = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        q.take_keyframe_request(Instant::now())
+            .map(|_| q.reset_generation)
     }
-    pub fn recovery_request_failed(&self) {
+    pub fn recovery_request_failed(&self, generation: u64) {
         self.shared
             .0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .fail("video-recovery-request-failed", None);
+            .request_failed(generation);
         self.shared.1.notify_one();
     }
     pub fn snapshot(&self) -> Snapshot {
@@ -1472,7 +1469,7 @@ pub fn probe_recovery() -> anyhow::Result<serde_json::Value> {
         );
         anyhow::ensure!(pipeline.shared.0.lock().unwrap().recover(Instant::now()));
         pipeline.shared.1.notify_one();
-        anyhow::ensure!(pipeline.take_keyframe_request());
+        anyhow::ensure!(pipeline.take_keyframe_request().is_some());
         for (index, pair) in starts.windows(2).enumerate() {
             let mut bytes = &fixture[pair[0]..pair[1]];
             if index == 0 {
