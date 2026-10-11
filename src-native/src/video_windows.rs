@@ -272,6 +272,7 @@ fn run(
     let mut header_bytes = 0usize;
     let mut generation = 0;
     let mut parameters = crate::video_stream::ParameterCache::default();
+    let mut awaiting_random_access = true;
     loop {
         let (next_generation, frame) = {
             let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -298,6 +299,7 @@ fn run(
         };
         if next_generation != generation {
             generation = next_generation;
+            awaiting_random_access = true;
             session = None;
             headers.clear();
             header_bytes = 0;
@@ -320,11 +322,32 @@ fn run(
                 });
             }
         }
-        let Some(frame) = frame else {
+        let Some(mut frame) = frame else {
             continue;
         };
         if frame.parameters {
             parameters.observe(&frame.bytes, frame.codec);
+        }
+        if awaiting_random_access && !frame.idr {
+            // A parameter-bearing packet may also contain delta pictures. Only
+            // feed its parameter NALs until this worker actually submits a key,
+            // regardless of whether a future key is already in the queue.
+            let mut bootstrap = crate::video_stream::ParameterCache::default();
+            bootstrap.observe(&frame.bytes, frame.codec);
+            let Some(bytes) = bootstrap.bytes() else {
+                shared
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .recycle(frame.bytes);
+                continue;
+            };
+            let original = std::mem::replace(&mut frame.bytes, bytes);
+            shared
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .recycle(original);
         }
         if session.is_none() {
             let hevc = if frame.codec == crate::video_stream::Codec::Hevc {
@@ -395,8 +418,11 @@ fn run(
                 failure = Some(error);
                 break;
             }
+            if frame.idr {
+                awaiting_random_access = false;
+            }
             if q.reset_generation == generation
-                && !q.report.waiting_for_idr
+                && !awaiting_random_access
                 && q.report.frames_decoded > decoded_before
             {
                 q.recovered();
