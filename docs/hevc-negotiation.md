@@ -98,7 +98,8 @@ automatic renegotiation; disable 10-bit and reconnect if needed.
 
 Actual SPS profile/depth chooses Main/NV12 or Main10/P010, independently of the
 preference. Both HEVC modes prefer synchronous D3D11-aware transforms accepting
-`CODECAPI_AVLowLatencyMode`; public enumeration order breaks equal-capability
+`CODECAPI_AVLowLatencyMode` via ICodecAPI or the documented `MF_LOW_LATENCY`
+transform attribute; public enumeration order breaks equal-capability
 ties. This is a supported DXVA-capable path, not proof that one transform is
 measurably faster or that every frame executes in hardware. Async MFTs need a
 different event-driven pipeline and are not substituted into this synchronous
@@ -112,3 +113,14 @@ backbuffer. No intermediate decoded-frame texture or CPU readback is added.
 Eight-bit streams retain NV12/BGRA8 output. Connection stats reports decoded
 depth only after output with the matching texture format has been observed.
 Ten-bit SDR does not imply HDR or guarantee the physical monitor's output depth.
+
+An isolated local test decoded a synthetic 1920x1080 Main10 Annex B fixture
+through both enumerated Windows transforms into P010 D3D11 decoder-bound
+surfaces. The GPU also reported Main10/P010 decode and P010-to-RGB10 conversion
+support. Both transforms rejected ICodecAPI queries but accepted MF_LOW_LATENCY;
+this is why both documented configuration routes are supported. This test is
+not live Parsec-host negotiation or an end-to-end latency measurement. Probe
+code, encoder tools and synthetic fixtures remain ignored outside the binary.
+
+[MF_LOW_LATENCY documentation](https://learn.microsoft.com/en-us/windows/win32/medfound/mf-low-latency)
+specifies GetAttributes/SetUINT32 for MFTs and explains its shared property GUID.

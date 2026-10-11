@@ -106,7 +106,7 @@ unsafe fn create_decoder(codec: crate::video_stream::Codec, ten_bit: bool) -> Re
 // Synchronous D3D11-aware MFTs can use DXVA on the selected GPU. Accepting this
 // property is a selection preference, not proof of hardware execution or speed.
 unsafe fn request_low_latency(decoder: &IMFTransform, codec: crate::video_stream::Codec) -> bool {
-    decoder.cast::<ICodecAPI>().is_ok_and(|codec_api| {
+    let codec_api_accepted = decoder.cast::<ICodecAPI>().is_ok_and(|codec_api| {
         let value = VARIANT {
             Anonymous: VARIANT_0 {
                 Anonymous: ManuallyDrop::new(VARIANT_0_0 {
@@ -129,7 +129,15 @@ unsafe fn request_low_latency(decoder: &IMFTransform, codec: crate::video_stream
         codec_api
             .SetValue(&CODECAPI_AVLowLatencyMode, &value)
             .is_ok()
-    })
+    });
+    // Documented MFT route for transforms without ICodecAPI. MF_LOW_LATENCY
+    // shares the property GUID, but IMFAttributes stores BOOL as UINT32.
+    // Acceptance records a request, not a measured latency guarantee.
+    codec_api_accepted
+        || decoder
+            .GetAttributes()
+            .and_then(|a| a.SetUINT32(&MF_LOW_LATENCY, 1))
+            .is_ok()
 }
 
 /// Check installed D3D11-aware decoder, GPU decode profile and P010 conversion.
