@@ -89,8 +89,11 @@ injection. Analysis tooling and downloaded SDK binaries remain outside the build
 preference. It is effective only with HEVC enabled. The next experimental startup
 uses `_flags: 0x19`: HEVC (`0x01`), native base (`0x08`), ten-bit (`0x10`).
 The initial `0x11` experiment passed local preflight and SCTP send, but the live
-stock host returned Main/8-bit. The `0x19` variation still requires live
-verification. The WASM core remains unchanged. No 4:4:4 request is added; H.264
+stock host returned Main/8-bit. User verification of build `091ca62` also
+returned Main/8-bit with `Sent (startup flags 0x19)` and zero local dropped
+frames at capture time. Adding the base bit therefore did not resolve Main10
+negotiation in this setup. Stock-client Main10 on the same host has not yet
+been tested. The WASM core remains unchanged. No 4:4:4 request is added; H.264
 and 8-bit HEVC retain their verified flags of 0 and 1 respectively.
 
 Before requesting 10-bit, the worker checks the selected GPU's HEVC Main10/P010
@@ -133,6 +136,16 @@ the base-bit experiment, to keep that test to one variable. The older public
 SDK header exposes HEVC and 4:4:4, but no documented ten-bit configuration field;
 its padding remains unused. Research scripts and disassemblies stay outside
 the application build.
+
+The stock opcode-13 path at `0x49b69` is an alternative branch to the initial
+opcode-11 path, not evidence that both must always be sent for the first
+stream. Its observed third argument is zero (`0x49b8a`), so a forced
+reinitialization must not be attributed to that trace. No speculative extra
+message or retry loop is added after the failed base-bit test. Stock encoder
+setup separately gates ten-bit and contains a ten-bit fallback after encoder
+creation failure (`0xac84b` onward). These static branches do not establish
+which path this live host took. A same-host stock-client Main10 comparison
+is needed to separate host availability from the WebRTC declaration path.
 
 Actual SPS profile/depth chooses Main/NV12 or Main10/P010, independently of the
 preference. Both HEVC modes prefer synchronous D3D11-aware transforms accepting
