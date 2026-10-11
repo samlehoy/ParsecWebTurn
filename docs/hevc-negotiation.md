@@ -47,7 +47,7 @@ sequence containing a VPS; H.264 SPS remains an accepted host fallback. Decoder
 selection follows observed syntax, never the requested preference alone. The
 first codec is fixed for this connection; unannounced codec changes are refused.
 VPS/SPS/PPS and BLA/IDR/CRA are distinguished from delta pictures. The experiment
-requests neither 10-bit nor 4:4:4.
+does not request 4:4:4. A separate experimental 10-bit preference is described below.
 
 The HEVC input type includes the coded width/height and profile parsed from the
 actual SPS, before output negotiation. A local isolated Media Foundation probe
@@ -81,3 +81,34 @@ The shared WASM configuration reader contains `client_decoder_h265`, but the
 active `parsec_web_new_attempt` ABI does not pass it out. Consequently this option
 is owned by the native Rust settings/transport, with no WASM patch or JavaScript
 injection. Analysis tooling and downloaded SDK binaries remain outside the build.
+
+## Experimental 10-bit path
+
+`preferHevc10bit` is off by default, independent of the existing `preferHevc`
+preference. It is effective only with HEVC enabled. Startup uses `_flags: 0x11`
+for HEVC plus 10-bit, based on lowlat's `FLAG_10BIT = 0x10`; unlike HEVC bit 0,
+this bit still requires live verification against a stock host. The WASM core
+remains unchanged. No 4:4:4 request is added.
+
+Before requesting 10-bit, the worker checks the selected GPU's HEVC Main10/P010
+decode capability, a D3D11-aware P010 transform, P010-to-RGB10 SDR conversion and
+RGB10 render/blend/display support. A failed capability check retains the 8-bit
+HEVC request. Failures after stream startup are reported rather than claiming
+automatic renegotiation; disable 10-bit and reconnect if needed.
+
+Actual SPS profile/depth chooses Main/NV12 or Main10/P010, independently of the
+preference. Both HEVC modes prefer synchronous D3D11-aware transforms accepting
+`CODECAPI_AVLowLatencyMode`; public enumeration order breaks equal-capability
+ties. This is a supported DXVA-capable path, not proof that one transform is
+measurably faster or that every frame executes in hardware. Async MFTs need a
+different event-driven pipeline and are not substituted into this synchronous
+worker.
+
+P010 decoder textures feed the VideoProcessor directly and render into an
+`R10G10B10A2_UNORM` swapchain with full-range gamma-2.2 BT.709 SDR output.
+Matrix/range are preserved through documented video color-space APIs and
+conversion support is checked. Overlay shaders draw directly into that same
+backbuffer. No intermediate decoded-frame texture or CPU readback is added.
+Eight-bit streams retain NV12/BGRA8 output. Connection stats reports decoded
+depth only after output with the matching texture format has been observed.
+Ten-bit SDR does not imply HDR or guarantee the physical monitor's output depth.

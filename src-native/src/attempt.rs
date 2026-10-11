@@ -725,11 +725,15 @@ fn worker(
                 .as_ref()
                 .and_then(|m| m.view().0.video_gpu);
             config.allow_hevc =
-                config.allow_hevc && crate::video_windows::hevc_available(gpu.as_ref());
+                config.allow_hevc && crate::video_windows::hevc_available(gpu.as_ref(), false);
+            config.allow_hevc_10bit = config.allow_hevc
+                && config.allow_hevc_10bit
+                && crate::video_windows::hevc_available(gpu.as_ref(), true);
         }
         #[cfg(not(windows))]
         {
             config.allow_hevc = false;
+            config.allow_hevc_10bit = false;
         }
         shared
             .lock()

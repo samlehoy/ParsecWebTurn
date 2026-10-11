@@ -99,6 +99,15 @@ Enable **Prefer H.265 / HEVC** in Settings to advertise HEVC support on your nex
 connection. This needs a compatible GPU and an installed Windows HEVC decoder.
 The host may still send H.264; Connection stats shows the codec actually received.
 
+An additional **Prefer 10-bit HEVC** switch enables the experimental Main10 path.
+It requires HEVC to be enabled and a compatible GPU/Windows decoder. The client
+keeps decoded frames on the GPU using P010 and a 10-bit RGB presentation surface;
+Connection stats shows the actual decoded color depth. Unsupported local
+capabilities leave the request at 8-bit. This is an SDR quality option, not HDR;
+final display precision also depends on Windows, the driver and your monitor.
+Stock-host 10-bit interoperability still needs live verification. Disable this
+switch and reconnect to retain the established 8-bit HEVC path.
+
 Examples: `turn:turn.example.com:3478?transport=udp`,
 `turn:turn.example.com:3478?transport=tcp`, or
 `turns:turn.example.com:443?transport=tcp`. The last option requires a TLS-enabled
@@ -123,6 +132,7 @@ delivery commitment. There are no fixed release dates for these milestones.
 | Native Rust WebRTC client | Available | Connect to a Parsec host without WebView2, using the existing Parsec WASM core. |
 | Native Windows video, audio and controls | Available | D3D11 video output, H.264 playback, Opus sound, keyboard, mouse and the Parsec overlay. |
 | H.265 / HEVC playback | Available (opt-in) | Request HEVC Main (8-bit), recognize the incoming codec and decode it through Media Foundation with D3D11 GPU presentation. Verified in a live 1080p session; requires compatible GPU/decoder support. H.264 remains the default. |
+| 10-bit HEVC color | Experimental (opt-in) | Main10/P010 decoding and 10-bit D3D11 output, with actual decoded depth in Connection stats. Live host validation pending; the existing 8-bit mode remains available. |
 | Single executable and saved settings | Available | Run the portable EXE; keep your sign-in and preferences after restarting. |
 | STUN connectivity | Available | Parsec's default STUN server, custom discovery servers and a STUN-only option for LAN/VPN use. |
 | Custom STUN and TURN relay support | Available | Cloudflare or custom TURN servers, including UDP, TCP and TLS server connections. Compatible with the earlier client's server settings file. |

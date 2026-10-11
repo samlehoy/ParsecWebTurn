@@ -10,6 +10,7 @@ const LIMIT: usize = 1024 * 1024;
 pub struct Config {
     pub video_protocol: crate::backend::VideoProtocol,
     pub allow_hevc: bool,
+    pub allow_hevc_10bit: bool,
 }
 
 impl Config {
@@ -17,9 +18,10 @@ impl Config {
         text(
             11,
             0,
-            // Native SDK 6.0 advertises HEVC with bit 0 of this private field.
-            // Keep it isolated from WebRTC/SDP; see docs/hevc-negotiation.md.
-            &json!({"_version":1,"_max_w":60000,"_max_h":60000,"_flags":u32::from(self.allow_hevc),
+            // HEVC bit 0 is SDK/live verified; bit 4 requests 10-bit per lowlat.
+            // Private Parsec contract, not SDP; see docs/hevc-negotiation.md.
+            &json!({"_version":1,"_max_w":60000,"_max_h":60000,"_flags":
+                if self.allow_hevc { 1 | if self.allow_hevc_10bit { 0x10 } else { 0 } } else { 0 },
             "resolutionX":1920,"resolutionY":1080,"refreshRate":60,"mediaContainer":0,
             "_VideoProtocolVersion":self.video_protocol.version})
             .to_string(),
@@ -227,6 +229,7 @@ mod tests {
                 flag_offset: 4,
             },
             allow_hevc: false,
+            allow_hevc_10bit: false,
         };
         let avc = config.startup().unwrap();
         config.allow_hevc = true;
@@ -245,6 +248,16 @@ mod tests {
         assert_eq!(hevc["_flags"], 1);
         hevc["_flags"] = json!(0);
         assert_eq!(avc, hevc);
+        config.allow_hevc_10bit = true;
+        let ten_bit = config.startup().unwrap();
+        let mut ten_bit: Value = serde_json::from_slice(&ten_bit[13..ten_bit.len() - 1]).unwrap();
+        assert_eq!(ten_bit["_flags"], 0x11);
+        ten_bit["_flags"] = json!(0);
+        assert_eq!(ten_bit, avc);
+        config.allow_hevc = false;
+        let disabled = config.startup().unwrap();
+        let disabled: Value = serde_json::from_slice(&disabled[13..disabled.len() - 1]).unwrap();
+        assert_eq!(disabled, avc);
     }
     #[test]
     fn absolute_motion_requires_a_real_viewport_and_preserves_control_framing() {

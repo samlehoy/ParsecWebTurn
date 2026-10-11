@@ -41,6 +41,7 @@ pub struct Snapshot {
     pub color_matrix: Option<u32>,
     pub nominal_range: Option<u32>,
     pub width: Option<u32>,
+    pub bit_depth: Option<u32>,
     pub height: Option<u32>,
     pub failure_stage: Option<&'static str>,
     pub failure_hresult: Option<String>,

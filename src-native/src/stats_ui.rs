@@ -206,6 +206,13 @@ fn rows(
             .into(),
     );
     row(
+        "Decoded color depth",
+        video
+            .and_then(|v| v.bit_depth)
+            .map(|bits| format!("{bits}-bit"))
+            .unwrap_or_else(|| "Not reported".into()),
+    );
+    row(
         "Renderer",
         video
             .and_then(|x| x.renderer)

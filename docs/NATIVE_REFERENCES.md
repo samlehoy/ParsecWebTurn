@@ -28,6 +28,10 @@ see [HEVC negotiation evidence and limitations](hevc-negotiation.md). No lowlat
 library, host implementation, socket/crypto replacement or copied source is
 included in our binary.
 
+For 10-bit, Zero Copy and 4:4:4 findings, including the distinction between
+protocol preferences and our native GPU pipeline, see the
+[native video options audit](native-video-options-audit.md).
+
 ## libparsec
 
 [nomi-san/libparsec](https://github.com/nomi-san/libparsec) is another useful
