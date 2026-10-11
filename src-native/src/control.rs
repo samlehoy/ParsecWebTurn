@@ -14,14 +14,24 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn video_flags(&self) -> u32 {
+        if !self.allow_hevc {
+            return 0;
+        }
+        // Experimental Main10 follows stock 150-105c's native declaration:
+        // HEVC (0x01), native base (0x08), ten-bit (0x10). lowlat also adds
+        // the base bit to browser declarations. Its exact role on a stock
+        // WebRTC host still needs live validation; retain older 8-bit flags.
+        1 | if self.allow_hevc_10bit { 0x18 } else { 0 }
+    }
     pub fn startup(&self) -> Result<Bytes> {
         text(
             11,
             0,
-            // HEVC bit 0 is SDK/live verified; bit 4 requests 10-bit per lowlat.
+            // HEVC bit 0 is SDK/live verified; Main10 flags are stock/lowlat derived.
             // Private Parsec contract, not SDP; see docs/hevc-negotiation.md.
             &json!({"_version":1,"_max_w":60000,"_max_h":60000,"_flags":
-                if self.allow_hevc { 1 | if self.allow_hevc_10bit { 0x10 } else { 0 } } else { 0 },
+                self.video_flags(),
             "resolutionX":1920,"resolutionY":1080,"refreshRate":60,"mediaContainer":0,
             "_VideoProtocolVersion":self.video_protocol.version})
             .to_string(),
@@ -220,7 +230,7 @@ pub fn input_with_viewport(
 mod tests {
     use super::*;
     #[test]
-    fn hevc_changes_only_the_verified_init_capability_bit() {
+    fn video_preferences_change_only_init_capability_flags() {
         let mut config = Config {
             video_protocol: crate::backend::VideoProtocol {
                 version: 0,
@@ -251,7 +261,7 @@ mod tests {
         config.allow_hevc_10bit = true;
         let ten_bit = config.startup().unwrap();
         let mut ten_bit: Value = serde_json::from_slice(&ten_bit[13..ten_bit.len() - 1]).unwrap();
-        assert_eq!(ten_bit["_flags"], 0x11);
+        assert_eq!(ten_bit["_flags"], 0x19);
         ten_bit["_flags"] = json!(0);
         assert_eq!(ten_bit, avc);
         config.allow_hevc = false;

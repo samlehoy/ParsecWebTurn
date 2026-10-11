@@ -31,9 +31,10 @@ Two independent observations establish the bit assignment:
   `55e01e04edc27f2db44e7d239121f53d51cadf17b4840eea791880cc72892835`.
 - [lowlat's protocol description, section 11.5](https://github.com/nomi-san/lowlat/blob/7b4dc4ae79990ea8c59a108c80b3c89b695c3cb4/docs/01-protocol.md#115-session-initialization)
   independently identifies HEVC as bit 0 and explains opcode 13's equivalent
-  per-stream flags. Its newer native-peer base flag `0x08` is **not** added to
-  our older pinned web contract. The original web adapter works with zero base
-  flags; flags from different peer generations must not be mixed blindly.
+  per-stream flags. The verified H.264 and eight-bit HEVC requests retain the
+  older web contract without its native-peer base flag `0x08`. The experimental
+  Main10 combination is investigated separately below; flags from different
+  peer generations must not be mixed blindly.
 
 ## Rust implementation and boundaries
 
@@ -85,10 +86,12 @@ injection. Analysis tooling and downloaded SDK binaries remain outside the build
 ## Experimental 10-bit path
 
 `preferHevc10bit` is off by default, independent of the existing `preferHevc`
-preference. It is effective only with HEVC enabled. Startup uses `_flags: 0x11`
-for HEVC plus 10-bit, based on lowlat's `FLAG_10BIT = 0x10`; unlike HEVC bit 0,
-this bit still requires live verification against a stock host. The WASM core
-remains unchanged. No 4:4:4 request is added.
+preference. It is effective only with HEVC enabled. The next experimental startup
+uses `_flags: 0x19`: HEVC (`0x01`), native base (`0x08`), ten-bit (`0x10`).
+The initial `0x11` experiment passed local preflight and SCTP send, but the live
+stock host returned Main/8-bit. The `0x19` variation still requires live
+verification. The WASM core remains unchanged. No 4:4:4 request is added; H.264
+and 8-bit HEVC retain their verified flags of 0 and 1 respectively.
 
 Before requesting 10-bit, the worker checks the selected GPU's HEVC Main10/P010
 decode capability, a D3D11-aware P010 transform, P010-to-RGB10 SDR conversion and
@@ -98,10 +101,38 @@ automatic renegotiation; disable 10-bit and reconnect if needed.
 
 Connection stats distinguishes the 10-bit request from the observed decoded
 depth. `10-bit HEVC request` reports disabled, the failing local API stage and
-HRESULT (when available), or `Sent (startup flags 0x11)` only after the startup
+HRESULT (when available), or the actual startup flags only after the startup
 message has been accepted by the SCTP send API. This does not prove remote
 acceptance. A sent request followed by Main/8-bit output means the received
 stream remains 8-bit; the cause on the remote side is not established.
+
+### Additional stock-client and lowlat evidence (2026-10-11)
+
+Read-only static inspection of the installed stock `parsecd-150-105c.dll`
+(SHA-256 `dbd59739cfb84a239860a30480b91281f0ebd316dfb5bf58bd4539e82c92c425`)
+independently confirms bit 4. At RVA `0x49980` the capability builder initializes
+flags to 8, adds HEVC at `0x499a0`, tests a requested/supported ten-bit pair at
+`0x499c6`/`0x499ce`, and ORs `0x10` at `0x499d4`. The flags reach the opcode-11
+serializer through `0x49b29`/`0x49b50`; `_flags` is written at `0xa5bb1` onward.
+This establishes the native client's `0x19` combination, not successful ten-bit
+negotiation over WebRTC.
+
+At lowlat revision `7b4dc4ae79990ea8c59a108c80b3c89b695c3cb4`,
+`crates/host/src/session.rs` normalizes both INIT and ENCODER_CONFIG declarations
+with `flags | FLAG_BASE`. Thus its browser example does not establish whether a
+stock host requires the base bit: lowlat supplies it on the receiver. Stock host
+code also tests `0x08` separately from `0x10` in the capture/encoder setup
+(RVAs `0xac18b`, `0xac5aa`, `0xac5bf`); the complete meaning of that base bit
+has not been established. Do not treat it as a universally harmless flag or
+change the verified eight-bit requests on this evidence alone.
+
+lowlat supports restating per-stream flags through opcode 13 (stream index,
+flags, reinitialize). The stock client sends that frame at RVA `0x49b69` onward
+for subsequent declarations. No additional reconfiguration message is added in
+the base-bit experiment, to keep that test to one variable. The older public
+SDK header exposes HEVC and 4:4:4, but no documented ten-bit configuration field;
+its padding remains unused. Research scripts and disassemblies stay outside
+the application build.
 
 Actual SPS profile/depth chooses Main/NV12 or Main10/P010, independently of the
 preference. Both HEVC modes prefer synchronous D3D11-aware transforms accepting

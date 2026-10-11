@@ -941,7 +941,7 @@ fn worker(
                                 state.fail_channel(FailureStage::ControlStartup, id);
                             } else {
                                 if config.allow_hevc_10bit {
-                                    state.video_stream.set_hevc_10bit_request("Sent (startup flags 0x11)".into());
+                                    state.video_stream.set_hevc_10bit_request(format!("Sent (startup flags {:#04x})", config.video_flags()));
                                 }
                                 state.progress.control_ready = true;
                                 state.progress.last_send_elapsed_ms = Some(state.elapsed_ms());
