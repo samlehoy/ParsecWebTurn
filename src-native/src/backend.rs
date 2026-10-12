@@ -382,6 +382,27 @@ impl Backend {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn successful_status_update_preserves_media_but_disconnect_retires_it() {
+        let mut backend = Backend::default();
+        backend.init();
+        backend.status = Some(0);
+        let key = backend
+            .buffers
+            .insert(bytes::Bytes::from_static(b"cursor"), 0..6)
+            .unwrap();
+        backend.events.push_back(json!({"type":1,"key":key}));
+        backend.disconnect(0, 0).unwrap();
+        assert_eq!(backend.buffers.size(key), 6);
+        assert_eq!(backend.peek_event().unwrap()["type"], 1);
+        backend.disconnect(-3, 8).unwrap();
+        assert_eq!(backend.buffers.size(key), 0);
+        let event = backend.poll_event().unwrap();
+        assert_eq!(event["type"], 7);
+        assert_eq!(event["state"], 8);
+        assert_eq!(event["status"], 0);
+        assert_eq!(backend.status, Some(-3));
+    }
+    #[test]
     fn unavailable_absolute_mouse_does_not_fail_connection_or_claim_delivery() {
         let mut backend = Backend::default();
         backend.init();

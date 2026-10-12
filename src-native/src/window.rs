@@ -550,7 +550,7 @@ unsafe fn create_window(state: &Arc<Window>, opengl_required: bool) -> Result<HW
         lpszClassName: name.as_ptr(),
         ..std::mem::zeroed()
     };
-    if RegisterClassW(&class) == 0 {
+    if RegisterClassW(&class) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
         bail!("RegisterClassW failed: {}", GetLastError());
     }
     let title: Vec<u16> = crate::APP_TITLE.encode_utf16().chain([0]).collect();
@@ -808,7 +808,13 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                     if let Some(surface) =
                         surface.filter(|surface| surface.size == (size.0 as u32, size.1 as u32))
                     {
-                        presenter.show(hwnd, &surface);
+                        if !presenter.show(hwnd, &surface) {
+                            s.overlay
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .report
+                                .failure = Some("software-gui-composition-failed");
+                        }
                     } else {
                         presenter.hide();
                     }

@@ -223,6 +223,22 @@ pub fn input_with_viewport(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn desktop_fullfps_settings_keep_the_pinned_userdata_envelope() {
+        for full_fps in [false, true] {
+            let configuration = json!([{"encoderFPS":60,"fullFPS":full_fps}]).to_string();
+            let frame = text(17, 11, &configuration).unwrap();
+            assert_eq!(frame[12], 17);
+            assert_eq!(
+                i32::from_be_bytes(frame[..4].try_into().unwrap()) as usize,
+                configuration.len() + 1
+            );
+            assert_eq!(&frame[4..8], &11i32.to_be_bytes());
+            assert_eq!(&frame[8..12], &[0; 4]);
+            assert_eq!(&frame[13..frame.len() - 1], configuration.as_bytes());
+            assert_eq!(frame.last(), Some(&0));
+        }
+    }
     #[cfg(windows)]
     #[test]
     fn refresh_request_preserves_startup_codec_flags_and_primary_stream() {

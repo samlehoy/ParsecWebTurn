@@ -30,10 +30,10 @@ pub fn rasterize(frame: &Frame) -> Option<Surface> {
     let mut bgra = vec![0u8; len];
     for batch in &frame.batches {
         let tex = &batch.texture;
-        if tex.width == 0
-            || tex.height == 0
-            || tex.rgba.len() != tex.width as usize * tex.height as usize * 4
-        {
+        let texture_len = (tex.width as usize)
+            .checked_mul(tex.height as usize)?
+            .checked_mul(4)?;
+        if tex.width == 0 || tex.height == 0 || tex.rgba.len() != texture_len {
             return None;
         }
         for triangle in batch.vertices.chunks_exact(60) {
@@ -250,6 +250,42 @@ pub struct Pending {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn isolated_gdi_layer_can_publish_hide_and_release_without_video() {
+        unsafe {
+            let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+            let parent = CreateWindowExW(
+                0,
+                class.as_ptr(),
+                std::ptr::null(),
+                WS_OVERLAPPEDWINDOW,
+                10,
+                10,
+                64,
+                64,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            );
+            assert!(!parent.is_null());
+            let mut presenter = Presenter::default();
+            let surface = Surface {
+                size: (8, 8),
+                bgra: [0, 0, 128, 128].repeat(64),
+            };
+            let shown = presenter.show(parent, &surface);
+            presenter.hide();
+            let hidden = IsWindowVisible(presenter.hwnd as HWND) == 0;
+            let child = presenter.hwnd as HWND;
+            presenter.destroy();
+            let released = IsWindow(child) == 0;
+            DestroyWindow(parent);
+            assert!(shown);
+            assert!(hidden);
+            assert!(released);
+        }
+    }
     #[test]
     fn triangle_edges_blend_once_and_scissor_preserves_transparency() {
         let mut vertices = Vec::new();
