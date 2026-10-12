@@ -5,7 +5,7 @@ builds, not published stable releases.
 
 ## Unreleased
 
-- Audio polling no longer follows the 60 Hz display cadence. Short audio gaps resume without restarting the initial buffer or filling the output with queued silence; overloaded playback keeps recent audio instead of retaining a delayed backlog. Live remote testing is pending.
+- Removed unsuccessful experimental audio buffering and endpoint-period changes, restoring the original shared WASAPI playback policy. Opus decoding and the core's requested buffer limits remain unchanged. Audio polling retains its independent worker cadence. This rollback does not claim to fix the stutter also reproduced in the official browser client.
 - Mouse capture now follows the native SDK's host cursor signals, including hidden-only relative requests used by applications and desktop drags. Relative motion uses Raw Input with a fixed cursor position, so changing direction does not require returning from outside the client. Disable Cursor Warp only disables return-position warping; Immersive Mouse/Both still provide continuous confinement. Live host verification is pending.
 - Immersive Mouse, Keyboard and Both now have native input bindings: Mouse confines the pointer, Keyboard forwards reserved shortcuts, and Both combines them. Capture is released when the stream loses focus, is detached, or disconnects. Cursor Warp respects its overlay switch and restores the host cursor position when leaving relative mode. Live host verification is pending.
 - Fullscreen now hides the Settings / Connection stats / Help menu and restores it when returning to a window.

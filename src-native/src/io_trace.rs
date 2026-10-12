@@ -52,16 +52,21 @@ pub fn start(
     backend: Arc<Mutex<crate::backend::Backend>>,
 ) -> Result<std::thread::JoinHandle<()>> {
     let mut file = std::fs::File::create(path)?;
+    let started = std::time::Instant::now();
+    let started_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis();
     let header = serde_json::json!({
-        "schema": 4, "scope": "opt-in-input-audio-connection-counters",
+        "schema": 5, "scope": "opt-in-input-audio-connection-counters",
         "app": env!("CARGO_PKG_VERSION"), "core": crate::PARSEC_CORE_VERSION,
         "build": option_env!("GITHUB_SHA").unwrap_or("local"),
         "interval_ms": 1000, "sample_limit": 600,
         "payloads_recorded": false,
+        "started_unix_ms": started_unix_ms,
+        "audio_output_policy": "original-shared-wasapi",
     });
     writeln!(file, "{header}")?;
     Ok(std::thread::Builder::new().name("parsec-io-trace".into()).spawn(move || {
-        let started = std::time::Instant::now();
         for _ in 0..600 {
             if window.closing.load(Ordering::Acquire) { break; }
             let audio = backend.try_lock().ok().map(|backend| {
@@ -71,8 +76,10 @@ pub fn start(
                     "connection": backend.native_attempt.as_ref().map(|a| a.connection_trace()),
                 })
             });
+            let elapsed_ms = started.elapsed().as_millis();
             let record = serde_json::json!({
-                "elapsed_ms": started.elapsed().as_millis(),
+                "elapsed_ms": elapsed_ms,
+                "unix_ms": started_unix_ms + elapsed_ms,
                 "input": window.input_trace_snapshot(),
                 "transport_audio": audio,
                 "playback": window.audio_registry.lock().unwrap_or_else(|e| e.into_inner()).snapshots(),

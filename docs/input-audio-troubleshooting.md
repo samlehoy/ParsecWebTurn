@@ -25,6 +25,22 @@ text, account identifiers, credentials, network addresses or device names.
    relative input. Briefly switch focus away and back, then repeat Mouse.
 4. Disconnect normally, close the client and return `io-diagnostics.jsonl`.
 
+## Current trace schema 5
+
+Playback now uses the original shared WASAPI policy; schema-3 refill/overflow
+semantics below are historical. The playback snapshot again contains only
+original output counters: real frames queued/written/dropped, underruns, staging
+frames, endpoint padding, device-open/failure/cleanup state. `underruns` counts
+partial writes that enter refill buffering, not audible clicks.
+
+The header adds `started_unix_ms` and `audio_output_policy`; every record adds
+`unix_ms` derived from the initial wall-clock anchor and monotonic elapsed time.
+For cross-machine captures verify clock agreement separately; do not infer
+one-way latency from unverified clocks. Schema-4 files have no absolute anchor
+and cannot be aligned precisely using file modification time.
+
+See [Host packet timing comparison](host-audio-transport-comparison.md).
+
 ## Interpretation and limits
 
 `input.state` is the policy applied by the Rust window. `events.core_reads`

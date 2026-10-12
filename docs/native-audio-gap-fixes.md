@@ -1,5 +1,30 @@
 # Native audio buffering and live gap investigation
 
+## Current baseline: experimental playback changes withdrawn (2026-10-12)
+
+The official browser client also stutters with this host, while the official
+native client was reported continuous. Disabling host echo cancellation did not
+help. These observations implicate a shared host/WebRTC path, but do not identify
+the source of the delay.
+
+The native playback adapter is restored to its original `043d500` policy:
+shared event-driven IAudioClient with the original 20 ms capacity request,
+core-provided minimum/maximum limits, initial/refill buffering, whole-block
+overflow rejection, and the original silence-fill behavior. Later IAudioClient3
+minimum-period selection, enlarged endpoint reserve, producer wake signals,
+oldest-frame trimming and immediate underrun recovery are removed. Supported
+MMCSS scheduling and the independent audio polling callback remain. Opus, media
+buffer recycling, transport policy, video and the verified mouse fixes are
+unchanged. This restores our original adapter, not a claim of identical behavior
+to Parsec's proprietary native implementation.
+
+The optional trace remains for the requested transport comparison. Schema 5
+adds a Unix-time anchor and absolute sample timestamps; it changes no sending,
+receiving or playback policy. Its playback fields again describe the original
+adapter. The historical experiments below are retained as investigation notes
+only; their descriptions of newer output policies are no longer current.
+
+
 ## Evidence and regression
 
 The pinned core's `main_audio_loop` drains `parsec_web_poll_audio`, then sleeps
