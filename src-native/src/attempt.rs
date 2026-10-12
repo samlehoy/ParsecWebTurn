@@ -212,10 +212,12 @@ enum Delivery {
     },
 }
 impl Delivery {
-    fn submit(self, bytes: &[u8]) -> Option<bool> {
+    fn submit(self, bytes: &[u8], received_at: Option<std::time::Instant>) -> Option<bool> {
         match self {
             Self::Queued => None,
-            Self::Audio(audio) => Some(!audio.is_some_and(|sender| sender.submit(bytes))),
+            Self::Audio(audio) => {
+                Some(!audio.is_some_and(|sender| sender.submit_received(bytes, received_at)))
+            }
             Self::Video {
                 inspector,
                 #[cfg(windows)]
@@ -308,7 +310,7 @@ impl Completion {
         let Some(delivery) = self.prepare_receive(channel, text, bytes) else {
             return false;
         };
-        if let Some(discarded) = delivery.submit(bytes) {
+        if let Some(discarded) = delivery.submit(bytes, None) {
             self.media_ingress.record(channel, bytes.len(), discarded);
         }
         true
@@ -326,6 +328,10 @@ async fn read_channel(
     let mut buffer = vec![0; MAX_CHANNEL_MESSAGE];
     loop {
         let read = channel.read_data_channel(&mut buffer).await;
+        #[cfg(windows)]
+        let received_at = (id == 2 && crate::io_trace::enabled()).then(std::time::Instant::now);
+        #[cfg(not(windows))]
+        let received_at = None;
         let len = read.as_ref().map_or(0, |(len, _)| *len);
         let delivery = match read {
             Ok((0, _)) => {
@@ -347,7 +353,7 @@ async fn read_channel(
         if let Some(delivery) = delivery {
             // Copy/submit outside the connection lock. Consume sender handles
             // before bookkeeping, so cancellation never joins a blocked reader.
-            if let Some(discarded) = delivery.submit(&buffer[..len]) {
+            if let Some(discarded) = delivery.submit(&buffer[..len], received_at) {
                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                 if !state.cancelled && !state.closing {
                     state.media_ingress.record(id, len, discarded);
@@ -639,7 +645,7 @@ impl Attempt {
             .unwrap_or_else(|e| e.into_inner())
             .audio_stream
             .as_ref()
-            .map(|audio| audio.snapshot())
+            .map(|audio| audio.diagnostic_snapshot())
     }
 
     pub fn configure_video_protocol(&self, protocol: crate::backend::VideoProtocol) {
@@ -1409,7 +1415,7 @@ mod tests {
         let mut audio = state.audio_stream.take().unwrap();
         state.cancelled = true;
         audio.stop();
-        assert_eq!(delivery.submit(&[0xf8, 0xff, 0xfe]), Some(true));
+        assert_eq!(delivery.submit(&[0xf8, 0xff, 0xfe], None), Some(true));
         assert!(audio.snapshot().worker_finished);
         assert_eq!(audio.snapshot().queued_samples, 0);
     }

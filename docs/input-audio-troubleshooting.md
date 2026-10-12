@@ -45,11 +45,23 @@ Audio decoder backlog (`queued_samples`, divided by 96 for milliseconds) and
 playback backlog (`queued_frames` and `device_padding`, each divided by 48)
 identify different queues. `max_poll_gap_ms` measures guest audio polling gaps;
 `max_worker_gap_ms` measures WASAPI worker wake gaps. `max_packet_gap_ms` measures
-gaps between incoming Opus packets (including silence/source pauses). Maxima are cumulative
-for the current pipeline/output. `empty_device_wakes` also counts an empty device
-when fresh PCM is already queued. In schema 1 `underruns` counted repeated empty
-wakes; schema 2 counts transitions into starvation buffering (`rebuffer_events`).
-`overflow_recoveries` counts trims down to the existing minimum buffer threshold.
+gaps between completed incoming Opus messages (including source pauses).
+Schema 3 adds `interval_max_packet_gap_ms`, reset after each diagnostic sample,
+and `packet_silence_ms`, the current age of the last incoming message. A quiet
+interval is therefore distinguishable from an old lifetime peak.
+`max_receive_handoff_ms` covers completed read to decoder submission, including
+the connection lock; `max_decode_queue_wait_ms` covers submission to worker
+pickup, and `max_decode_time_ms` covers decoding and PCM-buffer acquisition.
+These maxima are cumulative. They do not include socket/DTLS/SCTP reassembly time.
+`empty_device_wakes` also counts an empty endpoint when PCM is already staged.
+In schema 1 `underruns` counted repeated empty wakes; schema 2 counted forced
+refills. Schema 3 counts transitions into an observed empty endpoint and empty
+staging queue, without forcing another refill pause. `buffering` now denotes
+startup/explicit reset only. The obsolete `rebuffer_events` and
+`low_latency_shared_mode` fields are removed; `native_shared_buffer` identifies
+the endpoint buffering path. `overflow_recoveries` now counts excess-only trims
+against the combined endpoint/staging maximum. Counters across schemas are not
+directly comparable.
 Empty-device observations indicate starvation,
 not a precise count of audible clicks. Startup buffering, mute/reset, focus
 changes and a silent/stopped source must be considered when interpreting them.

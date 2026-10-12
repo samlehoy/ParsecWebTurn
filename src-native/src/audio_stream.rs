@@ -15,6 +15,11 @@ pub struct Snapshot {
     pub poll_calls: u64,
     pub max_poll_gap_ms: Option<f64>,
     pub max_packet_gap_ms: Option<f64>,
+    pub interval_max_packet_gap_ms: Option<f64>,
+    pub packet_silence_ms: Option<f64>,
+    pub max_receive_handoff_ms: Option<f64>,
+    pub max_decode_queue_wait_ms: Option<f64>,
+    pub max_decode_time_ms: Option<f64>,
     pub packets_decoded: u64,
     pub packets_dropped: u64,
     pub decode_errors: u64,
@@ -36,11 +41,16 @@ struct State {
 }
 #[derive(Clone)]
 pub(crate) struct Sender {
-    tx: mpsc::SyncSender<Vec<u8>>,
+    tx: mpsc::SyncSender<Packet>,
     state: Arc<Mutex<State>>,
 }
 impl Sender {
+    #[cfg(test)]
     pub fn submit(&self, bytes: &[u8]) -> bool {
+        self.submit_received(bytes, None)
+    }
+    pub fn submit_received(&self, bytes: &[u8], _received_at: Option<std::time::Instant>) -> bool {
+        let submitted_at = diagnostic_time();
         let mut packet = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.stopped || bytes.is_empty() || bytes.len() > 65_536 {
@@ -49,18 +59,28 @@ impl Sender {
             }
             #[cfg(windows)]
             if crate::io_trace::enabled() {
-                let now = std::time::Instant::now();
+                let now = _received_at.or(submitted_at).unwrap();
+                if let (Some(received), Some(submitted)) = (_received_at, submitted_at) {
+                    record_max(
+                        &mut state.report.max_receive_handoff_ms,
+                        submitted.duration_since(received).as_secs_f64() * 1000.0,
+                    );
+                }
                 if let Some(previous) = state.previous_packet.replace(now) {
                     let gap = now.duration_since(previous).as_secs_f64() * 1000.0;
                     state.report.max_packet_gap_ms =
                         Some(state.report.max_packet_gap_ms.unwrap_or(0.0).max(gap));
+                    record_max(&mut state.report.interval_max_packet_gap_ms, gap);
                 }
             }
             state.free_packets.pop().unwrap_or_default()
         };
         packet.clear();
         packet.extend_from_slice(bytes);
-        match self.tx.try_send(packet) {
+        match self.tx.try_send(Packet {
+            bytes: packet,
+            submitted_at,
+        }) {
             Ok(()) => true,
             Err(error) => {
                 let packet = match error {
@@ -71,15 +91,29 @@ impl Sender {
                 let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 state.report.packets_dropped += 1;
                 if !state.stopped && state.free_packets.len() < RECYCLED_BUFFERS {
-                    state.free_packets.push(packet);
+                    state.free_packets.push(packet.bytes);
                 }
                 false
             }
         }
     }
 }
+struct Packet {
+    bytes: Vec<u8>,
+    submitted_at: Option<std::time::Instant>,
+}
+fn diagnostic_time() -> Option<std::time::Instant> {
+    #[cfg(windows)]
+    if crate::io_trace::enabled() {
+        return Some(std::time::Instant::now());
+    }
+    None
+}
+fn record_max(value: &mut Option<f64>, sample: f64) {
+    *value = Some(value.unwrap_or(0.0).max(sample));
+}
 pub struct Pipeline {
-    tx: Option<mpsc::SyncSender<Vec<u8>>>,
+    tx: Option<mpsc::SyncSender<Packet>>,
     state: Arc<Mutex<State>>,
     poll_lock: Mutex<()>,
     worker: Option<JoinHandle<()>>,
@@ -131,7 +165,7 @@ impl Drop for Decoder {
 }
 impl Pipeline {
     pub fn start() -> Self {
-        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(64);
+        let (tx, rx) = mpsc::sync_channel::<Packet>(64);
         let state = Arc::new(Mutex::new(State::default()));
         let shared = state.clone();
         let worker = std::thread::spawn(move || {
@@ -145,16 +179,30 @@ impl Pipeline {
                         Err(mpsc::RecvTimeoutError::Timeout) => continue,
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     };
+                    let decode_started = packet.submitted_at.map(|_| std::time::Instant::now());
                     let recycled = shared
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .free_pcm
                         .pop();
                     let mut pcm = recycled.unwrap_or_else(|| Vec::with_capacity(PCM_SAMPLES));
-                    let decoded = decoder.decode_into(&packet, &mut pcm);
+                    let decoded = decoder.decode_into(&packet.bytes, &mut pcm);
+                    let decode_finished = decode_started.map(|_| std::time::Instant::now());
                     let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+                    if let (Some(submitted), Some(started), Some(finished)) =
+                        (packet.submitted_at, decode_started, decode_finished)
+                    {
+                        record_max(
+                            &mut state.report.max_decode_queue_wait_ms,
+                            started.duration_since(submitted).as_secs_f64() * 1000.0,
+                        );
+                        record_max(
+                            &mut state.report.max_decode_time_ms,
+                            finished.duration_since(started).as_secs_f64() * 1000.0,
+                        );
+                    }
                     if !state.stopped && state.free_packets.len() < RECYCLED_BUFFERS {
-                        state.free_packets.push(packet);
+                        state.free_packets.push(packet.bytes);
                     }
                     if state.stopped {
                         continue;
@@ -260,6 +308,16 @@ impl Pipeline {
             .unwrap_or_else(|e| e.into_inner())
             .report
             .clone()
+    }
+    #[cfg(all(windows, not(feature = "diagnostics")))]
+    pub fn diagnostic_snapshot(&self) -> Snapshot {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut report = state.report.clone();
+        report.packet_silence_ms = state
+            .previous_packet
+            .map(|v| v.elapsed().as_secs_f64() * 1000.0);
+        state.report.interval_max_packet_gap_ms = None;
+        report
     }
     pub fn stop(&mut self) {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).stopped = true;

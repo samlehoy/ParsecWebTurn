@@ -3,11 +3,12 @@ use anyhow::{bail, Result};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, VecDeque},
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     sync::{mpsc, Arc, Mutex},
     thread::JoinHandle,
 };
 use windows::{
-    core::{Interface, PCWSTR},
+    core::PCWSTR,
     Win32::{
         Foundation::*,
         Media::Audio::*,
@@ -19,12 +20,11 @@ pub struct Snapshot {
     pub min_buffer_ms: u32,
     pub max_buffer_ms: u32,
     pub resets: u64,
-    pub rebuffer_events: u64,
     pub overflow_recoveries: u64,
     pub buffering: bool,
     pub max_worker_gap_ms: Option<f64>,
     pub device_opened: bool,
-    pub low_latency_shared_mode: bool,
+    pub native_shared_buffer: bool,
     pub engine_period_frames: Option<u32>,
     pub device_buffer_frames: u32,
     pub mmcss_registered: bool,
@@ -92,7 +92,7 @@ pub struct Playback {
     shared: Arc<Mutex<State>>,
     worker: Mutex<Option<JoinHandle<()>>>,
     max_frames: usize,
-    min_frames: usize,
+    wake: Arc<Event>,
 }
 impl Playback {
     pub fn create(
@@ -106,6 +106,7 @@ impl Playback {
         // Pinned AudioWorklet converts its latency arguments from milliseconds to frames.
         let max_frames = max_buffer as usize * 48;
         let min_frames = min_buffer as usize * 48;
+        let wake = Arc::new(Event::new()?);
         let shared = Arc::new(Mutex::new(State::default()));
         {
             let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -114,12 +115,14 @@ impl Playback {
             state.report.buffering = true;
         }
         let state = shared.clone();
+        let worker_wake = wake.clone();
         let (tx, rx) = mpsc::sync_channel(1);
         window
             .active_contexts
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let worker = std::thread::spawn(move || {
-            let result = unsafe { render(&state, &window, min_frames, &tx) };
+            let result =
+                unsafe { render(&state, &window, min_frames, max_frames, &worker_wake, &tx) };
             if let Err(error) = result {
                 state
                     .lock()
@@ -141,7 +144,7 @@ impl Playback {
             shared,
             worker: Mutex::new(Some(worker)),
             max_frames,
-            min_frames,
+            wake,
         };
         if rx.recv_timeout(std::time::Duration::from_secs(3)).ok() != Some(true) {
             output.stop();
@@ -156,22 +159,16 @@ impl Playback {
             s.report.frames_dropped += frames as u64;
             return;
         }
-        // Recover headroom after a burst instead of repeatedly cutting audio
-        // at the maximum queue ceiling. Preserve the configured latency limits.
+        // Bound staging memory. The renderer also budgets endpoint padding,
+        // so moving PCM to WASAPI does not add a second latency allowance.
         let skip = frames.saturating_sub(self.max_frames) * 2;
         let incoming = &pcm[skip..frames * 2];
         s.pcm.extend(incoming);
-        let discard = if s.pcm.len() > self.max_frames * 2 {
-            s.report.overflow_recoveries += 1;
-            s.report.buffering = true;
-            s.pcm.len() - self.min_frames.max(1).min(self.max_frames) * 2
-        } else {
-            0
-        };
-        s.pcm.drain(..discard);
-        s.report.frames_dropped += ((skip + discard) / 2) as u64;
+        trim_to_budget(&mut s, 0, self.max_frames);
+        s.report.frames_dropped += (skip / 2) as u64;
         s.report.frames_queued += frames as u64;
         s.report.queued_frames = s.pcm.len() / 2;
+        self.wake.notify();
     }
     pub fn queued_frames(&self) -> u32 {
         let s = self.shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -184,6 +181,7 @@ impl Playback {
         s.report.resets += 1;
         s.report.buffering = true;
         s.reset = true;
+        self.wake.notify();
     }
     pub fn snapshot(&self) -> Snapshot {
         self.shared
@@ -197,6 +195,7 @@ impl Playback {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .stopped = true;
+        self.wake.notify();
         if let Some(worker) = self.worker.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = worker.join();
         }
@@ -215,11 +214,21 @@ impl Drop for Apartment {
         }
     }
 }
-struct Event(HANDLE);
-impl Drop for Event {
-    fn drop(&mut self) {
+// OwnedHandle provides lifetime-safe Send/Sync for this kernel event; COM
+// interfaces remain confined to the rendering worker.
+struct Event(OwnedHandle);
+impl Event {
+    fn new() -> windows::core::Result<Self> {
+        let handle = unsafe { CreateEventW(None, false, false, PCWSTR::null())? };
+        // SAFETY: CreateEventW returned an owned, valid handle exactly once.
+        Ok(Self(unsafe { OwnedHandle::from_raw_handle(handle.0) }))
+    }
+    fn handle(&self) -> HANDLE {
+        HANDLE(self.0.as_raw_handle())
+    }
+    fn notify(&self) {
         unsafe {
-            let _ = CloseHandle(self.0);
+            let _ = SetEvent(self.handle());
         }
     }
 }
@@ -236,6 +245,8 @@ unsafe fn render(
     shared: &Mutex<State>,
     window: &crate::window::Window,
     min_frames: usize,
+    max_frames: usize,
+    event: &Event,
     ready: &mpsc::SyncSender<bool>,
 ) -> windows::core::Result<()> {
     CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
@@ -252,22 +263,22 @@ unsafe fn render(
         wBitsPerSample: 16,
         cbSize: 0,
     };
-    let (client, period) = initialize_client(&device, &format)?;
-    let event = Event(CreateEventW(None, false, false, PCWSTR::null())?);
-    client.SetEventHandle(event.0)?;
+    let client = initialize_client(&device, &format, max_frames)?;
+    client.SetEventHandle(event.handle())?;
     let render: IAudioRenderClient = client.GetService()?;
     let capacity = client.GetBufferSize()?;
     {
         let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
-        state.report.low_latency_shared_mode = period.is_some();
-        state.report.engine_period_frames = period;
+        state.report.native_shared_buffer = true;
+        let mut period = 0;
+        if client.GetDevicePeriod(Some(&mut period), None).is_ok() {
+            state.report.engine_period_frames = Some((period as u64 * 48_000 / 10_000_000) as u32);
+        }
         state.report.device_buffer_frames = capacity;
         state.report.mmcss_registered = scheduling.is_some();
     }
-    // Prime with silence, without claiming real decoded audio was played.
-    let _ = render.GetBuffer(capacity)?;
-    render.ReleaseBuffer(capacity, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32)?;
-    client.Start()?;
+    // Stage actual PCM before Start, as the native SDK/Matoya example does.
+    // Capacity is headroom, not silence to prepend or a target to fill.
     let _started = Started(client.clone());
     shared
         .lock()
@@ -276,8 +287,10 @@ unsafe fn render(
         .device_opened = true;
     let _ = ready.send(true);
     let mut previous_wake = std::time::Instant::now();
+    let mut started = false;
+    let mut starved = false;
     loop {
-        WaitForSingleObject(event.0, 50);
+        WaitForSingleObject(event.handle(), 50);
         if window.closing.load(std::sync::atomic::Ordering::Acquire) {
             break;
         }
@@ -286,7 +299,10 @@ unsafe fn render(
             let now = std::time::Instant::now();
             let gap = now.duration_since(previous_wake).as_secs_f64() * 1000.0;
             previous_wake = now;
-            s.report.max_worker_gap_ms = Some(s.report.max_worker_gap_ms.unwrap_or(0.0).max(gap));
+            if started {
+                s.report.max_worker_gap_ms =
+                    Some(s.report.max_worker_gap_ms.unwrap_or(0.0).max(gap));
+            }
         }
         if s.stopped {
             break;
@@ -294,30 +310,35 @@ unsafe fn render(
         if s.reset {
             client.Stop()?;
             client.Reset()?;
-            client.Start()?;
+            started = false;
+            starved = false;
             s.reset = false;
             s.report.buffering = true;
         }
         let padding = client.GetCurrentPadding()?;
-        if crate::io_trace::enabled() && !s.report.buffering && padding == 0 {
+        if crate::io_trace::enabled() && started && padding == 0 {
             s.report.empty_device_wakes += 1;
         }
         s.report.device_padding = padding;
+        if started && padding == 0 && s.pcm.is_empty() {
+            if !starved {
+                s.report.underruns += 1;
+            }
+            starved = true;
+        } else if !s.pcm.is_empty() {
+            starved = false;
+        }
+        trim_to_budget(&mut s, padding as usize, max_frames);
         let available = capacity.saturating_sub(padding);
         if available == 0 {
             continue;
         }
-        let buffering = next_buffering(s.report.buffering, s.pcm.len() / 2, padding, min_frames);
-        if buffering && !s.report.buffering {
-            s.report.rebuffer_events += 1;
-            s.report.underruns += 1;
-        }
+        let buffering = next_buffering(s.report.buffering, s.pcm.len() / 2, min_frames);
         s.report.buffering = buffering;
         let count = render_frames(buffering, available, s.pcm.len() / 2);
         if count == 0 {
-            // An empty shared-mode stream is rendered as silence by Windows.
-            // A genuinely empty device/PCM queue re-enters the existing jitter
-            // threshold. A gap covered by device padding must keep playing.
+            // Windows renders starvation as silence. Once started, resume the
+            // first real PCM without imposing another 75 ms source pause.
             continue;
         }
         let pointer = render.GetBuffer(count)?;
@@ -330,15 +351,26 @@ unsafe fn render(
         s.report.device_padding = padding + count;
         s.report.frames_written += count as u64;
         s.report.queued_frames = s.pcm.len() / 2;
+        if !started {
+            client.Start()?;
+            started = true;
+        }
     }
     Ok(())
 }
 
-fn next_buffering(buffering: bool, queued: usize, padding: u32, minimum: usize) -> bool {
-    if buffering {
-        queued < minimum.max(1)
-    } else {
-        queued == 0 && padding == 0
+fn next_buffering(buffering: bool, queued: usize, minimum: usize) -> bool {
+    buffering && queued < minimum.max(1)
+}
+
+fn trim_to_budget(state: &mut State, padding: usize, maximum: usize) {
+    let queued = state.pcm.len() / 2;
+    let discard = queued.saturating_sub(maximum.saturating_sub(padding));
+    if discard > 0 {
+        state.pcm.drain(..discard * 2);
+        state.report.frames_dropped += discard as u64;
+        state.report.overflow_recoveries += 1;
+        state.report.queued_frames = state.pcm.len() / 2;
     }
 }
 
@@ -350,64 +382,25 @@ fn render_frames(buffering: bool, available: u32, queued: usize) -> u32 {
     }
 }
 
-/// Query the endpoint's supported period; never assume a fixed 1/2/5 ms quantum.
+/// Put the existing latency budget in the endpoint, where Windows can consume
+/// it independently of our worker. Requested capacity is not playback latency.
 unsafe fn initialize_client(
     device: &IMMDevice,
     format: &WAVEFORMATEX,
-) -> windows::core::Result<(IAudioClient, Option<u32>)> {
-    let candidate: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
-    if let Ok(client3) = candidate.cast::<IAudioClient3>() {
-        let (mut default, mut fundamental, mut minimum, mut maximum) = (0, 0, 0, 0);
-        if client3
-            .GetSharedModeEnginePeriod(
-                format,
-                &mut default,
-                &mut fundamental,
-                &mut minimum,
-                &mut maximum,
-            )
-            .is_ok()
-        {
-            if let Some(period) = supported_period(fundamental, minimum, maximum) {
-                // IAudioClient3 documents EVENTCALLBACK only. AUTOCONVERTPCM
-                // belongs to the legacy fallback, not this initialization call.
-                if client3
-                    .InitializeSharedAudioStream(
-                        AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                        period,
-                        format,
-                        None,
-                    )
-                    .is_ok()
-                {
-                    return Ok((candidate, Some(period)));
-                }
-            }
-        }
-    }
-    // A rejected format/period or an older endpoint must retain the working
-    // converter path. Use a fresh COM client after any failed initialization.
-    drop(candidate);
+    max_frames: usize,
+) -> windows::core::Result<IAudioClient> {
     let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
     client.Initialize(
         AUDCLNT_SHAREMODE_SHARED,
         AUDCLNT_STREAMFLAGS_EVENTCALLBACK
             | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
             | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-        200_000,
+        (max_frames as i64 * 10_000_000 / 48_000).max(1),
         0,
         format,
         None,
     )?;
-    Ok((client, None))
-}
-
-fn supported_period(fundamental: u32, minimum: u32, maximum: u32) -> Option<u32> {
-    if fundamental == 0 || minimum == 0 || minimum > maximum {
-        return None;
-    }
-    let period = minimum.div_ceil(fundamental).checked_mul(fundamental)?;
-    (period <= maximum).then_some(period)
+    Ok(client)
 }
 
 /// Quiet local device smoke test: no account/network and no audible test tone.
@@ -449,42 +442,37 @@ mod tests {
     }
 
     #[test]
-    fn device_padding_covers_short_gaps_but_real_starvation_refills_to_minimum() {
-        // Empty software PCM is not starvation while the endpoint has data.
-        assert!(!next_buffering(false, 0, 480, 3600));
-        assert!(next_buffering(false, 0, 0, 3600));
-        // Following an actual underrun, one 20 ms packet must not cause
-        // repeated short starts and stops before the 75 ms threshold returns.
-        assert!(next_buffering(true, 960, 0, 3600));
-        assert!(next_buffering(true, 2880, 0, 3600));
-        assert!(!next_buffering(true, 3840, 0, 3600));
-        // A packet that arrived before the device emptied needs no pause.
-        assert!(!next_buffering(false, 960, 0, 3600));
-        assert!(!next_buffering(true, 1, 0, 0));
+    fn startup_buffers_but_starvation_does_not_add_another_source_pause() {
+        assert!(next_buffering(true, 960, 3600));
+        assert!(next_buffering(true, 2880, 3600));
+        assert!(!next_buffering(true, 3840, 3600));
+        assert!(!next_buffering(false, 0, 3600));
+        assert!(!next_buffering(false, 960, 3600));
+        assert!(!next_buffering(true, 1, 0));
     }
 
     #[test]
-    fn burst_recovery_restores_headroom_and_stereo_order_without_raising_limits() {
+    fn endpoint_and_staging_share_one_budget_and_trim_only_excess_stereo_frames() {
         let output = Playback {
             shared: Arc::new(Mutex::new(State::default())),
             worker: Mutex::new(None),
-            min_frames: 4,
             max_frames: 8,
+            wake: Arc::new(Event::new().unwrap()),
         };
         output.queue(&[1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6]);
         output.queue(&[7, -7, 8, -8, 9, -9]);
         let report = output.snapshot();
-        assert_eq!(report.queued_frames, 4);
-        assert_eq!(report.frames_dropped, 5);
+        assert_eq!(report.queued_frames, 8);
+        assert_eq!(report.frames_dropped, 1);
         assert_eq!(report.overflow_recoveries, 1);
-        assert!(report.buffering);
-        assert_eq!(
-            output.shared.lock().unwrap().pcm,
-            [6, -6, 7, -7, 8, -8, 9, -9]
-        );
-        // Another packet now fits without another discontinuity.
+        assert!(!report.buffering);
+        let mut state = output.shared.lock().unwrap();
+        trim_to_budget(&mut state, 4, 8);
+        assert_eq!(state.pcm, [6, -6, 7, -7, 8, -8, 9, -9]);
+        assert_eq!(state.report.frames_dropped, 5);
+        drop(state);
         output.queue(&[10, -10, 11, -11]);
-        assert_eq!(output.snapshot().overflow_recoveries, 1);
+        assert_eq!(output.snapshot().overflow_recoveries, 2);
         assert_eq!(output.snapshot().queued_frames, 6);
     }
 
@@ -494,7 +482,7 @@ mod tests {
             shared: Arc::new(Mutex::new(State::default())),
             worker: Mutex::new(None),
             max_frames: 3,
-            min_frames: 3,
+            wake: Arc::new(Event::new().unwrap()),
         };
         output.queue(&[1, -1, 2, -2]);
         output.queue(&[3, -3, 4, -4]);
@@ -507,13 +495,56 @@ mod tests {
     }
 
     #[test]
-    fn engine_period_respects_device_granularity_bounds_and_overflow() {
-        assert_eq!(supported_period(4, 48, 448), Some(48));
-        assert_eq!(supported_period(48, 100, 480), Some(144));
-        assert_eq!(supported_period(48, 100, 120), None);
-        assert_eq!(supported_period(0, 48, 480), None);
-        assert_eq!(supported_period(48, 0, 480), None);
-        assert_eq!(supported_period(48, 480, 240), None);
-        assert_eq!(supported_period(2, u32::MAX, u32::MAX), None);
+    fn endpoint_headroom_preserves_continuous_pcm_across_worker_scheduling_stalls() {
+        let output = Playback {
+            shared: Arc::new(Mutex::new(State::default())),
+            worker: Mutex::new(None),
+            max_frames: 7200,
+            wake: Arc::new(Event::new().unwrap()),
+        };
+        let mut endpoint = VecDeque::new();
+        let mut buffering = true;
+        let mut started = false;
+        let mut source_frame = 0i16;
+        let mut expected_frame = 0i16;
+        for tick in 0..200 {
+            if tick % 2 == 0 {
+                let pcm: Vec<_> = (0..960)
+                    .flat_map(|_| {
+                        let value = source_frame;
+                        source_frame = source_frame.wrapping_add(1);
+                        [value, value.wrapping_neg()]
+                    })
+                    .collect();
+                output.queue(&pcm);
+            }
+            // A 40 ms worker stall; the 10 ms engine and 20 ms source keep
+            // running independently. The endpoint holds the startup reserve.
+            if !(8..12).contains(&(tick % 20)) {
+                let mut state = output.shared.lock().unwrap();
+                trim_to_budget(&mut state, endpoint.len() / 2, 7200);
+                buffering = next_buffering(buffering, state.pcm.len() / 2, 3600);
+                let count = render_frames(
+                    buffering,
+                    7200 - endpoint.len() as u32 / 2,
+                    state.pcm.len() / 2,
+                );
+                for _ in 0..count * 2 {
+                    endpoint.push_back(state.pcm.pop_front().unwrap());
+                }
+                started |= count > 0;
+                assert!(endpoint.len() / 2 + state.pcm.len() / 2 <= 7200);
+            }
+            if started {
+                assert!(endpoint.len() >= 960, "endpoint starvation at tick {tick}");
+                for _ in 0..480 {
+                    assert_eq!(endpoint.pop_front(), Some(expected_frame));
+                    assert_eq!(endpoint.pop_front(), Some(expected_frame.wrapping_neg()));
+                    expected_frame = expected_frame.wrapping_add(1);
+                }
+            }
+        }
+        assert!(started);
+        assert_eq!(output.snapshot().frames_dropped, 0);
     }
 }
