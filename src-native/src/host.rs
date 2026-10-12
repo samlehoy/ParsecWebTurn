@@ -252,6 +252,15 @@ pub fn dispatch(
         caller.data_mut().input_mode = mode;
         if let Some(window) = &caller.data().window {
             window.set_keyboard_grab(enable);
+            window.trace_core_input(
+                "keyboard-import",
+                &caller.data().memory,
+                caller.data().app_pointer,
+                mode,
+                caller.data().app_pointer.is_some_and(|app| {
+                    crate::core_input::state(&caller.data().memory, app, mode).is_ok()
+                }),
+            );
             if let Some(state) = caller
                 .data()
                 .app_pointer

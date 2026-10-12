@@ -16,6 +16,11 @@ use windows::{
 };
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
+    pub min_buffer_ms: u32,
+    pub max_buffer_ms: u32,
+    pub resets: u64,
+    pub buffering: bool,
+    pub max_worker_gap_ms: Option<f64>,
     pub device_opened: bool,
     pub low_latency_shared_mode: bool,
     pub engine_period_frames: Option<u32>,
@@ -25,6 +30,7 @@ pub struct Snapshot {
     pub frames_written: u64,
     pub frames_dropped: u64,
     pub underruns: u64,
+    pub empty_device_wakes: u64,
     pub queued_frames: usize,
     pub device_padding: u32,
     pub failure_hresult: Option<String>,
@@ -37,7 +43,6 @@ pub struct Registry {
     completed: VecDeque<Snapshot>,
 }
 impl Registry {
-    #[cfg(feature = "diagnostics")]
     pub fn snapshots(&self) -> Vec<Snapshot> {
         self.completed
             .iter()
@@ -99,6 +104,12 @@ impl Playback {
         let max_frames = max_buffer as usize * 48;
         let min_frames = min_buffer as usize * 48;
         let shared = Arc::new(Mutex::new(State::default()));
+        {
+            let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+            state.report.min_buffer_ms = min_buffer;
+            state.report.max_buffer_ms = max_buffer;
+            state.report.buffering = true;
+        }
         let state = shared.clone();
         let (tx, rx) = mpsc::sync_channel(1);
         window
@@ -160,6 +171,7 @@ impl Playback {
         let mut s = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         s.pcm.clear();
         s.report.queued_frames = 0;
+        s.report.resets += 1;
         s.reset = true;
     }
     pub fn snapshot(&self) -> Snapshot {
@@ -253,12 +265,19 @@ unsafe fn render(
         .device_opened = true;
     let _ = ready.send(true);
     let mut buffering = true;
+    let mut previous_wake = std::time::Instant::now();
     loop {
         WaitForSingleObject(event.0, 50);
         if window.closing.load(std::sync::atomic::Ordering::Acquire) {
             break;
         }
         let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
+        if crate::io_trace::enabled() {
+            let now = std::time::Instant::now();
+            let gap = now.duration_since(previous_wake).as_secs_f64() * 1000.0;
+            previous_wake = now;
+            s.report.max_worker_gap_ms = Some(s.report.max_worker_gap_ms.unwrap_or(0.0).max(gap));
+        }
         if s.stopped {
             break;
         }
@@ -270,6 +289,9 @@ unsafe fn render(
             buffering = true;
         }
         let padding = client.GetCurrentPadding()?;
+        if crate::io_trace::enabled() && !buffering && padding == 0 {
+            s.report.empty_device_wakes += 1;
+        }
         s.report.device_padding = padding;
         let available = capacity.saturating_sub(padding);
         if available == 0 {
@@ -278,6 +300,7 @@ unsafe fn render(
         if buffering && s.pcm.len() / 2 >= min_frames.max(1) {
             buffering = false;
         }
+        s.report.buffering = buffering;
         let count = render_frames(buffering, available, s.pcm.len() / 2);
         if count == 0 {
             // An empty shared-mode stream is rendered as silence by Windows.

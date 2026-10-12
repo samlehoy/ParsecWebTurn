@@ -66,6 +66,7 @@ pub struct Window {
     relative_anchor: Mutex<Option<(i32, i32)>>,
     has_focus: AtomicBool,
     input_state: Mutex<crate::core_input::State>,
+    input_trace: Mutex<crate::io_trace::Input>,
     mouse_clipped: AtomicBool,
     input_suspended: AtomicBool,
     host_cursor: Mutex<Option<(i32, i32, bool)>>,
@@ -159,6 +160,7 @@ impl Window {
             relative_anchor: Mutex::new(None),
             has_focus: AtomicBool::new(false),
             input_state: Default::default(),
+            input_trace: Default::default(),
             mouse_clipped: AtomicBool::new(false),
             input_suspended: AtomicBool::new(false),
             host_cursor: Default::default(),
@@ -465,6 +467,14 @@ impl Window {
         }
     }
     fn set_host_cursor(&self, x: i32, y: i32, relative: bool, hidden: bool) {
+        if crate::io_trace::enabled() {
+            let mut trace = self.input_trace.lock().unwrap_or_else(|e| e.into_inner());
+            trace.cursor_events += 1;
+            trace.relative_events += u64::from(relative);
+            trace.hidden_events += u64::from(hidden);
+            trace.last_relative = relative;
+            trace.last_hidden = hidden;
+        }
         // Parsec SDK cursor_func and lowlat both use OR. A hidden-only event
         // must acquire native relative input too; button state is not evidence.
         let relative = relative || hidden;
@@ -586,6 +596,12 @@ impl Window {
                     self.mouse_clipped.store(true, Ordering::Release);
                     return true;
                 }
+                if crate::io_trace::enabled() {
+                    self.input_trace
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clip_error = Some(GetLastError());
+                }
             }
         }
         if self.mouse_clipped.swap(false, Ordering::AcqRel) {
@@ -610,9 +626,15 @@ impl Window {
                 std::ptr::null_mut()
             },
         };
-        let acquired =
-            RegisterRawInputDevices(&device, 1, std::mem::size_of::<RAWINPUTDEVICE>() as u32) != 0
-                && enabled;
+        let registered =
+            RegisterRawInputDevices(&device, 1, std::mem::size_of::<RAWINPUTDEVICE>() as u32) != 0;
+        if !registered && crate::io_trace::enabled() {
+            self.input_trace
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .raw_registration_error = Some(GetLastError());
+        }
+        let acquired = registered && enabled;
         *self
             .relative_anchor
             .lock()
@@ -737,8 +759,98 @@ impl Window {
         self.events.push(event);
     }
     fn raw_mouse_motion(&self, mouse: &RAWMOUSE) {
+        if crate::io_trace::enabled() && mouse.usFlags & MOUSE_MOVE_ABSOLUTE != 0 {
+            self.input_trace
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .raw_absolute_events += 1;
+        }
         if self.relative_mouse.load(Ordering::Acquire) && mouse.usFlags & MOUSE_MOVE_ABSOLUTE == 0 {
+            if crate::io_trace::enabled() {
+                self.input_trace
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .raw_motion_events += 1;
+            }
             self.push(Event::RelativeMotion(mouse.lLastX, mouse.lLastY));
+        }
+    }
+
+    pub fn trace_core_input(
+        &self,
+        source: &'static str,
+        memory: &crate::memory::GuestMemory,
+        app: Option<u32>,
+        cached_mode: crate::core_input::Mode,
+        state_valid: bool,
+    ) {
+        if !crate::io_trace::enabled() {
+            return;
+        }
+        let actual_mode = crate::core_input::mode(memory).ok();
+        let mut trace = self.input_trace.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = trace
+            .core_reads
+            .entry(source)
+            .or_insert(crate::io_trace::CoreRead {
+                calls: 0,
+                failures: 0,
+                app_present: false,
+                state_valid: false,
+                cached_mode,
+                actual_mode: None,
+            });
+        entry.calls += 1;
+        entry.failures += u64::from(actual_mode.is_none() || !state_valid);
+        entry.app_present = app.is_some();
+        entry.state_valid = state_valid;
+        entry.cached_mode = cached_mode;
+        entry.actual_mode = actual_mode;
+    }
+
+    #[cfg(not(feature = "diagnostics"))]
+    pub fn input_trace_snapshot(&self) -> serde_json::Value {
+        unsafe {
+            let hwnd = self.handle();
+            // GetFocus is thread-local. Query the window's UI thread explicitly
+            // because this snapshot is collected by the optional file worker.
+            let thread = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
+            let mut gui = GUITHREADINFO {
+                cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+                ..std::mem::zeroed()
+            };
+            let gui_valid = thread != 0 && GetGUIThreadInfo(thread, &mut gui) != 0;
+            let mut clip = RECT::default();
+            let clip_valid = GetClipCursor(&mut clip) != 0;
+            let mut client = RECT::default();
+            let mut origin = POINT::default();
+            let bounds_valid =
+                GetClientRect(hwnd, &mut client) != 0 && ClientToScreen(hwnd, &mut origin) != 0;
+            let clip_inside = clip_valid
+                && bounds_valid
+                && clip.left >= origin.x
+                && clip.top >= origin.y
+                && clip.right <= origin.x + client.right
+                && clip.bottom <= origin.y + client.bottom;
+            let state = *self.input_state.lock().unwrap_or_else(|e| e.into_inner());
+            serde_json::json!({
+                "state": state,
+                "foreground": GetForegroundWindow() == hwnd,
+                "ui_focus": if gui_valid { Some(gui.hwndFocus == hwnd) } else { None },
+                "focus_flag": self.has_focus.load(Ordering::Acquire),
+                "minimized": IsIconic(hwnd) != 0,
+                "video_ready": self.video_ready.load(Ordering::Acquire),
+                "video_visible": self.video_visible.load(Ordering::Acquire),
+                "settings_open": self.settings_open(),
+                "suspended": self.input_suspended.load(Ordering::Acquire),
+                "relative_requested": self.relative_requested.load(Ordering::Acquire),
+                "relative_active": self.relative_mouse.load(Ordering::Acquire),
+                "keyboard_requested": self.keyboard_requested.load(Ordering::Acquire),
+                "keyboard_active": self.keyboard_grab.lock().unwrap_or_else(|e| e.into_inner()).active(),
+                "clip_owned": self.mouse_clipped.load(Ordering::Acquire),
+                "clip_inside_client": if clip_valid && bounds_valid { Some(clip_inside) } else { None },
+                "events": *self.input_trace.lock().unwrap_or_else(|e| e.into_inner()),
+            })
         }
     }
 }

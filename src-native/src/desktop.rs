@@ -415,17 +415,21 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
                 break;
             }
             if input {
-                let state = store
-                    .data()
-                    .app_pointer
-                    .and_then(|app| {
-                        crate::core_input::state(&store.data().memory, app, store.data().input_mode)
-                            .ok()
-                    })
-                    .unwrap_or(crate::core_input::State {
-                        detached: true,
-                        ..Default::default()
-                    });
+                let state = store.data().app_pointer.and_then(|app| {
+                    crate::core_input::state(&store.data().memory, app, store.data().input_mode)
+                        .ok()
+                });
+                window.trace_core_input(
+                    "main-loop",
+                    &store.data().memory,
+                    store.data().app_pointer,
+                    store.data().input_mode,
+                    state.is_some(),
+                );
+                let state = state.unwrap_or(crate::core_input::State {
+                    detached: true,
+                    ..Default::default()
+                });
                 window.set_input_state(state);
             }
             first = false;

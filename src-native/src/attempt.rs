@@ -632,6 +632,16 @@ impl Attempt {
         }
     }
 
+    #[cfg(all(windows, not(feature = "diagnostics")))]
+    pub fn audio_snapshot(&self) -> Option<crate::audio_stream::Snapshot> {
+        self.completion
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .audio_stream
+            .as_ref()
+            .map(|audio| audio.snapshot())
+    }
+
     pub fn configure_video_protocol(&self, protocol: crate::backend::VideoProtocol) {
         let inspector = self
             .completion

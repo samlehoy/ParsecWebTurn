@@ -7,7 +7,7 @@ const CONFIG_HASH: u32 = 2_954_756;
 const KEY: u32 = 2_123_041;
 const NAME: &[u8] = b"client_immersive\0";
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Mode {
     pub mouse: bool,
     pub keyboard: bool,
@@ -33,7 +33,7 @@ impl Mode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct State {
     pub mode: Mode,
     pub detached: bool,
