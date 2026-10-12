@@ -59,4 +59,3 @@ the next tier. RFC 8445 relay local preferences rank these transports; direct
 candidate priorities and remote nomination authority remain unchanged.
 This bounded policy does not prove that a slower preferred route is impossible.
 See `docs/native-turn-and-hotkeys.md` and the isolated coturn trickle-ICE fixture.
-

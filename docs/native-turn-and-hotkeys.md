@@ -59,3 +59,14 @@ The web core ignores the per-hotkey global flag and its
 `MTY_AppEnableGlobalHotkeys` is empty. These bindings work with client focus;
 this change does not register system-wide shortcuts or promise background
 activation. Secure OS combinations remain controlled by Windows.
+
+## Automated validation
+
+Runtime changes at `2ac9dda` passed normal and diagnostics Windows unit tests,
+Clippy in both configurations, isolated Settings save/reopen and immersive
+capture tests, and the loopback coturn fallback/SCTP tests on 2026-10-12.
+[CI run](https://github.com/vampywiz17/ParsecWebTurn/actions/runs/38268921429).
+The generated Settings preview also confirms the new checkbox remains reachable
+without overlapping the footer. Actual Parsec-host routing and UI hotkey
+rebinding still need the user's live test; the synthetic fixtures do not prove
+interoperability with every host or network.

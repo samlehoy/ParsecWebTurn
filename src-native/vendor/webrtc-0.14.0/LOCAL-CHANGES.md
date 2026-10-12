@@ -38,4 +38,3 @@ policy to the patched ICE crate. The native app opts into UDP, then TLS, then
 plain TCP timed fallback. No certificate checks or ICE roles are changed.
 The app's separate Force TURN relay option uses `RTCIceTransportPolicy::Relay`;
 that routing policy is not imposed on other users of the vendored library.
-
