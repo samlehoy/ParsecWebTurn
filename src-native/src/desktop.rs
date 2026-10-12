@@ -425,13 +425,6 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
                 let state = store.data().app_pointer.and_then(|app| {
                     crate::core_input::effective_state(&store.data().memory, app).ok()
                 });
-                window.trace_core_input(
-                    "main-loop",
-                    &store.data().memory,
-                    store.data().app_pointer,
-                    state.map(|state| state.mode).unwrap_or_default(),
-                    state.is_some(),
-                );
                 let state = state.unwrap_or(crate::core_input::State {
                     detached: true,
                     ..Default::default()

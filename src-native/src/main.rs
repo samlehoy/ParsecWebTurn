@@ -52,7 +52,6 @@ mod http;
 mod http_probe;
 mod input;
 #[cfg(windows)]
-mod io_trace;
 #[cfg(windows)]
 mod keyboard_grab;
 mod lifecycle;

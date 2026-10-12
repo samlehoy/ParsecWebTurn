@@ -50,16 +50,6 @@ jobs:
       - name: Fetch pinned embedded core
         shell: pwsh
         run: ./src-native/fetch-core.ps1
-      - name: Build normal executable for local UI feedback
-        shell: pwsh
-        run: |
-          cargo build --locked --manifest-path src-native/Cargo.toml
-          if ($LASTEXITCODE -ne 0) { throw 'Diagnostic build failed' }
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Native-client-debug-win64
-          path: src-native/target/x86_64-pc-windows-msvc/debug/parsec-web-turn.exe
-          if-no-files-found: error
       - name: Verify Settings UI without screenshot export
         shell: pwsh
         run: |

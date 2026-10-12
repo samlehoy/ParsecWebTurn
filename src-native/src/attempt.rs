@@ -182,39 +182,6 @@ struct Progress {
     legacy_rsa_1024: bool,
 }
 
-#[cfg(any(test, all(windows, not(feature = "diagnostics"))))]
-impl Progress {
-    /// Explicit allowlist: no SDP, candidates, addresses, guest strings or errors.
-    fn connection_trace(&self) -> serde_json::Value {
-        serde_json::json!({
-            "offer_ready": self.ready,
-            "local_description_set": self.local_description_set,
-            "remote_description_set": self.remote_description_set,
-            "local_candidates": self.local_candidates,
-            "remote_candidates": self.remote_candidates,
-            "transport_connected": self.transport_connected,
-            "connection_established": self.connection_established,
-            "channels_open": self.open_mask.count_ones(),
-            "control_ready": self.control_ready,
-            "sync_received": self.sync_received,
-            "channel_messages_received": self.channel_messages_received,
-            "channel_bytes_received": self.channel_bytes_received,
-            "failed": self.failed,
-            "failure_stage": self.failure_stage,
-            "failure_channel": self.failure_channel,
-            "failure_elapsed_ms": self.failure_elapsed_ms,
-            "closed": self.closed,
-            "states": {
-                "peer": self.transport_states.get("peer"),
-                "ice": self.transport_states.get("ice"),
-                "dtls": self.transport_states.get("dtls"),
-                "gathering": self.transport_states.get("gathering"),
-                "signaling": self.transport_states.get("signaling"),
-            },
-        })
-    }
-}
-
 struct Completion {
     #[cfg(windows)]
     telemetry: Option<(Arc<crate::stats::Shared>, u64)>,
@@ -245,12 +212,10 @@ enum Delivery {
     },
 }
 impl Delivery {
-    fn submit(self, bytes: &[u8], received_at: Option<std::time::Instant>) -> Option<bool> {
+    fn submit(self, bytes: &[u8]) -> Option<bool> {
         match self {
             Self::Queued => None,
-            Self::Audio(audio) => {
-                Some(!audio.is_some_and(|sender| sender.submit_received(bytes, received_at)))
-            }
+            Self::Audio(audio) => Some(!audio.is_some_and(|sender| sender.submit(bytes))),
             Self::Video {
                 inspector,
                 #[cfg(windows)]
@@ -343,7 +308,7 @@ impl Completion {
         let Some(delivery) = self.prepare_receive(channel, text, bytes) else {
             return false;
         };
-        if let Some(discarded) = delivery.submit(bytes, None) {
+        if let Some(discarded) = delivery.submit(bytes) {
             self.media_ingress.record(channel, bytes.len(), discarded);
         }
         true
@@ -361,10 +326,6 @@ async fn read_channel(
     let mut buffer = vec![0; MAX_CHANNEL_MESSAGE];
     loop {
         let read = channel.read_data_channel(&mut buffer).await;
-        #[cfg(windows)]
-        let received_at = (id == 2 && crate::io_trace::enabled()).then(std::time::Instant::now);
-        #[cfg(not(windows))]
-        let received_at = None;
         let len = read.as_ref().map_or(0, |(len, _)| *len);
         let delivery = match read {
             Ok((0, _)) => {
@@ -386,7 +347,7 @@ async fn read_channel(
         if let Some(delivery) = delivery {
             // Copy/submit outside the connection lock. Consume sender handles
             // before bookkeeping, so cancellation never joins a blocked reader.
-            if let Some(discarded) = delivery.submit(&buffer[..len], received_at) {
+            if let Some(discarded) = delivery.submit(&buffer[..len]) {
                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                 if !state.cancelled && !state.closing {
                     state.media_ingress.record(id, len, discarded);
@@ -669,22 +630,6 @@ impl Attempt {
             Some(audio) => audio.poll(memory, pointer, capacity),
             None => Ok(0),
         }
-    }
-
-    #[cfg(all(windows, not(feature = "diagnostics")))]
-    pub fn audio_snapshot(&self) -> Option<crate::audio_stream::Snapshot> {
-        self.completion
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .audio_stream
-            .as_ref()
-            .map(|audio| audio.diagnostic_snapshot())
-    }
-
-    #[cfg(all(windows, not(feature = "diagnostics")))]
-    pub fn connection_trace(&self) -> serde_json::Value {
-        let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
-        state.progress.connection_trace()
     }
 
     pub fn configure_video_protocol(&self, protocol: crate::backend::VideoProtocol) {
@@ -1337,31 +1282,6 @@ fn ice_configuration(stun_provider: StunProvider) -> RTCConfiguration {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn connection_trace_distinguishes_startup_stages_without_guest_data() {
-        let mut progress = super::Progress {
-            mid: "private-guest-string".into(),
-            ready: true,
-            local_description_set: true,
-            transport_states: serde_json::json!({
-                "ice": "checking", "dtls": "new", "candidate": "private-address"
-            }),
-            ..Default::default()
-        };
-        let trace = progress.connection_trace();
-        assert_eq!(trace["offer_ready"], true);
-        assert_eq!(trace["remote_description_set"], false);
-        assert_eq!(trace["states"]["ice"], "checking");
-        assert!(!trace.to_string().contains("private-"));
-        progress.remote_description_set = true;
-        progress.open_mask = 7;
-        progress.failed = true;
-        progress.failure_stage = Some(super::FailureStage::ControlStartup);
-        let trace = progress.connection_trace();
-        assert_eq!(trace["remote_description_set"], true);
-        assert_eq!(trace["channels_open"], 3);
-        assert_eq!(trace["failure_stage"], "control-startup");
-    }
 
     #[test]
     fn establishment_timeout_still_bounds_an_unconnected_attempt() {
@@ -1481,7 +1401,7 @@ mod tests {
         let mut audio = state.audio_stream.take().unwrap();
         state.cancelled = true;
         audio.stop();
-        assert_eq!(delivery.submit(&[0xf8, 0xff, 0xfe], None), Some(true));
+        assert_eq!(delivery.submit(&[0xf8, 0xff, 0xfe]), Some(true));
         assert!(audio.snapshot().worker_finished);
         assert_eq!(audio.snapshot().queued_samples, 0);
     }

@@ -6,27 +6,13 @@ off did not resolve it. The shared suspect is the host's WebRTC/SCTP path,
 including its source pacing, transport, reassembly and ordered delivery.
 This is a hypothesis, not a demonstrated fault in WebRTC itself.
 
-## Isolated host recording
+## Historical capture and interpretation
 
-Run `scripts/capture-host-network.ps1 -OutputDirectory <new-directory>` in an
-administrator PowerShell while continuous sound plays and the remote client
-runs with `--trace-io`. The Windows Packet Monitor driver requires administrator
-rights; the application itself does not. The script finds the active parsecd
-UDP ports, records 60 seconds at network adapters with 96-byte truncation, stops
-its own capture and clears the filter list only after verifying it still contains
-only its filters. Existing filters abort the
-test; an already-running capture must not be interrupted. Do not run concurrent
-Packet Monitor sessions or change filters while this test runs.
+The temporary host capture script and client `--trace-io` sampler have been
+removed. The observations below describe the previous investigation, not
+commands or instrumentation available in current builds.
 
-Capture output contains local/network addresses and partial encrypted packet
-data. Keep it local. Only anonymized timing/count summaries belong in research
-notes; never publish the raw ETL, text or pcapng in the repository.
-
-Microsoft documents [Packet Monitor](https://learn.microsoft.com/en-us/windows-server/networking/technologies/pktmon/pktmon-syntax)
-and its [pcapng conversion limitations](https://learn.microsoft.com/en-us/windows-server/networking/technologies/pktmon/pktmon-pcapng-support).
-Zero lost capture events is not proof that no network packets were lost.
-
-## What the two boundaries can establish
+### What the two boundaries can establish
 
 - A gap in all outgoing stream datagrams at the host NIC points to something
   before or at that boundary, rather than the Rust audio decoder.

@@ -30,11 +30,6 @@ pub fn main() {
 }
 fn run() -> Result<()> {
     let mut args: Vec<_> = std::env::args().skip(1).collect();
-    let trace_io = args.iter().any(|arg| arg == "--trace-io");
-    args.retain(|arg| arg != "--trace-io");
-    if trace_io {
-        io_trace::enable();
-    }
     let software_overlay = !args.iter().any(|arg| arg == "--d3d-overlay");
     args.retain(|arg| arg != "--software-overlay" && arg != "--d3d-overlay");
     if args == ["--version"] {
@@ -86,15 +81,6 @@ fn run() -> Result<()> {
         backend.stun_provider = attempt::StunProvider::Parsec;
         backend.connection_settings = Some(connection_settings);
     }
-    let trace = if trace_io {
-        Some(io_trace::start(
-            &root.join("io-diagnostics.jsonl"),
-            window.clone(),
-            store.data().backend.clone(),
-        )?)
-    } else {
-        None
-    };
     let outcome = (|| -> Result<()> {
         #[cfg(test)]
         {
@@ -124,9 +110,6 @@ fn run() -> Result<()> {
         .map_err(|_| anyhow::anyhow!("Profile lock failed"))?
         .flush();
     window.request_stop();
-    if let Some(trace) = trace {
-        let _ = trace.join();
-    }
     engine.increment_epoch();
     if let Some(runtime) = &store.data().threads {
         runtime.http.shutdown();

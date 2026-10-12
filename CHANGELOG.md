@@ -5,6 +5,8 @@ builds, not published stable releases.
 
 ## Unreleased
 
+- Removed temporary input/audio troubleshooting logging and its capture tools after the investigation. The input fixes and original audio playback behavior remain unchanged.
+
 - Settings now includes **Force TURN relay**, keeping the next connection on a relay even when a direct VPN route is available. STUN-only mode and missing custom TURN servers are checked before connecting.
 - TURN connections prefer UDP, with TLS and then plain TCP available as timed fallbacks when the preferred route has not connected.
 - Custom Parsec hotkeys now take priority over conflicting native F8/F11, Settings and Connection stats shortcuts. Rebinding and hotkey recording remain owned by the original core.
