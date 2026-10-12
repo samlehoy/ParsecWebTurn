@@ -409,6 +409,7 @@ impl Window {
     pub fn set_relative_mouse(&self, enabled: bool) {
         let state = *self.input_state.lock().unwrap_or_else(|e| e.into_inner());
         let suspended = !self.has_focus.load(Ordering::Acquire)
+            || unsafe { IsIconic(self.handle()) != 0 || GetForegroundWindow() != self.handle() }
             || !self.video_ready.load(Ordering::Acquire)
             || !self.video_visible.load(Ordering::Acquire)
             || self.input_suspended.load(Ordering::Acquire)
@@ -1071,8 +1072,13 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             WM_SETFOCUS => {
                 s.has_focus.store(true, Ordering::Release);
-                s.apply_input_capture();
+                // Foreground activation can still be in progress while this
+                // synchronous focus notification is being dispatched.
+                PostMessageW(hwnd, WM_APP + 12, 0, 0);
                 s.push(Event::Focus(true));
+            }
+            WM_ACTIVATE if wp & 0xffff != WA_INACTIVE as usize => {
+                PostMessageW(hwnd, WM_APP + 12, 0, 0);
             }
             WM_ENTERMENULOOP | WM_ENTERSIZEMOVE => {
                 s.input_suspended.store(true, Ordering::Release);
@@ -1371,6 +1377,14 @@ mod tests {
             window.end_session();
             wait(|| !relative() && !clipped() && !keyboard());
         }));
+        if result.is_err() {
+            eprintln!("capture state: requested={} relative={} clipped={} keyboard={} focused={} suspended={} iconic={} foreground={} input={:?}",
+                window.relative_requested.load(Ordering::Acquire),window.relative_mouse.load(Ordering::Acquire),
+                window.mouse_clipped.load(Ordering::Acquire),window.keyboard_grab.lock().unwrap().active(),
+                window.has_focus.load(Ordering::Acquire),window.input_suspended.load(Ordering::Acquire),
+                unsafe {IsIconic(window.handle())},unsafe {GetForegroundWindow()==window.handle()},
+                *window.input_state.lock().unwrap());
+        }
         window.close();
         wait(|| window.hwnd.load(Ordering::Acquire) == 0);
         if let Err(panic) = result {
