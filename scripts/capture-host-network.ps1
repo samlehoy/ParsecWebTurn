@@ -21,6 +21,10 @@ try {
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         throw 'Run this isolated packet capture as administrator.'
     }
+    $status = Invoke-Pktmon -Arguments @('status')
+    if ($status -notmatch '(?i)\bnot running\b') {
+        throw 'Packet Monitor is active or its status could not be recognized; leave it untouched.'
+    }
     $existing = Invoke-Pktmon -Arguments @('filter','list')
     if ($existing -notmatch '(?im)^\s*None\s*$|no filters|no packet filters|nincs') {
         throw 'Existing or unrecognized Packet Monitor filters: leave them untouched and stop.'
