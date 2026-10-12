@@ -395,6 +395,7 @@ impl Window {
         {
             ReleaseCapture();
         }
+        self.apply_mouse_clip();
         self.push(Event::Button(down, button, x, y));
     }
     fn release_buttons(&self) {
@@ -403,6 +404,9 @@ impl Window {
             if pressed & (1 << button) != 0 {
                 self.push(Event::Button(false, button, 0, 0));
             }
+        }
+        unsafe {
+            self.apply_mouse_clip();
         }
     }
 
@@ -523,14 +527,10 @@ impl Window {
         );
     }
     unsafe fn apply_mouse_clip(&self) -> bool {
-        let mouse = self
-            .input_state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .mode
-            .mouse;
-        let enabled =
-            self.input_allowed() && (mouse || self.relative_mouse.load(Ordering::Acquire));
+        let state = *self.input_state.lock().unwrap_or_else(|e| e.into_inner());
+        let drag = !state.warp_disabled && self.pressed_buttons.load(Ordering::Acquire) != 0;
+        let enabled = self.input_allowed()
+            && (state.mode.mouse || drag || self.relative_mouse.load(Ordering::Acquire));
         if enabled {
             let mut rect = RECT::default();
             let mut origin = POINT::default();
@@ -539,6 +539,19 @@ impl Window {
                 && rect.right > rect.left
                 && rect.bottom > rect.top
             {
+                // Absolute input clamps outside coordinates to the remote edge.
+                // Keep drags inside the actual video, including letterboxing,
+                // so reversing direction never has an off-screen dead zone.
+                if drag {
+                    if let Some([l, t, r, b]) = self.presented_viewport().and_then(|v| v.rect()) {
+                        rect = RECT {
+                            left: l,
+                            top: t,
+                            right: r,
+                            bottom: b,
+                        };
+                    }
+                }
                 rect.left += origin.x;
                 rect.right += origin.x;
                 rect.top += origin.y;
@@ -1337,6 +1350,23 @@ mod tests {
             wait(|| !relative() && clipped()); // Immersive Mouse survives raw unlock.
             window.set_input_state(mode(false, false));
             wait(|| !clipped() && !keyboard());
+            // SetCapture delivers outside motion but does not constrain the
+            // pointer. Native drags must also clip while Cursor Warp is enabled.
+            unsafe {
+                SendMessageW(window.handle(), WM_LBUTTONDOWN, 1, (100 << 16) | 100);
+            }
+            wait(clipped);
+            window.set_input_state(crate::core_input::State {
+                warp_disabled: true,
+                ..mode(false, false)
+            });
+            wait(|| !clipped());
+            window.set_input_state(mode(false, false));
+            wait(clipped);
+            unsafe {
+                SendMessageW(window.handle(), WM_LBUTTONUP, 0, (100 << 16) | 100);
+            }
+            wait(|| !clipped());
             window.set_relative_mouse(true);
             wait(|| relative() && clipped());
             window.set_input_state(crate::core_input::State {

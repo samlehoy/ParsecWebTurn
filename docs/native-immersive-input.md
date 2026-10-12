@@ -55,6 +55,12 @@ bits or configuration values are patched.
   Matoya update reports actual acquisition.
 - Disable Cursor Warp suppresses relative pointer lock and return-position
   warps. It does not override independently selected immersive Mouse capture.
+- With Cursor Warp enabled, button drags also use temporary confinement to the
+  presented video rectangle (excluding letterbox bars). `SetCapture` alone keeps
+  delivering out-of-window events but does not prevent the local pointer from
+  accumulating travel beyond the remote absolute-coordinate edge. Confinement
+  makes reversal immediate. Releasing all buttons or losing capture releases
+  this temporary policy; continuous confinement remains Immersive Mouse/Both.
 - When the host leaves relative mode, its absolute cursor position is mapped
   through the video letterbox and restored with `SetCursorPos`. Ordinary remote
   cursor updates do not chase the local pointer. The matching synthetic move

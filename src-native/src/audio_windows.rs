@@ -137,14 +137,18 @@ impl Playback {
     pub fn queue(&self, pcm: &[i16]) {
         let mut s = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         let frames = pcm.len() / 2;
-        if s.stopped
-            || s.report.failure_hresult.is_some()
-            || s.pcm.len() / 2 + frames > self.max_frames
-        {
+        if s.stopped || s.report.failure_hresult.is_some() {
             s.report.frames_dropped += frames as u64;
             return;
         }
-        s.pcm.extend(pcm);
+        // Keep recent audio after a burst instead of retaining an already-late
+        // queue and discarding every newly arriving packet until it drains.
+        let skip = frames.saturating_sub(self.max_frames) * 2;
+        let incoming = &pcm[skip..frames * 2];
+        let discard = (s.pcm.len() + incoming.len()).saturating_sub(self.max_frames * 2);
+        s.pcm.drain(..discard);
+        s.report.frames_dropped += ((skip + discard) / 2) as u64;
+        s.pcm.extend(incoming);
         s.report.frames_queued += frames as u64;
         s.report.queued_frames = s.pcm.len() / 2;
     }
@@ -274,34 +278,36 @@ unsafe fn render(
         if buffering && s.pcm.len() / 2 >= min_frames.max(1) {
             buffering = false;
         }
-        let count = if buffering {
-            0
-        } else {
-            available.min((s.pcm.len() / 2) as u32)
-        };
-        let pointer = render.GetBuffer(available)?;
-        // SAFETY: WASAPI grants exactly available interleaved 16-bit stereo frames.
-        let buffer = std::slice::from_raw_parts_mut(pointer.cast::<i16>(), available as usize * 2);
-        buffer.fill(0);
-        for sample in buffer.iter_mut().take(count as usize * 2) {
+        let count = render_frames(buffering, available, s.pcm.len() / 2);
+        if count == 0 {
+            // An empty shared-mode stream is rendered as silence by Windows.
+            // Do not enqueue synthetic silence and report it to the core as
+            // pending audio, or re-enter startup buffering for each short gap.
+            if !buffering && padding == 0 {
+                s.report.underruns += 1;
+            }
+            continue;
+        }
+        let pointer = render.GetBuffer(count)?;
+        // SAFETY: WASAPI grants exactly count interleaved 16-bit stereo frames.
+        let buffer = std::slice::from_raw_parts_mut(pointer.cast::<i16>(), count as usize * 2);
+        for sample in buffer {
             *sample = s.pcm.pop_front().unwrap();
         }
-        render.ReleaseBuffer(
-            available,
-            if count == 0 {
-                AUDCLNT_BUFFERFLAGS_SILENT.0 as u32
-            } else {
-                0
-            },
-        )?;
+        render.ReleaseBuffer(count, 0)?;
+        s.report.device_padding = padding + count;
         s.report.frames_written += count as u64;
         s.report.queued_frames = s.pcm.len() / 2;
-        if count < available && !buffering {
-            s.report.underruns += 1;
-            buffering = true;
-        }
     }
     Ok(())
+}
+
+fn render_frames(buffering: bool, available: u32, queued: usize) -> u32 {
+    if buffering {
+        0
+    } else {
+        available.min(queued.min(u32::MAX as usize) as u32)
+    }
 }
 
 /// Query the endpoint's supported period; never assume a fixed 1/2/5 ms quantum.
@@ -390,7 +396,34 @@ pub fn probe() -> Result<serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::supported_period;
+    use super::*;
+
+    #[test]
+    fn short_audio_packets_do_not_fill_the_endpoint_with_silence() {
+        assert_eq!(render_frames(true, 960, 240), 0);
+        assert_eq!(render_frames(false, 960, 240), 240);
+        assert_eq!(render_frames(false, 960, 0), 0);
+        // The next packet can resume immediately without startup rebuffering.
+        assert_eq!(render_frames(false, 960, 120), 120);
+        assert_eq!(render_frames(false, 120, 960), 120);
+    }
+
+    #[test]
+    fn output_overflow_keeps_recent_stereo_frames_and_reset_releases_them() {
+        let output = Playback {
+            shared: Arc::new(Mutex::new(State::default())),
+            worker: Mutex::new(None),
+            max_frames: 3,
+        };
+        output.queue(&[1, -1, 2, -2]);
+        output.queue(&[3, -3, 4, -4]);
+        assert_eq!(output.shared.lock().unwrap().pcm, [2, -2, 3, -3, 4, -4]);
+        output.queue(&[5, -5, 6, -6, 7, -7, 8, -8]);
+        assert_eq!(output.shared.lock().unwrap().pcm, [6, -6, 7, -7, 8, -8]);
+        assert_eq!(output.snapshot().frames_dropped, 5);
+        output.reset();
+        assert_eq!(output.snapshot().queued_frames, 0);
+    }
 
     #[test]
     fn engine_period_respects_device_granularity_bounds_and_overflow() {

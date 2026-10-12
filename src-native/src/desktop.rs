@@ -210,7 +210,6 @@ fn run_worker_callback(caller: &mut Caller<'_, HostState>, index: u32, opaque: i
         _ => bail!("invalid worker callback"),
     };
     let until = Instant::now() + Duration::from_secs(window.run_seconds);
-    let period = Duration::from_nanos(1_000_000_000 / 60);
     let mut first = true;
     while !window.closing.load(Ordering::Acquire) && (window.live || Instant::now() < until) {
         let started = Instant::now();
@@ -219,7 +218,11 @@ fn run_worker_callback(caller: &mut Caller<'_, HostState>, index: u32, opaque: i
             return Ok(());
         }
         first = false;
-        let remaining = period.saturating_sub(started.elapsed());
+        // Worker callbacks (including the pinned audio loop) already wait via
+        // libc nanosleep. They are not display callbacks: a 60 Hz throttle here
+        // delays audio polling and creates avoidable underruns. Only guard a
+        // callback that returns immediately against spinning a CPU core.
+        let remaining = Duration::from_millis(1).saturating_sub(started.elapsed());
         if !remaining.is_zero() {
             std::thread::sleep(remaining);
         }
