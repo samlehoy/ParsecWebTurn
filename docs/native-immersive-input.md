@@ -48,19 +48,22 @@ bits or configuration values are patched.
   intercepted key releases are preserved. Ordinary text retains the normal
   Windows keyboard-layout path. Secure OS shortcuts remain OS-controlled.
 - Both combines these policies. Off releases them; an independent host request
-  for relative game input can still require pointer lock.
-- Relative mouse uses Raw Input deltas; absolute WM_MOUSEMOVE events are not
+  for relative input (including desktop drags) can still require pointer lock.
+- Native relative intent is `cursor.relative || cursor.hidden`. The browser
+  core omits the hidden branch because `MTY_AppCanWarpCursor` is false. The Rust
+  adapter reads the already-decoded host cursor event and applies the native
+  rule without changing the WASM. A later browser pointer-lock callback cannot
+  cancel a known hidden-only native request. Clearing both host flags releases
+  it, including while unfocused. Button state alone never selects relative mode.
+- Relative mouse uses Raw Input deltas with one-pixel cursor confinement,
+  matching native Matoya's capture strategy; absolute WM_MOUSEMOVE events are not
   also forwarded. Requested and acquired states are separate, so temporary
   focus/visibility suspension does not lose the request. The existing exported
   Matoya update reports actual acquisition.
-- Disable Cursor Warp suppresses relative pointer lock and return-position
-  warps. It does not override independently selected immersive Mouse capture.
-- With Cursor Warp enabled, button drags also use temporary confinement to the
-  presented video rectangle (excluding letterbox bars). `SetCapture` alone keeps
-  delivering out-of-window events but does not prevent the local pointer from
-  accumulating travel beyond the remote absolute-coordinate edge. Confinement
-  makes reversal immediate. Releasing all buttons or losing capture releases
-  this temporary policy; continuous confinement remains Immersive Mouse/Both.
+- Disable Cursor Warp suppresses return-position warps only. It does not disable
+  relative capture or independently selected immersive Mouse capture. The pinned
+  main cursor-event handler reads this option only before its return-position
+  warp, not before acquiring relative input.
 - When the host leaves relative mode, its absolute cursor position is mapped
   through the video letterbox and restored with `SetCursorPos`. Ordinary remote
   cursor updates do not chase the local pointer. The matching synthetic move
@@ -75,9 +78,37 @@ The Windows implementation follows [ClipCursor ownership/release rules](https://
 and [low-level hook requirements](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc).
 
 An isolated foreground-window test exercises Mouse/Keyboard/Both/Off, the real
-hook-to-window key path, relative-mode independence, Disable Cursor Warp, detach,
+hook-to-window key path, the cursor wire decoder and all native host-flag
+combinations, one-pixel confinement, immediate opposite Raw Input deltas and
+their relative control packets, enabled/disabled return-position warping, detach,
 minimize/restore and disconnect. It runs separately from other window tests and
 restores the previous desktop cursor confinement/position. No account, real
 profile, network, decoder or administrator access is involved. A live host test
 is still needed to confirm the complete remote interaction on the user's GPUs.
 Video decoding, rendering, media queues and mouse coalescing are unchanged.
+
+## Source evidence and limits (2026-10-12)
+
+- [Official immersive documentation](https://support.parsec.app/hc/en-us/articles/32361385571860-Immersive-Mode-Setting)
+  and [configuration values](https://support.parsec.app/hc/en-us/articles/32381443626516-All-Advanced-Configuration-Options)
+  distinguish continuous Mouse/Both confinement from Keyboard and Off.
+- [Archived SDK client example, `cursor_func`](https://github.com/mbroemme/parsec-sdk/blob/14222ac25be3bc28c49b4858213a737642031513/examples/client/main.c#L58)
+  combines the two flags and restores the cursor on leaving relative mode.
+  The [SDK header](https://github.com/mbroemme/parsec-sdk/blob/14222ac25be3bc28c49b4858213a737642031513/sdk/parsec.h)
+  documents return coordinates and signed relative motion. This is an archived
+  mirror, not proof of every detail in the current closed-source application.
+- [lowlat host cursor source](https://github.com/nomi-san/lowlat/blob/7b4dc4ae79990ea8c59a108c80b3c89b695c3cb4/crates/host/src/cursor.rs)
+  corroborates the hidden-only capture requirement. Its
+  [cursor flags](https://github.com/nomi-san/lowlat/blob/7b4dc4ae79990ea8c59a108c80b3c89b695c3cb4/crates/core/src/cursor.rs)
+  distinguish relative, hidden and touch suppression; suppression must not be
+  treated as relative input. lowlat is a host, not a replacement client.
+- [Matoya's Windows implementation](https://github.com/snowcone-ltd/libmatoya/blob/952f2a22bdb4cf832db110c00aa3e57952358eae/src/windows/appw.c)
+  separates immersive grab from relative state, confines relative input to one
+  pixel and consumes Raw Input. Our retained legacy button-message path differs
+  from its NOLEGACY/raw-button path, but absolute motion is suppressed while
+  relative capture is acquired. No source implementation was copied.
+
+The earlier button-driven drag-confinement experiment was removed: the audited
+native policy uses host cursor intent, not a guess based on any button press.
+Automated tests establish the adapter's behavior for the supplied events; they
+cannot prove what a particular live host emits or how input feels on each GPU.

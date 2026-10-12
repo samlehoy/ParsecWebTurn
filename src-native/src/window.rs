@@ -63,6 +63,7 @@ pub struct Window {
     relative_mouse: AtomicBool,
     relative_pending: AtomicUsize,
     relative_requested: AtomicBool,
+    relative_anchor: Mutex<Option<(i32, i32)>>,
     has_focus: AtomicBool,
     input_state: Mutex<crate::core_input::State>,
     mouse_clipped: AtomicBool,
@@ -155,6 +156,7 @@ impl Window {
             relative_mouse: AtomicBool::new(false),
             relative_pending: AtomicUsize::new(0),
             relative_requested: AtomicBool::new(false),
+            relative_anchor: Mutex::new(None),
             has_focus: AtomicBool::new(false),
             input_state: Default::default(),
             mouse_clipped: AtomicBool::new(false),
@@ -326,11 +328,11 @@ impl Window {
     }
     pub fn end_session(&self) {
         self.begin_video(); // Retire the old surface before a reconnect can own it.
+        *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.relative_requested.store(false, Ordering::Release);
         self.set_input_state(Default::default());
         self.set_relative_mouse(false);
         self.set_keyboard_grab(false);
-        *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
     pub fn publish_software_overlay(&self, frame: &crate::overlay::Frame) {
         if !self.software_overlay_enabled.load(Ordering::Acquire)
@@ -395,7 +397,6 @@ impl Window {
         {
             ReleaseCapture();
         }
-        self.apply_mouse_clip();
         self.push(Event::Button(down, button, x, y));
     }
     fn release_buttons(&self) {
@@ -405,12 +406,21 @@ impl Window {
                 self.push(Event::Button(false, button, 0, 0));
             }
         }
-        unsafe {
-            self.apply_mouse_clip();
-        }
     }
 
     pub fn set_relative_mouse(&self, enabled: bool) {
+        // The browser build omits the native `relative || hidden` rule because
+        // MTY_AppCanWarpCursor returns false. Known native host intent takes
+        // precedence over that browser-specific pointer-lock callback.
+        let enabled = self
+            .host_cursor
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map(|(_, _, relative)| relative)
+            .unwrap_or(enabled);
+        self.request_relative_mouse(enabled, false);
+    }
+    fn request_relative_mouse(&self, enabled: bool, authoritative: bool) {
         let state = *self.input_state.lock().unwrap_or_else(|e| e.into_inner());
         let suspended = !self.has_focus.load(Ordering::Acquire)
             || unsafe { IsIconic(self.handle()) != 0 || GetForegroundWindow() != self.handle() }
@@ -418,12 +428,11 @@ impl Window {
             || !self.video_visible.load(Ordering::Acquire)
             || self.input_suspended.load(Ordering::Acquire)
             || self.settings_open()
-            || state.detached
-            || state.warp_disabled;
+            || state.detached;
         let previous = self.relative_requested.load(Ordering::Acquire);
         // The core may issue an unlock while focus/detach temporarily suspends
         // acquisition. Keep the host's relative request for the next activation.
-        if enabled || !suspended {
+        if authoritative || enabled || !suspended {
             self.relative_requested.store(enabled, Ordering::Release);
         }
         if enabled {
@@ -437,14 +446,34 @@ impl Window {
             PostMessageW(self.handle(), WM_APP + 7, 0, 0);
         }
     }
-    pub fn set_host_cursor(&self, x: i32, y: i32, relative: bool) {
+    pub fn host_cursor_event(&self, event: &serde_json::Value) {
+        if event["type"].as_i64() != Some(1) {
+            return;
+        }
+        let cursor = &event["cursor"];
+        if let (Some(x), Some(y), Some(relative), Some(hidden)) = (
+            cursor["positionX"]
+                .as_i64()
+                .and_then(|v| i32::try_from(v).ok()),
+            cursor["positionY"]
+                .as_i64()
+                .and_then(|v| i32::try_from(v).ok()),
+            cursor["relative"].as_bool(),
+            cursor["hidden"].as_bool(),
+        ) {
+            self.set_host_cursor(x, y, relative, hidden);
+        }
+    }
+    fn set_host_cursor(&self, x: i32, y: i32, relative: bool, hidden: bool) {
+        // Parsec SDK cursor_func and lowlat both use OR. A hidden-only event
+        // must acquire native relative input too; button state is not evidence.
+        let relative = relative || hidden;
         *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner()) = Some((x, y, relative));
         // When capture is suspended, the guest already sees relative=false and
         // may omit its redundant unlock. Do not retain a stale relative request.
-        if !relative && self.relative_requested.load(Ordering::Acquire) {
-            self.set_relative_mouse(false);
-            // An actual host transition is permanent, including while unfocused.
-            self.relative_requested.store(false, Ordering::Release);
+        if relative != self.relative_requested.load(Ordering::Acquire) {
+            // A host transition is permanent, including while unfocused.
+            self.request_relative_mouse(relative, true);
         }
     }
     unsafe fn restore_host_cursor(&self) {
@@ -517,20 +546,12 @@ impl Window {
                 self.handle(),
                 allowed && self.keyboard_requested.load(Ordering::Acquire),
             );
-        let warp_disabled = self
-            .input_state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .warp_disabled;
-        self.apply_relative_mouse(
-            allowed && !warp_disabled && self.relative_requested.load(Ordering::Acquire),
-        );
+        self.apply_relative_mouse(allowed && self.relative_requested.load(Ordering::Acquire));
     }
     unsafe fn apply_mouse_clip(&self) -> bool {
         let state = *self.input_state.lock().unwrap_or_else(|e| e.into_inner());
-        let drag = !state.warp_disabled && self.pressed_buttons.load(Ordering::Acquire) != 0;
         let enabled = self.input_allowed()
-            && (state.mode.mouse || drag || self.relative_mouse.load(Ordering::Acquire));
+            && (state.mode.mouse || self.relative_mouse.load(Ordering::Acquire));
         if enabled {
             let mut rect = RECT::default();
             let mut origin = POINT::default();
@@ -539,23 +560,28 @@ impl Window {
                 && rect.right > rect.left
                 && rect.bottom > rect.top
             {
-                // Absolute input clamps outside coordinates to the remote edge.
-                // Keep drags inside the actual video, including letterboxing,
-                // so reversing direction never has an off-screen dead zone.
-                if drag {
-                    if let Some([l, t, r, b]) = self.presented_viewport().and_then(|v| v.rect()) {
-                        rect = RECT {
-                            left: l,
-                            top: t,
-                            right: r,
-                            bottom: b,
-                        };
-                    }
-                }
                 rect.left += origin.x;
                 rect.right += origin.x;
                 rect.top += origin.y;
                 rect.bottom += origin.y;
+                if self.relative_mouse.load(Ordering::Acquire) {
+                    if let Some((x, y)) = *self
+                        .relative_anchor
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                    {
+                        // Native Matoya holds relative capture at one screen
+                        // pixel; movement comes from Raw Input, not OS position.
+                        let x = x.clamp(rect.left, rect.right - 1);
+                        let y = y.clamp(rect.top, rect.bottom - 1);
+                        rect = RECT {
+                            left: x,
+                            top: y,
+                            right: x + 1,
+                            bottom: y + 1,
+                        };
+                    }
+                }
                 if ClipCursor(&rect) != 0 {
                     self.mouse_clipped.store(true, Ordering::Release);
                     return true;
@@ -587,6 +613,19 @@ impl Window {
         let acquired =
             RegisterRawInputDevices(&device, 1, std::mem::size_of::<RAWINPUTDEVICE>() as u32) != 0
                 && enabled;
+        *self
+            .relative_anchor
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = if acquired {
+            let mut point = POINT::default();
+            if GetCursorPos(&mut point) != 0 {
+                Some((point.x, point.y))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         self.relative_mouse.store(acquired, Ordering::Release);
         let clipped = self.apply_mouse_clip();
         if acquired && !clipped {
@@ -626,9 +665,9 @@ impl Window {
         }
     }
     pub fn request_stop(&self) {
-        self.relative_requested.store(false, Ordering::Release);
-        self.set_relative_mouse(false);
         self.closing.store(true, Ordering::Release);
+        self.relative_requested.store(false, Ordering::Release);
+        self.request_relative_mouse(false, true);
         self.events.stop();
         self.stop.stop();
     }
@@ -696,6 +735,11 @@ impl Window {
     }
     fn push(&self, event: Event) {
         self.events.push(event);
+    }
+    fn raw_mouse_motion(&self, mouse: &RAWMOUSE) {
+        if self.relative_mouse.load(Ordering::Acquire) && mouse.usFlags & MOUSE_MOVE_ABSOLUTE == 0 {
+            self.push(Event::RelativeMotion(mouse.lLastX, mouse.lLastY));
+        }
     }
 }
 
@@ -1011,10 +1055,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                         >= std::mem::size_of::<RAWINPUTHEADER>() as u32
                             + std::mem::size_of::<RAWMOUSE>() as u32
                 {
-                    let mouse = raw.data.mouse;
-                    if mouse.usFlags & MOUSE_MOVE_ABSOLUTE == 0 {
-                        s.push(Event::RelativeMotion(mouse.lLastX, mouse.lLastY));
-                    }
+                    s.raw_mouse_motion(&raw.data.mouse);
                 }
                 // DefWindowProc releases the foreground WM_INPUT bookkeeping.
             }
@@ -1350,19 +1391,11 @@ mod tests {
             wait(|| !relative() && clipped()); // Immersive Mouse survives raw unlock.
             window.set_input_state(mode(false, false));
             wait(|| !clipped() && !keyboard());
-            // SetCapture delivers outside motion but does not constrain the
-            // pointer. Native drags must also clip while Cursor Warp is enabled.
+            // Native relative intent comes from host flags, not button state.
             unsafe {
                 SendMessageW(window.handle(), WM_LBUTTONDOWN, 1, (100 << 16) | 100);
             }
-            wait(clipped);
-            window.set_input_state(crate::core_input::State {
-                warp_disabled: true,
-                ..mode(false, false)
-            });
-            wait(|| !clipped());
-            window.set_input_state(mode(false, false));
-            wait(clipped);
+            assert!(!relative() && !clipped());
             unsafe {
                 SendMessageW(window.handle(), WM_LBUTTONUP, 0, (100 << 16) | 100);
             }
@@ -1373,7 +1406,100 @@ mod tests {
                 warp_disabled: true,
                 ..mode(false, false)
             });
+            wait(|| relative() && clipped()); // Warp controls return position only.
+            window.set_relative_mouse(false);
             wait(|| !relative() && !clipped());
+            *window.video_report.lock().unwrap() = Some(crate::video_output::Snapshot {
+                width: Some(1920),
+                height: Some(1080),
+                frames_presented: 1,
+                ..Default::default()
+            });
+            // SDK/lowlat truth table: either flag locks, both clear unlock.
+            for (rel, hidden) in [(true, false), (false, true), (true, true)] {
+                let mut wire = vec![0; 34];
+                wire[12] = 9;
+                wire[24..26].copy_from_slice(&960i16.to_be_bytes());
+                wire[26..28].copy_from_slice(&540i16.to_be_bytes());
+                let flags: u16 = if rel { 0x100 } else { 0 } | if hidden { 0x200 } else { 0 };
+                wire[32..34].copy_from_slice(&flags.to_be_bytes());
+                let crate::control::Message::Buffer { event, .. } =
+                    crate::control::decode(&wire).unwrap()
+                else {
+                    panic!("not a cursor event");
+                };
+                window.host_cursor_event(&event);
+                wait(|| relative() && clipped());
+                unsafe {
+                    let mut rect = RECT::default();
+                    assert_ne!(GetClipCursor(&mut rect), 0);
+                    assert_eq!((rect.right - rect.left, rect.bottom - rect.top), (1, 1));
+                }
+                // Browser callback must not cancel a hidden-only native request.
+                window.set_relative_mouse(false);
+                assert!(window.relative_requested.load(Ordering::Acquire));
+                window.events.drain();
+                for dx in [-400, 1] {
+                    window.raw_mouse_motion(&RAWMOUSE {
+                        lLastX: dx,
+                        ..Default::default()
+                    });
+                }
+                let motion: Vec<_> = window
+                    .events
+                    .drain()
+                    .into_iter()
+                    .filter_map(|e| {
+                        if let Event::RelativeMotion(x, y) = e {
+                            Some((x, y))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(motion, [(-400, 0), (1, 0)]); // Immediate reversal, no absolute dead zone.
+                for (x, y) in motion {
+                    let packet = crate::control::input(
+                        &serde_json::json!({"type":4,"relative":true,"x":x,"y":y}),
+                    )
+                    .unwrap();
+                    assert_eq!(packet, crate::control::header(3, 1, x, y));
+                }
+                let mut held = POINT::default();
+                unsafe {
+                    GetCursorPos(&mut held);
+                }
+                window.set_host_cursor(960, 540, false, false);
+                wait(|| !relative() && !clipped());
+                unsafe {
+                    SendMessageW(window.handle(), WM_APP + 7, 0, 0);
+                    let mut after = POINT::default();
+                    GetCursorPos(&mut after);
+                    assert_eq!((after.x, after.y), (held.x, held.y)); // Disabled warp leaves position alone.
+                }
+            }
+            window.set_input_state(mode(false, false));
+            window.set_host_cursor(960, 540, false, true);
+            wait(relative);
+            window.set_host_cursor(960, 540, false, false);
+            wait(|| !relative());
+            // Serialize with WM_APP+7: it applies unlock then warps through
+            // the letterboxed viewport. No global input injection is needed.
+            unsafe {
+                SendMessageW(window.handle(), WM_APP + 7, 0, 0);
+                let (x, y) = window
+                    .presented_viewport()
+                    .unwrap()
+                    .unmap(960, 540)
+                    .unwrap();
+                let mut expected = POINT { x, y };
+                ClientToScreen(window.handle(), &mut expected);
+                let mut actual = POINT::default();
+                GetCursorPos(&mut actual);
+                assert_eq!((actual.x, actual.y), (expected.x, expected.y));
+            }
+            window.set_host_cursor(960, 540, false, true);
+            wait(relative);
             window.set_input_state(mode(true, true));
             wait(|| relative() && clipped() && keyboard());
             window.set_input_state(crate::core_input::State {
@@ -1398,7 +1524,7 @@ mod tests {
                 ShowWindow(window.handle(), SW_MINIMIZE);
             }
             wait(|| !relative() && !clipped() && !keyboard());
-            window.set_host_cursor(100, 100, false);
+            window.set_host_cursor(100, 100, false, false);
             unsafe {
                 ShowWindow(window.handle(), SW_RESTORE);
                 SetForegroundWindow(window.handle());

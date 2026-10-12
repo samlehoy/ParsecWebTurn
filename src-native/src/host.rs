@@ -894,21 +894,8 @@ fn backend_call(
                         // buffer cannot silently discard an event.
                         m.c_string(ptr(args, 0)?, ptr(args, 1)? as usize, &json)?;
                         #[cfg(windows)]
-                        if event["type"].as_i64() == Some(1) {
-                            if let Some(window) = &caller.data().window {
-                                let cursor = &event["cursor"];
-                                if let (Some(x), Some(y), Some(relative)) = (
-                                    cursor["positionX"]
-                                        .as_i64()
-                                        .and_then(|v| i32::try_from(v).ok()),
-                                    cursor["positionY"]
-                                        .as_i64()
-                                        .and_then(|v| i32::try_from(v).ok()),
-                                    cursor["relative"].as_bool(),
-                                ) {
-                                    window.set_host_cursor(x, y, relative);
-                                }
-                            }
+                        if let Some(window) = &caller.data().window {
+                            window.host_cursor_event(event);
                         }
                         b.poll_event();
                         result(results, 1);
