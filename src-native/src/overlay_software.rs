@@ -36,13 +36,13 @@ pub fn rasterize(frame: &Frame) -> Option<Surface> {
         if tex.width == 0 || tex.height == 0 || tex.rgba.len() != texture_len {
             return None;
         }
-        for triangle in batch.vertices.chunks_exact(60) {
+        for triangle in batch.vertices.as_chunks::<60>().0 {
             let mut v = [Vertex {
                 p: [0.; 2],
                 uv: [0.; 2],
                 color: [0.; 4],
             }; 3];
-            for (n, bytes) in triangle.chunks_exact(20).enumerate() {
+            for (n, bytes) in triangle.as_chunks::<20>().0.iter().enumerate() {
                 let f = |i| f32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
                 v[n] = Vertex {
                     p: [(f(0) + 1.) * w as f32 * 0.5, (1. - f(4)) * h as f32 * 0.5],
