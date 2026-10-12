@@ -33,7 +33,7 @@ pub struct Registry {
     completed: VecDeque<Snapshot>,
 }
 impl Registry {
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(feature = "diagnostics")]
     pub fn snapshots(&self) -> Vec<Snapshot> {
         self.completed
             .iter()
