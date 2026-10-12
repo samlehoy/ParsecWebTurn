@@ -13,7 +13,8 @@ administrator PowerShell while continuous sound plays and the remote client
 runs with `--trace-io`. The Windows Packet Monitor driver requires administrator
 rights; the application itself does not. The script finds the active parsecd
 UDP ports, records 60 seconds at network adapters with 96-byte truncation, stops
-its own capture and removes only its named filters. Existing filters abort the
+its own capture and clears the filter list only after verifying it still contains
+only its filters. Existing filters abort the
 test; an already-running capture must not be interrupted. Do not run concurrent
 Packet Monitor sessions or change filters while this test runs.
 
@@ -44,3 +45,42 @@ Zero lost capture events is not proof that no network packets were lost.
 
 No host binary, encryption, media framing, channel reliability, or scheduling
 policy is modified for this recording.
+
+## 2026-10-12 observations and limitations
+
+The user clarified that the ten-minute schema-4 client trace and host capture
+were a Cloudflare TURN trial. Audio was substantially better (not perfect)
+there; switching back to direct communication over the Cloudflare One VPN
+reintroduced the severe symptom. The VPN runs on the remote client and on the
+host-side router. The local Windows host itself has no active VPN adapter.
+Consequently its 1500-byte Ethernet MTU does not establish the tunnel's MTU.
+The TURN-vs-VPN distinction is user-reported; schema-4 counters alone do not
+verify the selected ICE route.
+
+The client trace finishes with zero Opus decode errors and zero decoder packet
+drops; cumulative maxima are 0.0645 ms handoff, 3.2587 ms decode queue wait and
+4.1261 ms decode execution. The active output records 60 underruns and 107520
+discarded PCM frames under the since-withdrawn experimental playback policy.
+Source pauses/reconnections are present, so its 5968 ms lifetime arrival gap
+must not be labeled an audible network interruption without corroboration.
+
+The host NIC capture ran 14:24:29–14:25:29 UTC, with 1219 packet appearances,
+including duplicated observations at two components. The first DTLS record
+headers contain 658 unique outbound and 223 unique inbound epoch/sequence pairs.
+The sequence spans are much larger (94497 and 38690). Capturing only a subset of
+record headers at these observation points does not establish network loss;
+coalescing, capture coverage and record layout must be accounted for. Therefore
+the apparent multi-second gaps in this capture are **not accepted as proven
+host-send gaps**. The schema-4 file also lacks an absolute clock anchor: its
+copied file timestamp must not be used to assert exact host/client correlation.
+The comparison is inconclusive at the audio-send boundary.
+
+The route comparison now makes the Cloudflare One tunnel a concrete research
+lead. Cloudflare documents [PMTUD and WebRTC MTU requirements](https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/cloudflare-one-client/deployment/mdm-deployment/path-mtu-discovery/):
+the current guide warns of degraded WebRTC performance below a 1361-byte network
+path MTU and provides `warp-cli settings` / `warp-diag` checks. Its PMTUD feature
+requires MASQUE and current clients enable it by default. This is vendor guidance,
+not proof of this session's failure or a universal minimum for every SCTP packet.
+Do not change the application's packet sizing, router MTU or VPN protocol
+without verifying the actual tunnel type and path. A router cloudflared connector
+and a WARP/Mesh node are different configurations and must be identified first.

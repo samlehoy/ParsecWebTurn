@@ -30,7 +30,7 @@ try {
         Select-Object -ExpandProperty LocalPort -Unique)
     if ($ports.Count -eq 0) { throw 'No active Parsec UDP socket found.' }
     foreach ($port in $ports) {
-        $name = "ParsecAudioTiming-$PID-$port"
+        $name = "PWT-$PID-$port"
         $null = Invoke-Pktmon -Arguments @('filter','add',$name,'-t','UDP','-p',"$port")
         $filters += $name
     }
@@ -53,5 +53,20 @@ try {
     exit 1
 } finally {
     if ($started) { & pktmon stop 2>&1 | Out-File -Append -Encoding utf8 -FilePath $log }
-    foreach ($name in $filters) { & pktmon filter remove $name 2>&1 | Out-File -Append -Encoding utf8 -FilePath $log }
+    if ($filters.Count -gt 0) {
+        # Pktmon removes ALL filters, not one named filter. Remove only if the
+        # whole current list is ours; leave concurrent additions untouched.
+        $current = & pktmon filter list 2>&1
+        $filterExit = $LASTEXITCODE
+        $names = @($current | ForEach-Object {
+            if ($_ -match '^\s*\d+\s+(\S+)') { $Matches[1] }
+        })
+        if ($filterExit -eq 0 -and $names.Count -gt 0 -and
+            @($names | Where-Object { $_ -notin $filters }).Count -eq 0) {
+            & pktmon filter remove 2>&1 | Out-File -Append -Encoding utf8 -FilePath $log
+        } else {
+            'Filter list changed or could not be verified; left untouched.' |
+                Out-File -Append -Encoding utf8 -FilePath $log
+        }
+    }
 }
