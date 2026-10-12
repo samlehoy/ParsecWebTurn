@@ -5,6 +5,7 @@ use windows_sys::Win32::{Foundation::*, Graphics::Gdi::*, UI::WindowsAndMessagin
 struct Saved {
     style: isize,
     placement: WINDOWPLACEMENT,
+    menu: usize,
 }
 #[derive(Default)]
 pub struct State {
@@ -42,7 +43,12 @@ impl State {
                 if style & WS_VISIBLE as isize == 0 {
                     placement.showCmd = SW_HIDE as u32;
                 }
+                let menu = GetMenu(hwnd);
                 set_style(hwnd, style & !(WS_OVERLAPPEDWINDOW as isize))?;
+                if !menu.is_null() && SetMenu(hwnd, std::ptr::null_mut()) == 0 {
+                    let _ = set_style(hwnd, style);
+                    bail!("fullscreen menu detach failed");
+                }
                 let rect = monitor.rcMonitor;
                 if SetWindowPos(
                     hwnd,
@@ -55,6 +61,7 @@ impl State {
                 ) == 0
                 {
                     let _ = set_style(hwnd, style);
+                    SetMenu(hwnd, menu);
                     SetWindowPlacement(hwnd, &placement);
                     SetWindowPos(
                         hwnd,
@@ -67,9 +74,16 @@ impl State {
                     );
                     bail!("fullscreen resize failed");
                 }
-                self.saved = Some(Saved { style, placement });
+                self.saved = Some(Saved {
+                    style,
+                    placement,
+                    menu: menu as usize,
+                });
             } else if let Some(saved) = &self.saved {
                 set_style(hwnd, saved.style)?;
+                if SetMenu(hwnd, saved.menu as HMENU) == 0 {
+                    bail!("window menu restore failed");
+                }
                 if SetWindowPlacement(hwnd, &saved.placement) == 0
                     || SetWindowPos(
                         hwnd,
@@ -137,6 +151,10 @@ pub fn probe() -> Result<serde_json::Value> {
         }
     }
     let original_style = unsafe { GetWindowLongPtrW(window.0, GWL_STYLE) };
+    let menu = unsafe { CreateMenu() };
+    unsafe {
+        SetMenu(window.0, menu);
+    }
     let mut state = State::default();
     if state.set(window.0, false)? {
         bail!("idle exit entered fullscreen");
@@ -160,6 +178,7 @@ pub fn probe() -> Result<serde_json::Value> {
         }
         let bounds = |r: RECT| (r.left, r.top, r.right, r.bottom);
         if bounds(rect) != bounds(monitor.rcMonitor)
+            || !unsafe { GetMenu(window.0) }.is_null()
             || unsafe { GetWindowLongPtrW(window.0, GWL_STYLE) } & WS_OVERLAPPEDWINDOW as isize != 0
         {
             bail!("fullscreen is not borderless monitor size");
@@ -173,10 +192,15 @@ pub fn probe() -> Result<serde_json::Value> {
             }
         }
         if bounds(rect) != bounds(original)
+            || unsafe { GetMenu(window.0) } != menu
             || unsafe { GetWindowLongPtrW(window.0, GWL_STYLE) } != original_style
         {
             bail!("window geometry/style not restored");
         }
+    }
+    unsafe {
+        SetMenu(window.0, std::ptr::null_mut());
+        DestroyMenu(menu);
     }
     drop(window);
     guest_probe()?;
@@ -239,6 +263,12 @@ mod tests {
                 set.call(&mut store, 0).unwrap();
             }
             assert!(store.data().boundary.is_none());
+            #[cfg(windows)]
+            if name == "web_set_kb_grab" {
+                set.call(&mut store, 1).unwrap();
+                assert!(store.data().boundary.is_none());
+                continue;
+            }
             assert!(set.call(&mut store, 1).is_err());
             assert_eq!(
                 store.data().boundary.as_deref(),

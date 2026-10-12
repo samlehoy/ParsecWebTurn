@@ -47,6 +47,8 @@ mod http;
 #[cfg(any(test, feature = "diagnostics"))]
 mod http_probe;
 mod input;
+#[cfg(windows)]
+mod keyboard_grab;
 mod lifecycle;
 mod media_ingress;
 #[cfg(windows)]
@@ -56,6 +58,8 @@ mod network_audit;
 mod network_policy;
 #[cfg(windows)]
 mod overlay;
+#[cfg(windows)]
+mod overlay_software;
 #[cfg(windows)]
 mod overlay_windows;
 #[cfg(windows)]

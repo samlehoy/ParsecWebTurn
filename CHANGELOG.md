@@ -5,7 +5,11 @@ builds, not published stable releases.
 
 ## Unreleased
 
-- Overlay drawing now keeps its graphics settings together while sharing the GPU with the decoder, and resets unused shader stages. This targets coloured overlay artifacts reported on Intel HD Graphics; confirmation on the affected machine is still pending. Video decoding and GPU frame copies are unchanged.
+- Fullscreen now hides the Settings / Connection stats / Help menu and restores it when returning to a window.
+- Immersive mode no longer stops the app at the keyboard-grab boundary. Windows shortcuts are captured while the client has focus and released when focus is lost or the session ends. Windows security shortcuts remain OS-controlled.
+- Disconnect now immediately retires the native video surface and releases input capture. Late callbacks from an old video worker cannot reveal the disconnected surface or hide a newer connection. Returning to the computer list still needs live verification.
+- An optional `--software-overlay` test mode draws the overlay on the CPU into a separate transparent Windows layer, bypassing the D3D11 overlay pass. It leaves video decoding on the GPU; it may use more CPU while the overlay is open.
+- Overlay drawing keeps its graphics settings together while sharing the GPU with the decoder, and resets unused shader stages. Live Intel testing showed that this change alone did **not** eliminate overlay flicker; investigation continues.
 - Audio and video now reuse bounded input buffers to reduce repeated memory allocations. Media hand-off and statistics spend less time holding the shared connection lock, keeping controls responsive while streaming.
 - Video can attempt to recover after a temporary decoder error or an overloaded input queue: the client requests a fresh keyframe and restarts decoding with the saved codec parameters. Recovery has a timeout and retry limit; audio and controls keep running. The host's response to refresh requests still needs live testing.
 - HEVC decoding now also requests low-latency mode through Windows transform attributes when the decoder does not accept the existing codec API request. The benefit depends on the decoder and system; H.264 behavior is unchanged.

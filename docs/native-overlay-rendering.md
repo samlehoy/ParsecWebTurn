@@ -28,5 +28,27 @@ frames. An intentionally inherited geometry shader suppresses rendering unless
 the GUI establishes its own shader stages. Readback exists only in this test.
 
 These checks establish compositor behavior, not that the reported Intel artifact
-has been reproduced or eliminated. Repeat the live overlay/F8 comparison on the
-affected machine with the test build before considering the issue resolved.
+has been reproduced or eliminated. Live testing of 162b130 on the affected Intel
+machine did not eliminate the flicker.
+
+## Software overlay comparison
+
+Launch `ParsecWebTurn.exe --software-overlay` for an opt-in comparison. CPU
+rasterization consumes the same captured GUI triangles, clip rectangles and RGBA
+atlases, with bilinear sampling and premultiplied alpha. The resulting GUI-only
+bitmap is presented in an owned, click-through, non-activating layered window
+using documented [UpdateLayeredWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-updatelayeredwindow).
+The native D3D11 overlay pass is skipped in this mode. Windows still owns desktop
+composition, which may use the GPU: this is software **GUI rasterization**, not a
+claim that the entire desktop compositor runs on the CPU.
+
+Rasterization runs on the existing GUI render worker, not the input or video
+worker. A bounded latest-surface slot passes the result to the UI thread; old
+pending images are replaced. No decoded frame is copied or read back. The normal
+default remains the D3D11 overlay, and the original OpenGL account/computer UI is
+unchanged. Larger CPU/memory usage is an accepted cost of this temporary test.
+
+Compare the same overlay in normal mode and software mode on the affected Intel
+machine. If software mode is clean, D3D11 composition becomes the leading suspect;
+if it also flickers, investigate captured draw/texture data and publication next.
+Neither outcome alone establishes a particular driver defect.

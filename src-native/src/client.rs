@@ -29,7 +29,9 @@ pub fn main() {
     }
 }
 fn run() -> Result<()> {
-    let args: Vec<_> = std::env::args().skip(1).collect();
+    let mut args: Vec<_> = std::env::args().skip(1).collect();
+    let software_overlay = args.iter().any(|arg| arg == "--software-overlay");
+    args.retain(|arg| arg != "--software-overlay");
     if args == ["--version"] {
         println!(
             "ParsecWebTurn {} / Parsec WASM {}",
@@ -57,6 +59,9 @@ fn run() -> Result<()> {
     let engine = Engine::new(&core_config::config())?;
     let module = core_runtime::load(&engine)?;
     let window = window::Window::create(false, true, true, false)?;
+    window
+        .software_overlay_enabled
+        .store(software_overlay, Ordering::Release);
     window.install_connection_settings(connection_settings.clone());
     let (mut store, instance) = instantiate_mode(&engine, &module, Some(window.clone()))?;
     *store

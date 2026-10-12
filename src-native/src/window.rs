@@ -37,12 +37,16 @@ pub struct Window {
     pub events: crate::event_queue::Queue<Event>,
     pub dimensions: Mutex<(i32, i32)>,
     pub overlay: Mutex<crate::overlay::Shared>,
+    pub software_overlay_enabled: AtomicBool,
+    software_pending: Mutex<crate::overlay_software::Pending>,
+    software_presenter: Mutex<crate::overlay_software::Presenter>,
     pub graphics: Mutex<Option<crate::graphics::GraphicsReport>>,
     pub audio_registry: Mutex<crate::audio_windows::Registry>,
     pub video_report: Mutex<Option<crate::video_output::Snapshot>>,
     video_hwnd: AtomicUsize,
     video_create_failed: AtomicBool,
     video_ready: AtomicBool,
+    video_generation: Mutex<u64>,
     video_visible: AtomicBool,
     #[cfg(any(test, feature = "diagnostics"))]
     pub capture: Mutex<Option<std::path::PathBuf>>,
@@ -58,6 +62,8 @@ pub struct Window {
     pub stop: Arc<crate::lifecycle::StopSignal>,
     relative_mouse: AtomicBool,
     relative_pending: AtomicUsize,
+    keyboard_requested: AtomicBool,
+    keyboard_grab: Mutex<crate::keyboard_grab::State>,
     pressed_buttons: AtomicUsize,
     pressed_keys: Mutex<std::collections::BTreeSet<&'static str>>,
     text_decoder: Mutex<crate::input::TextDecoder>,
@@ -116,11 +122,15 @@ impl Window {
             dimensions: Mutex::new((1024, 720)),
             graphics: Default::default(),
             overlay: Default::default(),
+            software_overlay_enabled: AtomicBool::new(false),
+            software_pending: Default::default(),
+            software_presenter: Default::default(),
             video_report: Default::default(),
             audio_registry: Default::default(),
             video_hwnd: AtomicUsize::new(0),
             video_create_failed: AtomicBool::new(false),
             video_ready: AtomicBool::new(false),
+            video_generation: Mutex::new(0),
             video_visible: AtomicBool::new(true),
             #[cfg(any(test, feature = "diagnostics"))]
             capture: Default::default(),
@@ -136,6 +146,8 @@ impl Window {
             stop: Default::default(),
             relative_mouse: AtomicBool::new(false),
             relative_pending: AtomicUsize::new(0),
+            keyboard_requested: AtomicBool::new(false),
+            keyboard_grab: Default::default(),
             pressed_buttons: AtomicUsize::new(0),
             pressed_keys: Default::default(),
             text_decoder: Default::default(),
@@ -258,11 +270,61 @@ impl Window {
         }
         bail!("native video surface unavailable")
     }
-    pub fn set_video_ready(&self, ready: bool) {
+    fn set_video_ready(&self, ready: bool) {
         if self.video_ready.swap(ready, Ordering::AcqRel) != ready {
             unsafe {
                 PostMessageW(self.handle(), WM_APP + 6, 0, 0);
             }
+        }
+    }
+    pub fn begin_video(&self) -> u64 {
+        let mut generation = self
+            .video_generation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *generation = generation.wrapping_add(1);
+        self.set_video_ready(false);
+        *generation
+    }
+    pub fn set_video_ready_for(&self, expected: u64, ready: bool) {
+        let generation = self
+            .video_generation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if *generation == expected {
+            self.set_video_ready(ready);
+        }
+    }
+    pub fn finish_video(&self, expected: u64) {
+        let mut generation = self
+            .video_generation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if *generation == expected {
+            *generation = generation.wrapping_add(1);
+            self.set_video_ready(false);
+        }
+    }
+    pub fn end_session(&self) {
+        self.begin_video(); // Retire the old surface before a reconnect can own it.
+        self.set_relative_mouse(false);
+        self.set_keyboard_grab(false);
+    }
+    pub fn publish_software_overlay(&self, frame: &crate::overlay::Frame) {
+        if !self.software_overlay_enabled.load(Ordering::Acquire)
+            || !self.video_ready.load(Ordering::Acquire)
+        {
+            return;
+        }
+        // Rasterize on the GUI render worker, never on the input/UI/video worker.
+        let surface = crate::overlay_software::rasterize(frame);
+        let mut pending = self
+            .software_pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        pending.surface = surface;
+        if !pending.posted {
+            pending.posted = unsafe { PostMessageW(self.handle(), WM_APP + 14, 0, 0) != 0 };
         }
     }
     unsafe fn show_video_surface(&self) {
@@ -273,6 +335,12 @@ impl Window {
                 && self.video_visible.load(Ordering::Acquire)
                 && !self.closing.load(Ordering::Acquire);
             ShowWindow(hwnd, if show { SW_SHOWNA } else { SW_HIDE });
+            if !show {
+                self.software_presenter
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .hide();
+            }
         }
     }
 
@@ -320,6 +388,12 @@ impl Window {
             .store(if enabled { 2 } else { 1 }, Ordering::Release);
         unsafe {
             PostMessageW(self.handle(), WM_APP + 7, 0, 0);
+        }
+    }
+    pub fn set_keyboard_grab(&self, enabled: bool) {
+        self.keyboard_requested.store(enabled, Ordering::Release);
+        unsafe {
+            PostMessageW(self.handle(), WM_APP + 12, 0, 0);
         }
     }
     unsafe fn apply_relative_mouse(&self, enabled: bool) {
@@ -587,6 +661,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
             WM_CLOSE => {
+                s.keyboard_grab
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set(hwnd, false);
                 s.apply_relative_mouse(false);
                 s.apply_wake_lock(false, false);
                 s.request_stop();
@@ -699,6 +777,67 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 }
                 return 0;
             }
+            m if m == WM_APP + 12 => {
+                s.keyboard_grab
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set(
+                        hwnd,
+                        s.keyboard_requested.load(Ordering::Acquire)
+                            && !s.closing.load(Ordering::Acquire),
+                    );
+                return 0;
+            }
+            m if m == WM_APP + 14 => {
+                let surface = {
+                    let mut pending = s.software_pending.lock().unwrap_or_else(|e| e.into_inner());
+                    pending.posted = false;
+                    pending.surface.take()
+                };
+                let mut presenter = s
+                    .software_presenter
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let size = *s.dimensions.lock().unwrap_or_else(|e| e.into_inner());
+                if s.video_ready.load(Ordering::Acquire)
+                    && s.video_visible.load(Ordering::Acquire)
+                    && IsIconic(hwnd) == 0
+                    && !s.settings_open()
+                    && !s.closing.load(Ordering::Acquire)
+                {
+                    if let Some(surface) =
+                        surface.filter(|surface| surface.size == (size.0 as u32, size.1 as u32))
+                    {
+                        presenter.show(hwnd, &surface);
+                    } else {
+                        presenter.hide();
+                    }
+                } else {
+                    presenter.hide();
+                }
+                return 0;
+            }
+            m if m == WM_APP + 13 => {
+                if let Some(code) =
+                    crate::input::code(wp as u32, ((lp >> 16) & 255) as u8, lp & (1 << 24) != 0)
+                {
+                    let down = lp & (1 << 31) == 0;
+                    let mut pressed = s.pressed_keys.lock().unwrap_or_else(|e| e.into_inner());
+                    if down {
+                        pressed.insert(code);
+                    } else {
+                        pressed.remove(code);
+                    }
+                    let mods = modifiers()
+                        | if pressed.contains("MetaLeft") || pressed.contains("MetaRight") {
+                            8
+                        } else {
+                            0
+                        };
+                    s.push(Event::Key(down, code, mods));
+                }
+                return 0;
+            }
             WM_INPUT if s.relative_mouse.load(Ordering::Acquire) => {
                 let mut raw: RAWINPUT = std::mem::zeroed();
                 let mut size = std::mem::size_of::<RAWINPUT>() as u32;
@@ -743,6 +882,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             WM_KEYUP if wp as u32 == VK_F11 as u32 => return 0,
             WM_SIZE => {
+                s.software_presenter
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .hide();
                 let requested =
                     s.wake_lock_snapshot().requested && !s.closing.load(Ordering::Acquire);
                 s.apply_wake_lock(requested, wp as u32 != SIZE_MINIMIZED);
@@ -778,9 +921,27 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                     s.apply_relative_mouse(w > 0 && h > 0);
                 }
             }
-            WM_MOVE if s.relative_mouse.load(Ordering::Acquire) => s.apply_relative_mouse(true),
-            WM_SETFOCUS => s.push(Event::Focus(true)),
+            WM_MOVE => {
+                s.software_presenter
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .hide();
+                if s.relative_mouse.load(Ordering::Acquire) {
+                    s.apply_relative_mouse(true);
+                }
+            }
+            WM_SETFOCUS => {
+                s.keyboard_grab
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set(hwnd, s.keyboard_requested.load(Ordering::Acquire));
+                s.push(Event::Focus(true));
+            }
             WM_KILLFOCUS => {
+                s.keyboard_grab
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set(hwnd, false);
                 s.apply_relative_mouse(false);
                 s.release_buttons();
                 let mut pressed = s.pressed_keys.lock().unwrap_or_else(|e| e.into_inner());
@@ -819,10 +980,21 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                     } else {
                         pressed.remove(code);
                     }
-                    s.push(Event::Key(down, code, modifiers()));
+                    let mods = modifiers()
+                        | if pressed.contains("MetaLeft") || pressed.contains("MetaRight") {
+                            8
+                        } else {
+                            0
+                        };
+                    s.push(Event::Key(down, code, mods));
                 }
                 // Keep system handling (notably Alt+F4) in DefWindowProc.
-                if matches!(message, WM_KEYDOWN | WM_KEYUP) {
+                if matches!(message, WM_KEYDOWN | WM_KEYUP)
+                    || s.keyboard_grab
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .active()
+                {
                     return 0;
                 }
             }
@@ -846,6 +1018,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
             WM_DESTROY => {
+                s.software_presenter
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .destroy();
+                s.keyboard_grab
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set(hwnd, false);
                 s.apply_relative_mouse(false);
                 s.apply_wake_lock(false, false);
                 // Cursor resources are created, replaced and freed on this UI
@@ -859,6 +1039,32 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
         }
     }
     DefWindowProcW(hwnd, message, wp, lp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn disconnect_retires_video_and_old_workers_cannot_reveal_or_hide_new_session() {
+        let window = Window::create_mode(false, false, false, false, false).unwrap();
+        unsafe {
+            ShowWindow(window.handle(), SW_HIDE);
+        }
+        let old = window.begin_video();
+        window.set_video_ready_for(old, true);
+        assert!(window.video_ready.load(Ordering::Acquire));
+        window.end_session();
+        assert!(!window.video_ready.load(Ordering::Acquire));
+        window.set_video_ready_for(old, true);
+        assert!(!window.video_ready.load(Ordering::Acquire));
+        let new = window.begin_video();
+        window.set_video_ready_for(new, true);
+        window.finish_video(old);
+        assert!(window.video_ready.load(Ordering::Acquire));
+        window.finish_video(new);
+        assert!(!window.video_ready.load(Ordering::Acquire));
+        window.close();
+    }
 }
 
 unsafe fn modifiers() -> i32 {

@@ -124,12 +124,16 @@ type Shared = Arc<(Mutex<Queue>, Condvar)>;
 pub struct Pipeline {
     shared: Shared,
     started: Instant,
+    window: Arc<crate::window::Window>,
+    surface_generation: u64,
 }
 impl Pipeline {
     pub fn start(window: Arc<crate::window::Window>) -> Self {
         Self::start_mode(window, false)
     }
     fn start_mode(window: Arc<crate::window::Window>, verify_synthetic_pixels: bool) -> Self {
+        let surface_generation = window.begin_video();
+        let surface_window = window.clone();
         let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
         shared
             .0
@@ -154,6 +158,7 @@ impl Pipeline {
                         &window,
                         verify_synthetic_pixels,
                         preferred_gpu.as_ref(),
+                        surface_generation,
                     )
                 }));
                 let mut q = state.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -166,7 +171,7 @@ impl Pipeline {
                 q.stopped = true;
                 q.report.worker_finished = true;
                 q.report.resources_released = true;
-                window.set_video_ready(false);
+                window.finish_video(surface_generation);
                 *window
                     .video_report
                     .lock()
@@ -183,6 +188,8 @@ impl Pipeline {
         Self {
             shared,
             started: Instant::now(),
+            window: surface_window,
+            surface_generation,
         }
     }
     pub fn submit(&self, bytes: &[u8], info: crate::video_stream::PacketInfo) -> bool {
@@ -231,6 +238,7 @@ impl Pipeline {
             .clone()
     }
     pub fn stop(&self) {
+        self.window.finish_video(self.surface_generation);
         self.shared
             .0
             .lock()
@@ -261,6 +269,7 @@ fn run(
     window: &Arc<crate::window::Window>,
     verify_synthetic_pixels: bool,
     preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
+    surface_generation: u64,
 ) -> Result<()> {
     let scheduling = crate::media_scheduling::Registration::video();
     update(shared, |s| s.mmcss_registered = scheduling.is_some());
@@ -300,7 +309,7 @@ fn run(
             session = None;
             headers.clear();
             header_bytes = 0;
-            window.set_video_ready(false);
+            window.set_video_ready_for(surface_generation, false);
             if let Some(bytes) = parameters.bytes() {
                 let codec = shared
                     .0
@@ -379,6 +388,7 @@ fn run(
                     preferred_gpu,
                     frame.codec,
                     hevc,
+                    surface_generation,
                 )?
             };
             update(shared, |s| {
@@ -600,6 +610,7 @@ impl OutputFormat {
 }
 
 struct Session {
+    surface_generation: u64,
     low_latency_request_accepted: bool,
     decoder: IMFTransform,
     _manager: IMFDXGIDeviceManager,
@@ -614,6 +625,7 @@ impl Session {
         preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
         codec: crate::video_stream::Codec,
         hevc: Option<crate::video_stream::HevcConfiguration>,
+        surface_generation: u64,
     ) -> Result<Self> {
         let runtime = Runtime::start()?;
         let mut renderer = Renderer::create(hwnd, preferred_gpu)?;
@@ -710,6 +722,7 @@ impl Session {
         }
         api("video-input-type", decoder.SetInputType(0, &input, 0))?;
         let mut result = Self {
+            surface_generation,
             low_latency_request_accepted,
             decoder,
             _manager: manager,
@@ -894,7 +907,7 @@ impl Session {
                 }
             });
             if presented == Presentation::Presented {
-                window.set_video_ready(true);
+                window.set_video_ready_for(self.surface_generation, true);
             }
         }
         Err(unavailable("video-output-iteration-limit"))
@@ -1283,7 +1296,11 @@ impl Renderer {
         );
         ManuallyDrop::drop(&mut stream.pInputSurface);
         api("video-processor-blt", result)?;
-        if !self.overlay_failed {
+        if !self.overlay_failed
+            && !window
+                .software_overlay_enabled
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
             let frame = {
                 window
                     .overlay

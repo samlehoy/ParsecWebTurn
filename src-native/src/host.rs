@@ -98,7 +98,11 @@ impl HostState {
 pub fn implemented(module: &str, name: &str) -> bool {
     #[cfg(windows)]
     if module == "env"
-        && (crate::cursor::handles(name) || matches!(name, "web_set_fullscreen" | "web_wake_lock"))
+        && (crate::cursor::handles(name)
+            || matches!(
+                name,
+                "web_set_fullscreen" | "web_wake_lock" | "web_set_kb_grab"
+            ))
     {
         return true;
     }
@@ -231,6 +235,14 @@ pub fn dispatch(
         let id = format!("{module}::{name}");
         *caller.data_mut().calls.entry(id.clone()).or_default() += 1;
         caller.data_mut().last_host_call = Some(id);
+    }
+    #[cfg(windows)]
+    if module == "env" && name == "web_set_kb_grab" {
+        let enable = int(args, 0)? != 0;
+        if let Some(window) = &caller.data().window {
+            window.set_keyboard_grab(enable);
+        }
+        return Ok(());
     }
     #[cfg(windows)]
     if module == "env" && name == "web_set_pointer_lock" {
@@ -779,7 +791,15 @@ fn backend_call(
                         }
                     }
                 }
-                "parsec_web_disconnect" => b.disconnect(int(args, 0)?, int(args, 1)?)?,
+                "parsec_web_disconnect" => {
+                    b.disconnect(int(args, 0)?, int(args, 1)?)?;
+                    #[cfg(windows)]
+                    if int(args, 0)? != 0 {
+                        if let Some(window) = &caller.data().window {
+                            window.end_session();
+                        }
+                    }
+                }
                 "parsec_web_send_message" => {
                     // weblib.js parses JSON even when no transport is connected.
                     let message: serde_json::Value =

@@ -229,10 +229,14 @@ impl Backend {
         } else {
             None
         };
-        self.retain_attempt_diagnostic();
-        self.events
-            .retain(|event| !matches!(event["type"].as_i64(), Some(1 | 3)));
-        self.buffers.clear();
+        // Z() in the pinned adapter only closes transport/media for nonzero
+        // status. A successful status update must not cancel the live attempt.
+        if status != 0 {
+            self.retain_attempt_diagnostic();
+            self.events
+                .retain(|event| !matches!(event["type"].as_i64(), Some(1 | 3)));
+            self.buffers.clear();
+        }
         self.status = Some(status);
         self.guests.clear();
         self.me = Value::Null;

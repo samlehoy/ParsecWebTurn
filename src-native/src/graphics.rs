@@ -248,6 +248,20 @@ impl Graphics {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()),
         );
+        if self
+            .window
+            .software_overlay_enabled
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            let frame = self
+                .window
+                .overlay
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .frame
+                .clone();
+            self.window.publish_software_overlay(&frame);
+        }
         // Explicit optional test artifact only: one readback, never the normal
         // presentation path. Capture the rendered backbuffer before swapping.
         #[cfg(any(test, feature = "diagnostics"))]
