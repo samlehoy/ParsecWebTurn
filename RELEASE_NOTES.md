@@ -1,4 +1,4 @@
-ParsecWebTurn v0.9.3-dev.1 — Connection and input improvements
+ParsecWebTurn v0.9.3-dev.1 - Connection and input improvements
 
 This native Windows development release improves connection routing, mouse and
 keyboard capture, overlay compatibility and streaming stability. Changes below

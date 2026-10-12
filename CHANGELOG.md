@@ -5,7 +5,7 @@ builds, not published stable releases.
 
 ## Unreleased
 
-## 0.9.3-dev.1 — Connection and input improvements (2026-10-12)
+## 0.9.3-dev.1 - Connection and input improvements (2026-10-12)
 
 - **Force TURN relay:** a new Settings checkbox keeps the next connection on a TURN relay even when a direct route is available, including over a VPN. Conflicting STUN-only settings and missing custom TURN servers are checked before connecting.
 - **TURN transport preference:** relay connections prefer UDP, with TLS and then plain TCP available as timed fallbacks when the preferred route has not connected.
@@ -19,13 +19,13 @@ builds, not published stable releases.
 - **Video recovery:** after a temporary decoder error or input overload, the client can request a fresh keyframe and restart decoding. Recovery has bounded retries and depends on the host supplying the requested keyframe.
 - **Low-latency HEVC:** the 8-bit HEVC decoder also requests low-latency operation through Windows transform attributes when its codec API does not accept the existing request. The benefit depends on the decoder and driver.
 
-## 0.9.2-dev.1 â€” H.265 / HEVC video (2026-10-11)
+## 0.9.2-dev.1 - H.265 / HEVC video (2026-10-11)
 
 - **H.265 / HEVC support:** enable **Prefer H.265 / HEVC** in Settings to request an 8-bit HEVC stream on your next connection. The client checks decoder support on your selected GPU first; H.264 remains the default and is used when HEVC is unavailable or the host chooses H.264.
 - **Native HEVC playback:** HEVC uses the Windows decoder and the existing D3D11 video path. Successful video playback has been verified with a Parsec host.
 - **HEVC details in Connection stats:** see the received codec and profile, decoder, resolution and graphics adapter. These describe the stream actually received, rather than just your selected preference.
 
-## 0.9.1-dev.1 â€” Faster startup and more responsive controls (2026-10-10)
+## 0.9.1-dev.1 - Faster startup and more responsive controls (2026-10-10)
 
 - Mouse and keyboard input now wakes processing immediately instead of waiting for the next regular tick. Local testing showed substantially shorter input processing times; actual responsiveness depends on your system and connection.
 - The bundled Parsec core is precompiled during the build, so the app no longer compiles it at startup.
@@ -34,7 +34,7 @@ builds, not published stable releases.
 
 This first published native preview also includes the connection settings, live statistics and other native-client features listed under 0.9.0 and 0.8.0 below.
 
-## 0.9.0 â€” More connection options and live stats (dev, 2026-10-10)
+## 0.9.0 - More connection options and live stats (dev, 2026-10-10)
 
 ### New
 
@@ -67,7 +67,7 @@ This first published native preview also includes the connection settings, live 
 - Enabling TURN can result in a relay being selected even when a direct path is possible. Use **STUN only** if you want to exclude relays.
 - Client-to-host clipboard paste remains a known issue in the tested Parsec session; it also reproduced in standalone Edge.
 
-## 0.8.0 â€” Native Rust client (dev)
+## 0.8.0 - Native Rust client (dev)
 
 - Replace the WebView2 launcher with the native Rust client using the pinned Parsec WASM core (150-104a).
 - Embed the core in one executable; no separate WASM file, launcher script or WebView2 runtime is required.
@@ -83,7 +83,7 @@ Custom server settings and native connection statistics were added in 0.9.0 abov
 ### Added
 
 - Separate STUN and custom TURN address fields with automatic migration of existing mixed address lists.
-- Add **STUN only â€” no TURN relay** for direct connections. Cloudflare mode can use its public STUN endpoint without an API token or TURN credential generation. Custom STUN addresses also work alongside Cloudflare TURN.
+- Add **STUN only - no TURN relay** for direct connections. Cloudflare mode can use its public STUN endpoint without an API token or TURN credential generation. Custom STUN addresses also work alongside Cloudflare TURN.
 - Show reported WebRTC DTLS state, version, cipher suite and SRTP protection profile in Connection stats.
 - Show CPU usage for the application and its WebView2 processes, plus WebView2 GPU engine and video-decode utilization when available.
 - Show detected audio codec, sample rate and channel count, retaining these values during silence. The sender's configured bitrate remains unknown when the receiving APIs do not expose it.
@@ -101,7 +101,7 @@ Custom server settings and native connection statistics were added in 0.9.0 abov
 
 ### Added
 
-- Background GitHub stable-release notifications and App Ă˘â€ â€™ Check for updates.
+- Background GitHub stable-release notifications and App > Check for updates.
 - Native update window with release notes and a direct link to the official Windows ZIP, opened in the default browser only after a click.
 - Bounded metadata-only HTTPS checks, stable numeric version comparison and exact repository ZIP link validation.
 
@@ -115,7 +115,7 @@ Custom server settings and native connection statistics were added in 0.9.0 abov
 - Preserve native WebCodecs callback dictionary conversion, inherited/frozen callbacks and callback capture semantics.
 - Update notifications do not download or run executables, create a helper, replace the app or restart it. Updates are installed manually and follow the browser's organization policies.
 - Correlate selected ICE endpoints with the ICE transport and gathered local/remote candidates to identify additional direct paths, including VPN connections. Positive TURN evidence retains priority; incomplete or ambiguous evidence stays unverified.
-- Label confirmed direct routes as "Direct Ă˘â‚¬â€ť no TURN"; VPN routing underneath WebRTC does not imply TURN use. Candidate addresses remain inside the WebView and are not included in telemetry.
+- Label confirmed direct routes as "Direct - no TURN"; VPN routing underneath WebRTC does not imply TURN use. Candidate addresses remain inside the WebView and are not included in telemetry.
 
 ## [0.5.0] - 2026-09-30
 
