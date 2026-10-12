@@ -66,6 +66,11 @@ jobs:
           Remove-Item Env:PARSEC_SETTINGS_SCREENSHOTS -ErrorAction SilentlyContinue
           cargo test --locked --manifest-path src-native/Cargo.toml connection_settings_ui::tests::native_controls_save_and_reopen_without_guest_or_real_profile -- --exact
           if ($LASTEXITCODE -ne 0) { throw 'Settings UI without screenshot export failed' }
+      - name: Verify native immersive capture on an isolated desktop window
+        shell: pwsh
+        run: |
+          cargo test --locked --manifest-path src-native/Cargo.toml window::tests::immersive_native_capture_lifecycle -- --exact --ignored --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Native immersive capture failed' }
       - name: Validate independent Rust host
         shell: pwsh
         env:
@@ -83,11 +88,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
           cargo clippy --locked --manifest-path src-native/Cargo.toml --features diagnostics --all-targets -- -D warnings
           if ($LASTEXITCODE -ne 0) { throw 'Diagnostic Clippy failed' }
-      - name: Verify native immersive capture on an isolated desktop window
-        shell: pwsh
-        run: |
-          cargo test --locked --manifest-path src-native/Cargo.toml window::tests::immersive_native_capture_lifecycle -- --exact --ignored --test-threads=1
-          if ($LASTEXITCODE -ne 0) { throw 'Native immersive capture failed' }
       - uses: actions/upload-artifact@v4
         if: always()
         with:

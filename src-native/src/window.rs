@@ -1261,6 +1261,7 @@ mod tests {
             }
         };
         let window = Window::create_mode(false, false, false, false, false).unwrap();
+        #[track_caller]
         fn wait(mut check: impl FnMut() -> bool) {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
             while !check() {
@@ -1293,13 +1294,17 @@ mod tests {
                 ClientToScreen(window.handle(), &mut origin);
                 let mut client = RECT::default();
                 GetClientRect(window.handle(), &mut client);
+                // ClipCursor intersects with the virtual desktop. The CI
+                // display can be narrower than the default client window.
+                let sx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+                let sy = GetSystemMetrics(SM_YVIRTUALSCREEN);
                 assert_eq!(
                     (actual.left, actual.top, actual.right, actual.bottom),
                     (
-                        origin.x,
-                        origin.y,
-                        origin.x + client.right,
-                        origin.y + client.bottom
+                        origin.x.max(sx),
+                        origin.y.max(sy),
+                        (origin.x + client.right).min(sx + GetSystemMetrics(SM_CXVIRTUALSCREEN)),
+                        (origin.y + client.bottom).min(sy + GetSystemMetrics(SM_CYVIRTUALSCREEN))
                     )
                 );
             }
@@ -1353,6 +1358,16 @@ mod tests {
                 SetForegroundWindow(window.handle());
             }
             wait(|| relative() && clipped() && keyboard());
+            unsafe {
+                ShowWindow(window.handle(), SW_MINIMIZE);
+            }
+            wait(|| !relative() && !clipped() && !keyboard());
+            window.set_host_cursor(100, 100, false);
+            unsafe {
+                ShowWindow(window.handle(), SW_RESTORE);
+                SetForegroundWindow(window.handle());
+            }
+            wait(|| !relative() && clipped() && keyboard());
             window.end_session();
             wait(|| !relative() && !clipped() && !keyboard());
         }));
