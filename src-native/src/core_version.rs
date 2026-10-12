@@ -180,7 +180,7 @@ fn latest() -> Result<String, &'static str> {
         .header("Accept-Encoding", "identity")
         .send()
         .map_err(|_| "Cannot reach the public Parsec web client. Reopen About to retry.")?;
-    if !response.status().is_success() {
+    if response.status() != reqwest::StatusCode::OK {
         return Err("The public Parsec web client could not be checked. Reopen About to retry.");
     }
     if response
@@ -237,5 +237,18 @@ mod tests {
         }
         assert_eq!(state.view(), View::Found("150-104a".into()));
         state.check_with(|| panic!("cached result should not fetch"));
+        state.0.lock().unwrap().checked = Some(Instant::now() - Duration::from_secs(3601));
+        state.check_with(|| Err("Offline"));
+        let until = Instant::now() + Duration::from_secs(5);
+        while state.view() == View::Checking && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(state.view(), View::Unavailable("Offline"));
+        state.check_with(|| Ok("150-105a".into()));
+        let until = Instant::now() + Duration::from_secs(5);
+        while state.view() == View::Checking && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(state.view(), View::Found("150-105a".into()));
     }
 }

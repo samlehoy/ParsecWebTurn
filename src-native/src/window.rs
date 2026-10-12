@@ -258,7 +258,7 @@ impl Window {
                             .find(|h| {
                                 !h.is_null() && (msg.hwnd == *h || IsChild(*h, msg.hwnd) != 0)
                             })
-                            .unwrap_or(null_mut());
+                            .unwrap_or(std::ptr::null_mut());
                             if !updates.is_null()
                                 && (msg.hwnd == updates || IsChild(updates, msg.hwnd) != 0)
                             {
