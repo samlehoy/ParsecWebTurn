@@ -3,11 +3,12 @@
 use crate::overlay::{Frame, Texture};
 use std::{collections::BTreeMap, sync::Arc};
 use windows::{
-    core::{s, PCSTR},
+    core::{s, Interface, PCSTR},
     Win32::{
         Foundation::RECT,
         Graphics::{
             Direct3D::{Fxc::*, *},
+            Direct3D10::ID3D10Multithread,
             Direct3D11::*,
             Dxgi::Common::*,
         },
@@ -16,6 +17,7 @@ use windows::{
 pub struct Renderer {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
+    multithread: ID3D10Multithread,
     vs: ID3D11VertexShader,
     ps: ID3D11PixelShader,
     layout: ID3D11InputLayout,
@@ -52,6 +54,8 @@ unsafe fn blob(blob: &ID3DBlob) -> &[u8] {
 impl Renderer {
     pub unsafe fn create(device: &ID3D11Device) -> windows::core::Result<Self> {
         let context = device.GetImmediateContext()?;
+        let multithread: ID3D10Multithread = device.cast()?;
+        let _ = multithread.SetMultithreadProtected(true);
         let vertex = compile(s!("vs"), s!("vs_4_0"))?;
         let pixel = compile(s!("ps"), s!("ps_4_0"))?;
         let mut vs = None;
@@ -138,6 +142,7 @@ impl Renderer {
         Ok(Self {
             device: device.clone(),
             context,
+            multithread,
             vs: vs.unwrap(),
             ps: ps.unwrap(),
             layout: layout.unwrap(),
@@ -196,6 +201,12 @@ impl Renderer {
         if frame.size != size || frame.batches.is_empty() {
             return Ok(0);
         }
+        // Media Foundation can use the same immediate context on its worker
+        // threads. Per-call protection alone does not preserve the ordering of
+        // this state setup, uploads and draws. Hold the device critical section
+        // only for the GUI pass; never across decode, Present or a queue wait.
+        self.multithread.Enter();
+        let _context = ContextGuard(self.multithread.clone());
         let total = frame
             .batches
             .iter()
@@ -253,6 +264,11 @@ impl Renderer {
         self.context
             .IASetVertexBuffers(0, 1, Some(&self.buffer), Some(&20), Some(&0));
         self.context.VSSetShader(&self.vs, None);
+        // The GUI is a VS/PS triangle pass. Do not inherit other shader stages
+        // from components sharing the device's immediate context.
+        self.context.GSSetShader(None, None);
+        self.context.HSSetShader(None, None);
+        self.context.DSSetShader(None, None);
         self.context.PSSetShader(&self.ps, None);
         self.context
             .PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
@@ -280,12 +296,220 @@ impl Renderer {
     }
 }
 
+struct ContextGuard(ID3D10Multithread);
+impl Drop for ContextGuard {
+    fn drop(&mut self) {
+        unsafe {
+            self.0.Leave();
+        }
+    }
+}
+
 struct Bindings(ID3D11DeviceContext);
 impl Drop for Bindings {
     fn drop(&mut self) {
         unsafe {
             self.0.PSSetShaderResources(0, Some(&[None]));
             self.0.OMSetRenderTargets(None, None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::overlay::Batch;
+    use windows::Win32::Foundation::HMODULE;
+
+    fn rectangle(rect: [u32; 4], color: [u8; 4], texture: Arc<Texture>, clip: [i32; 4]) -> Batch {
+        let [left, top, right, bottom] = rect;
+        let mut vertices = Vec::new();
+        for (x, y) in [
+            (left, top),
+            (right, top),
+            (right, bottom),
+            (left, top),
+            (right, bottom),
+            (left, bottom),
+        ] {
+            vertices.extend_from_slice(&(x as f32 / 32. - 1.).to_le_bytes());
+            vertices.extend_from_slice(&(1. - y as f32 / 24.).to_le_bytes());
+            // Sample the centre of an odd-width atlas, including its alpha.
+            vertices.extend_from_slice(&0.5f32.to_le_bytes());
+            vertices.extend_from_slice(&0.5f32.to_le_bytes());
+            vertices.extend_from_slice(&color);
+        }
+        Batch {
+            vertices,
+            texture,
+            clip,
+        }
+    }
+
+    #[test]
+    fn multibatch_overlay_preserves_transparency_clipping_and_replaces_inherited_stages() {
+        // WARP makes this an actual D3D11 rendering test even on CI machines
+        // without video hardware. Readback is limited to this synthetic target.
+        unsafe {
+            let mut device = None;
+            let mut context = None;
+            D3D11CreateDevice(
+                None,
+                D3D_DRIVER_TYPE_WARP,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                Some(&[D3D_FEATURE_LEVEL_11_0]),
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                Some(&mut context),
+            )
+            .unwrap();
+            let device = device.unwrap();
+            let context = context.unwrap();
+            let mut renderer = Renderer::create(&device).unwrap();
+            let desc = D3D11_TEXTURE2D_DESC {
+                Width: 64,
+                Height: 48,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+                ..Default::default()
+            };
+            let mut target = None;
+            device
+                .CreateTexture2D(&desc, None, Some(&mut target))
+                .unwrap();
+            let target = target.unwrap();
+            let mut view = None;
+            device
+                .CreateRenderTargetView(&target, None, Some(&mut view))
+                .unwrap();
+            let view = view.unwrap();
+            let mut staging = None;
+            device
+                .CreateTexture2D(
+                    &D3D11_TEXTURE2D_DESC {
+                        Usage: D3D11_USAGE_STAGING,
+                        BindFlags: 0,
+                        CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                        ..desc
+                    },
+                    None,
+                    Some(&mut staging),
+                )
+                .unwrap();
+            let staging = staging.unwrap();
+
+            // Model a different component leaving a geometry shader bound.
+            // Without explicit stage setup this shader suppresses all GUI output.
+            let source = b"struct P { float4 p:SV_POSITION; float2 uv:TEXCOORD; float4 c:COLOR; }; [maxvertexcount(3)] void gs(triangle P input[3], inout TriangleStream<P> output) { }";
+            let mut code = None;
+            D3DCompile(
+                source.as_ptr().cast(),
+                source.len(),
+                PCSTR::null(),
+                None,
+                None,
+                s!("gs"),
+                s!("gs_4_0"),
+                D3DCOMPILE_ENABLE_STRICTNESS,
+                0,
+                &mut code,
+                None,
+            )
+            .unwrap();
+            let mut inherited = None;
+            device
+                .CreateGeometryShader(blob(code.as_ref().unwrap()), None, Some(&mut inherited))
+                .unwrap();
+            let inherited = inherited.unwrap();
+
+            for generation in 0..4 {
+                let solid = Arc::new(Texture {
+                    version: generation * 2 + 1,
+                    width: 7,
+                    height: 3,
+                    rgba: [255; 4].repeat(21),
+                });
+                let transparent = Arc::new(Texture {
+                    version: generation * 2 + 2,
+                    width: 7,
+                    height: 3,
+                    rgba: [231, 17, 119, 0].repeat(21),
+                });
+                let mut batches = vec![
+                    rectangle([0, 0, 64, 48], [255; 4], transparent, [0, 0, 64, 48]),
+                    rectangle(
+                        [4, 5, 20, 25],
+                        [255, 0, 0, 255],
+                        solid.clone(),
+                        [0, 0, 64, 48],
+                    ),
+                    rectangle(
+                        [28, 8, 50, 35],
+                        [0, 255, 0, 255],
+                        solid.clone(),
+                        [30, 10, 45, 30],
+                    ),
+                ];
+                // Exercise vertex-buffer growth as well as multiple atlas versions.
+                for _ in 0..generation {
+                    batches.push(rectangle(
+                        [4, 5, 20, 25],
+                        [255, 0, 0, 255],
+                        solid.clone(),
+                        [0, 0, 64, 48],
+                    ));
+                }
+                let frame = Arc::new(Frame {
+                    size: (64, 48),
+                    batches,
+                });
+                for _ in 0..2 {
+                    context.ClearRenderTargetView(&view, &[0., 0., 0., 1.]);
+                    context.GSSetShader(&inherited, None);
+                    renderer.draw(frame.clone(), &target, (64, 48)).unwrap();
+                    context.CopyResource(&staging, &target);
+                    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                    context
+                        .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+                        .unwrap();
+                    let mut mismatch = None;
+                    for y in 0..48usize {
+                        for x in 0..64usize {
+                            let expected = if (4..20).contains(&x) && (5..25).contains(&y) {
+                                [0, 0, 255]
+                            } else if (30..45).contains(&x) && (10..30).contains(&y) {
+                                [0, 255, 0]
+                            } else {
+                                [0, 0, 0]
+                            };
+                            let pixel = std::slice::from_raw_parts(
+                                mapped
+                                    .pData
+                                    .cast::<u8>()
+                                    .add(y * mapped.RowPitch as usize + x * 4),
+                                3,
+                            );
+                            if pixel != expected && mismatch.is_none() {
+                                mismatch = Some((x, y, pixel.to_vec(), expected));
+                            }
+                        }
+                    }
+                    context.Unmap(&staging, 0);
+                    assert_eq!(
+                        mismatch, None,
+                        "unexpected GUI pixel at generation {generation}"
+                    );
+                }
+            }
+            context.ClearState();
         }
     }
 }

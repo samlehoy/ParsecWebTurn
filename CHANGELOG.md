@@ -5,6 +5,7 @@ builds, not published stable releases.
 
 ## Unreleased
 
+- Overlay drawing now keeps its graphics settings together while sharing the GPU with the decoder, and resets unused shader stages. This targets coloured overlay artifacts reported on Intel HD Graphics; confirmation on the affected machine is still pending. Video decoding and GPU frame copies are unchanged.
 - Audio and video now reuse bounded input buffers to reduce repeated memory allocations. Media hand-off and statistics spend less time holding the shared connection lock, keeping controls responsive while streaming.
 - Video can attempt to recover after a temporary decoder error or an overloaded input queue: the client requests a fresh keyframe and restarts decoding with the saved codec parameters. Recovery has a timeout and retry limit; audio and controls keep running. The host's response to refresh requests still needs live testing.
 - HEVC decoding now also requests low-latency mode through Windows transform attributes when the decoder does not accept the existing codec API request. The benefit depends on the decoder and system; H.264 behavior is unchanged.
