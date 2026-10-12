@@ -5,31 +5,27 @@ builds, not published stable releases.
 
 ## Unreleased
 
-- Removed temporary input/audio troubleshooting logging and its capture tools after the investigation. The input fixes and original audio playback behavior remain unchanged.
+## 0.9.3-dev.1 — Connection and input improvements (2026-10-12)
 
-- Settings now includes **Force TURN relay**, keeping the next connection on a relay even when a direct VPN route is available. STUN-only mode and missing custom TURN servers are checked before connecting.
-- TURN connections prefer UDP, with TLS and then plain TCP available as timed fallbacks when the preferred route has not connected.
-- Custom Parsec hotkeys now take priority over conflicting native F8/F11, Settings and Connection stats shortcuts. Rebinding and hotkey recording remain owned by the original core.
+- **Force TURN relay:** a new Settings checkbox keeps the next connection on a TURN relay even when a direct route is available, including over a VPN. Conflicting STUN-only settings and missing custom TURN servers are checked before connecting.
+- **TURN transport preference:** relay connections prefer UDP, with TLS and then plain TCP available as timed fallbacks when the preferred route has not connected.
+- **Working immersive input:** Mouse confines the pointer to the client window, Keyboard forwards reserved shortcuts while the client has focus, and Both combines them. Capture is released on focus loss and disconnect; Windows security shortcuts remain controlled by Windows.
+- **Smoother relative mouse control:** host cursor signals now activate native Raw Input correctly, including during desktop drags. Changing direction no longer requires moving back from outside the client. Cursor Warp restores the host cursor position when leaving relative mode and respects its overlay setting.
+- **More compatible overlay:** software drawing is now the default for the interface, resolving the reported Intel overlay flicker. Video decoding and presentation retain their GPU path without adding decoded-frame CPU readback.
+- **Reliable disconnect:** disconnecting from the overlay returns to the computer list instead of freezing on a black screen. Callbacks from an ended stream cannot reveal its old video surface.
+- **Cleaner fullscreen:** the Settings, Connection stats and Help menu disappears in fullscreen and returns in windowed mode.
+- **Custom hotkeys:** Parsec hotkey assignments take priority when they conflict with native F8/F11, Settings or Connection stats shortcuts. Hotkey recording and saving remain handled by the original core.
+- **Less allocation and lock contention:** audio and video reuse bounded input buffers, and media hand-off holds the shared connection lock for less time.
+- **Video recovery:** after a temporary decoder error or input overload, the client can request a fresh keyframe and restart decoding. Recovery has bounded retries and depends on the host supplying the requested keyframe.
+- **Low-latency HEVC:** the 8-bit HEVC decoder also requests low-latency operation through Windows transform attributes when its codec API does not accept the existing request. The benefit depends on the decoder and driver.
 
-- Removed unsuccessful experimental audio buffering and endpoint-period changes, restoring the original shared WASAPI playback policy. Opus decoding and the core's requested buffer limits remain unchanged. Audio polling retains its independent worker cadence. This rollback does not claim to fix the stutter also reproduced in the official browser client.
-- Mouse capture now follows the native SDK's host cursor signals, including hidden-only relative requests used by applications and desktop drags. Relative motion uses Raw Input with a fixed cursor position, so changing direction does not require returning from outside the client. Disable Cursor Warp only disables return-position warping; Immersive Mouse/Both still provide continuous confinement. Live host verification is pending.
-- Immersive Mouse, Keyboard and Both now have native input bindings: Mouse confines the pointer, Keyboard forwards reserved shortcuts, and Both combines them. Capture is released when the stream loses focus, is detached, or disconnects. Cursor Warp respects its overlay switch and restores the host cursor position when leaving relative mode. Live host verification is pending.
-- Fullscreen now hides the Settings / Connection stats / Help menu and restores it when returning to a window.
-- Immersive mode no longer stops the app at the keyboard-grab boundary. Windows shortcuts are captured while the client has focus and released when focus is lost or the session ends. Windows security shortcuts remain OS-controlled.
-- Disconnect now preserves the Parsec audio worker's original cleanup and thread-exit sequence, so the client can finish waiting for that worker. Live testing confirmed that this fixes the reported freeze. Old video callbacks remain unable to reveal a disconnected surface or hide a newer connection.
-- The overlay now uses software drawing by default, following successful testing on the affected Intel GPU. Only the interface is drawn on the CPU; video decoding and presentation keep their existing GPU path without a new decoded-frame copy or readback. This may use more CPU while the overlay is open. `--d3d-overlay` retains the previous drawing path for comparison.
-- Overlay drawing keeps its graphics settings together while sharing the GPU with the decoder, and resets unused shader stages. Live Intel testing showed that this change alone did **not** eliminate overlay flicker; investigation continues.
-- Audio and video now reuse bounded input buffers to reduce repeated memory allocations. Media hand-off and statistics spend less time holding the shared connection lock, keeping controls responsive while streaming.
-- Video can attempt to recover after a temporary decoder error or an overloaded input queue: the client requests a fresh keyframe and restarts decoding with the saved codec parameters. Recovery has a timeout and retry limit; audio and controls keep running. The host's response to refresh requests still needs live testing.
-- HEVC decoding now also requests low-latency mode through Windows transform attributes when the decoder does not accept the existing codec API request. The benefit depends on the decoder and system; H.264 behavior is unchanged.
-
-## 0.9.2-dev.1 — H.265 / HEVC video (2026-10-11)
+## 0.9.2-dev.1 â€” H.265 / HEVC video (2026-10-11)
 
 - **H.265 / HEVC support:** enable **Prefer H.265 / HEVC** in Settings to request an 8-bit HEVC stream on your next connection. The client checks decoder support on your selected GPU first; H.264 remains the default and is used when HEVC is unavailable or the host chooses H.264.
 - **Native HEVC playback:** HEVC uses the Windows decoder and the existing D3D11 video path. Successful video playback has been verified with a Parsec host.
 - **HEVC details in Connection stats:** see the received codec and profile, decoder, resolution and graphics adapter. These describe the stream actually received, rather than just your selected preference.
 
-## 0.9.1-dev.1 — Faster startup and more responsive controls (2026-10-10)
+## 0.9.1-dev.1 â€” Faster startup and more responsive controls (2026-10-10)
 
 - Mouse and keyboard input now wakes processing immediately instead of waiting for the next regular tick. Local testing showed substantially shorter input processing times; actual responsiveness depends on your system and connection.
 - The bundled Parsec core is precompiled during the build, so the app no longer compiles it at startup.
@@ -38,7 +34,7 @@ builds, not published stable releases.
 
 This first published native preview also includes the connection settings, live statistics and other native-client features listed under 0.9.0 and 0.8.0 below.
 
-## 0.9.0 — More connection options and live stats (dev, 2026-10-10)
+## 0.9.0 â€” More connection options and live stats (dev, 2026-10-10)
 
 ### New
 
@@ -71,7 +67,7 @@ This first published native preview also includes the connection settings, live 
 - Enabling TURN can result in a relay being selected even when a direct path is possible. Use **STUN only** if you want to exclude relays.
 - Client-to-host clipboard paste remains a known issue in the tested Parsec session; it also reproduced in standalone Edge.
 
-## 0.8.0 — Native Rust client (dev)
+## 0.8.0 â€” Native Rust client (dev)
 
 - Replace the WebView2 launcher with the native Rust client using the pinned Parsec WASM core (150-104a).
 - Embed the core in one executable; no separate WASM file, launcher script or WebView2 runtime is required.
@@ -87,7 +83,7 @@ Custom server settings and native connection statistics were added in 0.9.0 abov
 ### Added
 
 - Separate STUN and custom TURN address fields with automatic migration of existing mixed address lists.
-- Add **STUN only — no TURN relay** for direct connections. Cloudflare mode can use its public STUN endpoint without an API token or TURN credential generation. Custom STUN addresses also work alongside Cloudflare TURN.
+- Add **STUN only â€” no TURN relay** for direct connections. Cloudflare mode can use its public STUN endpoint without an API token or TURN credential generation. Custom STUN addresses also work alongside Cloudflare TURN.
 - Show reported WebRTC DTLS state, version, cipher suite and SRTP protection profile in Connection stats.
 - Show CPU usage for the application and its WebView2 processes, plus WebView2 GPU engine and video-decode utilization when available.
 - Show detected audio codec, sample rate and channel count, retaining these values during silence. The sender's configured bitrate remains unknown when the receiving APIs do not expose it.
@@ -105,7 +101,7 @@ Custom server settings and native connection statistics were added in 0.9.0 abov
 
 ### Added
 
-- Background GitHub stable-release notifications and App â†’ Check for updates.
+- Background GitHub stable-release notifications and App Ă˘â€ â€™ Check for updates.
 - Native update window with release notes and a direct link to the official Windows ZIP, opened in the default browser only after a click.
 - Bounded metadata-only HTTPS checks, stable numeric version comparison and exact repository ZIP link validation.
 
@@ -119,7 +115,7 @@ Custom server settings and native connection statistics were added in 0.9.0 abov
 - Preserve native WebCodecs callback dictionary conversion, inherited/frozen callbacks and callback capture semantics.
 - Update notifications do not download or run executables, create a helper, replace the app or restart it. Updates are installed manually and follow the browser's organization policies.
 - Correlate selected ICE endpoints with the ICE transport and gathered local/remote candidates to identify additional direct paths, including VPN connections. Positive TURN evidence retains priority; incomplete or ambiguous evidence stays unverified.
-- Label confirmed direct routes as "Direct â€” no TURN"; VPN routing underneath WebRTC does not imply TURN use. Candidate addresses remain inside the WebView and are not included in telemetry.
+- Label confirmed direct routes as "Direct Ă˘â‚¬â€ť no TURN"; VPN routing underneath WebRTC does not imply TURN use. Candidate addresses remain inside the WebView and are not included in telemetry.
 
 ## [0.5.0] - 2026-09-30
 
