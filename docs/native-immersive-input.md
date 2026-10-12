@@ -29,8 +29,13 @@ stores its main-app opaque argument at +884; the main-app backlink at +9376 is
 validated before reading the overlay's Disable Cursor Warp byte at +9464.
 These small state checks run after regular input callbacks, so the core's detach
 and warp actions reach Win32 even though their original setters have no import.
-Configuration is read only on immersive transitions, not on each mouse event or
-video frame. UI-thread messages are posted only when the policy changes.
+Effective configuration is read after the regular main input callback, alongside
+detach/warp state, and on pointer-lock transitions. It is not cached in a WASM
+host instance: the GUI worker has its own instance and may execute the keyboard
+import without any app pointer. The live capture confirmed that a GUI update
+previously left the main instance's cached mode at Off while shared configuration
+was Both. Mouse input exports keep their immediate path; UI-thread messages are
+posted only when policy changes.
 
 `build.rs` already rejects any core with a different SHA-256. An offline test
 initializes the actual pinned core and verifies this configuration schema.

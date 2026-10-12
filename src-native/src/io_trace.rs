@@ -41,7 +41,7 @@ pub struct CoreRead {
     pub failures: u64,
     pub app_present: bool,
     pub state_valid: bool,
-    pub cached_mode: crate::core_input::Mode,
+    pub applied_mode: crate::core_input::Mode,
     pub actual_mode: Option<crate::core_input::Mode>,
 }
 
@@ -53,7 +53,7 @@ pub fn start(
 ) -> Result<std::thread::JoinHandle<()>> {
     let mut file = std::fs::File::create(path)?;
     let header = serde_json::json!({
-        "schema": 1, "scope": "opt-in-input-audio-counters",
+        "schema": 2, "scope": "opt-in-input-audio-counters",
         "app": env!("CARGO_PKG_VERSION"), "core": crate::PARSEC_CORE_VERSION,
         "build": option_env!("GITHUB_SHA").unwrap_or("local"),
         "interval_ms": 1000, "sample_limit": 600,

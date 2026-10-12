@@ -19,6 +19,8 @@ pub struct Snapshot {
     pub min_buffer_ms: u32,
     pub max_buffer_ms: u32,
     pub resets: u64,
+    pub rebuffer_events: u64,
+    pub overflow_recoveries: u64,
     pub buffering: bool,
     pub max_worker_gap_ms: Option<f64>,
     pub device_opened: bool,
@@ -90,6 +92,7 @@ pub struct Playback {
     shared: Arc<Mutex<State>>,
     worker: Mutex<Option<JoinHandle<()>>>,
     max_frames: usize,
+    min_frames: usize,
 }
 impl Playback {
     pub fn create(
@@ -138,6 +141,7 @@ impl Playback {
             shared,
             worker: Mutex::new(Some(worker)),
             max_frames,
+            min_frames,
         };
         if rx.recv_timeout(std::time::Duration::from_secs(3)).ok() != Some(true) {
             output.stop();
@@ -152,14 +156,20 @@ impl Playback {
             s.report.frames_dropped += frames as u64;
             return;
         }
-        // Keep recent audio after a burst instead of retaining an already-late
-        // queue and discarding every newly arriving packet until it drains.
+        // Recover headroom after a burst instead of repeatedly cutting audio
+        // at the maximum queue ceiling. Preserve the configured latency limits.
         let skip = frames.saturating_sub(self.max_frames) * 2;
         let incoming = &pcm[skip..frames * 2];
-        let discard = (s.pcm.len() + incoming.len()).saturating_sub(self.max_frames * 2);
+        s.pcm.extend(incoming);
+        let discard = if s.pcm.len() > self.max_frames * 2 {
+            s.report.overflow_recoveries += 1;
+            s.report.buffering = true;
+            s.pcm.len() - self.min_frames.max(1).min(self.max_frames) * 2
+        } else {
+            0
+        };
         s.pcm.drain(..discard);
         s.report.frames_dropped += ((skip + discard) / 2) as u64;
-        s.pcm.extend(incoming);
         s.report.frames_queued += frames as u64;
         s.report.queued_frames = s.pcm.len() / 2;
     }
@@ -172,6 +182,7 @@ impl Playback {
         s.pcm.clear();
         s.report.queued_frames = 0;
         s.report.resets += 1;
+        s.report.buffering = true;
         s.reset = true;
     }
     pub fn snapshot(&self) -> Snapshot {
@@ -264,7 +275,6 @@ unsafe fn render(
         .report
         .device_opened = true;
     let _ = ready.send(true);
-    let mut buffering = true;
     let mut previous_wake = std::time::Instant::now();
     loop {
         WaitForSingleObject(event.0, 50);
@@ -286,10 +296,10 @@ unsafe fn render(
             client.Reset()?;
             client.Start()?;
             s.reset = false;
-            buffering = true;
+            s.report.buffering = true;
         }
         let padding = client.GetCurrentPadding()?;
-        if crate::io_trace::enabled() && !buffering && padding == 0 {
+        if crate::io_trace::enabled() && !s.report.buffering && padding == 0 {
             s.report.empty_device_wakes += 1;
         }
         s.report.device_padding = padding;
@@ -297,18 +307,17 @@ unsafe fn render(
         if available == 0 {
             continue;
         }
-        if buffering && s.pcm.len() / 2 >= min_frames.max(1) {
-            buffering = false;
+        let buffering = next_buffering(s.report.buffering, s.pcm.len() / 2, padding, min_frames);
+        if buffering && !s.report.buffering {
+            s.report.rebuffer_events += 1;
+            s.report.underruns += 1;
         }
         s.report.buffering = buffering;
         let count = render_frames(buffering, available, s.pcm.len() / 2);
         if count == 0 {
             // An empty shared-mode stream is rendered as silence by Windows.
-            // Do not enqueue synthetic silence and report it to the core as
-            // pending audio, or re-enter startup buffering for each short gap.
-            if !buffering && padding == 0 {
-                s.report.underruns += 1;
-            }
+            // A genuinely empty device/PCM queue re-enters the existing jitter
+            // threshold. A gap covered by device padding must keep playing.
             continue;
         }
         let pointer = render.GetBuffer(count)?;
@@ -323,6 +332,14 @@ unsafe fn render(
         s.report.queued_frames = s.pcm.len() / 2;
     }
     Ok(())
+}
+
+fn next_buffering(buffering: bool, queued: usize, padding: u32, minimum: usize) -> bool {
+    if buffering {
+        queued < minimum.max(1)
+    } else {
+        queued == 0 && padding == 0
+    }
 }
 
 fn render_frames(buffering: bool, available: u32, queued: usize) -> u32 {
@@ -432,11 +449,52 @@ mod tests {
     }
 
     #[test]
+    fn device_padding_covers_short_gaps_but_real_starvation_refills_to_minimum() {
+        // Empty software PCM is not starvation while the endpoint has data.
+        assert!(!next_buffering(false, 0, 480, 3600));
+        assert!(next_buffering(false, 0, 0, 3600));
+        // Following an actual underrun, one 20 ms packet must not cause
+        // repeated short starts and stops before the 75 ms threshold returns.
+        assert!(next_buffering(true, 960, 0, 3600));
+        assert!(next_buffering(true, 2880, 0, 3600));
+        assert!(!next_buffering(true, 3840, 0, 3600));
+        // A packet that arrived before the device emptied needs no pause.
+        assert!(!next_buffering(false, 960, 0, 3600));
+        assert!(!next_buffering(true, 1, 0, 0));
+    }
+
+    #[test]
+    fn burst_recovery_restores_headroom_and_stereo_order_without_raising_limits() {
+        let output = Playback {
+            shared: Arc::new(Mutex::new(State::default())),
+            worker: Mutex::new(None),
+            min_frames: 4,
+            max_frames: 8,
+        };
+        output.queue(&[1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6]);
+        output.queue(&[7, -7, 8, -8, 9, -9]);
+        let report = output.snapshot();
+        assert_eq!(report.queued_frames, 4);
+        assert_eq!(report.frames_dropped, 5);
+        assert_eq!(report.overflow_recoveries, 1);
+        assert!(report.buffering);
+        assert_eq!(
+            output.shared.lock().unwrap().pcm,
+            [6, -6, 7, -7, 8, -8, 9, -9]
+        );
+        // Another packet now fits without another discontinuity.
+        output.queue(&[10, -10, 11, -11]);
+        assert_eq!(output.snapshot().overflow_recoveries, 1);
+        assert_eq!(output.snapshot().queued_frames, 6);
+    }
+
+    #[test]
     fn output_overflow_keeps_recent_stereo_frames_and_reset_releases_them() {
         let output = Playback {
             shared: Arc::new(Mutex::new(State::default())),
             worker: Mutex::new(None),
             max_frames: 3,
+            min_frames: 3,
         };
         output.queue(&[1, -1, 2, -2]);
         output.queue(&[3, -3, 4, -4]);

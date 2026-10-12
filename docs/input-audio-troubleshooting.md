@@ -28,10 +28,11 @@ text, account identifiers, credentials, network addresses or device names.
 ## Interpretation and limits
 
 `input.state` is the policy applied by the Rust window. `events.core_reads`
-compares the per-instance cached mode with a fresh read of the shared pinned
-core configuration and records missing/invalid app contexts. This is deliberately
-observational: a suspected cache mismatch is not silently corrected before it
-can be established in the failing live session.
+compares the applied mode with a fresh read of shared pinned core configuration
+and records missing/invalid app contexts. Schema 1 called this field `cached_mode`;
+schema 2 uses `applied_mode` after eliminating the instance-local cache. A missing
+app context in the GUI worker's keyboard import is expected; main-loop reads
+must have a valid app context.
 
 `clip_owned` is the client's last successful ClipCursor ownership flag;
 `clip_inside_client` independently queries the current Windows clipping rectangle.
@@ -43,10 +44,13 @@ because the current relative adapter accepts delta packets only.
 Audio decoder backlog (`queued_samples`, divided by 96 for milliseconds) and
 playback backlog (`queued_frames` and `device_padding`, each divided by 48)
 identify different queues. `max_poll_gap_ms` measures guest audio polling gaps;
-`max_worker_gap_ms` measures WASAPI worker wake gaps. These maxima are cumulative
+`max_worker_gap_ms` measures WASAPI worker wake gaps. `max_packet_gap_ms` measures
+gaps between incoming Opus packets (including silence/source pauses). Maxima are cumulative
 for the current pipeline/output. `empty_device_wakes` also counts an empty device
-when fresh PCM is already queued, whereas the older `underruns` counter only
-counts wakes with no writable PCM. Empty-device observations indicate starvation,
+when fresh PCM is already queued. In schema 1 `underruns` counted repeated empty
+wakes; schema 2 counts transitions into starvation buffering (`rebuffer_events`).
+`overflow_recoveries` counts trims down to the existing minimum buffer threshold.
+Empty-device observations indicate starvation,
 not a precise count of audible clicks. Startup buffering, mute/reset, focus
 changes and a silent/stopped source must be considered when interpreting them.
 

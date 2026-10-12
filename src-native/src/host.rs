@@ -42,9 +42,6 @@ pub struct HostState {
     pub guest_worker: bool,
     pub title: Option<String>,
     pub app_pointer: Option<u32>,
-    #[cfg(windows)]
-    #[serde(skip)]
-    pub input_mode: crate::core_input::Mode,
     #[cfg(any(test, feature = "diagnostics"))]
     pub filesystem_requests: Vec<(String, String, i32)>,
     #[serde(skip)]
@@ -87,8 +84,6 @@ impl HostState {
             guest_worker: false,
             title: None,
             app_pointer: None,
-            #[cfg(windows)]
-            input_mode: Default::default(),
             #[cfg(any(test, feature = "diagnostics"))]
             filesystem_requests: Vec::new(),
             keys: BTreeMap::new(),
@@ -249,7 +244,6 @@ pub fn dispatch(
         // Every immersive transition (including Mouse/Off) reaches this import.
         // The companion MTY_AppGrabMouse call is empty in the pinned core.
         let mode = crate::core_input::mode(&caller.data().memory).unwrap_or_default();
-        caller.data_mut().input_mode = mode;
         if let Some(window) = &caller.data().window {
             window.set_keyboard_grab(enable);
             window.trace_core_input(
@@ -274,9 +268,11 @@ pub fn dispatch(
     #[cfg(windows)]
     if module == "env" && name == "web_set_pointer_lock" {
         if let Some(window) = &caller.data().window {
-            if let Some(state) = caller.data().app_pointer.and_then(|app| {
-                crate::core_input::state(&caller.data().memory, app, caller.data().input_mode).ok()
-            }) {
+            if let Some(state) = caller
+                .data()
+                .app_pointer
+                .and_then(|app| crate::core_input::effective_state(&caller.data().memory, app).ok())
+            {
                 window.set_input_state(state);
             }
             window.set_relative_mouse(int(args, 0)? != 0);

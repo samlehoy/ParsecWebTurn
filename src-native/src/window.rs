@@ -781,7 +781,7 @@ impl Window {
         source: &'static str,
         memory: &crate::memory::GuestMemory,
         app: Option<u32>,
-        cached_mode: crate::core_input::Mode,
+        applied_mode: crate::core_input::Mode,
         state_valid: bool,
     ) {
         if !crate::io_trace::enabled() {
@@ -797,14 +797,14 @@ impl Window {
                 failures: 0,
                 app_present: false,
                 state_valid: false,
-                cached_mode,
+                applied_mode,
                 actual_mode: None,
             });
         entry.calls += 1;
         entry.failures += u64::from(actual_mode.is_none() || !state_valid);
         entry.app_present = app.is_some();
         entry.state_valid = state_valid;
-        entry.cached_mode = cached_mode;
+        entry.applied_mode = applied_mode;
         entry.actual_mode = actual_mode;
     }
 

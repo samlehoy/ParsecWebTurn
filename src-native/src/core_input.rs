@@ -114,11 +114,17 @@ pub fn state(memory: &GuestMemory, app: u32, mode: Mode) -> Result<State> {
     })
 }
 
+/// GUI workers have separate host instances but edit the same guest memory.
+/// Read effective policy here rather than caching it in a single host instance.
+pub fn effective_state(memory: &GuestMemory, app: u32) -> Result<State> {
+    state(memory, app, mode(memory)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     fn state(memory: &GuestMemory, app: u32) -> Result<State> {
-        super::state(memory, app, mode(memory)?)
+        effective_state(memory, app)
     }
     fn fixture() -> GuestMemory {
         let engine = wasmtime::Engine::new(&crate::core_config::config()).unwrap();
@@ -164,6 +170,28 @@ mod tests {
         assert!(s.detached && s.warp_disabled);
         m.set_u32(8192 + 9376, 0).unwrap();
         assert!(state(&m, 4096).is_err());
+    }
+    #[test]
+    fn gui_worker_changes_reach_main_reader_without_a_keyboard_import() {
+        let main_memory = fixture();
+        let gui_memory = main_memory.clone();
+        assert_eq!(
+            effective_state(&main_memory, 4096).unwrap().mode,
+            Mode::default()
+        );
+        gui_memory.set_u32(101_088, 1).unwrap();
+        let both = effective_state(&main_memory, 4096).unwrap();
+        assert!(both.mode.mouse && both.mode.keyboard);
+        gui_memory.set_u32(101_088, 3).unwrap();
+        let mouse = effective_state(&main_memory, 4096).unwrap();
+        assert!(mouse.mode.mouse && !mouse.mode.keyboard);
+        gui_memory.set_u32(4096 + 48, 1).unwrap();
+        assert!(effective_state(&main_memory, 4096).unwrap().detached);
+        gui_memory.set_u32(101_088, 0).unwrap();
+        assert_eq!(
+            effective_state(&main_memory, 4096).unwrap().mode,
+            Mode::default()
+        );
     }
     #[test]
     fn invalid_layout_type_mode_and_bucket_fail_without_capture() {

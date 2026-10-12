@@ -14,6 +14,7 @@ const RECYCLED_BUFFERS: usize = 32;
 pub struct Snapshot {
     pub poll_calls: u64,
     pub max_poll_gap_ms: Option<f64>,
+    pub max_packet_gap_ms: Option<f64>,
     pub packets_decoded: u64,
     pub packets_dropped: u64,
     pub decode_errors: u64,
@@ -25,6 +26,8 @@ pub struct Snapshot {
 struct State {
     #[cfg(windows)]
     previous_poll: Option<std::time::Instant>,
+    #[cfg(windows)]
+    previous_packet: Option<std::time::Instant>,
     report: Snapshot,
     pcm: VecDeque<Vec<i16>>,
     free_pcm: Vec<Vec<i16>>,
@@ -43,6 +46,15 @@ impl Sender {
             if state.stopped || bytes.is_empty() || bytes.len() > 65_536 {
                 state.report.packets_dropped += 1;
                 return false;
+            }
+            #[cfg(windows)]
+            if crate::io_trace::enabled() {
+                let now = std::time::Instant::now();
+                if let Some(previous) = state.previous_packet.replace(now) {
+                    let gap = now.duration_since(previous).as_secs_f64() * 1000.0;
+                    state.report.max_packet_gap_ms =
+                        Some(state.report.max_packet_gap_ms.unwrap_or(0.0).max(gap));
+                }
             }
             state.free_packets.pop().unwrap_or_default()
         };
