@@ -90,3 +90,36 @@ Supported API references:
 - [Microsoft: Rendering a Stream](https://learn.microsoft.com/en-us/windows/win32/coreaudio/rendering-a-stream)
   (stage data before Start; use current padding and partial writes).
 - [Microsoft: GetCurrentPadding](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-getcurrentpadding).
+
+
+## Direct-connection test: receive bursts (2026-10-12)
+
+The `8526906` live trace still stuttered. The user reports continuous sound with
+stock Parsec to the same host, and a direct ICE connection in our client. The
+completed-audio-message gaps repeatedly reach 150–535 ms (maximum 1,080 ms),
+while local handoff peaks at 0.049 ms, decoder queue wait at 4 ms, and renderer
+wake gap at 13.85 ms. One interval receives no audio, followed by a catch-up
+burst. This places the largest observed gap before the completed SCTP read;
+it does not distinguish host web-path behavior, packet loss, retransmission or
+transport scheduling. Stock native transport is not an identical control path.
+
+The next controlled change requests a **1 MiB minimum UDP SO_RCVBUF** on native
+host, server-reflexive and UDP TURN sockets. Larger existing buffers stay intact;
+OS limits and option failures remain nonfatal. TCP/TLS TURN streams, ICE port
+selection, reliable/ordered channels, decoder and audio playout stay unchanged.
+This is burst capacity, not a wait-to-fill policy. It may reduce kernel drops
+when video arrives in bursts, but packet loss has not yet been established and
+this is not a confirmed cure. No additional audio buffering is introduced.
+
+The optional IO trace records requested, previous and actual socket buffer sizes
+and option failure, without addresses or credentials. A loopback test checks
+readback, no shrinking and intact datagrams. Existing ICE/DTLS/SCTP and UDP/TCP/TLS
+TURN integration probes continue to cover the gather paths.
+
+Supported APIs:
+- [socket2 SockRef](https://docs.rs/socket2/0.6.5/socket2/struct.SockRef.html)
+- [Winsock setsockopt / SO_RCVBUF](https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-setsockopt)
+
+The lowlat socket implementation at the revision above explicitly provisions
+receive capacity for bursts. Its Linux host's 64 MiB request is not copied into
+this Windows client; neither its recvmmsg loop nor its native transport is used.

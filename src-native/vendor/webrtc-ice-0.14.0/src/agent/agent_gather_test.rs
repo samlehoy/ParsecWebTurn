@@ -437,6 +437,7 @@ async fn test_vnet_gather_turn_connection_leak() -> Result<()> {
             vec![turn_server_url.clone()],
             Arc::clone(&v.net0),
             agent_internal,
+            Default::default(),
         )
         .await;
     }

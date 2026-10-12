@@ -28,6 +28,7 @@ use webrtc::{
     data_channel::data_channel_init::RTCDataChannelInit,
     data_channel::data_channel_state::RTCDataChannelState,
     ice::network_type::NetworkType,
+    ice::udp_network::{EphemeralUDP, UDPNetwork},
     ice_transport::ice_server::RTCIceServer,
     ice_transport::{ice_candidate_type::RTCIceCandidateType, ice_protocol::RTCIceProtocol},
     peer_connection::{
@@ -198,6 +199,7 @@ struct Completion {
     media_ingress: crate::media_ingress::Ingress,
     video_stream: Arc<Mutex<crate::video_stream::Inspector>>,
     audio_stream: Option<crate::audio_stream::Pipeline>,
+    udp_config: EphemeralUDP,
     #[cfg(windows)]
     video_output: Option<Arc<crate::video_windows::Pipeline>>,
 }
@@ -471,6 +473,7 @@ impl Attempt {
             #[cfg(windows)]
             video_output: None,
             audio_stream: None,
+            udp_config: EphemeralUDP::default(),
         }));
         let finished = Arc::new((Mutex::new(false), Condvar::new()));
         let shared = completion.clone();
@@ -646,6 +649,15 @@ impl Attempt {
             .audio_stream
             .as_ref()
             .map(|audio| audio.diagnostic_snapshot())
+    }
+
+    #[cfg(all(windows, not(feature = "diagnostics")))]
+    pub fn udp_buffer_snapshot(&self) -> Vec<webrtc::ice::udp_network::ReceiveBufferReport> {
+        self.completion
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .udp_config
+            .receive_buffer_reports()
     }
 
     pub fn configure_video_protocol(&self, protocol: crate::backend::VideoProtocol) {
@@ -835,7 +847,13 @@ fn worker(
         .worker_threads(2)
         .enable_all()
         .build()?;
+    let mut udp_config = EphemeralUDP::default();
+    // Absorb short video bursts without deliberately delaying UDP reads. Do not
+    // change ICE topology, SCTP reliability, send buffering or audio playout.
+    udp_config.set_receive_buffer_size(1024 * 1024);
+    shared.lock().unwrap_or_else(|e| e.into_inner()).udp_config = udp_config.clone();
     let mut settings = SettingEngine::default();
+    settings.set_udp_network(UDPNetwork::Ephemeral(udp_config));
     settings.set_network_types(vec![NetworkType::Udp4]);
     settings.set_data_channel_only(true);
     settings.detach_data_channels();
@@ -1383,6 +1401,42 @@ mod tests {
     use super::*;
     use crate::signaling::Credentials;
     use wasmtime::{Config, Engine, MemoryType, SharedMemory};
+    #[tokio::test]
+    async fn receive_buffer_tuning_preserves_datagrams_and_never_shrinks() {
+        let receiver = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sender = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut config = EphemeralUDP::default();
+        config.configure_socket(&receiver);
+        assert!(config.receive_buffer_reports().is_empty());
+        config.set_receive_buffer_size(1024 * 1024);
+        config.configure_socket(&receiver);
+        let report = config.receive_buffer_reports().pop().unwrap();
+        assert!(!report.error);
+        // OS limits can clamp the request. Readback is authoritative.
+        assert!(report.after_bytes.unwrap() >= report.before_bytes.unwrap());
+        let grown = report.after_bytes.unwrap();
+        config.set_receive_buffer_size(1);
+        config.configure_socket(&receiver);
+        let report = config.receive_buffer_reports().pop().unwrap();
+        assert!(!report.error);
+        assert_eq!(report.before_bytes, Some(grown));
+        assert_eq!(report.after_bytes, Some(grown));
+        for n in 0..32u8 {
+            let payload = [n; 1200];
+            sender
+                .send_to(&payload, receiver.local_addr().unwrap())
+                .await
+                .unwrap();
+            let mut read = [0; 1500];
+            let (length, _) =
+                tokio::time::timeout(Duration::from_secs(1), receiver.recv_from(&mut read))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(&read[..length], &payload);
+        }
+    }
+
     fn empty_completion() -> Completion {
         Completion {
             #[cfg(windows)]
@@ -1401,6 +1455,7 @@ mod tests {
             #[cfg(windows)]
             video_output: None,
             audio_stream: None,
+            udp_config: EphemeralUDP::default(),
         }
     }
 

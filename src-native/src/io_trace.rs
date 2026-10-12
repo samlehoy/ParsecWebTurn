@@ -68,6 +68,7 @@ pub fn start(
                 serde_json::json!({
                     "connected": backend.status == Some(0),
                     "decoder": backend.native_attempt.as_ref().and_then(|a| a.audio_snapshot()),
+                    "udp_receive_buffers": backend.native_attempt.as_ref().map(|a| a.udp_buffer_snapshot()),
                 })
             });
             let record = serde_json::json!({
