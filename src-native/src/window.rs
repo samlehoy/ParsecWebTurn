@@ -29,6 +29,8 @@ pub enum Event {
 pub struct Window {
     pub stats: Arc<crate::stats::Shared>,
     stats_page: AtomicUsize,
+    pub updates: Arc<crate::updater::State>,
+    updates_page: AtomicUsize,
     connection_settings: Mutex<Option<Arc<crate::connection_settings::Manager>>>,
     settings_page: AtomicUsize,
     pub hwnd: AtomicUsize,
@@ -88,6 +90,21 @@ pub struct Window {
 }
 
 impl Window {
+    unsafe fn open_updates(&self, check: bool, activate: bool) {
+        if check {
+            self.updates.check(false);
+        }
+        let existing = self.updates_page.load(Ordering::Acquire) as HWND;
+        if !existing.is_null() {
+            if activate {
+                ShowWindow(existing, SW_RESTORE);
+                SetForegroundWindow(existing);
+            }
+            return;
+        }
+        let page = crate::updater_ui::open(self.handle(), self.updates.clone(), activate);
+        self.updates_page.store(page as usize, Ordering::Release);
+    }
     unsafe fn open_stats(&self) {
         let existing = self.stats_page.load(Ordering::Acquire) as HWND;
         if !existing.is_null() {
@@ -123,6 +140,8 @@ impl Window {
         let state = Arc::new(Self {
             stats: Default::default(),
             stats_page: AtomicUsize::new(0),
+            updates: Default::default(),
+            updates_page: AtomicUsize::new(0),
             connection_settings: Default::default(),
             settings_page: AtomicUsize::new(0),
             hwnd: AtomicUsize::new(0),
@@ -212,6 +231,18 @@ impl Window {
                                     continue;
                                 }
                                 if IsDialogMessageW(page, &msg) != 0 {
+                                    continue;
+                                }
+                            }
+                            let updates = ui.updates_page.load(Ordering::Acquire) as HWND;
+                            if !updates.is_null()
+                                && (msg.hwnd == updates || IsChild(updates, msg.hwnd) != 0)
+                            {
+                                if msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE as usize {
+                                    PostMessageW(updates, WM_CLOSE, 0, 0);
+                                    continue;
+                                }
+                                if IsDialogMessageW(updates, &msg) != 0 {
                                     continue;
                                 }
                             }
@@ -833,6 +864,29 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
         let x = lp as i16 as i32;
         let y = (lp >> 16) as i16 as i32;
         match message {
+            crate::updater_ui::CLOSED => {
+                let _ = s
+                    .updates_page
+                    .compare_exchange(wp, 0, Ordering::AcqRel, Ordering::Acquire);
+                return 0;
+            }
+            crate::updater_ui::START => {
+                SetTimer(hwnd, crate::updater_ui::NOTIFY_TIMER, 1000, None);
+                return 0;
+            }
+            WM_TIMER if wp == crate::updater_ui::NOTIFY_TIMER => {
+                if !s.closing.load(Ordering::Acquire) && s.updates.take_notification() {
+                    s.open_updates(false, false);
+                }
+                if s.updates.view().phase != crate::updater::Phase::Checking {
+                    KillTimer(hwnd, crate::updater_ui::NOTIFY_TIMER);
+                }
+                return 0;
+            }
+            WM_COMMAND if wp & 0xffff == crate::updater_ui::OPEN => {
+                s.open_updates(true, true);
+                return 0;
+            }
             m if m == WM_APP + 10 => {
                 let _ = s
                     .stats_page
@@ -1250,6 +1304,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
             WM_DESTROY => {
+                KillTimer(hwnd, crate::updater_ui::NOTIFY_TIMER);
                 s.input_suspended.store(true, Ordering::Release);
                 s.software_presenter
                     .lock()

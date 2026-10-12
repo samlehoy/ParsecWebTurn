@@ -63,6 +63,17 @@ fn run() -> Result<()> {
         .software_overlay_enabled
         .store(software_overlay, Ordering::Release);
     window.install_connection_settings(connection_settings.clone());
+    if std::env::var_os("PARSECWEBTURN_NO_UPDATE_CHECK").is_none() {
+        window.updates.check(true);
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+                window.handle(),
+                updater_ui::START,
+                0,
+                0,
+            );
+        }
+    }
     let (mut store, instance) = instantiate_mode(&engine, &module, Some(window.clone()))?;
     *store
         .data()

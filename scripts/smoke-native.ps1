@@ -12,6 +12,7 @@ foreach ($taskLaunch in 1..2) {
     # This launches the client UI under test, not a background helper/service.
     $taskInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Normal
     $taskInfo.Environment['LOCALAPPDATA'] = $taskProfile
+    $taskInfo.Environment['PARSECWEBTURN_NO_UPDATE_CHECK'] = '1'
     $taskProcess = [Diagnostics.Process]::Start($taskInfo)
     try {
         $taskUntil = [DateTime]::UtcNow.AddSeconds(180)

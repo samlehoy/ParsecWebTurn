@@ -95,6 +95,10 @@ mod transport;
 mod transport_diagnostic_errors;
 #[cfg(any(test, feature = "diagnostics"))]
 mod transport_diagnostics;
+#[cfg(windows)]
+mod updater;
+#[cfg(windows)]
+mod updater_ui;
 mod video_output;
 mod video_stream;
 #[cfg(windows)]

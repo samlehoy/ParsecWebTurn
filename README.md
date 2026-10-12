@@ -74,6 +74,20 @@ a connection succeeds.
 if you need to reach the interface underneath. Use the Parsec overlay for stream
 controls, volume and relative mouse mode.
 
+Open **Help > Check for updates** to check for a newer stable GitHub release and
+read its release notes in a native window. The app also checks once in the
+background at startup and shows an available update without taking focus away
+from your current window. It checks stable releases only, including when running
+a dev build: `0.9.3` is newer than `0.9.3-dev.1`, while an older stable release is
+never offered as a downgrade. Dev prereleases are not offered by this updater.
+
+Choose **Download ZIP** to open the official release archive in your default
+browser, then close the app and replace `ParsecWebTurn.exe` manually. Keep
+`settings.json`; your saved native sign-in and preferences remain in place.
+The app does not download, execute or install updates itself. Network failures
+do not block startup or streaming. Set `PARSECWEBTURN_NO_UPDATE_CHECK=1` in the
+environment to disable the startup check; the Help command remains available.
+
 Open **Connection stats** or press **Ctrl+Shift+S** for native measurements in a
 separate window. Unknown measurements stay unknown. Traffic shows actual usage,
 not your maximum connection speed. Audio format remains visible during silence;

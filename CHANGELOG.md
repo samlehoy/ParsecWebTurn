@@ -5,6 +5,8 @@ builds, not published stable releases.
 
 ## Unreleased
 
+- **Stable release updates:** Help > Check for updates shows newer stable GitHub releases and their notes in a native window. Startup checks run in the background. Download the official Windows ZIP through your browser, then close the app and replace the EXE manually. Development builds can upgrade to the matching stable version; older stable releases are not offered as downgrades.
+
 ## 0.9.3-dev.1 - Connection and input improvements (2026-10-12)
 
 - **Force TURN relay:** a new Settings checkbox keeps the next connection on a TURN relay even when a direct route is available, including over a VPN. Conflicting STUN-only settings and missing custom TURN servers are checked before connecting.

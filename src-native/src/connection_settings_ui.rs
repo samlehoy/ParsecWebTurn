@@ -1,7 +1,7 @@
 //! Native, modeless settings page inside the existing client window.
 //! All HWND/GDI ownership and control access stay on the window's UI thread.
 #[path = "settings_controls.rs"]
-mod controls;
+pub(crate) mod controls;
 use crate::connection_settings::{Manager, Settings};
 use std::{
     ptr::{null, null_mut},
@@ -120,6 +120,12 @@ pub unsafe fn install_menu(parent: HWND) {
     );
     let help = CreatePopupMenu();
     AppendMenuW(help, MF_STRING, ABOUT, wide("About ParsecWebTurn").as_ptr());
+    AppendMenuW(
+        help,
+        MF_STRING,
+        crate::updater_ui::OPEN,
+        wide("Check for updates").as_ptr(),
+    );
     AppendMenuW(menu, MF_POPUP, help as usize, wide("Help").as_ptr());
     SetMenu(parent, menu);
     DrawMenuBar(parent);
@@ -1103,6 +1109,7 @@ mod tests {
             let help = GetSubMenu(GetMenu(parent), 2);
             assert!(!help.is_null());
             assert_eq!(GetMenuItemID(help, 0), ABOUT as u32);
+            assert_eq!(GetMenuItemID(help, 1), crate::updater_ui::OPEN as u32);
             assert!(about_text().contains(env!("CARGO_PKG_VERSION")));
             assert!(about_text().contains(crate::PARSEC_CORE_VERSION));
             let page = open(parent, manager.clone());
