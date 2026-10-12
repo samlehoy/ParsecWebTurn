@@ -1,7 +1,7 @@
 //! Native Win32 window. Its UI thread blocks in GetMessage; WASM runs separately.
 use anyhow::{bail, Result};
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     Arc, Mutex,
 };
 use windows_sys::Win32::{
@@ -69,7 +69,7 @@ pub struct Window {
     input_suspended: AtomicBool,
     host_cursor: Mutex<Option<(i32, i32, bool)>>,
     warp_pending: AtomicBool,
-    warp_echo: Mutex<Option<(i32, i32)>>,
+    warp_echo: AtomicU64,
     keyboard_requested: AtomicBool,
     keyboard_grab: Mutex<crate::keyboard_grab::State>,
     pressed_buttons: AtomicUsize,
@@ -460,7 +460,10 @@ impl Window {
                 if ClientToScreen(self.handle(), &mut point) != 0
                     && SetCursorPos(point.x, point.y) != 0
                 {
-                    *self.warp_echo.lock().unwrap_or_else(|e| e.into_inner()) = Some((cx, cy));
+                    // Zero means no synthetic move. Keep the ordinary mouse
+                    // path free of an additional mutex for this rare transition.
+                    self.warp_echo
+                        .store(((cx as u64) << 32 | cy as u64) + 1, Ordering::Release);
                 }
             }
         }
@@ -1096,8 +1099,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             WM_CAPTURECHANGED => s.release_buttons(),
             WM_MOUSEMOVE if !s.relative_mouse.load(Ordering::Acquire) => {
-                let echo = s.warp_echo.lock().unwrap_or_else(|e| e.into_inner()).take();
-                if echo != Some((x, y)) {
+                let echo = s.warp_echo.swap(0, Ordering::AcqRel);
+                if echo == 0 || echo - 1 != (u64::from(x as u32) << 32 | u64::from(y as u32)) {
                     s.push(Event::Motion(x, y));
                 }
             }
