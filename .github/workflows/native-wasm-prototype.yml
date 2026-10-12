@@ -82,6 +82,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
           cargo clippy --locked --manifest-path src-native/Cargo.toml --features diagnostics --all-targets -- -D warnings
           if ($LASTEXITCODE -ne 0) { throw 'Diagnostic Clippy failed' }
+      - name: Verify native immersive capture on an isolated desktop window
+        shell: pwsh
+        run: |
+          cargo test --locked --manifest-path src-native/Cargo.toml window::tests::immersive_native_capture_lifecycle -- --exact --ignored --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Native immersive capture failed' }
       - uses: actions/upload-artifact@v4
         if: always()
         with:

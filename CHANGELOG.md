@@ -5,9 +5,10 @@ builds, not published stable releases.
 
 ## Unreleased
 
+- Immersive Mouse, Keyboard and Both now have native input bindings: Mouse confines the pointer, Keyboard forwards reserved shortcuts, and Both combines them. Capture is released when the stream loses focus, is detached, or disconnects. Cursor Warp respects its overlay switch and restores the host cursor position when leaving relative mode. Live host verification is pending.
 - Fullscreen now hides the Settings / Connection stats / Help menu and restores it when returning to a window.
 - Immersive mode no longer stops the app at the keyboard-grab boundary. Windows shortcuts are captured while the client has focus and released when focus is lost or the session ends. Windows security shortcuts remain OS-controlled.
-- Disconnect now preserves the Parsec audio worker's original cleanup and thread-exit sequence, so the client can finish waiting for that worker. The previous surface-only fix did not resolve the reported freeze; this lifecycle fix still needs live verification. Old video callbacks remain unable to reveal a disconnected surface or hide a newer connection.
+- Disconnect now preserves the Parsec audio worker's original cleanup and thread-exit sequence, so the client can finish waiting for that worker. Live testing confirmed that this fixes the reported freeze. Old video callbacks remain unable to reveal a disconnected surface or hide a newer connection.
 - The overlay now uses software drawing by default, following successful testing on the affected Intel GPU. Only the interface is drawn on the CPU; video decoding and presentation keep their existing GPU path without a new decoded-frame copy or readback. This may use more CPU while the overlay is open. `--d3d-overlay` retains the previous drawing path for comparison.
 - Overlay drawing keeps its graphics settings together while sharing the GPU with the decoder, and resets unused shader stages. Live Intel testing showed that this change alone did **not** eliminate overlay flicker; investigation continues.
 - Audio and video now reuse bounded input buffers to reduce repeated memory allocations. Media hand-off and statistics spend less time holding the shared connection lock, keeping controls responsive while streaming.

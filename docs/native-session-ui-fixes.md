@@ -46,7 +46,7 @@ no completion flag is fabricated, and no thread is forcibly terminated.
 An isolated shared-memory WASM regression exercises multiple callback ticks,
 cleanup after the yield, atomic join notification and three successive workers.
 It uses a hidden native window without OpenGL, audio hardware, network or real
-profile data. Live disconnect/reconnect still requires testing on a Parsec host.
+profile data. Live testing subsequently confirmed the disconnect fix and the software overlay default.
 
 The Constant FPS report was subsequently refined: with a stationary picture,
 the measured rate reaches the requested value, and it drops during movement.

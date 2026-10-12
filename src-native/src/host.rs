@@ -42,6 +42,9 @@ pub struct HostState {
     pub guest_worker: bool,
     pub title: Option<String>,
     pub app_pointer: Option<u32>,
+    #[cfg(windows)]
+    #[serde(skip)]
+    pub input_mode: crate::core_input::Mode,
     #[cfg(any(test, feature = "diagnostics"))]
     pub filesystem_requests: Vec<(String, String, i32)>,
     #[serde(skip)]
@@ -84,6 +87,8 @@ impl HostState {
             guest_worker: false,
             title: None,
             app_pointer: None,
+            #[cfg(windows)]
+            input_mode: Default::default(),
             #[cfg(any(test, feature = "diagnostics"))]
             filesystem_requests: Vec::new(),
             keys: BTreeMap::new(),
@@ -241,8 +246,19 @@ pub fn dispatch(
     #[cfg(windows)]
     if module == "env" && name == "web_set_kb_grab" {
         let enable = int(args, 0)? != 0;
+        // Every immersive transition (including Mouse/Off) reaches this import.
+        // The companion MTY_AppGrabMouse call is empty in the pinned core.
+        let mode = crate::core_input::mode(&caller.data().memory).unwrap_or_default();
+        caller.data_mut().input_mode = mode;
         if let Some(window) = &caller.data().window {
             window.set_keyboard_grab(enable);
+            if let Some(state) = caller
+                .data()
+                .app_pointer
+                .and_then(|app| crate::core_input::state(&caller.data().memory, app, mode).ok())
+            {
+                window.set_input_state(state);
+            }
         }
         return Ok(());
     }
@@ -872,6 +888,23 @@ fn backend_call(
                         // Consume only after a successful copy, so a bad guest
                         // buffer cannot silently discard an event.
                         m.c_string(ptr(args, 0)?, ptr(args, 1)? as usize, &json)?;
+                        #[cfg(windows)]
+                        if event["type"].as_i64() == Some(1) {
+                            if let Some(window) = &caller.data().window {
+                                let cursor = &event["cursor"];
+                                if let (Some(x), Some(y), Some(relative)) = (
+                                    cursor["positionX"]
+                                        .as_i64()
+                                        .and_then(|v| i32::try_from(v).ok()),
+                                    cursor["positionY"]
+                                        .as_i64()
+                                        .and_then(|v| i32::try_from(v).ok()),
+                                    cursor["relative"].as_bool(),
+                                ) {
+                                    window.set_host_cursor(x, y, relative);
+                                }
+                            }
+                        }
                         b.poll_event();
                         result(results, 1);
                     } else {

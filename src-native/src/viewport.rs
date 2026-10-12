@@ -42,10 +42,42 @@ impl Viewport {
             axis(y, t, b - t, self.source.1),
         ))
     }
+    /// Host cursor -> client pixels, using the same letterbox as video/input.
+    #[cfg(any(windows, test))]
+    pub fn unmap(self, x: i32, y: i32) -> Option<(i32, i32)> {
+        let [l, t, r, b] = self.rect()?;
+        let axis = |v: i32, size: u32, origin: i32, end: i32| {
+            origin
+                + (f64::from(v.clamp(0, size as i32)) * f64::from(end - origin) / f64::from(size))
+                    .round() as i32
+        };
+        Some((
+            axis(x, self.source.0, l, r).clamp(l, r - 1),
+            axis(y, self.source.1, t, b).clamp(t, b - 1),
+        ))
+    }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn host_cursor_warp_uses_letterbox_coordinates_and_inside_edges() {
+        let v = Viewport {
+            source: (1920, 1080),
+            client: (1024, 768),
+        };
+        assert_eq!(v.unmap(960, 540), Some((512, 384)));
+        assert_eq!(v.unmap(-1, -1), Some((0, 96)));
+        assert_eq!(v.unmap(1920, 1080), Some((1023, 671)));
+        assert_eq!(
+            Viewport {
+                source: (0, 1080),
+                ..v
+            }
+            .unmap(0, 0),
+            None
+        );
+    }
     #[test]
     fn input_uses_the_presented_letterbox_and_clamps_edges() {
         let v = Viewport {

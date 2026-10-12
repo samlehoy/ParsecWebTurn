@@ -411,6 +411,20 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
             if callback.call(&mut *store, opaque as i32)? == 0 {
                 break;
             }
+            if input {
+                let state = store
+                    .data()
+                    .app_pointer
+                    .and_then(|app| {
+                        crate::core_input::state(&store.data().memory, app, store.data().input_mode)
+                            .ok()
+                    })
+                    .unwrap_or(crate::core_input::State {
+                        detached: true,
+                        ..Default::default()
+                    });
+                window.set_input_state(state);
+            }
             first = false;
         }
         // SwapBuffers can already wait for vblank. Do not add a full second

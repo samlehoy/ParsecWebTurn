@@ -21,6 +21,8 @@ mod connection_settings_ui;
 mod control;
 #[cfg(any(windows, feature = "diagnostics"))]
 mod core_config;
+#[cfg(windows)]
+mod core_input;
 #[cfg(any(windows, feature = "diagnostics"))]
 mod core_runtime;
 #[cfg(test)]
