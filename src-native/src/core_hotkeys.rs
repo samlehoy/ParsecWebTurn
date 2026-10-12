@@ -77,6 +77,10 @@ mod tests {
                 let engine = wasmtime::Engine::new(&crate::core_config::config()).unwrap();
                 let module = crate::core_runtime::load(&engine).unwrap();
                 let (mut store, instance) = crate::instantiate(&engine, &module).unwrap();
+                // The offline watchdog advances this isolated engine once.
+                // Host-side fixture setup can outlast that timer on CI; keep
+                // the finite fuel budget as the bound for these guest calls.
+                store.set_epoch_deadline(2);
                 let _ = instance
                     .get_typed_func::<(), ()>(&mut store, "_start")
                     .unwrap()
