@@ -28,7 +28,6 @@ use webrtc::{
     data_channel::data_channel_init::RTCDataChannelInit,
     data_channel::data_channel_state::RTCDataChannelState,
     ice::network_type::NetworkType,
-    ice::udp_network::{EphemeralUDP, UDPNetwork},
     ice_transport::ice_server::RTCIceServer,
     ice_transport::{ice_candidate_type::RTCIceCandidateType, ice_protocol::RTCIceProtocol},
     peer_connection::{
@@ -183,6 +182,39 @@ struct Progress {
     legacy_rsa_1024: bool,
 }
 
+#[cfg(any(test, all(windows, not(feature = "diagnostics"))))]
+impl Progress {
+    /// Explicit allowlist: no SDP, candidates, addresses, guest strings or errors.
+    fn connection_trace(&self) -> serde_json::Value {
+        serde_json::json!({
+            "offer_ready": self.ready,
+            "local_description_set": self.local_description_set,
+            "remote_description_set": self.remote_description_set,
+            "local_candidates": self.local_candidates,
+            "remote_candidates": self.remote_candidates,
+            "transport_connected": self.transport_connected,
+            "connection_established": self.connection_established,
+            "channels_open": self.open_mask.count_ones(),
+            "control_ready": self.control_ready,
+            "sync_received": self.sync_received,
+            "channel_messages_received": self.channel_messages_received,
+            "channel_bytes_received": self.channel_bytes_received,
+            "failed": self.failed,
+            "failure_stage": self.failure_stage,
+            "failure_channel": self.failure_channel,
+            "failure_elapsed_ms": self.failure_elapsed_ms,
+            "closed": self.closed,
+            "states": {
+                "peer": self.transport_states.get("peer"),
+                "ice": self.transport_states.get("ice"),
+                "dtls": self.transport_states.get("dtls"),
+                "gathering": self.transport_states.get("gathering"),
+                "signaling": self.transport_states.get("signaling"),
+            },
+        })
+    }
+}
+
 struct Completion {
     #[cfg(windows)]
     telemetry: Option<(Arc<crate::stats::Shared>, u64)>,
@@ -199,7 +231,6 @@ struct Completion {
     media_ingress: crate::media_ingress::Ingress,
     video_stream: Arc<Mutex<crate::video_stream::Inspector>>,
     audio_stream: Option<crate::audio_stream::Pipeline>,
-    udp_config: EphemeralUDP,
     #[cfg(windows)]
     video_output: Option<Arc<crate::video_windows::Pipeline>>,
 }
@@ -473,7 +504,6 @@ impl Attempt {
             #[cfg(windows)]
             video_output: None,
             audio_stream: None,
-            udp_config: EphemeralUDP::default(),
         }));
         let finished = Arc::new((Mutex::new(false), Condvar::new()));
         let shared = completion.clone();
@@ -652,12 +682,9 @@ impl Attempt {
     }
 
     #[cfg(all(windows, not(feature = "diagnostics")))]
-    pub fn udp_buffer_snapshot(&self) -> Vec<webrtc::ice::udp_network::ReceiveBufferReport> {
-        self.completion
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .udp_config
-            .receive_buffer_reports()
+    pub fn connection_trace(&self) -> serde_json::Value {
+        let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
+        state.progress.connection_trace()
     }
 
     pub fn configure_video_protocol(&self, protocol: crate::backend::VideoProtocol) {
@@ -847,13 +874,7 @@ fn worker(
         .worker_threads(2)
         .enable_all()
         .build()?;
-    let mut udp_config = EphemeralUDP::default();
-    // Absorb short video bursts without deliberately delaying UDP reads. Do not
-    // change ICE topology, SCTP reliability, send buffering or audio playout.
-    udp_config.set_receive_buffer_size(1024 * 1024);
-    shared.lock().unwrap_or_else(|e| e.into_inner()).udp_config = udp_config.clone();
     let mut settings = SettingEngine::default();
-    settings.set_udp_network(UDPNetwork::Ephemeral(udp_config));
     settings.set_network_types(vec![NetworkType::Udp4]);
     settings.set_data_channel_only(true);
     settings.detach_data_channels();
@@ -1316,6 +1337,32 @@ fn ice_configuration(stun_provider: StunProvider) -> RTCConfiguration {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn connection_trace_distinguishes_startup_stages_without_guest_data() {
+        let mut progress = super::Progress {
+            mid: "private-guest-string".into(),
+            ready: true,
+            local_description_set: true,
+            transport_states: serde_json::json!({
+                "ice": "checking", "dtls": "new", "candidate": "private-address"
+            }),
+            ..Default::default()
+        };
+        let trace = progress.connection_trace();
+        assert_eq!(trace["offer_ready"], true);
+        assert_eq!(trace["remote_description_set"], false);
+        assert_eq!(trace["states"]["ice"], "checking");
+        assert!(!trace.to_string().contains("private-"));
+        progress.remote_description_set = true;
+        progress.open_mask = 7;
+        progress.failed = true;
+        progress.failure_stage = Some(super::FailureStage::ControlStartup);
+        let trace = progress.connection_trace();
+        assert_eq!(trace["remote_description_set"], true);
+        assert_eq!(trace["channels_open"], 3);
+        assert_eq!(trace["failure_stage"], "control-startup");
+    }
+
+    #[test]
     fn establishment_timeout_still_bounds_an_unconnected_attempt() {
         let start = std::time::Instant::now();
         let mut deadline = super::EstablishmentDeadline::new(start);
@@ -1401,42 +1448,6 @@ mod tests {
     use super::*;
     use crate::signaling::Credentials;
     use wasmtime::{Config, Engine, MemoryType, SharedMemory};
-    #[tokio::test]
-    async fn receive_buffer_tuning_preserves_datagrams_and_never_shrinks() {
-        let receiver = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let sender = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let mut config = EphemeralUDP::default();
-        config.configure_socket(&receiver);
-        assert!(config.receive_buffer_reports().is_empty());
-        config.set_receive_buffer_size(1024 * 1024);
-        config.configure_socket(&receiver);
-        let report = config.receive_buffer_reports().pop().unwrap();
-        assert!(!report.error);
-        // OS limits can clamp the request. Readback is authoritative.
-        assert!(report.after_bytes.unwrap() >= report.before_bytes.unwrap());
-        let grown = report.after_bytes.unwrap();
-        config.set_receive_buffer_size(1);
-        config.configure_socket(&receiver);
-        let report = config.receive_buffer_reports().pop().unwrap();
-        assert!(!report.error);
-        assert_eq!(report.before_bytes, Some(grown));
-        assert_eq!(report.after_bytes, Some(grown));
-        for n in 0..32u8 {
-            let payload = [n; 1200];
-            sender
-                .send_to(&payload, receiver.local_addr().unwrap())
-                .await
-                .unwrap();
-            let mut read = [0; 1500];
-            let (length, _) =
-                tokio::time::timeout(Duration::from_secs(1), receiver.recv_from(&mut read))
-                    .await
-                    .unwrap()
-                    .unwrap();
-            assert_eq!(&read[..length], &payload);
-        }
-    }
-
     fn empty_completion() -> Completion {
         Completion {
             #[cfg(windows)]
@@ -1455,7 +1466,6 @@ mod tests {
             #[cfg(windows)]
             video_output: None,
             audio_stream: None,
-            udp_config: EphemeralUDP::default(),
         }
     }
 

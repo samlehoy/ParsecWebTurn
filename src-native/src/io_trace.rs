@@ -53,7 +53,7 @@ pub fn start(
 ) -> Result<std::thread::JoinHandle<()>> {
     let mut file = std::fs::File::create(path)?;
     let header = serde_json::json!({
-        "schema": 3, "scope": "opt-in-input-audio-counters",
+        "schema": 4, "scope": "opt-in-input-audio-connection-counters",
         "app": env!("CARGO_PKG_VERSION"), "core": crate::PARSEC_CORE_VERSION,
         "build": option_env!("GITHUB_SHA").unwrap_or("local"),
         "interval_ms": 1000, "sample_limit": 600,
@@ -68,7 +68,7 @@ pub fn start(
                 serde_json::json!({
                     "connected": backend.status == Some(0),
                     "decoder": backend.native_attempt.as_ref().and_then(|a| a.audio_snapshot()),
-                    "udp_receive_buffers": backend.native_attempt.as_ref().map(|a| a.udp_buffer_snapshot()),
+                    "connection": backend.native_attempt.as_ref().map(|a| a.connection_trace()),
                 })
             });
             let record = serde_json::json!({

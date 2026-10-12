@@ -4,16 +4,6 @@ Base: crates.io `webrtc-ice` 0.14.0 (MIT OR Apache-2.0). Original licenses and
 upstream sources remain in this directory. This patch does not change ICE pair
 priorities, nomination, candidate filtering or the application's `all` policy.
 
-- `src/udp_network.rs`: optional minimum native UDP receive capacity using
-  documented socket2/SO_RCVBUF APIs. Zero preserves upstream defaults; larger
-  existing capacity is never reduced, and option errors are nonfatal. Address-free
-  reports include requested, previous and granted sizes. The same cloned config
-  applies to ephemeral host, server-reflexive and UDP TURN sockets. Virtual sockets,
-  mux topology and TCP/TLS streams are untouched. No wait-to-fill or playout policy
-  is introduced. The app requests 1 MiB to test video-burst loss as a possible cause
-  of audio gaps; this is not a confirmed loss diagnosis. App loopback tests verify
-  intact datagrams and no shrinking.
-
 - `src/turn_stream.rs`: implements the existing `webrtc-util::Conn` contract
   over Tokio TCP and rustls TLS. RFC 8656 sections 7 and 11 define the STUN and
   ChannelData framing and stream padding; there is no additional RFC 4571

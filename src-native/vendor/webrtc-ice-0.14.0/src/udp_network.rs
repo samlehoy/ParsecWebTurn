@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use super::udp_mux::UDPMux;
 use super::Error;
@@ -7,66 +7,9 @@ use super::Error;
 pub struct EphemeralUDP {
     port_min: u16,
     port_max: u16,
-    receive_buffer_size: usize,
-    receive_buffers: Arc<Mutex<Vec<ReceiveBufferReport>>>,
-}
-
-/// Address-free results of optional native socket tuning. OS limits may apply.
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct ReceiveBufferReport {
-    pub requested_bytes: usize,
-    pub before_bytes: Option<usize>,
-    pub after_bytes: Option<usize>,
-    pub error: bool,
 }
 
 impl EphemeralUDP {
-    /// Best-effort minimum SO_RCVBUF. Zero preserves the platform default.
-    /// This is capacity for bursts, not a playout delay or a batching threshold.
-    pub fn set_receive_buffer_size(&mut self, bytes: usize) {
-        self.receive_buffer_size = bytes;
-    }
-
-    pub fn receive_buffer_reports(&self) -> Vec<ReceiveBufferReport> {
-        self.receive_buffers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-    }
-
-    /// Apply optional native UDP tuning before a connection starts receiving.
-    /// Unsupported/virtual connections and failed socket options are nonfatal.
-    pub fn configure_socket(&self, conn: &(dyn util::Conn + Send + Sync)) {
-        if self.receive_buffer_size == 0 {
-            return;
-        }
-        // Virtual networks and stream TURN connections are deliberately untouched.
-        let Some(socket) = conn.as_any().downcast_ref::<tokio::net::UdpSocket>() else {
-            return;
-        };
-        let socket = socket2::SockRef::from(socket);
-        let before = socket.recv_buffer_size();
-        let mut error = before.is_err();
-        if let Ok(current) = &before {
-            if *current < self.receive_buffer_size {
-                error |= socket
-                    .set_recv_buffer_size(self.receive_buffer_size)
-                    .is_err();
-            }
-        }
-        let after = socket.recv_buffer_size();
-        error |= after.is_err();
-        self.receive_buffers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(ReceiveBufferReport {
-                requested_bytes: self.receive_buffer_size,
-                before_bytes: before.ok(),
-                after_bytes: after.ok(),
-                error,
-            });
-    }
-
     pub fn new(port_min: u16, port_max: u16) -> Result<Self, Error> {
         let mut s = Self::default();
         s.set_ports(port_min, port_max)?;

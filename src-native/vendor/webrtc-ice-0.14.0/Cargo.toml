@@ -81,9 +81,6 @@ features = ["derive"]
 [dependencies.serde_json]
 version = "1"
 
-[dependencies.socket2]
-version = "0.6"
-
 [dependencies.stun]
 version = "0.9.0"
 

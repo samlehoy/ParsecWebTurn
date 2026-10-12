@@ -14,7 +14,7 @@ use crate::candidate::candidate_server_reflexive::CandidateServerReflexiveConfig
 use crate::candidate::*;
 use crate::error::*;
 use crate::network_type::*;
-use crate::udp_network::{EphemeralUDP, UDPNetwork};
+use crate::udp_network::UDPNetwork;
 use crate::url::{ProtoType, SchemeType, Url};
 use crate::util::*;
 
@@ -63,7 +63,8 @@ struct GatherCandidatesLocalUDPMuxParams {
 
 struct GatherCandidatesSrflxMappedParasm {
     network_types: Vec<NetworkType>,
-    ephemeral_config: EphemeralUDP,
+    port_max: u16,
+    port_min: u16,
     ext_ip_mapper: Arc<Option<ExternalIpMapper>>,
     net: Arc<Net>,
     agent_internal: Arc<AgentInternal>,
@@ -72,7 +73,8 @@ struct GatherCandidatesSrflxMappedParasm {
 struct GatherCandidatesSrflxParams {
     urls: Vec<Url>,
     network_types: Vec<NetworkType>,
-    ephemeral_config: EphemeralUDP,
+    port_max: u16,
+    port_min: u16,
     net: Arc<Net>,
     agent_internal: Arc<AgentInternal>,
 }
@@ -121,7 +123,8 @@ impl Agent {
                     let srflx_params = GatherCandidatesSrflxParams {
                         urls: params.urls.clone(),
                         network_types: params.network_types.clone(),
-                        ephemeral_config: ephemeral_config.clone(),
+                        port_max: ephemeral_config.port_max(),
+                        port_min: ephemeral_config.port_min(),
                         net: Arc::clone(&params.net),
                         agent_internal: Arc::clone(&params.agent_internal),
                     };
@@ -135,7 +138,8 @@ impl Agent {
                         if ext_ip_mapper.candidate_type == CandidateType::ServerReflexive {
                             let srflx_mapped_params = GatherCandidatesSrflxMappedParasm {
                                 network_types: params.network_types.clone(),
-                                ephemeral_config: ephemeral_config.clone(),
+                                port_max: ephemeral_config.port_max(),
+                                port_min: ephemeral_config.port_min(),
                                 ext_ip_mapper: Arc::clone(&params.ext_ip_mapper),
                                 net: Arc::clone(&params.net),
                                 agent_internal: Arc::clone(&params.agent_internal),
@@ -150,7 +154,6 @@ impl Agent {
                     }
                 }
                 CandidateType::Relay => {
-                    let udp_network = params.udp_network.clone();
                     let urls = params.urls.clone();
                     let net = Arc::clone(&params.net);
                     let agent_internal = Arc::clone(&params.agent_internal);
@@ -158,7 +161,7 @@ impl Agent {
                     tokio::spawn(async move {
                         let _d = w;
 
-                        Self::gather_candidates_relay(urls, net, agent_internal, udp_network).await;
+                        Self::gather_candidates_relay(urls, net, agent_internal).await;
                     });
                 }
                 _ => {}
@@ -304,7 +307,6 @@ impl Agent {
                     }
                 };
 
-                ephemeral_config.configure_socket(conn.as_ref());
                 let port = match conn.local_addr() {
                     Ok(addr) => addr.port(),
                     Err(err) => {
@@ -472,7 +474,8 @@ impl Agent {
     async fn gather_candidates_srflx_mapped(params: GatherCandidatesSrflxMappedParasm) {
         let GatherCandidatesSrflxMappedParasm {
             network_types,
-            ephemeral_config,
+            port_max,
+            port_min,
             ext_ip_mapper,
             net,
             agent_internal,
@@ -486,7 +489,6 @@ impl Agent {
             }
 
             let network = network_type.to_string();
-            let ephemeral_config = ephemeral_config.clone();
             let net2 = Arc::clone(&net);
             let agent_internal2 = Arc::clone(&agent_internal);
             let ext_ip_mapper2 = Arc::clone(&ext_ip_mapper);
@@ -497,8 +499,8 @@ impl Agent {
 
                 let conn: Arc<dyn Conn + Send + Sync> = match listen_udp_in_port_range(
                     &net2,
-                    ephemeral_config.port_max(),
-                    ephemeral_config.port_min(),
+                    port_max,
+                    port_min,
                     if network_type.is_ipv4() {
                         SocketAddr::new(Ipv4Addr::new(0, 0, 0, 0).into(), 0)
                     } else {
@@ -519,7 +521,6 @@ impl Agent {
                     }
                 };
 
-                ephemeral_config.configure_socket(conn.as_ref());
                 let laddr = conn.local_addr()?;
                 let mapped_ip = {
                     if let Some(ext_ip_mapper3) = &*ext_ip_mapper2 {
@@ -601,7 +602,8 @@ impl Agent {
         let GatherCandidatesSrflxParams {
             urls,
             network_types,
-            ephemeral_config,
+            port_max,
+            port_min,
             net,
             agent_internal,
         } = params;
@@ -616,7 +618,6 @@ impl Agent {
                 let network = network_type.to_string();
                 let is_ipv4 = network_type.is_ipv4();
                 let url = url.clone();
-                let ephemeral_config = ephemeral_config.clone();
                 let net2 = Arc::clone(&net);
                 let agent_internal2 = Arc::clone(&agent_internal);
 
@@ -640,8 +641,8 @@ impl Agent {
 
                     let conn: Arc<dyn Conn + Send + Sync> = match listen_udp_in_port_range(
                         &net2,
-                        ephemeral_config.port_max(),
-                        ephemeral_config.port_min(),
+                        port_max,
+                        port_min,
                         if is_ipv4 {
                             SocketAddr::new(Ipv4Addr::new(0, 0, 0, 0).into(), 0)
                         } else {
@@ -662,7 +663,6 @@ impl Agent {
                         }
                     };
 
-                    ephemeral_config.configure_socket(conn.as_ref());
                     let xoraddr =
                         match get_xormapped_addr(&conn, server_addr, STUN_GATHER_TIMEOUT).await {
                             Ok(xoraddr) => xoraddr,
@@ -739,7 +739,6 @@ impl Agent {
         urls: Vec<Url>,
         net: Arc<Net>,
         agent_internal: Arc<AgentInternal>,
-        udp_network: UDPNetwork,
     ) {
         let wg = WaitGroup::new();
 
@@ -765,7 +764,6 @@ impl Agent {
             }
 
             let network = NetworkType::Udp4.to_string();
-            let udp_network = udp_network.clone();
             let net2 = Arc::clone(&net);
             let agent_internal2 = Arc::clone(&agent_internal);
 
@@ -789,9 +787,6 @@ impl Agent {
                             }
                         };
 
-                        if let UDPNetwork::Ephemeral(config) = &udp_network {
-                            config.configure_socket(loc_conn.as_ref());
-                        }
                         let local_addr = loc_conn.local_addr()?;
                         let rel_addr = local_addr.ip().to_string();
                         let rel_port = local_addr.port();
