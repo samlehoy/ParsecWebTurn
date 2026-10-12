@@ -14,13 +14,39 @@ the client.
 
 Fullscreen saves and detaches the Win32 menu as well as saving/restoring window
 styles and placement. Its isolated probe checks that the same menu is restored.
+Live testing confirmed both the immersive-mode crash fix and fullscreen menu
+hiding/restoration.
 
 Disconnect explicitly retires the native video surface and input capture. Video
 surface generations reject late ready/finished callbacks from previous sessions;
 the decoder/presentation algorithm is unchanged. A disconnected old worker
 cannot reveal a black video child above the computer-selection UI, and cannot
 hide a newer session. The guest's existing disconnect event drives navigation;
-there is no injected click or restart. This needs live host verification.
+there is no injected click or restart. Live testing showed that this surface-only
+fix did not resolve the freeze.
+
+Further inspection of the pinned core found a skipped guest-thread epilogue.
+`main_audio_thread` calls `MTY_RunAndYield`, then destroys its audio object and
+returns through `__wasi_thread_start_C`. That libc epilogue publishes pthread
+completion and wakes joiners. During disconnect the main core clears the audio
+loop's run flag and calls `MTY_ThreadDestroy` / `__pthread_join`.
+Previously, our `web_run_and_yield` import trapped out of the worker's WASM call
+stack, and Rust invoked callbacks separately. When the callback returned zero,
+Rust marked its own worker finished, but the guest's audio cleanup and pthread
+completion code never resumed. A guest join could therefore wait indefinitely.
+
+Guest workers now execute the callback loop synchronously within the host import
+using Wasmtime's supported reentrant calls. Normal callback completion returns
+from the import into the original WASM stack so its cleanup and pthread exit
+run naturally. The main UI retains its existing input-aware event loop. Worker
+cadence, video decoder, presentation queue and mouse handling are unchanged.
+The core binary is unchanged: no private pthread layout is written by Rust,
+no completion flag is fabricated, and no thread is forcibly terminated.
+
+An isolated shared-memory WASM regression exercises multiple callback ticks,
+cleanup after the yield, atomic join notification and three successive workers.
+It uses a hidden native window without OpenGL, audio hardware, network or real
+profile data. Live disconnect/reconnect still requires testing on a Parsec host.
 
 The Constant FPS report was subsequently refined: with a stationary picture,
 the measured rate reaches the requested value, and it drops during movement.

@@ -122,7 +122,7 @@ impl Window {
             dimensions: Mutex::new((1024, 720)),
             graphics: Default::default(),
             overlay: Default::default(),
-            software_overlay_enabled: AtomicBool::new(false),
+            software_overlay_enabled: AtomicBool::new(true),
             software_pending: Default::default(),
             software_presenter: Default::default(),
             video_report: Default::default(),
@@ -1088,6 +1088,74 @@ unsafe extern "system" fn video_surface_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn worker_yield_returns_to_guest_cleanup_and_notifies_join_on_repeated_sessions() {
+        let window = Window::create_mode(false, false, false, false, false).unwrap();
+        unsafe {
+            ShowWindow(window.handle(), SW_HIDE);
+        }
+        let result = (|| -> anyhow::Result<()> {
+            let engine = wasmtime::Engine::new(&crate::core_config::config())?;
+            // Models the relevant guest contract without an account, a codec,
+            // audio hardware or private pthread-layout writes from the host.
+            let module = wasmtime::Module::new(
+                &engine,
+                r#"(module
+                (import "env" "memory" (memory 1 1 shared))
+                (import "env" "web_run_and_yield" (func $yield (param i32 i32)))
+                (table (export "__indirect_function_table") 1 funcref)
+                (elem (i32.const 0) $tick)
+                (func $tick (param i32) (result i32)
+                    i32.const 12 i32.const 1 i32.atomic.rmw.add drop
+                    i32.const 0 i32.atomic.load i32.eqz)
+                (func (export "wasi_thread_start") (param i32 i32)
+                    i32.const 0 i32.const 0 call $yield
+                    ;; Real WASM audio/thread cleanup also follows the yield.
+                    i32.const 4 i32.const 1 i32.atomic.store
+                    i32.const 8 i32.const 0 i32.atomic.store
+                    i32.const 8 i32.const 1 memory.atomic.notify drop))"#,
+            )?;
+            let (store, _) = crate::instantiate_mode(&engine, &module, Some(window.clone()))?;
+            let runtime = store.data().threads.as_ref().unwrap();
+            let memory = &runtime.memory;
+            for _ in 0..3 {
+                for (ptr, value) in [(0, 0), (4, 0), (8, 1), (12, 0)] {
+                    memory.sync_word(ptr)?.store(value, Ordering::SeqCst);
+                }
+                let id = runtime.spawn(0);
+                anyhow::ensure!(id > 0, "worker spawn failed");
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while memory.sync_word(12)?.load(Ordering::SeqCst) < 2 {
+                    anyhow::ensure!(std::time::Instant::now() < until, "callback did not run");
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                memory.sync_word(0)?.store(1, Ordering::SeqCst);
+                memory
+                    .0
+                    .atomic_wait32(8, 1, Some(std::time::Duration::from_secs(2)))?;
+                anyhow::ensure!(
+                    memory.sync_word(8)?.load(Ordering::SeqCst) == 0,
+                    "guest join remained blocked after callback completion"
+                );
+                anyhow::ensure!(
+                    memory.sync_word(4)?.load(Ordering::SeqCst) == 1,
+                    "guest cleanup following yield was skipped"
+                );
+                loop {
+                    let records = runtime.snapshot();
+                    if let Some(record) = records.iter().find(|r| r.id == id && r.finished) {
+                        anyhow::ensure!(record.error.is_none(), "guest worker failed");
+                        break;
+                    }
+                    anyhow::ensure!(std::time::Instant::now() < until, "worker did not finish");
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            }
+            Ok(())
+        })();
+        window.close();
+        result.unwrap();
+    }
     #[test]
     fn disconnect_retires_video_and_old_workers_cannot_reveal_or_hide_new_session() {
         let window = Window::create_mode(false, false, false, false, false).unwrap();

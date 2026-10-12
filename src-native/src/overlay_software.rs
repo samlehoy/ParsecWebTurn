@@ -1,4 +1,4 @@
-//! Opt-in CPU GUI rasterizer and per-pixel-alpha Win32 layer.
+//! CPU GUI rasterizer and per-pixel-alpha Win32 layer (default overlay path).
 //! Consumes captured GUI vertices/atlases only. Never reads decoded video.
 use crate::overlay::Frame;
 #[cfg(test)]

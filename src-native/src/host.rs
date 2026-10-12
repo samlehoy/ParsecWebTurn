@@ -39,6 +39,7 @@ pub struct HostState {
     pub boundary: Option<String>,
     pub stdout_bytes: u64,
     pub guest_exit_code: Option<u32>,
+    pub guest_worker: bool,
     pub title: Option<String>,
     pub app_pointer: Option<u32>,
     #[cfg(any(test, feature = "diagnostics"))]
@@ -80,6 +81,7 @@ impl HostState {
             boundary: None,
             stdout_bytes: 0,
             guest_exit_code: None,
+            guest_worker: false,
             title: None,
             app_pointer: None,
             #[cfg(any(test, feature = "diagnostics"))]

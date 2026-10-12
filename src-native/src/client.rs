@@ -30,8 +30,8 @@ pub fn main() {
 }
 fn run() -> Result<()> {
     let mut args: Vec<_> = std::env::args().skip(1).collect();
-    let software_overlay = args.iter().any(|arg| arg == "--software-overlay");
-    args.retain(|arg| arg != "--software-overlay");
+    let software_overlay = !args.iter().any(|arg| arg == "--d3d-overlay");
+    args.retain(|arg| arg != "--software-overlay" && arg != "--d3d-overlay");
     if args == ["--version"] {
         println!(
             "ParsecWebTurn {} / Parsec WASM {}",

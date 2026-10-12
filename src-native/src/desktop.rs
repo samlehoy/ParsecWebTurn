@@ -68,6 +68,9 @@ pub fn dispatch(
             // Win32 owns the swapchain size. Matoya sets viewport in its GL calls.
         }
         "web_run_and_yield" => {
+            if caller.data().guest_worker {
+                return run_worker_callback(caller, int(0)? as u32, int(1)?);
+            }
             caller.data_mut().event_loop = Some((int(0)? as u32, int(1)? as u32));
             bail!("native event-loop handoff");
         }
@@ -189,8 +192,42 @@ pub fn run(store: &mut Store<HostState>, instance: &Instance) -> Result<()> {
     run_loop(store, instance, true)
 }
 
-pub fn run_worker(store: &mut Store<HostState>, instance: &Instance) -> Result<()> {
-    run_loop(store, instance, false)
+fn run_worker_callback(caller: &mut Caller<'_, HostState>, index: u32, opaque: i32) -> Result<()> {
+    // Keep the WASM call stack alive: returning from this import must run the
+    // audio cleanup and libc pthread exit/notify before a guest join completes.
+    // Trapping and running callbacks in a new invocation skips that epilogue.
+    let window = caller
+        .data()
+        .window
+        .clone()
+        .context("native window missing")?;
+    let table = caller
+        .get_export("__indirect_function_table")
+        .and_then(|e| e.into_table())
+        .context("callback table missing")?;
+    let callback = match table.get(&mut *caller, index as u64) {
+        Some(wasmtime::Ref::Func(Some(f))) => f.typed::<i32, i32>(&*caller)?,
+        _ => bail!("invalid worker callback"),
+    };
+    let until = Instant::now() + Duration::from_secs(window.run_seconds);
+    let period = Duration::from_nanos(1_000_000_000 / 60);
+    let mut first = true;
+    while !window.closing.load(Ordering::Acquire) && (window.live || Instant::now() < until) {
+        let started = Instant::now();
+        caller.set_fuel(if first { 500_000_000 } else { 50_000_000 })?;
+        if callback.call(&mut *caller, opaque)? == 0 {
+            return Ok(());
+        }
+        first = false;
+        let remaining = period.saturating_sub(started.elapsed());
+        if !remaining.is_zero() {
+            std::thread::sleep(remaining);
+        }
+    }
+    if window.closing.load(Ordering::Acquire) {
+        return Err(crate::lifecycle::cancellation_error());
+    }
+    bail!("worker callback deadline reached before normal completion")
 }
 
 struct CallbackCadence {

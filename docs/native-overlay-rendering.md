@@ -31,9 +31,12 @@ These checks establish compositor behavior, not that the reported Intel artifact
 has been reproduced or eliminated. Live testing of 162b130 on the affected Intel
 machine did not eliminate the flicker.
 
-## Software overlay comparison
+## Default software overlay
 
-Launch `ParsecWebTurn.exe --software-overlay` for an opt-in comparison. CPU
+Live testing on the affected Intel HD Graphics machine confirmed that software
+overlay rendering eliminated the observed flicker. It is now the default;
+launch `ParsecWebTurn.exe --d3d-overlay` to compare the previous path.
+The earlier `--software-overlay` argument remains accepted for compatibility. CPU
 rasterization consumes the same captured GUI triangles, clip rectangles and RGBA
 atlases, with bilinear sampling and premultiplied alpha. The resulting GUI-only
 bitmap is presented in an owned, click-through, non-activating layered window
@@ -45,10 +48,12 @@ claim that the entire desktop compositor runs on the CPU.
 Rasterization runs on the existing GUI render worker, not the input or video
 worker. A bounded latest-surface slot passes the result to the UI thread; old
 pending images are replaced. No decoded frame is copied or read back. The normal
-default remains the D3D11 overlay, and the original OpenGL account/computer UI is
-unchanged. Larger CPU/memory usage is an accepted cost of this temporary test.
+default is the software overlay, and the original OpenGL account/computer UI is
+unchanged. CPU/memory usage can be higher while rendering the overlay.
 
-Compare the same overlay in normal mode and software mode on the affected Intel
-machine. If software mode is clean, D3D11 composition becomes the leading suspect;
-if it also flickers, investigate captured draw/texture data and publication next.
-Neither outcome alone establishes a particular driver defect.
+The comparison points to the D3D11 GUI composition path, but does not establish
+a particular driver defect. This Win32 presentation layer is Windows-specific;
+other operating systems still need a native presenter. The CPU GUI rasterizer
+does not add a copy or readback of decoded video. Color conversion and final
+output writes in the existing GPU presenter are still necessary; this is not
+a claim of complete end-to-end zero-copy execution.

@@ -176,6 +176,7 @@ impl ThreadRuntime {
                 let mut host = None;
                 let outcome: Result<()> = (|| {
                     let (mut store, instance) = crate::instantiate_with_runtime(runtime.clone())?;
+                    store.data_mut().guest_worker = true;
                     let entry = instance
                         .get_typed_func::<(i32, i32), ()>(&mut store, "wasi_thread_start")
                         .context("WASI thread entry export missing")?;
@@ -184,13 +185,6 @@ impl ThreadRuntime {
                         store.data_mut().execution_stage = Some("guest-thread-start");
                     }
                     let result = entry.call(&mut store, (id, argument as i32));
-                    #[cfg(windows)]
-                    let result =
-                        if store.data().window.is_some() && store.data().event_loop.is_some() {
-                            crate::desktop::run_worker(&mut store, &instance)
-                        } else {
-                            result
-                        };
                     #[cfg(any(test, feature = "diagnostics"))]
                     if let Err(error) = &result {
                         store.data_mut().execution_failure =

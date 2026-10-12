@@ -40,7 +40,10 @@ The native Windows development build currently supports:
 - H.264 video and optional H.265 / HEVC Main (8-bit) playback with a D3D11-based
   GPU video pipeline.
 - Opus audio, keyboard and mouse input.
-- The familiar Parsec stream overlay, including its relative-mouse option.
+- The familiar Parsec stream overlay, including its relative-mouse option. The
+  overlay uses software drawing for compatibility; streamed video stays on the
+  existing GPU path. `--d3d-overlay` selects the previous overlay renderer for
+  troubleshooting.
 - Remembering your sign-in and Parsec preferences between launches.
 - Graceful disconnect from the overlay and when closing the app.
 - Custom STUN servers and TURN relays over UDP, TCP or TLS, including Cloudflare.
