@@ -1047,32 +1047,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
     DefWindowProcW(hwnd, message, wp, lp)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn disconnect_retires_video_and_old_workers_cannot_reveal_or_hide_new_session() {
-        let window = Window::create_mode(false, false, false, false, false).unwrap();
-        unsafe {
-            ShowWindow(window.handle(), SW_HIDE);
-        }
-        let old = window.begin_video();
-        window.set_video_ready_for(old, true);
-        assert!(window.video_ready.load(Ordering::Acquire));
-        window.end_session();
-        assert!(!window.video_ready.load(Ordering::Acquire));
-        window.set_video_ready_for(old, true);
-        assert!(!window.video_ready.load(Ordering::Acquire));
-        let new = window.begin_video();
-        window.set_video_ready_for(new, true);
-        window.finish_video(old);
-        assert!(window.video_ready.load(Ordering::Acquire));
-        window.finish_video(new);
-        assert!(!window.video_ready.load(Ordering::Acquire));
-        window.close();
-    }
-}
-
 unsafe fn modifiers() -> i32 {
     let mut mods = 0;
     for (vk, bit) in [(VK_SHIFT, 1), (VK_CONTROL, 2), (VK_MENU, 4)] {
@@ -1108,5 +1082,31 @@ unsafe extern "system" fn video_surface_proc(
             0
         }
         _ => DefWindowProcW(hwnd, message, wp, lp),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn disconnect_retires_video_and_old_workers_cannot_reveal_or_hide_new_session() {
+        let window = Window::create_mode(false, false, false, false, false).unwrap();
+        unsafe {
+            ShowWindow(window.handle(), SW_HIDE);
+        }
+        let old = window.begin_video();
+        window.set_video_ready_for(old, true);
+        assert!(window.video_ready.load(Ordering::Acquire));
+        window.end_session();
+        assert!(!window.video_ready.load(Ordering::Acquire));
+        window.set_video_ready_for(old, true);
+        assert!(!window.video_ready.load(Ordering::Acquire));
+        let new = window.begin_video();
+        window.set_video_ready_for(new, true);
+        window.finish_video(old);
+        assert!(window.video_ready.load(Ordering::Acquire));
+        window.finish_video(new);
+        assert!(!window.video_ready.load(Ordering::Acquire));
+        window.close();
     }
 }

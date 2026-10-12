@@ -22,12 +22,17 @@ cannot reveal a black video child above the computer-selection UI, and cannot
 hide a newer session. The guest's existing disconnect event drives navigation;
 there is no injected click or restart. This needs live host verification.
 
-Constant FPS remains under investigation. The pinned core toggles the `fullFPS`
+The Constant FPS report was subsequently refined: with a stationary picture,
+the measured rate reaches the requested value, and it drops during movement.
+This is consistent with a working request and a throughput limitation under
+load, but does not establish which stage is limiting throughput. Connection
+stats displays measured decoder output, not the requested host frame rate.
+The pinned core toggles the `fullFPS`
 boolean in its per-stream configuration and serializes the array into user-data
 sub-ID 11. The Rust adapter forwards that text as private control opcode 17,
 with a NUL-terminated payload and sub-ID, matching the pinned JavaScript adapter.
 The SDK header describes `fullFPS` as a desktop-host request to **attempt** to
 stream at `encoderFPS`; a checked menu item is not confirmation of the received
 frame rate. No invented protocol bit, artificial frame duplication, or decoder
-queue pacing has been added. Live verification of the host's response remains
-necessary; the fix is not claimed complete.
+queue pacing has been added. There is no confirmed Constant FPS control defect
+to fix from this observation alone; its request path is unchanged.

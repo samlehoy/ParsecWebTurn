@@ -1,5 +1,6 @@
 //! Snapshot-specific GLES import adapter to a real native driver context.
-//! No rasterization, framebuffer copy or browser is used for presentation.
+//! The original UI stays on GL; optional overlay CPU rendering uses captured
+//! GUI commands, never framebuffer readback or a browser.
 use crate::{memory::GuestMemory, window::Window};
 use anyhow::{bail, Context, Result};
 use glow::HasContext;
