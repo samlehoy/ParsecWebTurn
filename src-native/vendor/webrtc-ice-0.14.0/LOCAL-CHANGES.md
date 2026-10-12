@@ -1,8 +1,10 @@
 # Local TURN stream transport integration
 
 Base: crates.io `webrtc-ice` 0.14.0 (MIT OR Apache-2.0). Original licenses and
-upstream sources remain in this directory. This patch does not change ICE pair
-priorities, nomination, candidate filtering or the application's `all` policy.
+upstream sources remain in this directory. With transport preference disabled,
+the original stream integration does not change ICE pair priorities, nomination
+or candidate filtering. The application defaults to `all`, with an explicit
+relay-only setting available to the user.
 
 - `src/turn_stream.rs`: implements the existing `webrtc-util::Conn` contract
   over Tokio TCP and rustls TLS. RFC 8656 sections 7 and 11 define the STUN and
@@ -47,3 +49,14 @@ never embedded in the client executable.
 References: [TURN RFC 8656](https://www.rfc-editor.org/rfc/rfc8656),
 [STUN RFC 8489](https://www.rfc-editor.org/rfc/rfc8489),
 [TURN URI RFC 7065](https://www.rfc-editor.org/rfc/rfc7065).
+# Opt-in TURN transport preference
+
+`AgentConfig::prefer_turn_udp` defaults to false. Enabled by the native app, it
+stages TURN gathering as UDP first, TLS second and plain TCP last. Each present
+preferred tier receives a three-second connectivity head start. Delayed fallbacks
+stop after ICE connects, fails or closes. An unanswered allocation does not block
+the next tier. RFC 8445 relay local preferences rank these transports; direct
+candidate priorities and remote nomination authority remain unchanged.
+This bounded policy does not prove that a slower preferred route is impossible.
+See `docs/native-turn-and-hotkeys.md` and the isolated coturn trickle-ICE fixture.
+

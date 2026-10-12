@@ -91,6 +91,17 @@ can supply your own STUN server and enable **STUN only** to exclude all TURN rel
 For a custom relay, enter its TURN URL, username and password; or select Cloudflare
 and enter your TURN Key ID and API token. Changes apply on the next connection.
 
+Enable **Force TURN relay** to use TURN even when a direct route is available,
+for example when a VPN's direct route gives unstable playback. This requires a
+configured TURN provider and cannot be combined with STUN only. UDP TURN gets
+first preference; TLS and then plain TCP are timed fallbacks if it has not
+connected. Without this checkbox, ICE continues to allow direct connections.
+
+The embedded Parsec **Hotkeys** page remains responsible for configuring and
+saving stream shortcuts. Custom bindings take priority over conflicting native
+shortcuts, including F8/F11. They work while the client has focus; background
+global hotkeys are not implemented by this core.
+
 **Video GPU** selects the adapter for native stream decoding and rendering;
 it does not change the host or the GPU used by the embedded interface. Automatic
 keeps Windows' default adapter. Choose a GPU that supports D3D11 and H.264 decoding.

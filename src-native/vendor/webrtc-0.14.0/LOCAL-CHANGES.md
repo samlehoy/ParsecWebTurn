@@ -31,3 +31,11 @@ Primary transport contract: https://www.rfc-editor.org/rfc/rfc8831.html
 
 Keep this patch isolated to the standalone native prototype. On upstream
 migration, re-audit and remove it if a supported equivalent becomes available.
+# Opt-in TURN transport preference
+
+`SettingEngine::set_prefer_turn_udp` forwards a disabled-by-default gathering
+policy to the patched ICE crate. The native app opts into UDP, then TLS, then
+plain TCP timed fallback. No certificate checks or ICE roles are changed.
+The app's separate Force TURN relay option uses `RTCIceTransportPolicy::Relay`;
+that routing policy is not imposed on other users of the vendored library.
+
