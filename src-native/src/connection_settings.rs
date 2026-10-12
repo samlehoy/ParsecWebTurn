@@ -57,6 +57,7 @@ pub struct Settings {
     pub stun_urls: Vec<String>,
     pub turn_urls: Vec<String>,
     pub stun_only: bool,
+    pub force_relay: bool,
     pub custom_username: String,
     pub encrypted_custom_password: String,
     pub turn_key_id: String,
@@ -78,6 +79,7 @@ impl Default for Settings {
             stun_urls: vec![],
             turn_urls: vec![],
             stun_only: false,
+            force_relay: false,
             custom_username: String::new(),
             encrypted_custom_password: String::new(),
             turn_key_id: String::new(),
@@ -126,6 +128,12 @@ impl Settings {
         })
     }
     pub fn validate(&self) -> Result<()> {
+        if self.force_relay && self.stun_only {
+            bail!("Force TURN relay cannot be combined with STUN only");
+        }
+        if self.force_relay && self.provider == "custom" && self.turn_urls.is_empty() {
+            bail!("Force TURN relay requires at least one TURN server");
+        }
         if !matches!(self.provider.as_str(), "custom" | "cloudflare") {
             bail!("Choose Custom servers or Cloudflare TURN");
         }
@@ -313,12 +321,37 @@ impl Manager {
         *self.cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
         Ok(())
     }
+    #[cfg(test)]
     pub async fn resolve(&self) -> Result<Vec<RTCIceServer>> {
-        use sha2::{Digest, Sha256};
         let (settings, error) = self.view();
         if error.is_some() {
             bail!("Fix connection settings before connecting");
         }
+        self.resolve_settings(&settings).await
+    }
+    /// Resolve credentials and routing from the same settings snapshot.
+    pub async fn resolve_configuration(
+        &self,
+    ) -> Result<webrtc::peer_connection::configuration::RTCConfiguration> {
+        use webrtc::peer_connection::{
+            configuration::RTCConfiguration, policy::ice_transport_policy::RTCIceTransportPolicy,
+        };
+        let (settings, error) = self.view();
+        if error.is_some() {
+            bail!("Fix connection settings before connecting");
+        }
+        Ok(RTCConfiguration {
+            ice_servers: self.resolve_settings(&settings).await?,
+            ice_transport_policy: if settings.force_relay {
+                RTCIceTransportPolicy::Relay
+            } else {
+                RTCIceTransportPolicy::All
+            },
+            ..Default::default()
+        })
+    }
+    async fn resolve_settings(&self, settings: &Settings) -> Result<Vec<RTCIceServer>> {
+        use sha2::{Digest, Sha256};
         settings.validate()?;
         if settings.stun_only || settings.provider == "custom" {
             return settings.custom_servers();
@@ -485,6 +518,40 @@ fn atomic_write(path: &std::path::Path, raw: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn relay_policy_is_persisted_and_cannot_fall_back_to_direct() {
+        use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
+        let dir = Directory::new();
+        let manager = Manager::open(dir.file());
+        let mut s = Settings::fresh();
+        assert!(!s.force_relay);
+        s.force_relay = true;
+        assert!(s.validate().is_err()); // no TURN server
+        s.turn_urls = vec!["turn:relay.example.invalid:3478?transport=udp".into()];
+        s.custom_username = "fixture".into();
+        manager
+            .save(s, "fixture-password", "", false, false)
+            .unwrap();
+        let manager = Manager::open(dir.file());
+        assert!(manager.view().0.force_relay);
+        let config = manager.resolve_configuration().await.unwrap();
+        assert_eq!(config.ice_transport_policy, RTCIceTransportPolicy::Relay);
+        let mut s = manager.view().0;
+        s.stun_only = true;
+        assert!(s.validate().is_err());
+        s.stun_only = false;
+        s.force_relay = false;
+        manager.save(s, "", "", false, false).unwrap();
+        assert_eq!(
+            manager
+                .resolve_configuration()
+                .await
+                .unwrap()
+                .ice_transport_policy,
+            RTCIceTransportPolicy::All
+        );
+        assert!(!serde_json::from_str::<Settings>("{}").unwrap().force_relay);
+    }
     struct Directory(PathBuf);
     impl Directory {
         fn new() -> Self {

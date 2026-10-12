@@ -877,6 +877,7 @@ fn worker(
     let mut settings = SettingEngine::default();
     settings.set_network_types(vec![NetworkType::Udp4]);
     settings.set_data_channel_only(true);
+    settings.set_prefer_turn_udp(true);
     settings.detach_data_channels();
     settings.set_sctp_max_message_size_can_send(
         webrtc::api::setting_engine::SctpMaxMessageSize::Bounded(MAX_CHANNEL_MESSAGE as u32),
@@ -889,9 +890,9 @@ fn worker(
     // thread. Snapshot settings once; a save affects only the next attempt.
     let mut ice = ice_configuration(stun_provider);
     if let Some(manager) = connection_settings {
-        ice.ice_servers = runtime.block_on(async {
+        ice = runtime.block_on(async {
             tokio::select! {
-                result = manager.resolve() => result,
+                result = manager.resolve_configuration() => result,
                 _ = async {
                     loop {
                         if shared.lock().unwrap_or_else(|e| e.into_inner()).cancelled { break; }

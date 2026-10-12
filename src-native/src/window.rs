@@ -66,6 +66,7 @@ pub struct Window {
     relative_anchor: Mutex<Option<(i32, i32)>>,
     has_focus: AtomicBool,
     input_state: Mutex<crate::core_input::State>,
+    core_hotkeys: Mutex<Option<crate::core_hotkeys::Binding>>,
     input_trace: Mutex<crate::io_trace::Input>,
     mouse_clipped: AtomicBool,
     input_suspended: AtomicBool,
@@ -160,6 +161,7 @@ impl Window {
             relative_anchor: Mutex::new(None),
             has_focus: AtomicBool::new(false),
             input_state: Default::default(),
+            core_hotkeys: Default::default(),
             input_trace: Default::default(),
             mouse_clipped: AtomicBool::new(false),
             input_suspended: AtomicBool::new(false),
@@ -197,6 +199,7 @@ impl Window {
                                 && msg.wParam == b'S' as usize
                                 && GetKeyState(VK_CONTROL as i32) < 0
                                 && GetKeyState(VK_SHIFT as i32) < 0
+                                && !ui.core_owns_key("KeyS", modifiers())
                             {
                                 if msg.lParam & (1 << 30) == 0 {
                                     ui.open_stats();
@@ -232,6 +235,16 @@ impl Window {
 
     pub fn handle(&self) -> HWND {
         self.hwnd.load(Ordering::Acquire) as HWND
+    }
+    pub fn bind_core_hotkeys(&self, binding: crate::core_hotkeys::Binding) {
+        *self.core_hotkeys.lock().unwrap_or_else(|e| e.into_inner()) = Some(binding);
+    }
+    fn core_owns_key(&self, code: &str, mods: i32) -> bool {
+        self.core_hotkeys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|binding| binding.owns(code, mods).unwrap_or(true))
     }
     pub fn settings_open(&self) -> bool {
         self.settings_page.load(Ordering::Acquire) != 0
@@ -964,7 +977,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
             WM_KEYDOWN
-                if wp as u32 == VK_OEM_COMMA as u32 && GetKeyState(VK_CONTROL as i32) < 0 =>
+                if wp as u32 == VK_OEM_COMMA as u32
+                    && GetKeyState(VK_CONTROL as i32) < 0
+                    && !s.core_owns_key("Comma", modifiers()) =>
             {
                 if lp & (1 << 30) == 0 {
                     s.open_connection_settings();
@@ -1172,7 +1187,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 // DefWindowProc releases the foreground WM_INPUT bookkeeping.
             }
             WM_KEYDOWN
-                if wp as u32 == VK_F8 as u32 && s.video_hwnd.load(Ordering::Acquire) != 0 =>
+                if wp as u32 == VK_F8 as u32
+                    && s.video_hwnd.load(Ordering::Acquire) != 0
+                    && !s.core_owns_key("F8", modifiers()) =>
             {
                 if lp & (1 << 30) == 0 {
                     s.apply_relative_mouse(false);
@@ -1181,16 +1198,22 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 }
                 return 0;
             }
-            WM_KEYUP if wp as u32 == VK_F8 as u32 && s.video_hwnd.load(Ordering::Acquire) != 0 => {
+            WM_KEYUP
+                if wp as u32 == VK_F8 as u32
+                    && s.video_hwnd.load(Ordering::Acquire) != 0
+                    && !s.core_owns_key("F8", modifiers()) =>
+            {
                 return 0
             }
-            WM_KEYDOWN if wp as u32 == VK_F11 as u32 => {
+            WM_KEYDOWN if wp as u32 == VK_F11 as u32 && !s.core_owns_key("F11", modifiers()) => {
                 if lp & (1 << 30) == 0 {
                     s.set_fullscreen(!s.fullscreen_active.load(Ordering::Acquire));
                 }
                 return 0;
             }
-            WM_KEYUP if wp as u32 == VK_F11 as u32 => return 0,
+            WM_KEYUP if wp as u32 == VK_F11 as u32 && !s.core_owns_key("F11", modifiers()) => {
+                return 0
+            }
             WM_SIZE => {
                 s.software_presenter
                     .lock()

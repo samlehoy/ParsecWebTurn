@@ -100,6 +100,7 @@ pub struct SettingEngine {
     pub(crate) udp_network: UDPNetwork,
     pub(crate) disable_media_engine_copy: bool,
     pub(crate) data_channel_only: bool,
+    pub(crate) prefer_turn_udp: bool,
     pub(crate) srtp_protection_profiles: Vec<SrtpProtectionProfile>,
     pub(crate) receive_mtu: usize,
     pub(crate) mid_generator: Option<Arc<dyn Fn(isize) -> String + Send + Sync>>,
@@ -109,6 +110,11 @@ pub struct SettingEngine {
 }
 
 impl SettingEngine {
+    /// Local opt-in TURN gathering policy: UDP, then TLS, then plain TCP.
+    /// Each available tier gets a three-second connectivity head start.
+    pub fn set_prefer_turn_udp(&mut self, enabled: bool) {
+        self.prefer_turn_udp = enabled;
+    }
     /// get_receive_mtu returns the configured MTU. If SettingEngine's MTU is configured to 0 it returns the default
     pub(crate) fn get_receive_mtu(&self) -> usize {
         if self.receive_mtu != 0 {

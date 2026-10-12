@@ -22,6 +22,8 @@ mod control;
 #[cfg(any(windows, feature = "diagnostics"))]
 mod core_config;
 #[cfg(windows)]
+mod core_hotkeys;
+#[cfg(windows)]
 mod core_input;
 #[cfg(any(windows, feature = "diagnostics"))]
 mod core_runtime;

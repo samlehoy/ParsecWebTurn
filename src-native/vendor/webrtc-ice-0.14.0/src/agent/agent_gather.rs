@@ -6,6 +6,9 @@ use util::vnet::net::*;
 use util::Conn;
 use waitgroup::WaitGroup;
 
+#[path = "turn_preference.rs"]
+mod turn_preference;
+
 use super::*;
 use crate::candidate::candidate_base::CandidateBaseConfig;
 use crate::candidate::candidate_host::CandidateHostConfig;
@@ -741,8 +744,13 @@ impl Agent {
         agent_internal: Arc<AgentInternal>,
     ) {
         let wg = WaitGroup::new();
+        let started = tokio::time::Instant::now();
+        let delays: Vec<_> = urls
+            .iter()
+            .map(|url| turn_preference::delay(url, &urls))
+            .collect();
 
-        for url in urls {
+        for (index, url) in urls.into_iter().enumerate() {
             if url.scheme != SchemeType::Turn && url.scheme != SchemeType::Turns {
                 continue;
             }
@@ -766,10 +774,45 @@ impl Agent {
             let network = NetworkType::Udp4.to_string();
             let net2 = Arc::clone(&net);
             let agent_internal2 = Arc::clone(&agent_internal);
+            let preference = agent_internal.prefer_turn_udp;
+            let delay = delays[index];
+            let priority = if preference {
+                turn_preference::priority(&url, index)
+            } else {
+                0
+            };
 
             let w = wg.worker();
             tokio::spawn(async move {
                 let _d = w;
+
+                if preference && !delay.is_zero() {
+                    // Allocation success alone does not prove peer reachability.
+                    // Allow preferred candidates real ICE checks before starting
+                    // a fallback; never wait for a long UDP allocation timeout.
+                    loop {
+                        let state = agent_internal2
+                            .connection_state
+                            .load(Ordering::SeqCst)
+                            .into();
+                        if matches!(
+                            state,
+                            ConnectionState::Connected
+                                | ConnectionState::Completed
+                                | ConnectionState::Closed
+                                | ConnectionState::Failed
+                        ) {
+                            return Ok(());
+                        }
+                        let remaining = (started + delay)
+                            .saturating_duration_since(tokio::time::Instant::now());
+                        if remaining.is_zero() {
+                            break;
+                        }
+                        tokio::time::sleep(remaining.min(std::time::Duration::from_millis(50)))
+                            .await;
+                    }
+                }
 
                 let mut turn_server_addr = format!("{}:{}", url.host, url.port);
 
@@ -912,6 +955,7 @@ impl Agent {
                         address: raddr.ip().to_string(),
                         port: raddr.port(),
                         component: COMPONENT_RTP,
+                        priority,
                         conn: Some(Arc::clone(&relay_conn)),
                         ..CandidateBaseConfig::default()
                     },

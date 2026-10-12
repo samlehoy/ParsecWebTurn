@@ -23,30 +23,37 @@ mod integration {
     };
 
     async fn exchange(url: &str) {
+        exchange_urls(&[url], url, false).await;
+    }
+
+    async fn exchange_urls(urls: &[&str], url: &str, prefer_udp: bool) {
         let mut settings = SettingEngine::default();
         settings.set_network_types(vec![NetworkType::Udp4]);
         settings.set_data_channel_only(true);
+        settings.set_prefer_turn_udp(prefer_udp);
         settings.detach_data_channels();
         settings.set_sctp_max_message_size_can_send(
             webrtc::api::setting_engine::SctpMaxMessageSize::Bounded(262144),
         );
         let api = APIBuilder::new().with_setting_engine(settings).build();
-        let a = api
-            .new_peer_connection(RTCConfiguration {
+        let a = Arc::new(
+            api.new_peer_connection(RTCConfiguration {
                 ice_transport_policy: RTCIceTransportPolicy::Relay,
                 ice_servers: vec![RTCIceServer {
-                    urls: vec![url.into()],
+                    urls: urls.iter().map(|url| (*url).into()).collect(),
                     username: "fixture".into(),
                     credential: "fixture-password".into(),
                 }],
                 ..Default::default()
             })
             .await
-            .unwrap();
-        let b = api
-            .new_peer_connection(RTCConfiguration::default())
-            .await
-            .unwrap();
+            .unwrap(),
+        );
+        let b = Arc::new(
+            api.new_peer_connection(RTCConfiguration::default())
+                .await
+                .unwrap(),
+        );
         let (tx, mut rx) = mpsc::channel(8);
         let mut channels = Vec::new();
         for id in 0..3 {
@@ -95,26 +102,56 @@ mod integration {
             }
             channels.push((ca, cb));
         }
-        let mut done = a.gathering_complete_promise().await;
+        // Real trickle ICE: a blocked allocation must not hold up fallback
+        // connectivity until gathering-complete, just like the native client.
+        let (atx, mut arx) = mpsc::unbounded_channel();
+        let (btx, mut brx) = mpsc::unbounded_channel();
+        a.on_ice_candidate(Box::new(move |candidate| {
+            let tx = atx.clone();
+            Box::pin(async move {
+                if let Some(candidate) = candidate {
+                    let _ = tx.send(candidate.to_json().unwrap());
+                }
+            })
+        }));
+        b.on_ice_candidate(Box::new(move |candidate| {
+            let tx = btx.clone();
+            Box::pin(async move {
+                if let Some(candidate) = candidate {
+                    let _ = tx.send(candidate.to_json().unwrap());
+                }
+            })
+        }));
         a.set_local_description(a.create_offer(None).await.unwrap())
             .await
             .unwrap();
-        done.recv().await;
-        let offer = a.local_description().await.unwrap();
-        assert!(
-            offer.sdp.contains("typ relay"),
-            "no relay gathered for {url}"
-        );
-        assert!(!offer.sdp.contains("typ host"), "fixture must force TURN");
-        b.set_remote_description(offer).await.unwrap();
-        let mut done = b.gathering_complete_promise().await;
+        b.set_remote_description(a.local_description().await.unwrap())
+            .await
+            .unwrap();
         b.set_local_description(b.create_answer(None).await.unwrap())
             .await
             .unwrap();
-        done.recv().await;
         a.set_remote_description(b.local_description().await.unwrap())
             .await
             .unwrap();
+        let remote = Arc::downgrade(&b);
+        let forward_a = tokio::spawn(async move {
+            while let Some(candidate) = arx.recv().await {
+                let Some(remote) = remote.upgrade() else {
+                    break;
+                };
+                remote.add_ice_candidate(candidate).await.unwrap();
+            }
+        });
+        let remote = Arc::downgrade(&a);
+        let forward_b = tokio::spawn(async move {
+            while let Some(candidate) = brx.recv().await {
+                let Some(remote) = remote.upgrade() else {
+                    break;
+                };
+                remote.add_ice_candidate(candidate).await.unwrap();
+            }
+        });
         while channels.iter().any(|(a, b)| {
             a.ready_state() != RTCDataChannelState::Open
                 || b.ready_state() != RTCDataChannelState::Open
@@ -178,6 +215,8 @@ mod integration {
             measured_rtt && allocation,
             "selected TURN telemetry must be present"
         );
+        forward_a.abort();
+        forward_b.abort();
         timeout(Duration::from_secs(5), a.close())
             .await
             .unwrap()
@@ -199,6 +238,27 @@ mod integration {
             timeout(Duration::from_secs(40), exchange(url))
                 .await
                 .expect(url);
+        }
+    }
+
+    #[tokio::test]
+    async fn udp_then_tls_then_plain_tcp_fallback_preserves_sctp() {
+        let udp = "turn:localhost:43478?transport=udp";
+        let tls = "turns:localhost:43549?transport=tcp";
+        let tcp = "turn:localhost:43478?transport=tcp";
+        let unavailable_udp = "turn:127.0.0.1:43479?transport=udp";
+        let unavailable_tls = "turns:localhost:43550?transport=tcp";
+        for (urls, expected) in [
+            (vec![tcp, tls, udp], udp),
+            (vec![tcp, unavailable_udp, tls], tls),
+            (vec![tcp, unavailable_udp, unavailable_tls], tcp),
+        ] {
+            timeout(
+                Duration::from_secs(25),
+                exchange_urls(&urls, expected, true),
+            )
+            .await
+            .expect(expected);
         }
     }
 

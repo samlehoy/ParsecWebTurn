@@ -264,6 +264,13 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
     };
     if input {
         export(store, instance, "mty_app_set_keys", &[])?;
+        if let Some(app) = store.data().app_pointer {
+            window.bind_core_hotkeys(crate::core_hotkeys::Binding {
+                memory: store.data().memory.clone(),
+                app,
+                keys: store.data().key_codes.clone(),
+            });
+        }
     }
     let until = Instant::now() + Duration::from_secs(window.run_seconds);
     #[cfg(any(test, feature = "diagnostics"))]

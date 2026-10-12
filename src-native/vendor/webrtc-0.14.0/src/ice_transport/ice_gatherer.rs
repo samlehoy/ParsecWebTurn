@@ -107,6 +107,7 @@ impl RTCIceGatherer {
         let mdns_mode = self.setting_engine.candidates.multicast_dns_mode;
 
         let mut config = ice::agent::agent_config::AgentConfig {
+            prefer_turn_udp: self.setting_engine.prefer_turn_udp,
             udp_network: self.setting_engine.udp_network.clone(),
             lite: self.setting_engine.candidates.ice_lite,
             urls: self.validated_servers.clone(),
