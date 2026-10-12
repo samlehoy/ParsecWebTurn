@@ -35,6 +35,8 @@ struct Page {
     owned: bool,
     state: Arc<State>,
     last: Option<View>,
+    core: Option<Arc<crate::core_version::State>>,
+    last_core: Option<crate::core_version::View>,
     background: HBRUSH,
     field: HBRUSH,
     font: HFONT,
@@ -87,6 +89,18 @@ unsafe fn add(parent: HWND, class: &str, title: &str, id: usize, style: u32, fon
     hwnd
 }
 pub unsafe fn open(parent: HWND, state: Arc<State>, activate: bool) -> HWND {
+    open_page(parent, state, activate, None)
+}
+pub unsafe fn open_about(parent: HWND, core: Arc<crate::core_version::State>) -> HWND {
+    open_page(parent, Arc::new(State::default()), true, Some(core))
+}
+unsafe fn open_page(
+    parent: HWND,
+    state: Arc<State>,
+    activate: bool,
+    core: Option<Arc<crate::core_version::State>>,
+) -> HWND {
+    let about = core.is_some();
     let class = wide("ParsecWebTurnUpdates");
     let instance = GetModuleHandleW(null());
     RegisterClassW(&WNDCLASSW {
@@ -101,6 +115,8 @@ pub unsafe fn open(parent: HWND, state: Arc<State>, activate: bool) -> HWND {
         owned: false,
         state,
         last: None,
+        core,
+        last_core: None,
         background: CreateSolidBrush(BG),
         field: CreateSolidBrush(FIELD),
         font: font(16),
@@ -110,12 +126,17 @@ pub unsafe fn open(parent: HWND, state: Arc<State>, activate: bool) -> HWND {
     let hwnd = CreateWindowExW(
         WS_EX_CONTROLPARENT,
         class.as_ptr(),
-        wide("ParsecWebTurn - Updates").as_ptr(),
+        wide(if about {
+            "About ParsecWebTurn"
+        } else {
+            "ParsecWebTurn - Updates"
+        })
+        .as_ptr(),
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         740,
-        680,
+        if about { 540 } else { 680 },
         parent,
         null_mut(),
         instance,
@@ -126,7 +147,18 @@ pub unsafe fn open(parent: HWND, state: Arc<State>, activate: bool) -> HWND {
     }
     page.owned = true;
     let page = &mut *Box::into_raw(page);
-    add(hwnd, "STATIC", "Updates", 1, 0, page.heading);
+    add(
+        hwnd,
+        "STATIC",
+        if about {
+            "About ParsecWebTurn"
+        } else {
+            "Updates"
+        },
+        1,
+        0,
+        page.heading,
+    );
     add(hwnd, "STATIC", "", VERSION, 0, page.font);
     add(hwnd, "STATIC", "", STATUS, 0, page.font);
     let notes = add(
@@ -157,12 +189,16 @@ pub unsafe fn open(parent: HWND, state: Arc<State>, activate: bool) -> HWND {
             page.font,
         );
     }
+    if about {
+        ShowWindow(GetDlgItem(hwnd, CHECK as i32), SW_HIDE);
+        ShowWindow(GetDlgItem(hwnd, DOWNLOAD as i32), SW_HIDE);
+    }
     refresh(hwnd, page);
     layout(hwnd);
     SetTimer(hwnd, 1, 500, None);
     ShowWindow(hwnd, if activate { SW_SHOW } else { SW_SHOWNOACTIVATE });
     if activate {
-        SetFocus(GetDlgItem(hwnd, CHECK as i32));
+        SetFocus(GetDlgItem(hwnd, if about { CLOSE } else { CHECK } as i32));
     }
     hwnd
 }
@@ -192,6 +228,31 @@ unsafe fn layout(hwnd: HWND) {
     }
 }
 unsafe fn refresh(hwnd: HWND, page: &mut Page) {
+    if let Some(core) = &page.core {
+        let view = core.view();
+        if page.last_core.as_ref() == Some(&view) {
+            return;
+        }
+        let version = format!(
+            "Native Rust app: {}\r\nEmbedded Parsec WASM client: {}",
+            env!("CARGO_PKG_VERSION"),
+            crate::PARSEC_CORE_VERSION
+        );
+        SetWindowTextW(GetDlgItem(hwnd, VERSION as i32), wide(&version).as_ptr());
+        SetWindowTextW(
+            GetDlgItem(hwnd, STATUS as i32),
+            wide(&crate::core_version::status(
+                &view,
+                crate::PARSEC_CORE_VERSION,
+            ))
+            .as_ptr(),
+        );
+        let explanation = format!("Independent client; not an official Parsec application.\r\n\r\nSource: {}\r\n\r\nThe embedded core is never updated automatically. A core change requires compatibility testing and a new app release. Different version labels do not establish compatibility.\r\n\r\nSuccessful checks are cached for one hour in this app session. Reopen About to retry a failed check.", crate::core_version::SOURCE);
+        SetWindowTextW(GetDlgItem(hwnd, NOTES as i32), wide(&explanation).as_ptr());
+        page.last_core = Some(view);
+        InvalidateRect(hwnd, null(), 1);
+        return;
+    }
     let view = page.state.view();
     if page.last.as_ref() == Some(&view) {
         return;
@@ -306,11 +367,17 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             }
             WM_COMMAND => match wp & 0xffff {
                 CHECK => {
+                    if page.core.is_some() {
+                        return 0;
+                    }
                     page.state.check(false);
                     refresh(hwnd, page);
                     return 0;
                 }
                 DOWNLOAD => {
+                    if page.core.is_some() {
+                        return 0;
+                    }
                     if let Some(release) = page.state.view().release {
                         use crate::platform::Desktop;
                         if !crate::platform_windows::NativeDesktop(hwnd as usize)
@@ -386,6 +453,23 @@ mod tests {
             );
             SendMessageW(hwnd, WM_COMMAND, CLOSE, 0);
             assert_eq!(IsWindow(hwnd), 0);
+            // About shares the native layout but exposes no updater actions.
+            // The idle fixture never makes a request or opens a browser.
+            let about = open_about(parent, Arc::new(crate::core_version::State::default()));
+            assert!(!about.is_null());
+            assert_eq!(IsWindowVisible(GetDlgItem(about, CHECK as i32)), 0);
+            assert_eq!(IsWindowVisible(GetDlgItem(about, DOWNLOAD as i32)), 0);
+            let mut text = [0; 512];
+            GetWindowTextW(
+                GetDlgItem(about, VERSION as i32),
+                text.as_mut_ptr(),
+                text.len() as i32,
+            );
+            let text = String::from_utf16_lossy(&text);
+            assert!(text.contains(env!("CARGO_PKG_VERSION")));
+            assert!(text.contains(crate::PARSEC_CORE_VERSION));
+            SendMessageW(about, WM_COMMAND, CLOSE, 0);
+            assert_eq!(IsWindow(about), 0);
             DestroyWindow(parent);
         }
     }

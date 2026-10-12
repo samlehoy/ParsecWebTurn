@@ -130,20 +130,6 @@ pub unsafe fn install_menu(parent: HWND) {
     SetMenu(parent, menu);
     DrawMenuBar(parent);
 }
-fn about_text() -> String {
-    format!(
-        "ParsecWebTurn\n\nNative Rust app: {}\nEmbedded Parsec WASM client: {}\n\nIndependent client; not an official Parsec application.",
-        env!("CARGO_PKG_VERSION"), crate::PARSEC_CORE_VERSION
-    )
-}
-pub unsafe fn show_about(parent: HWND) {
-    MessageBoxW(
-        parent,
-        wide(&about_text()).as_ptr(),
-        wide("About ParsecWebTurn").as_ptr(),
-        MB_OK | MB_ICONINFORMATION,
-    );
-}
 pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     let name = wide("ParsecWebTurnSettings");
     let instance = GetModuleHandleW(null());
@@ -1110,8 +1096,6 @@ mod tests {
             assert!(!help.is_null());
             assert_eq!(GetMenuItemID(help, 0), ABOUT as u32);
             assert_eq!(GetMenuItemID(help, 1), crate::updater_ui::OPEN as u32);
-            assert!(about_text().contains(env!("CARGO_PKG_VERSION")));
-            assert!(about_text().contains(crate::PARSEC_CORE_VERSION));
             let page = open(parent, manager.clone());
             assert!(!page.is_null());
             assert_ne!(

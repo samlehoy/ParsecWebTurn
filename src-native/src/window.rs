@@ -31,6 +31,8 @@ pub struct Window {
     stats_page: AtomicUsize,
     pub updates: Arc<crate::updater::State>,
     updates_page: AtomicUsize,
+    core_version: Arc<crate::core_version::State>,
+    about_page: AtomicUsize,
     connection_settings: Mutex<Option<Arc<crate::connection_settings::Manager>>>,
     settings_page: AtomicUsize,
     pub hwnd: AtomicUsize,
@@ -90,6 +92,17 @@ pub struct Window {
 }
 
 impl Window {
+    unsafe fn open_about(&self) {
+        self.core_version.check();
+        let existing = self.about_page.load(Ordering::Acquire) as HWND;
+        if !existing.is_null() {
+            ShowWindow(existing, SW_RESTORE);
+            SetForegroundWindow(existing);
+            return;
+        }
+        let page = crate::updater_ui::open_about(self.handle(), self.core_version.clone());
+        self.about_page.store(page as usize, Ordering::Release);
+    }
     unsafe fn open_updates(&self, check: bool, activate: bool) {
         if check {
             self.updates.check(false);
@@ -142,6 +155,8 @@ impl Window {
             stats_page: AtomicUsize::new(0),
             updates: Default::default(),
             updates_page: AtomicUsize::new(0),
+            core_version: Default::default(),
+            about_page: AtomicUsize::new(0),
             connection_settings: Default::default(),
             settings_page: AtomicUsize::new(0),
             hwnd: AtomicUsize::new(0),
@@ -234,7 +249,16 @@ impl Window {
                                     continue;
                                 }
                             }
-                            let updates = ui.updates_page.load(Ordering::Acquire) as HWND;
+                            let updates = [
+                                ui.updates_page.load(Ordering::Acquire),
+                                ui.about_page.load(Ordering::Acquire),
+                            ]
+                            .into_iter()
+                            .map(|h| h as HWND)
+                            .find(|h| {
+                                !h.is_null() && (msg.hwnd == *h || IsChild(*h, msg.hwnd) != 0)
+                            })
+                            .unwrap_or(null_mut());
                             if !updates.is_null()
                                 && (msg.hwnd == updates || IsChild(updates, msg.hwnd) != 0)
                             {
@@ -866,6 +890,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
         match message {
             crate::updater_ui::CLOSED => {
                 let _ = s
+                    .about_page
+                    .compare_exchange(wp, 0, Ordering::AcqRel, Ordering::Acquire);
+                let _ = s
                     .updates_page
                     .compare_exchange(wp, 0, Ordering::AcqRel, Ordering::Acquire);
                 return 0;
@@ -915,7 +942,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
             WM_COMMAND if wp & 0xffff == crate::connection_settings_ui::ABOUT => {
-                crate::connection_settings_ui::show_about(hwnd);
+                s.open_about();
                 return 0;
             }
             WM_KEYDOWN

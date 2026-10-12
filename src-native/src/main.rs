@@ -27,6 +27,8 @@ mod core_hotkeys;
 mod core_input;
 #[cfg(any(windows, feature = "diagnostics"))]
 mod core_runtime;
+#[cfg(windows)]
+mod core_version;
 #[cfg(test)]
 mod crypto_policy_tests;
 #[cfg(windows)]

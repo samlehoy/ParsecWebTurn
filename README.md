@@ -74,6 +74,17 @@ a connection succeeds.
 if you need to reach the interface underneath. Use the Parsec overlay for stream
 controls, volume and relative mouse mode.
 
+**Help > About ParsecWebTurn** also compares the embedded core version with the
+version currently served at `https://web.parsec.app/parsecd`. Opening About starts
+a background, read-only check. The response is streamed through a small memory
+buffer to inspect its version labels, then discarded; no core is saved, executed
+or installed. Successful results are cached for one hour in the running app.
+Unavailable or unrecognized versions remain unknown; a different label does not
+establish compatibility or indicate which other Parsec release channels are newer.
+This public-file convention may change. The embedded core remains SHA-pinned and
+can only be changed after compatibility testing and a new app build.
+`PARSECWEBTURN_NO_UPDATE_CHECK` disables this check as well as app update checks.
+
 Open **Help > Check for updates** to check for a newer stable GitHub release and
 read its release notes in a native window. The app also checks once in the
 background at startup and shows an available update without taking focus away
