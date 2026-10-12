@@ -91,14 +91,14 @@ Supported API references:
   (stage data before Start; use current padding and partial writes).
 - [Microsoft: GetCurrentPadding](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-getcurrentpadding).
 
-## Receive-buffer test withdrawn (2026-10-12)
+## Receive-buffer test and corrected startup report (2026-10-12)
 
 The `7a50af9` test requested 1 MiB SO_RCVBUF on native UDP sockets. Readback
-confirmed 65,536 to 1,048,576 bytes without socket-option errors. However, the
-user could not start a stream with that build, while `8526906` still connected
-on the same machine to the same host. No audio message or playback endpoint
-appeared in the new trace. This is a startup regression report, not evidence
-that increasing receive capacity fixed the original audio stalls.
+confirmed 65,536 to 1,048,576 bytes without socket-option errors. The initial
+startup failure was later explained by the user: the test directory did not
+contain the required `settings.json`. It is **not evidence of a transport
+regression caused by SO_RCVBUF**. With settings restored, that same `7a50af9`
+build starts the stream, but the audio still stutters.
 
 The receive-buffer modification and its socket2 dependency edge are withdrawn
 in full. Runtime connection behavior returns to `8526906`; the working input,
@@ -107,4 +107,24 @@ schema 4 and adds existing connection-state labels, SDP-ready flags, candidate
 counts, channel-open counts, receive counts and sanitized failure categories.
 It records no SDP, addresses, credentials or media. This provides the missing
 startup-stage evidence without changing transport options or packet handling.
-The exact reason the receive-buffer test failed remains unconfirmed.
+The rollback was performed before that correction. It remains the conservative
+baseline because this tuning has not solved the reported audio issue; it must
+not be described as a fix for a proven socket-option startup failure.
+
+The subsequent 64-second `7a50af9` trace confirms successful 1 MiB readback on
+all reported sockets, zero Opus decode errors and zero compressed-packet drops.
+Local handoff peaks at 0.049 ms, decode queue wait at 4.73 ms, decode execution
+at 0.351 ms, poll gap at 11.82 ms and output-worker wake gap at 20.45 ms.
+After the initial source/startup interval, completed-audio-message gaps still
+reach 833 ms and 1,000 ms, with burst delivery after the gaps. WASAPI records
+47 underruns and trims 207,360 old PCM frames against the existing maximum
+queue budget. These downstream symptoms do not establish which earlier layer
+delayed delivery. The initial 5.86-second gap is not attributed to the client
+without knowing whether the source was playing continuously then.
+
+The existing `0c29ec1` schema-4 test can now compare per-channel receive counts
+and bytes during those gaps (control/video/audio) with unchanged socket defaults.
+If video continues while completed audio stops, investigate audio-stream
+reassembly/delivery or source behavior; if both stop, investigate the shared
+transport/scheduling path. Counts alone do not prove packet loss or retransmission.
+No additional audio buffering or transport-policy change follows from this log.
