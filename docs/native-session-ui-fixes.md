@@ -1,6 +1,8 @@
 # Session UI investigation (2026-10-12)
 
-Only dev is changed. Mouse input is deliberately unchanged at the user's request.
+Only dev is changed. Mouse performance/coalescing is unchanged. The subsequent
+immersive Mouse and Cursor Warp integration is described in
+[Native immersive input and cursor warp](native-immersive-input.md).
 
 Immersive mode reached `env::web_set_kb_grab(1)`, which previously trapped as
 unsupported. The native import now posts a focus-scoped keyboard request. A

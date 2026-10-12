@@ -63,6 +63,7 @@ pub struct Window {
     relative_mouse: AtomicBool,
     relative_pending: AtomicUsize,
     relative_requested: AtomicBool,
+    has_focus: AtomicBool,
     input_state: Mutex<crate::core_input::State>,
     mouse_clipped: AtomicBool,
     input_suspended: AtomicBool,
@@ -154,6 +155,7 @@ impl Window {
             relative_mouse: AtomicBool::new(false),
             relative_pending: AtomicUsize::new(0),
             relative_requested: AtomicBool::new(false),
+            has_focus: AtomicBool::new(false),
             input_state: Default::default(),
             mouse_clipped: AtomicBool::new(false),
             input_suspended: AtomicBool::new(false),
@@ -324,6 +326,7 @@ impl Window {
     }
     pub fn end_session(&self) {
         self.begin_video(); // Retire the old surface before a reconnect can own it.
+        self.relative_requested.store(false, Ordering::Release);
         self.set_input_state(Default::default());
         self.set_relative_mouse(false);
         self.set_keyboard_grab(false);
@@ -404,10 +407,23 @@ impl Window {
     }
 
     pub fn set_relative_mouse(&self, enabled: bool) {
-        let previous = self.relative_requested.swap(enabled, Ordering::AcqRel);
+        let state = *self.input_state.lock().unwrap_or_else(|e| e.into_inner());
+        let suspended = !self.has_focus.load(Ordering::Acquire)
+            || !self.video_ready.load(Ordering::Acquire)
+            || !self.video_visible.load(Ordering::Acquire)
+            || self.input_suspended.load(Ordering::Acquire)
+            || self.settings_open()
+            || state.detached
+            || state.warp_disabled;
+        let previous = self.relative_requested.load(Ordering::Acquire);
+        // The core may issue an unlock while focus/detach temporarily suspends
+        // acquisition. Keep the host's relative request for the next activation.
+        if enabled || !suspended {
+            self.relative_requested.store(enabled, Ordering::Release);
+        }
         if enabled {
             self.warp_pending.store(false, Ordering::Release);
-        } else if previous {
+        } else if previous && !suspended {
             self.warp_pending.store(true, Ordering::Release);
         }
         self.relative_pending
@@ -420,8 +436,10 @@ impl Window {
         *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner()) = Some((x, y, relative));
         // When capture is suspended, the guest already sees relative=false and
         // may omit its redundant unlock. Do not retain a stale relative request.
-        if !relative {
+        if !relative && self.relative_requested.load(Ordering::Acquire) {
             self.set_relative_mouse(false);
+            // An actual host transition is permanent, including while unfocused.
+            self.relative_requested.store(false, Ordering::Release);
         }
     }
     unsafe fn restore_host_cursor(&self) {
@@ -455,12 +473,14 @@ impl Window {
     }
     pub fn set_input_state(&self, state: crate::core_input::State) {
         let mut current = self.input_state.lock().unwrap_or_else(|e| e.into_inner());
-        if *current == state {
+        let keyboard_changed = self
+            .keyboard_requested
+            .swap(state.mode.keyboard, Ordering::AcqRel)
+            != state.mode.keyboard;
+        if *current == state && !keyboard_changed {
             return;
         }
         *current = state;
-        self.keyboard_requested
-            .store(state.mode.keyboard, Ordering::Release);
         unsafe {
             PostMessageW(self.handle(), WM_APP + 12, 0, 0);
         }
@@ -589,6 +609,7 @@ impl Window {
         }
     }
     pub fn request_stop(&self) {
+        self.relative_requested.store(false, Ordering::Release);
         self.set_relative_mouse(false);
         self.closing.store(true, Ordering::Release);
         self.events.stop();
@@ -1046,6 +1067,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 s.apply_input_capture();
             }
             WM_SETFOCUS => {
+                s.has_focus.store(true, Ordering::Release);
                 s.apply_input_capture();
                 s.push(Event::Focus(true));
             }
@@ -1058,6 +1080,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 s.apply_input_capture();
             }
             WM_KILLFOCUS => {
+                s.has_focus.store(false, Ordering::Release);
                 s.keyboard_grab
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -1282,13 +1305,16 @@ mod tests {
             // Exercise the actual hook-to-window path without synthesizing global
             // OS input. Key-up must still arrive after Alt has been released.
             crate::keyboard_grab::test_reserved_pair(window.handle());
+            let mut received = Vec::new();
             wait(|| {
-                window
-                    .events
-                    .drain()
+                received.extend(window.events.drain());
+                received
                     .iter()
                     .any(|e| matches!(e, Event::Key(false, "Tab", 0)))
             });
+            assert!(received
+                .iter()
+                .any(|e| matches!(e, Event::Key(true, "Tab", 4))));
             window.set_input_state(mode(true, true));
             wait(|| clipped() && keyboard());
             window.set_relative_mouse(true);
@@ -1311,12 +1337,14 @@ mod tests {
                 ..mode(true, true)
             });
             wait(|| !relative() && !clipped() && !keyboard());
+            window.set_relative_mouse(false); // Core detach cleanup must not lose the request.
             window.set_input_state(mode(true, true));
             wait(|| relative() && clipped() && keyboard());
             unsafe {
                 ShowWindow(window.handle(), SW_MINIMIZE);
             }
             wait(|| !relative() && !clipped() && !keyboard());
+            window.set_relative_mouse(false); // Same for focus-loss cleanup.
             unsafe {
                 ShowWindow(window.handle(), SW_RESTORE);
                 SetForegroundWindow(window.handle());
@@ -1326,6 +1354,7 @@ mod tests {
             wait(|| !relative() && !clipped() && !keyboard());
         }));
         window.close();
+        wait(|| window.hwnd.load(Ordering::Acquire) == 0);
         if let Err(panic) = result {
             std::panic::resume_unwind(panic);
         }

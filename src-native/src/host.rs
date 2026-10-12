@@ -265,6 +265,11 @@ pub fn dispatch(
     #[cfg(windows)]
     if module == "env" && name == "web_set_pointer_lock" {
         if let Some(window) = &caller.data().window {
+            if let Some(state) = caller.data().app_pointer.and_then(|app| {
+                crate::core_input::state(&caller.data().memory, app, caller.data().input_mode).ok()
+            }) {
+                window.set_input_state(state);
+            }
             window.set_relative_mouse(int(args, 0)? != 0);
             return Ok(());
         }
