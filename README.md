@@ -118,17 +118,12 @@ and enter your TURN Key ID and API token. Changes apply on the next connection.
 
 Enable **Force TURN relay** to use TURN even when a direct route is available,
 for example when a VPN's direct route gives unstable playback. This requires a
-configured TURN provider and cannot be combined with STUN only. Forced mode tries
-one TURN URL per connection attempt: UDP first, then TLS and plain TCP. If a
-route fails before connecting, the client closes it and asks the embedded core
-to start a fresh attempt with the next endpoint. STUN discovery stays enabled,
-and saved server lists remain intact. An unanswered route gets 8 seconds after
-the host answers; once DTLS progresses, the ordinary establishment timeout
-applies. The fallback sequence is capped at 60 seconds after credential
-resolution. Successful streams are not retried, and user cancellation stops
-pending retries. Without this checkbox, the existing automatic ICE routing and
-parallel/timed TURN allocation behavior are unchanged.
-
+configured TURN provider and cannot be combined with STUN only. Forced mode retains
+all configured TURN URLs and keeps STUN discovery enabled. It sends the Parsec
+readiness signal once the host answer and first relay candidate are available,
+without waiting for later TLS/TCP allocations. Later candidates continue through
+the same connection; failed endpoints do not trigger sequential reconnects.
+Without this checkbox, normal ICE selection and timed transport tiers are unchanged.
 
 The embedded Parsec **Hotkeys** page remains responsible for configuring and
 saving stream shortcuts. Custom bindings take priority over conflicting native

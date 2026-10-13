@@ -298,15 +298,15 @@ pub struct LocalCandidateSync {
 
 impl LocalCandidateSync {
     /// The Parsec readiness marker is application signaling, not an ICE
-    /// candidate. After real relay gathering, do not wait for the peer's marker.
-    pub fn relay_complete(
+    /// candidate. After the first relay and remote description, do not wait for
+    /// gathering completion or the peer's marker.
+    pub fn relay_ready(
         &mut self,
         attempt: &str,
-        gathering_complete: bool,
         remote_ready: bool,
         relay_candidates: usize,
     ) -> Option<serde_json::Value> {
-        if !gathering_complete || !remote_ready || relay_candidates == 0 {
+        if !remote_ready || relay_candidates == 0 {
             return None;
         }
         self.acknowledge(attempt)
@@ -456,7 +456,7 @@ mod tests {
             "dGVzdA==\n",
             "dGVzdA==\r\na=setup:passive",
             "test-_==",
-            "短短==",
+            "çź­çź­==",
         ] {
             let mut c = creds();
             c.ufrag = value.into();
@@ -472,7 +472,7 @@ mod tests {
     }
     #[test]
     fn token_shape_classifies_rejection_without_disclosing_credential() {
-        let synthetic = "Ab09+/==-_ \t\r\n\u{1}\u{7f}é:!";
+        let synthetic = "Ab09+/==-_ \t\r\n\u{1}\u{7f}Ă©:!";
         let shape = token_shape(synthetic, 4);
         for (name, count) in [
             ("ice_char_bytes", 6),
@@ -561,7 +561,7 @@ mod tests {
         c.fingerprint = "sha-256 AA:BB".into();
         assert!(c.validate().is_err());
         c = creds();
-        c.ufrag = "短".into();
+        c.ufrag = "çź­".into();
         assert!(c.validate().is_err());
     }
     #[test]
@@ -578,25 +578,22 @@ mod tests {
         assert!(Description::from_sdp(&(answer + "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n")).is_err());
     }
     #[test]
-    fn relay_sync_follows_real_gathering_and_remote_description_once() {
+    fn relay_sync_requires_first_relay_and_remote_description_once() {
         let mut sync = LocalCandidateSync::default();
-        assert!(sync.relay_complete("fixture", false, true, 1).is_none());
-        assert!(sync.relay_complete("fixture", true, false, 1).is_none());
-        assert!(sync.relay_complete("fixture", true, true, 0).is_none());
+        assert!(sync.relay_ready("fixture", false, 1).is_none());
+        assert!(sync.relay_ready("fixture", true, 0).is_none());
         assert!(!sync.queued());
-        let marker = sync.relay_complete("fixture", true, true, 1).unwrap();
+        let marker = sync.relay_ready("fixture", true, 1).unwrap();
         assert_eq!(marker["sync"], true);
         assert_eq!(marker["attemptID"], "fixture");
         assert_eq!(marker["lan"], false);
         assert_eq!(marker["fromStun"], false);
         assert!(sync.queued());
-        assert!(sync.relay_complete("fixture", true, true, 1).is_none());
+        assert!(sync.relay_ready("fixture", true, 1).is_none());
         assert!(sync.acknowledge("fixture").is_none());
         let mut early_ack = LocalCandidateSync::default();
         assert!(early_ack.acknowledge("other-attempt").is_some());
-        assert!(early_ack
-            .relay_complete("other-attempt", true, true, 1)
-            .is_none());
+        assert!(early_ack.relay_ready("other-attempt", true, 1).is_none());
     }
 
     #[test]

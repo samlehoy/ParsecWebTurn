@@ -24,20 +24,6 @@ mod tests {
                 let module = super::load(&engine).unwrap();
                 let (mut store, instance) = crate::instantiate(&engine, &module).unwrap();
                 crate::allocator_roundtrip(&mut store, &instance).unwrap();
-                // Immutable 150-104a GUI retry ABI: verify table signatures on
-                // the actual pinned module, not a synthetic replacement core.
-                let table = instance
-                    .get_table(&mut store, "__indirect_function_table")
-                    .unwrap();
-                let Some(wasmtime::Ref::Func(Some(action))) = table.get(&mut store, 80) else {
-                    panic!("reconnect UI callback missing")
-                };
-                action.typed::<(i32, i32, i32), ()>(&store).unwrap();
-                let Some(wasmtime::Ref::Func(Some(render))) = table.get(&mut store, 84) else {
-                    panic!("GUI callback missing")
-                };
-                render.typed::<i32, i32>(&store).unwrap();
-
                 let alloc = instance
                     .get_typed_func::<(i32, i32), i32>(&mut store, "mty_system_alloc")
                     .unwrap();

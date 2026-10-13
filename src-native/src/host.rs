@@ -718,7 +718,6 @@ fn backend_call(
                                 .as_ref()
                                 .is_some_and(|m| m.view().0.prefer_hevc),
                         });
-                        let relay_route = b.route_for_new_attempt();
                         match crate::attempt::Attempt::spawn_configured(
                             &id,
                             output.clone(),
@@ -726,7 +725,6 @@ fn backend_call(
                             b.stun_provider,
                             b.legacy_rsa_1024_enabled,
                             b.connection_settings.clone(),
-                            relay_route,
                         ) {
                             Ok(attempt) => {
                                 #[cfg(windows)]

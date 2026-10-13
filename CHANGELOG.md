@@ -6,7 +6,7 @@ builds, not published stable releases.
 ## Unreleased
 
 - **Multiline server fields:** Enter now starts a new line in the custom STUN and TURN server fields, so multiple server URLs can be entered as described.
-- **Automatic Force TURN fallback:** forced relay connections try the available endpoints one at a time, preferring UDP, then TLS and TCP. A failed route is closed before a fresh connection starts with the next endpoint. STUN discovery stays enabled. Unresponsive routes use a shorter wait, while connections that reach DTLS get time to finish. Normal automatic routing and established streams keep their existing behavior.
+- **Earlier Force TURN readiness:** forced relay connections retain all configured TURN endpoints and send the readiness signal as soon as the first relay and the host answer are available. Later candidates continue to be shared without waiting for all transport tiers. Sequential reconnect attempts have been removed; normal routing is unchanged.
 - **Public Parsec core version:** About shows the embedded WASM version alongside the version currently served by Parsec's web client, and indicates whether they differ. The check never installs or executes the public core; changing the embedded core still requires compatibility testing and a new app build.
 - **Stable release updates:** Help > Check for updates shows newer stable GitHub releases and their notes in a native window. Startup checks run in the background. Download the official Windows ZIP through your browser, then close the app and replace the EXE manually. Development builds can upgrade to the matching stable version; older stable releases are not offered as downgrades.
 

@@ -75,7 +75,6 @@ pub enum FailureStage {
     CommandQueueClosed,
     Cancelled,
     Deadline,
-    RelayEndpointTimeout,
 }
 impl std::fmt::Display for FailureStage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -149,7 +148,6 @@ impl Output {
 
 #[derive(Default)]
 struct Progress {
-    relay_route: Option<crate::relay_fallback::Route>,
     #[cfg(any(test, feature = "diagnostics"))]
     relay_only: bool,
     #[cfg(any(test, feature = "diagnostics"))]
@@ -270,16 +268,15 @@ impl Completion {
         }
     }
 
-    fn relay_gathering_sync(&mut self, id: &str) {
+    fn relay_readiness_sync(&mut self, id: &str) {
         if self.cancelled || self.closing {
             return;
         }
         let relay_candidates = self.progress.local_candidates.saturating_sub(
             self.progress.local_host_candidates + self.progress.local_srflx_candidates,
         );
-        let marker = self.progress.local_sync.relay_complete(
+        let marker = self.progress.local_sync.relay_ready(
             id,
-            self.progress.local_gathering_complete,
             self.progress.remote_description_set,
             relay_candidates,
         );
@@ -449,7 +446,7 @@ impl Attempt {
 
     #[cfg(test)]
     pub fn spawn_named(id: &str, output: Output) -> Result<Self> {
-        Self::spawn_configured(id, output, None, StunProvider::None, false, None, None)
+        Self::spawn_configured(id, output, None, StunProvider::None, false, None)
     }
 
     pub fn spawn_configured(
@@ -459,7 +456,6 @@ impl Attempt {
         stun_provider: StunProvider,
         legacy_rsa_1024: bool,
         connection_settings: Option<Arc<crate::connection_settings::Manager>>,
-        relay_route: Option<crate::relay_fallback::Route>,
     ) -> Result<Self> {
         CandidateGate::new(id)?;
         let mut active = ACTIVE_WORKERS.load(Ordering::SeqCst);
@@ -527,7 +523,6 @@ impl Attempt {
                         stun_provider,
                         legacy_rsa_1024,
                         connection_settings,
-                        relay_route,
                     },
                 );
                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -608,30 +603,6 @@ impl Attempt {
             .progress
             .failed
             .then_some(state.progress.failure_stage.unwrap_or(FailureStage::Worker))
-    }
-
-    pub fn relay_retry_target(&self, stage: FailureStage) -> Option<crate::relay_fallback::Route> {
-        let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
-        if state.cancelled
-            || state.progress.connection_established
-            || !matches!(
-                stage,
-                FailureStage::RelayEndpointTimeout
-                    | FailureStage::IceTransport
-                    | FailureStage::PeerTransport
-            )
-        {
-            return None;
-        }
-        state.progress.relay_route.as_ref()?.next()
-    }
-
-    pub fn retry_cleanup_finished(&self) -> bool {
-        if !*self.finished.0.lock().unwrap_or_else(|e| e.into_inner()) {
-            return false;
-        }
-        let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
-        state.progress.closed
     }
 
     pub fn control_ready(&self) -> bool {
@@ -866,7 +837,6 @@ struct NetworkOptions {
     stun_provider: StunProvider,
     legacy_rsa_1024: bool,
     connection_settings: Option<Arc<crate::connection_settings::Manager>>,
-    relay_route: Option<crate::relay_fallback::Route>,
 }
 
 fn worker(
@@ -881,7 +851,6 @@ fn worker(
         stun_provider,
         legacy_rsa_1024,
         connection_settings,
-        relay_route,
     } = network;
     if let Some(config) = &mut config {
         // Capability work stays on this worker, outside the WASM/backend lock.
@@ -928,12 +897,7 @@ fn worker(
     if let Some(manager) = connection_settings {
         ice = runtime.block_on(async {
             tokio::select! {
-                result = async {
-                    match &relay_route {
-                        Some(route) => route.resolve(&manager).await,
-                        None => manager.resolve_configuration().await,
-                    }
-                } => result,
+                result = manager.resolve_configuration() => result,
                 _ = async {
                     loop {
                         if shared.lock().unwrap_or_else(|e| e.into_inner()).cancelled { break; }
@@ -946,11 +910,6 @@ fn worker(
     let relay_only = ice.ice_transport_policy
         == webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy::Relay;
     if relay_only {
-        shared
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .progress
-            .relay_route = relay_route.clone();
         // Parsec still sees real host/srflx discovery. A separate ICE routing
         // policy rejects non-relay pairs and inbound data from the outset.
         ice.ice_transport_policy =
@@ -1030,7 +989,7 @@ fn worker(
             let Some(candidate)=candidate else {
                 let mut state=shared.lock().unwrap_or_else(|e|e.into_inner());
                 state.progress.local_gathering_complete=true;
-                if relay_only { state.relay_gathering_sync(&id); }
+                if relay_only { state.relay_readiness_sync(&id); }
                 wake.notify_all();
                 return;
             };
@@ -1042,6 +1001,7 @@ fn worker(
                 state.progress.local_candidates+=1;
                 if candidate.typ==RTCIceCandidateType::Host {state.progress.local_host_candidates+=1;} else if candidate.typ==RTCIceCandidateType::Srflx {state.progress.local_srflx_candidates+=1;}
                 state.events.push_back(serde_json::json!({"type":8,"attemptID":id,"ip":candidate.address,"port":candidate.port,"lan":candidate.typ==RTCIceCandidateType::Host,"fromStun":candidate.typ==RTCIceCandidateType::Srflx,"sync":false}));
+                if relay_only && candidate.typ==RTCIceCandidateType::Relay { state.relay_readiness_sync(&id); }
             }
             wake.notify_all();
         })
@@ -1175,19 +1135,8 @@ fn worker(
             bail!("native offer publication failed or was cancelled");
         }
         let mut deadline = EstablishmentDeadline::new(std::time::Instant::now());
-        if let Some(budget) = relay_route.as_ref().and_then(|route| route.budget()) {
-            deadline.0 = Some(std::time::Instant::now() + budget.min(Duration::from_secs(30)));
-        }
-        let mut relay_check = crate::relay_fallback::CheckDeadline::new(
-            relay_only
-                && relay_route
-                    .as_ref()
-                    .and_then(|route| route.next())
-                    .is_some(),
-        );
         #[cfg(windows)]
         let mut next_video_recovery_check = std::time::Instant::now();
-        drop(relay_route);
         loop {
             // Read only documented native state enums; never serialize SDP,
             // addresses, certificates or underlying error strings.
@@ -1196,26 +1145,10 @@ fn worker(
                 state.progress.transport_states = transport_states(&peer);
                 state.progress.connection_established |=
                     state.progress.transport_connected && state.progress.open_mask == 7;
-                if state.progress.connection_established {
-                    state.progress.relay_route = None;
-                }
-                let now = std::time::Instant::now();
-                if relay_only {
-                    use webrtc::dtls_transport::dtls_transport_state::RTCDtlsTransportState;
-                    let dtls_progress = matches!(
-                        peer.dtls_transport().state(),
-                        RTCDtlsTransportState::Connecting | RTCDtlsTransportState::Connected
-                    );
-                    if relay_check.expired(
-                        now,
-                        state.progress.remote_description_set,
-                        dtls_progress,
-                        state.progress.connection_established,
-                    ) {
-                        return Err(FailureStage::RelayEndpointTimeout.into());
-                    }
-                }
-                deadline.poll_wait(now, state.progress.connection_established)?
+                deadline.poll_wait(
+                    std::time::Instant::now(),
+                    state.progress.connection_established,
+                )?
             };
             #[cfg(windows)]
             if std::time::Instant::now() >= next_video_recovery_check {
@@ -1287,7 +1220,7 @@ fn worker(
                                 shared
                                     .lock()
                                     .unwrap_or_else(|e| e.into_inner())
-                                    .relay_gathering_sync(id);
+                                    .relay_readiness_sync(id);
                                 wake.notify_all();
                             }
                         }
@@ -1603,22 +1536,43 @@ mod tests {
     use crate::signaling::Credentials;
     use wasmtime::{Config, Engine, MemoryType, SharedMemory};
     #[test]
-    fn relay_sync_is_last_bounded_and_retired_with_attempt() {
+    fn relay_sync_remote_first_waits_for_relay_and_later_candidates_stay_after_marker() {
+        let mut state = empty_completion();
+        state.progress.remote_description_set = true;
+        state.progress.local_candidates = 2;
+        state.progress.local_host_candidates = 1;
+        state.progress.local_srflx_candidates = 1;
+        state.relay_readiness_sync("fixture");
+        assert!(state.events.is_empty());
+        state.progress.local_candidates += 1;
+        state.events.push_back(serde_json::json!({"sync":false}));
+        state.relay_readiness_sync("fixture");
+        assert!(!state.progress.local_gathering_complete);
+        assert_eq!(state.events.len(), 2);
+        state.progress.local_candidates += 1;
+        state.events.push_back(serde_json::json!({"sync":false}));
+        state.relay_readiness_sync("fixture");
+        assert_eq!(state.events.len(), 3);
+        assert_eq!(state.events[1]["sync"], true);
+        assert_eq!(state.events[2]["sync"], false);
+    }
+
+    #[test]
+    fn relay_sync_precedes_gathering_completion_is_bounded_and_retired() {
         let mut state = empty_completion();
         state.progress.local_candidates = 1;
         state.events.push_back(serde_json::json!({"sync":false}));
-        state.relay_gathering_sync("fixture");
+        state.relay_readiness_sync("fixture");
         assert_eq!(state.events.len(), 1);
-        state.progress.local_gathering_complete = true;
-        state.relay_gathering_sync("fixture");
-        assert_eq!(state.events.len(), 1);
+        assert!(!state.progress.local_gathering_complete);
         state.progress.remote_description_set = true;
-        state.relay_gathering_sync("fixture");
+        state.relay_readiness_sync("fixture");
         assert_eq!(state.events.len(), 2);
         assert!(state.progress.local_sync_queued);
         assert_eq!(state.events.front().unwrap()["sync"], false);
         assert_eq!(state.events.back().unwrap()["sync"], true);
-        state.relay_gathering_sync("fixture");
+        state.progress.local_gathering_complete = true;
+        state.relay_readiness_sync("fixture");
         let ack = state.progress.local_sync.acknowledge("fixture");
         state.queue_local_sync(ack);
         assert_eq!(state.events.len(), 2);
@@ -1629,7 +1583,7 @@ mod tests {
             retired.progress.local_candidates = 1;
             retired.progress.local_gathering_complete = true;
             retired.progress.remote_description_set = true;
-            retired.relay_gathering_sync("retired");
+            retired.relay_readiness_sync("retired");
             assert!(retired.events.is_empty());
         }
         let mut full = empty_completion();
@@ -1637,89 +1591,10 @@ mod tests {
         full.progress.local_candidates = 1;
         full.progress.local_gathering_complete = true;
         full.progress.remote_description_set = true;
-        full.relay_gathering_sync("full");
+        full.relay_readiness_sync("full");
         assert!(full.progress.failed);
         assert!(!full.progress.local_sync_queued);
         assert_eq!(full.events.len(), 64);
-    }
-
-    #[test]
-    fn relay_retry_requires_peer_closure_and_stops_after_success_or_cancellation() {
-        let mut state = empty_completion();
-        state.progress.ready = true;
-        state.progress.relay_route = Some(crate::relay_fallback::Route::fixture());
-        let attempt = Attempt {
-            commands: None,
-            id: "fixture".into(),
-            completion: Arc::new(Mutex::new(state)),
-            finished: Arc::new((Mutex::new(true), Condvar::new())),
-            wake: Arc::new(Condvar::new()),
-        };
-        assert!(attempt
-            .relay_retry_target(FailureStage::RelayEndpointTimeout)
-            .is_some());
-        assert!(attempt
-            .relay_retry_target(FailureStage::DtlsTransport)
-            .is_none());
-        assert!(!attempt.retry_cleanup_finished());
-        attempt.completion.lock().unwrap().progress.closed = true;
-        assert!(attempt.retry_cleanup_finished());
-        attempt
-            .completion
-            .lock()
-            .unwrap()
-            .progress
-            .connection_established = true;
-        assert!(attempt
-            .relay_retry_target(FailureStage::IceTransport)
-            .is_none());
-        attempt
-            .completion
-            .lock()
-            .unwrap()
-            .progress
-            .connection_established = false;
-        attempt.completion.lock().unwrap().cancelled = true;
-        assert!(attempt
-            .relay_retry_target(FailureStage::IceTransport)
-            .is_none());
-        attempt.completion.lock().unwrap().cancelled = false;
-        #[cfg(windows)]
-        {
-            // Exercise the actual backend handoff, using an isolated synthetic
-            // settings file and no network/account/profile.
-            let mut nonce = [0; 16];
-            getrandom::fill(&mut nonce).unwrap();
-            let name: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
-            let path = std::env::temp_dir().join(format!("parsec-relay-fixture-{name}.json"));
-            let manager = crate::connection_settings::Manager::open(path.clone());
-            let settings = crate::connection_settings::Settings {
-                provider: "custom".into(),
-                force_relay: true,
-                turn_urls: vec!["turn:relay.invalid:3478".into()],
-                custom_username: "fixture".into(),
-                ..Default::default()
-            };
-            manager
-                .save(settings, "fixture-secret", "", false, false)
-                .unwrap();
-            let mut backend = crate::backend::Backend::default();
-            backend.init();
-            backend.connection_settings = Some(manager);
-            backend.native_attempt = Some(attempt);
-            backend.status = Some(20);
-            backend
-                .fail_native_attempt(FailureStage::RelayEndpointTimeout)
-                .unwrap();
-            assert_eq!(backend.poll_event().unwrap()["status"], -3);
-            assert!(!backend.take_relay_reconnect(false).unwrap());
-            assert!(backend.take_relay_reconnect(true).unwrap());
-            let next = backend.route_for_new_attempt().unwrap();
-            assert!(next.next().is_none()); // exactly one advancement
-            backend.fail_native_attempt(FailureStage::Worker).unwrap();
-            assert_eq!(backend.poll_event().unwrap()["status"], -6200);
-            std::fs::remove_file(path).unwrap();
-        }
     }
 
     fn empty_completion() -> Completion {

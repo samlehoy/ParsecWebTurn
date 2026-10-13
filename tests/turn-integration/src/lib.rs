@@ -239,19 +239,20 @@ mod integration {
                             .unwrap(),
                         )
                         .unwrap();
-                    // Model the native host's readiness barrier. No addresses
-                    // are used until the client completes gathering and syncs.
-                    assert!(host_gate.pop_ready().is_none());
-                } else {
-                    let marker = local_sync
-                        .relay_complete("relay-readiness", true, true, relay_candidates)
-                        .expect("completed real relay gathering must emit readiness");
+                    // The first real relay releases the host's readiness barrier,
+                    // before the end-of-gathering event. Later addresses trickle.
+                    if !local_sync.queued() {
+                        assert!(host_gate.pop_ready().is_none());
+                    }
+                }
+                if let Some(marker) =
+                    local_sync.relay_ready("relay-readiness", true, relay_candidates)
+                {
                     assert_eq!(marker["sync"], true);
                     host_gate.sync("relay-readiness").unwrap();
-                    while let Some(candidate) = host_gate.pop_ready() {
-                        remote.add_ice_candidate(candidate).await.unwrap();
-                    }
-                    assert!(local_sync.acknowledge("relay-readiness").is_none());
+                }
+                while let Some(candidate) = host_gate.pop_ready() {
+                    remote.add_ice_candidate(candidate).await.unwrap();
                 }
             }
         });

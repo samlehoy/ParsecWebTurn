@@ -9,14 +9,6 @@ use std::collections::VecDeque;
 pub struct Backend {
     #[serde(skip)]
     pub connection_settings: Option<std::sync::Arc<crate::connection_settings::Manager>>,
-    #[serde(skip)]
-    relay_route: Option<crate::relay_fallback::Route>,
-    #[serde(skip)]
-    relay_pending: Option<std::time::Instant>,
-    #[serde(skip)]
-    relay_launching: Option<std::time::Instant>,
-    #[serde(skip)]
-    retiring_attempt: Option<crate::attempt::Attempt>,
     pub initialized: bool,
     pub stun_provider: crate::attempt::StunProvider,
     pub legacy_rsa_1024_enabled: bool,
@@ -79,7 +71,6 @@ impl Backend {
     }
 
     pub fn destroy(&mut self) {
-        self.clear_relay_fallback();
         self.retain_attempt_diagnostic();
         self.initialized = false;
         self.status = None;
@@ -96,82 +87,6 @@ impl Backend {
         self.me = Value::Null;
         self.attempt_id.clear();
         self.attempt_started = None;
-    }
-
-    fn clear_relay_fallback(&mut self) {
-        self.relay_route = None;
-        self.relay_pending = None;
-        self.relay_launching = None;
-        self.retiring_attempt = None;
-    }
-
-    pub fn route_for_new_attempt(&mut self) -> Option<crate::relay_fallback::Route> {
-        let forced = self
-            .connection_settings
-            .as_ref()
-            .is_some_and(|m| m.view().0.force_relay);
-        if forced && self.relay_launching.is_some() {
-            self.relay_launching = None;
-            return self.relay_route.clone();
-        }
-        self.clear_relay_fallback();
-        if forced {
-            self.relay_route = Some(Default::default());
-        }
-        self.relay_route.clone()
-    }
-
-    /// Called before handling new user commands; never interfere with a stream.
-    pub fn cancel_pending_relay_retry(&mut self) {
-        if self.relay_pending.is_some() || self.relay_launching.is_some() {
-            self.clear_relay_fallback();
-        }
-    }
-
-    /// The GUI worker invokes the unchanged core's own Reconnect UI action.
-    /// Only do so after the previous peer closed and its event was consumed.
-    pub fn take_relay_reconnect(&mut self, core_ready: bool) -> Result<bool> {
-        let Some(started) = self.relay_pending else {
-            if self
-                .relay_launching
-                .is_some_and(|t| t.elapsed() >= std::time::Duration::from_secs(3))
-            {
-                self.clear_relay_fallback();
-                self.fail_native_attempt(crate::attempt::FailureStage::Deadline)?;
-            }
-            return Ok(false);
-        };
-        if !self
-            .connection_settings
-            .as_ref()
-            .is_some_and(|m| m.view().0.force_relay)
-        {
-            self.clear_relay_fallback();
-            return Ok(false);
-        }
-        if started.elapsed() >= std::time::Duration::from_secs(3) {
-            self.clear_relay_fallback();
-            self.fail_native_attempt(crate::attempt::FailureStage::Deadline)?;
-            return Ok(false);
-        }
-        if !core_ready
-            || self.status != Some(-3)
-            || !self.events.is_empty()
-            || !self
-                .retiring_attempt
-                .as_ref()
-                .is_some_and(|a| a.retry_cleanup_finished())
-        {
-            return Ok(false);
-        }
-        #[cfg(any(test, feature = "diagnostics"))]
-        {
-            self.attempt_diagnostic = self.retiring_attempt.as_ref().map(|a| a.snapshot());
-        }
-        self.retiring_attempt = None;
-        self.relay_pending = None;
-        self.relay_launching = Some(std::time::Instant::now());
-        Ok(true)
     }
 
     pub fn require_initialized(&self) -> Result<()> {
@@ -301,17 +216,6 @@ impl Backend {
 
     pub fn disconnect(&mut self, status: i32, state: i32) -> Result<()> {
         self.require_initialized()?;
-        // The core acknowledges the intermediate cancelled connection before
-        // Reconnect is dispatched. User cancellation is also observed by input.
-        if self.relay_pending.is_some() && status != 0 {
-            // Discard late errors/cleanup from the retired connection. Explicit
-            // user commands cancel the pending retry before they reach the core.
-            self.status = Some(-3);
-            return Ok(());
-        }
-        if self.relay_pending.is_none() && self.relay_launching.is_none() {
-            self.clear_relay_fallback();
-        }
         let event = if state == 4 && self.status != Some(0) {
             Some(json!({
                 "type": 7, "status": status, "state": state,
@@ -365,31 +269,6 @@ impl Backend {
 
     /// Expected connection failure is an app event, not a Wasmtime trap.
     pub fn fail_native_attempt(&mut self, stage: crate::attempt::FailureStage) -> Result<()> {
-        let next = self
-            .native_attempt
-            .as_ref()
-            .and_then(|a| a.relay_retry_target(stage));
-        if let Some(next) = next {
-            if self.status != Some(0) {
-                let mut retiring = self
-                    .native_attempt
-                    .take()
-                    .context("relay attempt missing")?;
-                retiring.cancel();
-                self.retiring_attempt = Some(retiring);
-                self.relay_route = Some(next);
-                self.relay_pending = Some(std::time::Instant::now());
-                self.attempt_failure = Some(stage);
-                self.events.clear();
-                self.buffers.clear();
-                self.status = Some(-3);
-                // -3 is the pinned adapter's ordinary cancelled/idle status.
-                // Final errors retain -6200; no fake success reaches the core.
-                self.events.push_back(json!({"type":7,"status":-3,"state":4,"attemptID":self.attempt_id,"duration":0}));
-                return Ok(());
-            }
-        }
-        self.clear_relay_fallback();
         self.attempt_failure = Some(stage);
         let connected = self.status == Some(0);
         // Reserve space for the single failure event even if ICE events filled
@@ -430,9 +309,6 @@ impl Backend {
                 }
                 self.events.push_back(event);
             }
-        }
-        if self.status == Some(0) {
-            self.clear_relay_fallback();
         }
         if self
             .native_attempt
@@ -505,43 +381,6 @@ impl Backend {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn retired_cleanup_cannot_replace_pending_retry_with_a_late_error() {
-        let mut backend = super::Backend::default();
-        backend.init();
-        backend.relay_pending = Some(std::time::Instant::now());
-        backend.disconnect(-6200, 4).unwrap();
-        assert_eq!(backend.status, Some(-3));
-        assert!(backend.poll_event().is_none());
-        backend.cancel_pending_relay_retry();
-        backend.disconnect(-6200, 4).unwrap();
-        assert_eq!(backend.poll_event().unwrap()["status"], -6200);
-
-        backend.relay_launching =
-            Some(std::time::Instant::now() - std::time::Duration::from_secs(3));
-        assert!(!backend.take_relay_reconnect(true).unwrap());
-        assert!(backend.relay_launching.is_none());
-        assert_eq!(backend.poll_event().unwrap()["status"], -6200);
-    }
-
-    #[test]
-    fn ordinary_connections_and_user_cancellation_discard_pending_fallbacks() {
-        let mut backend = super::Backend::default();
-        backend.init();
-        backend.relay_route = Some(Default::default());
-        backend.relay_pending = Some(std::time::Instant::now());
-        assert!(backend.route_for_new_attempt().is_none());
-        assert!(backend.relay_pending.is_none());
-        assert!(backend.relay_route.is_none());
-        backend.relay_route = Some(Default::default());
-        backend.relay_launching = Some(std::time::Instant::now());
-        backend.cancel_pending_relay_retry();
-        assert!(backend.relay_launching.is_none());
-        assert!(backend.relay_route.is_none());
-        backend.relay_pending = Some(std::time::Instant::now());
-        assert!(!backend.take_relay_reconnect(true).unwrap()); // Force is absent
-        assert!(backend.relay_pending.is_none());
-    }
     #[test]
     fn successful_status_update_preserves_media_but_disconnect_retires_it() {
         let mut backend = Backend::default();
