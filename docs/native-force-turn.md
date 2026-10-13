@@ -99,6 +99,13 @@ transfer and rejection of a usable direct path. Automated checks do not prove
 real Parsec host retry behavior; the automatic second-endpoint path needs a
 live test with the preferred endpoint deliberately unavailable.
 
+Separate diagnostic-build limitation retained from the earlier investigation:
+TURN send errors acquire an `io error: ` prefix, while the permission error
+subclassifier matches an unprefixed CreatePermission string. Zero 403/other
+subcategory counts therefore do not prove permission errors were absent. The
+aggregate send-failure count remains meaningful. This diagnostic output is
+never a production routing input and is excluded from the normal executable.
+
 References: [Cloudflare TURN transports](https://developers.cloudflare.com/realtime/turn/),
 [RFC 8838](https://www.rfc-editor.org/rfc/rfc8838.html), and
 [research references](NATIVE_REFERENCES.md).
