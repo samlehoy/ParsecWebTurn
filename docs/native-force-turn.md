@@ -35,7 +35,7 @@ local candidates or silently fall back to direct routing.
 
 Ordinary connections retain the original synchronization behavior. If a real
 Parsec sync marker arrives, its existing acknowledgment remains unchanged. No
-sync marker is fabricated, and its placeholder address is never used as a peer.
+ICE address is fabricated, and a sync placeholder is never used as a peer.
 Attempt identity checks, credential/fingerprint validation, candidate validation,
 deduplication and queue limits remain in place. The WASM core is unchanged.
 
@@ -58,3 +58,40 @@ resolved issue in release notes. A fresh trace from the matching diagnostic
 build is needed to distinguish absent remote candidates from connectivity
 checks that run but fail. The earlier trace cannot establish the new failure
 stage.
+
+
+## Follow-up trace and outbound readiness
+
+The matching dd28f3e diagnostic trace submitted on 2026-10-13 confirms that the
+previous delivery adjustment worked: Force TURN submits six remote candidates,
+up from zero, while retaining three local relay candidates and zero local
+host/srflx candidates. Nevertheless ICE stays checking, DTLS stays new and the
+30-second establishment deadline expires. The ordinary-policy attempt connects.
+No peer sync marker arrives in the forced attempt.
+
+The adapter previously emitted its own sync marker only as a delayed reply to
+a peer marker. Inspection of the pinned original shim confirms this behavior:
+`ka()` schedules `a.l("1.2.3.4",1234,true,false,false)` after a received sync.
+The lowlat signaling reference explains the complementary host-side barrier:
+a peer may withhold candidate processing until the client sends readiness, and
+the marker belongs after real candidates. This is application signaling on top
+of ICE, not an ICE requirement or a real address.
+
+The next test client therefore queues its own readiness marker for relay-only
+attempts after both real ICE gathering completion (`on_ice_candidate(None)`) and
+installation of the remote description, provided at least one usable relay
+candidate was gathered. It does not depend on a received peer marker. Exactly
+one marker is queued per attempt; the existing delayed response remains for
+ordinary attempts and is deduplicated if readiness was already queued. Ended
+attempts cannot emit readiness and the existing bounded event queue is retained.
+
+Diagnostics report `local_gathering_complete` and `local_sync_queued`. Queued is
+not proof of signaling-server or host receipt. No TURN bypass, fake host/srflx
+candidate, fingerprint relaxation, core modification or media-path change is
+included. Unit tests cover ordering, prerequisites, duplicates, retired attempts
+and queue overflow. The coturn integration uses the production readiness helper
+and a peer candidate gate that withholds relay addresses until readiness, then
+checks bidirectional data on all three DTLS/SCTP channels. Real Cloudflare/Parsec
+compatibility still requires a live retest.
+
+Reference: [lowlat signaling readiness](https://github.com/nomi-san/lowlat/blob/main/docs/04-signaling.md).

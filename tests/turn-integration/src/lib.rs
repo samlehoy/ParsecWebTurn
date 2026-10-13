@@ -132,7 +132,9 @@ mod integration {
                             candidate.address, candidate.port
                         );
                     }
-                    let _ = tx.send(init);
+                    let _ = tx.send(Some(init));
+                } else {
+                    let _ = tx.send(None);
                 }
             })
         }));
@@ -159,13 +161,57 @@ mod integration {
         let description =
             crate::signaling::Description::from_sdp(&b.local_description().await.unwrap().sdp)
                 .unwrap();
+        let host_description =
+            crate::signaling::Description::from_sdp(&a.local_description().await.unwrap().sdp)
+                .unwrap();
         let remote = Arc::downgrade(&b);
         let forward_a = tokio::spawn(async move {
+            let mut host_gate = crate::signaling::CandidateGate::new("relay-readiness").unwrap();
+            host_gate
+                .remote_ready(
+                    "relay-readiness",
+                    &host_description.mid,
+                    &host_description.credentials.ufrag,
+                )
+                .unwrap();
+            let mut local_sync = crate::signaling::LocalCandidateSync::default();
+            let mut relay_candidates = 0;
             while let Some(candidate) = arx.recv().await {
                 let Some(remote) = remote.upgrade() else {
                     break;
                 };
-                remote.add_ice_candidate(candidate).await.unwrap();
+                if !compact {
+                    if let Some(candidate) = candidate {
+                        remote.add_ice_candidate(candidate).await.unwrap();
+                    }
+                    continue;
+                }
+                if let Some(candidate) = candidate {
+                    relay_candidates += 1;
+                    host_gate
+                        .push(
+                            "relay-readiness",
+                            crate::signaling::Candidate::from_sdp_line(&format!(
+                                "a={}",
+                                candidate.candidate
+                            ))
+                            .unwrap(),
+                        )
+                        .unwrap();
+                    // Model the native host's readiness barrier. No addresses
+                    // are used until the client completes gathering and syncs.
+                    assert!(host_gate.pop_ready().is_none());
+                } else {
+                    let marker = local_sync
+                        .relay_complete("relay-readiness", true, true, relay_candidates)
+                        .expect("completed real relay gathering must emit readiness");
+                    assert_eq!(marker["sync"], true);
+                    host_gate.sync("relay-readiness").unwrap();
+                    while let Some(candidate) = host_gate.pop_ready() {
+                        remote.add_ice_candidate(candidate).await.unwrap();
+                    }
+                    assert!(local_sync.acknowledge("relay-readiness").is_none());
+                }
             }
         });
         let remote = Arc::downgrade(&a);
@@ -275,7 +321,7 @@ mod integration {
     }
 
     #[tokio::test]
-    async fn relay_only_connects_without_parsec_sync_using_production_candidate_gate() {
+    async fn relay_only_sync_after_gathering_releases_host_gate_and_connects_sctp() {
         let url = "turn:localhost:43478?transport=udp";
         timeout(
             Duration::from_secs(40),

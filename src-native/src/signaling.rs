@@ -289,10 +289,47 @@ impl Candidate {
     }
 }
 
+// Track the outbound application-level readiness marker independently from
+// inbound ICE candidate delivery. The placeholder is never a peer endpoint.
+#[derive(Default)]
+pub struct LocalCandidateSync {
+    queued: bool,
+}
+
+impl LocalCandidateSync {
+    /// The Parsec readiness marker is application signaling, not an ICE
+    /// candidate. After real relay gathering, do not wait for the peer's marker.
+    pub fn relay_complete(
+        &mut self,
+        attempt: &str,
+        gathering_complete: bool,
+        remote_ready: bool,
+        relay_candidates: usize,
+    ) -> Option<serde_json::Value> {
+        if !gathering_complete || !remote_ready || relay_candidates == 0 {
+            return None;
+        }
+        self.acknowledge(attempt)
+    }
+
+    pub fn acknowledge(&mut self, attempt: &str) -> Option<serde_json::Value> {
+        if self.queued {
+            return None;
+        }
+        self.queued = true;
+        Some(
+            serde_json::json!({"type":8,"attemptID":attempt,"ip":"1.2.3.4","port":1234,"lan":false,"fromStun":false,"sync":true}),
+        )
+    }
+
+    pub fn queued(&self) -> bool {
+        self.queued
+    }
+}
+
 // Preserve the original shim's batching for ordinary connections. Relay-only
-// ICE uses standard trickle after begin_p2p: Parsec's additional sync marker
-// may never arrive without host/srflx gathering. Never use its placeholder as
-// an endpoint. Identity, validation, deduplication and queue bounds still apply.
+// ICE uses standard trickle after begin_p2p. Identity, validation, deduplication
+// and queue bounds still apply; sync placeholders never become endpoints.
 pub struct CandidateGate {
     attempt: String,
     pending: VecDeque<Candidate>,
@@ -540,6 +577,28 @@ mod tests {
         assert!(Description::from_sdp(&(answer.clone() + "a=ice-ufrag:abcd\r\n")).is_err());
         assert!(Description::from_sdp(&(answer + "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n")).is_err());
     }
+    #[test]
+    fn relay_sync_follows_real_gathering_and_remote_description_once() {
+        let mut sync = LocalCandidateSync::default();
+        assert!(sync.relay_complete("fixture", false, true, 1).is_none());
+        assert!(sync.relay_complete("fixture", true, false, 1).is_none());
+        assert!(sync.relay_complete("fixture", true, true, 0).is_none());
+        assert!(!sync.queued());
+        let marker = sync.relay_complete("fixture", true, true, 1).unwrap();
+        assert_eq!(marker["sync"], true);
+        assert_eq!(marker["attemptID"], "fixture");
+        assert_eq!(marker["lan"], false);
+        assert_eq!(marker["fromStun"], false);
+        assert!(sync.queued());
+        assert!(sync.relay_complete("fixture", true, true, 1).is_none());
+        assert!(sync.acknowledge("fixture").is_none());
+        let mut early_ack = LocalCandidateSync::default();
+        assert!(early_ack.acknowledge("other-attempt").is_some());
+        assert!(early_ack
+            .relay_complete("other-attempt", true, true, 1)
+            .is_none());
+    }
+
     #[test]
     fn relay_trickle_requires_remote_identity_but_not_parsec_sync() {
         let mut gate = CandidateGate::new("relay-test").unwrap();

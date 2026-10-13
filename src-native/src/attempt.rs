@@ -2,7 +2,7 @@
 //! private ABI is isolated; no account, signaling server or remote host is used.
 use crate::{
     memory::GuestMemory,
-    signaling::{Candidate, CandidateGate, Credentials, Description},
+    signaling::{Candidate, CandidateGate, Credentials, Description, LocalCandidateSync},
     transport::CHANNELS,
 };
 use anyhow::{bail, Context, Result};
@@ -177,6 +177,8 @@ struct Progress {
     local_description_set: bool,
     remote_description_set: bool,
     sync_received: bool,
+    local_gathering_complete: bool,
+    local_sync: LocalCandidateSync,
     transport_states: serde_json::Value,
     transport_states_before_close: serde_json::Value,
     transport_states_at_failure: serde_json::Value,
@@ -250,6 +252,32 @@ impl Drop for Completion {
     }
 }
 impl Completion {
+    fn queue_local_sync(&mut self, marker: Option<serde_json::Value>) {
+        if let Some(marker) = marker {
+            if self.events.len() >= 64 {
+                self.progress.failed = true;
+            } else {
+                self.events.push_back(marker);
+            }
+        }
+    }
+
+    fn relay_gathering_sync(&mut self, id: &str) {
+        if self.cancelled || self.closing {
+            return;
+        }
+        let relay_candidates = self.progress.local_candidates.saturating_sub(
+            self.progress.local_host_candidates + self.progress.local_srflx_candidates,
+        );
+        let marker = self.progress.local_sync.relay_complete(
+            id,
+            self.progress.local_gathering_complete,
+            self.progress.remote_description_set,
+            relay_candidates,
+        );
+        self.queue_local_sync(marker);
+    }
+
     fn elapsed_ms(&self) -> u64 {
         u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
@@ -674,6 +702,9 @@ impl Attempt {
                 state.progress.local_host_candidates + state.progress.local_srflx_candidates
             ));
         snapshot["relay_only_policy"] = serde_json::json!(state.progress.relay_only);
+        snapshot["local_gathering_complete"] =
+            serde_json::json!(state.progress.local_gathering_complete);
+        snapshot["local_sync_queued"] = serde_json::json!(state.progress.local_sync.queued());
         snapshot["ice_servers_configured"] =
             serde_json::json!(state.progress.resolved_ice_servers.map(|count| count != 0));
         snapshot["resolved_ice_server_entries"] =
@@ -928,7 +959,13 @@ fn worker(
     peer.on_ice_candidate(Box::new(move |candidate| {
         let shared=callback_state.clone(); let wake=callback_wake.clone(); let id=attempt_id.clone();
         Box::pin(async move {
-            let Some(candidate)=candidate else { return; };
+            let Some(candidate)=candidate else {
+                let mut state=shared.lock().unwrap_or_else(|e|e.into_inner());
+                state.progress.local_gathering_complete=true;
+                if relay_only { state.relay_gathering_sync(&id); }
+                wake.notify_all();
+                return;
+            };
             if candidate.protocol != RTCIceProtocol::Udp || candidate.component != 1 { return; }
             let mut state=shared.lock().unwrap_or_else(|e|e.into_inner());
             if state.cancelled { return; }
@@ -1127,48 +1164,105 @@ fn worker(
                 break;
             }
             runtime.block_on(async {
-                tokio::time::timeout(Duration::from_secs(5),async {
+                tokio::time::timeout(Duration::from_secs(5), async {
                     match command {
-                        Command::Begin(remote)=>{
-                            let local=offer.take().context("remote begin already supplied")?;
-                            peer.set_local_description(local).await.context(FailureStage::SetLocalDescription)?;
-                            shared.lock().unwrap_or_else(|e|e.into_inner()).progress.local_description_set=true;
-                            peer.set_remote_description(RTCSessionDescription::answer(description.answer(&remote)?)?).await.context(FailureStage::SetRemoteDescription)?;
-                            shared.lock().unwrap_or_else(|e|e.into_inner()).progress.remote_description_set=true;
-                            gate.remote_ready(id,&description.mid,&remote.ufrag).context(FailureStage::CandidateGate)?;
+                        Command::Begin(remote) => {
+                            let local = offer.take().context("remote begin already supplied")?;
+                            peer.set_local_description(local)
+                                .await
+                                .context(FailureStage::SetLocalDescription)?;
+                            shared
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .progress
+                                .local_description_set = true;
+                            peer.set_remote_description(RTCSessionDescription::answer(
+                                description.answer(&remote)?,
+                            )?)
+                            .await
+                            .context(FailureStage::SetRemoteDescription)?;
+                            shared
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .progress
+                                .remote_description_set = true;
+                            gate.remote_ready(id, &description.mid, &remote.ufrag)
+                                .context(FailureStage::CandidateGate)?;
+                            if relay_only {
+                                shared
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .relay_gathering_sync(id);
+                                wake.notify_all();
+                            }
                         }
-                        Command::Candidate(candidate)=>gate.push(id,candidate).context(FailureStage::CandidateGate)?,
-                        Command::Sync=>{
+                        Command::Candidate(candidate) => gate
+                            .push(id, candidate)
+                            .context(FailureStage::CandidateGate)?,
+                        Command::Sync => {
                             gate.sync(id)?;
-                            shared.lock().unwrap_or_else(|e|e.into_inner()).progress.sync_received=true;
-                            if !sync_ack_scheduled {
-                                sync_ack_scheduled=true;
-                                let shared=shared.clone(); let wake=wake.clone(); let id=id.to_owned();
+                            shared
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .progress
+                                .sync_received = true;
+                            if !sync_ack_scheduled
+                                && !shared
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .progress
+                                    .local_sync
+                                    .queued()
+                            {
+                                sync_ack_scheduled = true;
+                                let shared = shared.clone();
+                                let wake = wake.clone();
+                                let id = id.to_owned();
                                 tokio::spawn(async move {
                                     // ka() in the pinned JS returns this marker after 500 ms.
                                     tokio::time::sleep(Duration::from_millis(500)).await;
-                                    let mut state=shared.lock().unwrap_or_else(|e|e.into_inner());
-                                    if !state.cancelled {
-                                        if state.events.len()>=64 { state.progress.failed=true; }
-                                        else { state.events.push_back(serde_json::json!({"type":8,"attemptID":id,"ip":"1.2.3.4","port":1234,"lan":false,"fromStun":false,"sync":true})); }
+                                    let mut state =
+                                        shared.lock().unwrap_or_else(|e| e.into_inner());
+                                    if !state.cancelled && !state.closing {
+                                        let marker = state.progress.local_sync.acknowledge(&id);
+                                        state.queue_local_sync(marker);
                                         wake.notify_all();
                                     }
                                 });
                             }
                         }
-                        Command::Send(id,payload)=>{
-                            let channel=&channels[usize::from(id)];
-                            if channel.ready_state()!=RTCDataChannelState::Open { return Err(FailureStage::ChannelSend.into()); }
-                            channel.send(&payload).await.context(FailureStage::ChannelSend)?;
-                            let mut state=shared.lock().unwrap_or_else(|e|e.into_inner());
-                            state.progress.last_send_elapsed_ms=Some(state.elapsed_ms());
-                            state.progress.last_sent_control_kind=if id==0 { payload.get(12).copied() } else { None };
+                        Command::Send(id, payload) => {
+                            let channel = &channels[usize::from(id)];
+                            if channel.ready_state() != RTCDataChannelState::Open {
+                                return Err(FailureStage::ChannelSend.into());
+                            }
+                            channel
+                                .send(&payload)
+                                .await
+                                .context(FailureStage::ChannelSend)?;
+                            let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+                            state.progress.last_send_elapsed_ms = Some(state.elapsed_ms());
+                            state.progress.last_sent_control_kind = if id == 0 {
+                                payload.get(12).copied()
+                            } else {
+                                None
+                            };
                         }
                         Command::Disconnect => unreachable!("handled before command dispatch"),
                     }
-                    while let Some(candidate)=gate.pop_ready() { peer.add_ice_candidate(candidate).await.context(FailureStage::AddIceCandidate)?; shared.lock().unwrap_or_else(|e|e.into_inner()).progress.remote_candidates+=1; }
-                    Ok::<(),anyhow::Error>(())
-                }).await
+                    while let Some(candidate) = gate.pop_ready() {
+                        peer.add_ice_candidate(candidate)
+                            .await
+                            .context(FailureStage::AddIceCandidate)?;
+                        shared
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .progress
+                            .remote_candidates += 1;
+                    }
+                    Ok::<(), anyhow::Error>(())
+                })
+                .await
             })??;
         }
         drop((offer, channels));
@@ -1394,6 +1488,45 @@ mod tests {
     use super::*;
     use crate::signaling::Credentials;
     use wasmtime::{Config, Engine, MemoryType, SharedMemory};
+    #[test]
+    fn relay_sync_is_last_bounded_and_retired_with_attempt() {
+        let mut state = empty_completion();
+        state.progress.local_candidates = 1;
+        state.events.push_back(serde_json::json!({"sync":false}));
+        state.relay_gathering_sync("fixture");
+        assert_eq!(state.events.len(), 1);
+        state.progress.local_gathering_complete = true;
+        state.relay_gathering_sync("fixture");
+        assert_eq!(state.events.len(), 1);
+        state.progress.remote_description_set = true;
+        state.relay_gathering_sync("fixture");
+        assert_eq!(state.events.len(), 2);
+        assert_eq!(state.events.front().unwrap()["sync"], false);
+        assert_eq!(state.events.back().unwrap()["sync"], true);
+        state.relay_gathering_sync("fixture");
+        let ack = state.progress.local_sync.acknowledge("fixture");
+        state.queue_local_sync(ack);
+        assert_eq!(state.events.len(), 2);
+        for cancelled in [false, true] {
+            let mut retired = empty_completion();
+            retired.cancelled = cancelled;
+            retired.closing = !cancelled;
+            retired.progress.local_candidates = 1;
+            retired.progress.local_gathering_complete = true;
+            retired.progress.remote_description_set = true;
+            retired.relay_gathering_sync("retired");
+            assert!(retired.events.is_empty());
+        }
+        let mut full = empty_completion();
+        full.events = (0..64).map(|_| serde_json::Value::Null).collect();
+        full.progress.local_candidates = 1;
+        full.progress.local_gathering_complete = true;
+        full.progress.remote_description_set = true;
+        full.relay_gathering_sync("full");
+        assert!(full.progress.failed);
+        assert_eq!(full.events.len(), 64);
+    }
+
     fn empty_completion() -> Completion {
         Completion {
             #[cfg(windows)]
