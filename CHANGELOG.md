@@ -5,7 +5,6 @@ builds, not published stable releases.
 
 ## Unreleased
 
-- **Force TURN connection fix:** relay-only connections can start checking validated host addresses without waiting indefinitely for Parsec's additional synchronization marker. TURN remains mandatory when this option is enabled.
 - **Public Parsec core version:** About shows the embedded WASM version alongside the version currently served by Parsec's web client, and indicates whether they differ. The check never installs or executes the public core; changing the embedded core still requires compatibility testing and a new app build.
 - **Stable release updates:** Help > Check for updates shows newer stable GitHub releases and their notes in a native window. Startup checks run in the background. Download the official Windows ZIP through your browser, then close the app and replace the EXE manually. Development builds can upgrade to the matching stable version; older stable releases are not offered as downgrades.
 

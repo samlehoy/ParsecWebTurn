@@ -26,7 +26,7 @@ relay-only session without that marker, the gate indefinitely withholds otherwis
 valid remote candidates even after the remote description has been installed.
 This behavior is independently reproduced by the isolated regression fixture.
 
-## Correction
+## Candidate-delivery adjustment
 
 For an effective `RTCIceTransportPolicy::Relay` configuration, deliver validated
 remote candidates using standard trickle ICE once the remote description is
@@ -47,5 +47,14 @@ Unit tests cover missing remote descriptions, stale attempt identifiers,
 duplicates and late synchronization. The coturn fixture uses the production
 `CandidateGate` with no Parsec sync marker and verifies all three real DTLS/SCTP
 data channels, bidirectional payloads and a selected local relay candidate.
-This synthetic test does not execute a real Parsec host. A live Cloudflare/Parsec
-retest is still needed to establish resolution of the reported failure.
+This synthetic test does not execute a real Parsec host.
+
+## Live retest result
+
+On 2026-10-13 the user retested the dd28f3e client and reported that Force TURN
+still did not connect. Removing the additional candidate gate is therefore not
+a verified fix for the reported Cloudflare/Parsec failure. Do not list it as a
+resolved issue in release notes. A fresh trace from the matching diagnostic
+build is needed to distinguish absent remote candidates from connectivity
+checks that run but fail. The earlier trace cannot establish the new failure
+stage.
