@@ -2,7 +2,8 @@
 
 Investigate the user-reported ExpressTURN disconnect after roughly ten minutes
 separately from the resolved Force TURN readiness problem. Cloudflare remains
-stable in the user's comparison. No renewal behavior is changed in this probe.
+stable in the user's comparison. Baseline renewal behavior remains unchanged.
+The separate opt-in timing experiment below changes only ChannelBind refresh.
 
 ## Why capture renewal
 
@@ -81,3 +82,41 @@ Look for the initial lifetime, Refresh attempts/responses around half that
 interval, 438 and the subsequent success or failure, channel-binding refresh
 and error codes, and the final ICE/DTLS/SCTP state. Use that sequence to choose
 the next fix; the approximate ten-minute interval alone is insufficient.
+
+## Controlled ChannelBind timing experiment
+
+Two user reports show failure at 302.858 and 302.233 seconds from attempt start
+(a difference of 0.625 seconds). Their renewal timelines both place teardown
+immediately around the first ChannelBind refresh at approximately 300 seconds.
+The second trial kept the machine unlocked. All recorded allocation, permission
+and channel-binding refresh responses were successful; no 438 was recorded.
+The most recent allocation response reported another 240 seconds of lifetime
+at approximately 240 seconds. The client's later lifetime-zero request is
+cleanup after termination, not evidence of a server-expired allocation.
+
+This timing correlation does not prove that ChannelBind is the cause, or whether
+any fault belongs to the client, the provider, or the surrounding network.
+
+Only a build with the `diagnostics` feature can opt in using
+`PARSECWEBTURN_TURN_EARLY_BIND_REFRESH=1`. The fixed diagnostic value is 60 seconds;
+missing or different values retain 300 seconds. Normal builds omit this feature
+and ignore the variable completely. No connection policy, readiness, allocation
+or permission timer, retry, authentication, SCTP, media or input behavior changes.
+
+The setting is read once per relay connection. The existing on-send trigger is
+retained: refresh runs on the first send after the threshold, not on a new exact
+periodic timer. The trace reports `channel-bind-refresh-interval-seconds`, so
+verify a value of 60 in the experimental run. A separate loopback test, executed
+in its own process, waits beyond 60 seconds and verifies a refresh of the same
+channel number before the allocation or permission timer can fire.
+
+Run the 60-second test launcher using the same ExpressTURN URL, credentials,
+transport and Force TURN setting as before. Keep the machine unlocked and the
+stream active until failure, or for at least 15 minutes. After an error close
+normally and retain the report; do not reconnect in that process.
+
+If failure follows the first refresh to approximately 60 seconds, the refresh
+path becomes a strong causal lead. If early refreshes succeed and failure stays
+near 300 seconds, investigate another five-minute mechanism. If it stays stable,
+repeat or compare the default 300-second mode before calling this a fix. Keep
+all of these outcomes separate from the already working Force TURN readiness.

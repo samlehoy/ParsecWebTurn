@@ -96,6 +96,8 @@ jobs:
           $runtimeEngine = @($runtimeArtifacts | Where-Object { $_.target.name -eq 'wasmtime' })
           if ($runtimeEngine.Count -ne 1 -or $runtimeEngine[0].features -contains 'cranelift' -or $runtimeEngine[0].features -contains 'winch') { throw 'The normal runtime must use a compiler-free Wasmtime build' }
           if ($runtimeArtifacts.target.name -contains 'wasmtime_internal_cranelift') { throw 'The normal runtime must not link the WASM compiler' }
+          $runtimeTurn = @($runtimeArtifacts | Where-Object { $_.target.name -eq 'turn' })
+          if ($runtimeTurn.Count -ne 1 -or $runtimeTurn[0].features -contains 'renewal-diagnostics') { throw 'Normal runtime must not enable the TURN timing experiment' }
           New-Item -ItemType Directory -Path src-native/artifacts -Force | Out-Null
           Copy-Item src-native/target/x86_64-pc-windows-msvc/release/parsec-web-turn.exe src-native/artifacts/ParsecWebTurn.exe
           ./scripts/package-native.ps1

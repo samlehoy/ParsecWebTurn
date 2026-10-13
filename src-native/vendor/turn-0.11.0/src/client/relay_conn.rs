@@ -26,6 +26,7 @@ use crate::{proto, Error};
 
 const PERM_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 const MAX_RETRY_ATTEMPTS: u16 = 3;
+const CHANNEL_BIND_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 pub(crate) struct InboundData {
     pub(crate) data: Vec<u8>,
@@ -58,6 +59,8 @@ pub(crate) struct RelayConnConfig {
 }
 
 pub struct RelayConnInternal<T: 'static + RelayConnObserver + Send + Sync> {
+    #[cfg(feature = "renewal-diagnostics")]
+    channel_bind_refresh_interval: Duration,
     obs: Arc<Mutex<T>>,
     relayed_addr: SocketAddr,
     perm_map: PermissionMap,
@@ -193,9 +196,38 @@ impl<T: RelayConnObserver + Send + Sync> Conn for RelayConn<T> {
 }
 
 impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
+    fn channel_bind_refresh_interval(&self) -> Duration {
+        #[cfg(feature = "renewal-diagnostics")]
+        {
+            self.channel_bind_refresh_interval
+        }
+        #[cfg(not(feature = "renewal-diagnostics"))]
+        {
+            CHANNEL_BIND_REFRESH_INTERVAL
+        }
+    }
     /// Creates a new [`RelayConnInternal`].
     fn new(obs: Arc<Mutex<T>>, config: RelayConnConfig) -> Self {
+        #[cfg(feature = "renewal-diagnostics")]
+        let channel_bind_refresh_interval = {
+            // Opt-in, fixed-value experiment. Normal builds do not read this
+            // environment variable; default diagnostic behavior remains 300 s.
+            let interval = if std::env::var_os("PARSECWEBTURN_TURN_EARLY_BIND_REFRESH").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+            {
+                Duration::from_secs(60)
+            } else {
+                CHANNEL_BIND_REFRESH_INTERVAL
+            };
+            log::debug!(
+                "TURN renewal channel-bind-interval seconds={}",
+                interval.as_secs()
+            );
+            interval
+        };
         RelayConnInternal {
+            #[cfg(feature = "renewal-diagnostics")]
+            channel_bind_refresh_interval,
             obs,
             relayed_addr: config.relayed_addr,
             perm_map: PermissionMap::new(),
@@ -315,7 +347,7 @@ impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
                 && Instant::now()
                     .checked_duration_since(bind_at)
                     .unwrap_or_else(|| Duration::from_secs(0))
-                    > Duration::from_secs(5 * 60)
+                    > self.channel_bind_refresh_interval()
             {
                 let binding_mgr = Arc::clone(&self.binding_mgr);
                 let rc_obs = Arc::clone(&self.obs);

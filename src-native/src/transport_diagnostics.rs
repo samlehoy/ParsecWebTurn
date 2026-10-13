@@ -213,6 +213,12 @@ struct RenewalTrace {
 fn renewal_category(message: &str) -> Option<(&'static str, Option<u64>)> {
     for (prefix, suffix, kind, max) in [
         (
+            "TURN renewal channel-bind-interval seconds=",
+            "",
+            "channel-bind-refresh-interval-seconds",
+            300,
+        ),
+        (
             "initial lifetime: ",
             " seconds",
             "allocation-initial-lifetime-seconds",

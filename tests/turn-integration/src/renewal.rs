@@ -19,12 +19,14 @@ enum Scenario {
     RefreshStale,
     RefreshDenied,
     BindStale,
+    BindRefresh,
 }
 
 #[derive(Debug)]
 struct Observation {
     method: Method,
     fresh_nonce: bool,
+    channel_number: Option<u16>,
 }
 
 async fn observe(scenario: Scenario) -> Vec<Observation> {
@@ -52,10 +54,13 @@ async fn observe(scenario: Scenario) -> Vec<Observation> {
             let method = request.typ.method;
             let nonce = Nonce::get_from_as(&request, ATTR_NONCE).ok();
             if method == METHOD_REFRESH || method == METHOD_CHANNEL_BIND {
+                let mut number = webrtc::turn::proto::channum::ChannelNumber::default();
+                let channel_number = number.get_from(&request).ok().map(|_| number.0);
                 let _ = tx
                     .send(Observation {
                         method,
                         fresh_nonce: nonce.as_ref().is_some_and(|n| n.text == "fixture-rotated"),
+                        channel_number,
                     })
                     .await;
             }
@@ -74,7 +79,7 @@ async fn observe(scenario: Scenario) -> Vec<Observation> {
                             port: 49999,
                         }));
                         attributes.push(Box::new(Lifetime(Duration::from_secs(
-                            if matches!(scenario, Scenario::BindStale) {
+                            if matches!(scenario, Scenario::BindStale | Scenario::BindRefresh) {
                                 600
                             } else {
                                 2
@@ -151,7 +156,7 @@ async fn observe(scenario: Scenario) -> Vec<Observation> {
     client.listen().await.unwrap();
     let relay = client.allocate().await.unwrap();
     let mut observations = Vec::new();
-    if matches!(scenario, Scenario::BindStale) {
+    if matches!(scenario, Scenario::BindStale | Scenario::BindRefresh) {
         let peer: SocketAddr = "127.0.0.1:49998".parse().unwrap();
         relay.send_to(b"synthetic", peer).await.unwrap();
         observations.push(
@@ -162,10 +167,25 @@ async fn observe(scenario: Scenario) -> Vec<Observation> {
         );
         // Allow the background binding response to be processed, then send again.
         tokio::time::sleep(Duration::from_millis(100)).await;
+        if matches!(scenario, Scenario::BindRefresh) {
+            // Exercise the real diagnostic threshold, not a shortened test-only
+            // replacement. Allocation (300 s) and permission (120 s) timers
+            // cannot fire before this observation completes.
+            tokio::time::sleep(Duration::from_millis(60100)).await;
+        }
         relay.send_to(b"synthetic", peer).await.unwrap();
-        assert!(timeout(Duration::from_millis(200), rx.recv())
-            .await
-            .is_err());
+        if matches!(scenario, Scenario::BindRefresh) {
+            observations.push(
+                timeout(Duration::from_secs(3), rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        } else {
+            assert!(timeout(Duration::from_millis(200), rx.recv())
+                .await
+                .is_err());
+        }
     } else {
         for _ in 0..3 {
             observations.push(
@@ -181,6 +201,25 @@ async fn observe(scenario: Scenario) -> Vec<Observation> {
     worker.abort();
     assert!(worker.await.unwrap_err().is_cancelled());
     observations
+}
+
+#[tokio::test]
+#[ignore = "60-second opt-in experiment; run in a separate process with renewal-diagnostics"]
+async fn early_channel_bind_refresh_only() {
+    assert_eq!(
+        std::env::var("PARSECWEBTURN_TURN_EARLY_BIND_REFRESH").as_deref(),
+        Ok("1")
+    );
+    let start = std::time::Instant::now();
+    let seen = timeout(Duration::from_secs(70), observe(Scenario::BindRefresh))
+        .await
+        .unwrap();
+    assert!(start.elapsed() >= Duration::from_secs(60));
+    assert_eq!(seen.len(), 2);
+    assert!(seen.iter().all(|o| o.method == METHOD_CHANNEL_BIND));
+    assert!(seen[0].channel_number.is_some());
+    assert_eq!(seen[0].channel_number, seen[1].channel_number);
+    println!("renewal-observation: same channel refreshed after 60 seconds, before any allocation or permission timer");
 }
 
 #[tokio::test]

@@ -8,7 +8,7 @@ publish = false
 # Independent crate: neither Tauri nor WebView2 is linked.
 [features]
 default = []
-diagnostics = ["dep:log", "dep:rcgen", "dep:ring", "dep:rustls", "dep:tokio-rustls", "wasmtime/wat", "wasmtime/cranelift"]
+diagnostics = ["dep:log", "dep:rcgen", "dep:ring", "dep:rustls", "dep:tokio-rustls", "wasmtime/wat", "wasmtime/cranelift", "webrtc/turn-renewal-diagnostics"]
 
 [dependencies]
 anyhow = "1"
