@@ -168,10 +168,16 @@ async fn observe(scenario: Scenario) -> Vec<Observation> {
         // Allow the background binding response to be processed, then send again.
         tokio::time::sleep(Duration::from_millis(100)).await;
         if matches!(scenario, Scenario::BindRefresh) {
-            // Exercise the real diagnostic threshold, not a shortened test-only
-            // replacement. Allocation (300 s) and permission (120 s) timers
-            // cannot fire before this observation completes.
-            tokio::time::sleep(Duration::from_millis(60100)).await;
+            // Exercise the actual selected threshold, without virtual time.
+            // Allocation remains 300 s and permission remains 120 s; the latter
+            // can run during the 240-second experiment.
+            let seconds =
+                if std::env::var("PARSECWEBTURN_TURN_EARLY_BIND_REFRESH").as_deref() == Ok("240") {
+                    240
+                } else {
+                    60
+                };
+            tokio::time::sleep(Duration::from_millis(seconds * 1000 + 100)).await;
         }
         relay.send_to(b"synthetic", peer).await.unwrap();
         if matches!(scenario, Scenario::BindRefresh) {
@@ -220,6 +226,25 @@ async fn early_channel_bind_refresh_only() {
     assert!(seen[0].channel_number.is_some());
     assert_eq!(seen[0].channel_number, seen[1].channel_number);
     println!("renewal-observation: same channel refreshed after 60 seconds, before any allocation or permission timer");
+}
+
+#[tokio::test]
+#[ignore = "240-second opt-in experiment; run separately with renewal-diagnostics"]
+async fn channel_bind_refresh_240_seconds() {
+    assert_eq!(
+        std::env::var("PARSECWEBTURN_TURN_EARLY_BIND_REFRESH").as_deref(),
+        Ok("240")
+    );
+    let start = std::time::Instant::now();
+    let seen = timeout(Duration::from_secs(250), observe(Scenario::BindRefresh))
+        .await
+        .unwrap();
+    assert!(start.elapsed() >= Duration::from_secs(240));
+    assert_eq!(seen.len(), 2);
+    assert!(seen.iter().all(|o| o.method == METHOD_CHANNEL_BIND));
+    assert!(seen[0].channel_number.is_some());
+    assert_eq!(seen[0].channel_number, seen[1].channel_number);
+    println!("renewal-observation: same channel refreshed after 240 seconds; allocation and permission timers unchanged");
 }
 
 #[tokio::test]

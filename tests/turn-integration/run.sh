@@ -27,3 +27,8 @@ if ! PARSECWEBTURN_TURN_EARLY_BIND_REFRESH=1 cargo test --locked --manifest-path
   cat "$fixture/turn.log"
   exit 1
 fi
+
+if ! PARSECWEBTURN_TURN_EARLY_BIND_REFRESH=240 cargo test --locked --manifest-path tests/turn-integration/Cargo.toml --target x86_64-unknown-linux-gnu --features renewal-diagnostics renewal::channel_bind_refresh_240_seconds -- --exact --ignored --nocapture; then
+  cat "$fixture/turn.log"
+  exit 1
+fi

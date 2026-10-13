@@ -98,8 +98,8 @@ This timing correlation does not prove that ChannelBind is the cause, or whether
 any fault belongs to the client, the provider, or the surrounding network.
 
 Only a build with the `diagnostics` feature can opt in using
-`PARSECWEBTURN_TURN_EARLY_BIND_REFRESH=1`. The fixed diagnostic value is 60 seconds;
-missing or different values retain 300 seconds. Normal builds omit this feature
+`PARSECWEBTURN_TURN_EARLY_BIND_REFRESH=1`. The value `1` selects 60 seconds and `240` selects 240 seconds;
+missing or other values retain 300 seconds. Normal builds omit this feature
 and ignore the variable completely. No connection policy, readiness, allocation
 or permission timer, retry, authentication, SCTP, media or input behavior changes.
 
@@ -120,3 +120,29 @@ path becomes a strong causal lead. If early refreshes succeed and failure stays
 near 300 seconds, investigate another five-minute mechanism. If it stays stable,
 repeat or compare the default 300-second mode before calling this a fix. Keep
 all of these outcomes separate from the already working Force TURN readiness.
+
+## 240-second follow-up
+
+The 60-second live trial remained connected for approximately 950 seconds,
+with 15 successful ChannelBind refreshes and no recorded attempt failure.
+The same executable's 300-second control failed at 301.950 seconds; its trace
+contained no ChannelBind refresh-start event before cleanup. This supports a
+refresh/lifetime-related lead, but does not isolate the server or client cause.
+The shorter interval may also refresh the peer permission before its five-minute
+expiry; do not treat this as proof that the ChannelBind transaction is faulty.
+
+The next opt-in value is `PARSECWEBTURN_TURN_EARLY_BIND_REFRESH=240`.
+`Start-TURN-240s-Test.cmd` in its test package selects this value and writes
+`turn-diagnostics-240s.json`. Keep the same ExpressTURN endpoint, credentials,
+transport and Force TURN setting. Keep the machine unlocked and test until
+failure or for at least 15 minutes, then close normally without reconnecting.
+
+The original 60-second opt-in remains available and the default remains 300.
+Only the ChannelBind threshold changes. The allocation and permission timers,
+SCTP, decoder, video presentation and input paths are untouched. The separate
+loopback fixture waits past 240 seconds and checks that the same channel is
+refreshed while leaving the other timers at their original values.
+
+A stable 240-second run would be a tested workaround candidate, not yet a proven
+universal fix. Compare image stalls separately from connection survival: the
+reports contain aggregate video timings, not a timeline of end-to-end latency.
