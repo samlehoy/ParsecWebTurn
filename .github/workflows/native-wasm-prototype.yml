@@ -234,6 +234,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native fullscreen bridge failed' }
           $window = Get-Content "$artifact/guest-window.json" -Raw | ConvertFrom-Json
           if ($window.fullscreen_roundtrips -ne 5 -or !$window.native_geometry_restored -or !$window.native_style_restored -or !$window.idempotent_requests_verified -or !$window.guest_import_verified -or $window.real_account_used -or $window.parsec_host_connected) { throw 'Incorrect fullscreen proof' }
+          # Separate opt-in troubleshooting executable; never part of release ZIPs.
+          Copy-Item -LiteralPath $exe -Destination "$artifact/parsec-native-diagnostics.exe"
+          Copy-Item -LiteralPath $core -Destination "$artifact/parsecd.wasm"
       - uses: actions/upload-artifact@v4
         with:
           name: Native-client-validation-win64

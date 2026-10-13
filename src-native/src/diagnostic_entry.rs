@@ -444,6 +444,17 @@ fn run() -> Result<()> {
         #[cfg(not(windows))]
         let (mut store, instance) = instantiate(&engine, &module)?;
         report.instantiated = true;
+        #[cfg(windows)]
+        if account_mode {
+            // Live user-invoked diagnostics must use the same connection settings
+            // as the portable client. Offline fixtures remain isolated.
+            let root = env::current_exe()?.parent().context("Application directory unavailable")?.to_path_buf();
+            let settings = connection_settings::Manager::open(root.join("settings.json"));
+            if let Some(window) = &native_window {
+                window.install_connection_settings(settings.clone());
+            }
+            store.data().backend.lock().unwrap_or_else(|e| e.into_inner()).connection_settings = Some(settings);
+        }
         allocator_roundtrip(&mut store, &instance)?;
         report.allocator_roundtrip = true;
         {

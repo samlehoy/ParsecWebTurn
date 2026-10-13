@@ -27,6 +27,14 @@ mod integration {
     }
 
     async fn exchange_urls(urls: &[&str], url: &str, prefer_udp: bool) {
+        exchange_with_compact_candidates(urls, url, prefer_udp, false).await;
+    }
+    async fn exchange_with_compact_candidates(
+        urls: &[&str],
+        url: &str,
+        prefer_udp: bool,
+        compact: bool,
+    ) {
         let mut settings = SettingEngine::default();
         settings.set_network_types(vec![NetworkType::Udp4]);
         settings.set_data_channel_only(true);
@@ -110,7 +118,18 @@ mod integration {
             let tx = atx.clone();
             Box::pin(async move {
                 if let Some(candidate) = candidate {
-                    let _ = tx.send(candidate.to_json().unwrap());
+                    assert_eq!(candidate.typ.to_string(), "relay");
+                    let mut init = candidate.to_json().unwrap();
+                    if compact {
+                        // Parsec's compact address/port/fromStun ABI cannot carry
+                        // a relay type. Its remote adapter rebuilds typ host for
+                        // fromStun=false. The real local candidate stays relay.
+                        init.candidate = format!(
+                            "candidate:2395300328 1 udp 2113937151 {} {} typ host",
+                            candidate.address, candidate.port
+                        );
+                    }
+                    let _ = tx.send(init);
                 }
             })
         }));
@@ -225,6 +244,17 @@ mod integration {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn relay_only_connects_when_compact_signaling_omits_remote_relay_type() {
+        let url = "turn:localhost:43478?transport=udp";
+        timeout(
+            Duration::from_secs(40),
+            exchange_with_compact_candidates(&[url], url, true, true),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
