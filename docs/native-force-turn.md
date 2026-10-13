@@ -95,3 +95,21 @@ checks bidirectional data on all three DTLS/SCTP channels. Real Cloudflare/Parse
 compatibility still requires a live retest.
 
 Reference: [lowlat signaling readiness](https://github.com/nomi-san/lowlat/blob/main/docs/04-signaling.md).
+
+
+## Readiness client live retest
+
+The user retested the 2649bc9 normal client on 2026-10-13 and reported that
+forced TURN still fails both with and without the VPN. This is not a verified
+resolution. The matching diagnostic package is available from successful CI
+run 38369099018; its `local_gathering_complete` and `local_sync_queued` fields
+are needed before drawing a conclusion about the updated readiness path.
+The earlier dd28f3e trace does not contain these fields and must not be treated
+as evidence of this new build's outbound readiness behavior.
+
+`RTCIceTransportPolicy::Relay` is configured in the Rust WebRTC peer. It is not
+passed as a force-relay option to the unchanged WASM core. The core does receive
+the resulting compact relay addresses through its existing candidate events;
+its host-side interoperability still needs investigation. Failure without the
+VPN points away from a VPN-only explanation but does not establish which
+endpoint, signaling step or relay connectivity check is responsible.
