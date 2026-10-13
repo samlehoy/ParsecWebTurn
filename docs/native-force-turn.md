@@ -185,3 +185,44 @@ actual gathered candidate types, permission/check observations and the selected
 path of the ordinary attempt. Do not assume that an ordinary connection selected
 TURN solely because TURN was configured or a relay candidate was allocated.
 No further production routing experiment is justified by the old trace alone.
+
+
+## Detailed a514d4c diagnostic result
+
+The matching user trace on 2026-10-13 contains a forced first attempt and an
+ordinary second attempt (the user explicitly confirmed this ordering).
+
+Forced: gathering All, relay-only connectivity enabled, 2 host + 2 srflx + 3
+relay candidates, 6 remote candidates, peer sync received and local sync queued.
+All 18 relay candidate pairs fail. The observation window has 144 binding-check
+attempt events, 96 STUN send failures, 99 permission transaction events and 6
+successful channel-bind events, but zero authenticated STUN success events or
+responses. ICE stays checking until the 30-second deadline; DTLS stays new.
+A ChannelBind success proves server-side setup, not arrival at the Parsec host.
+
+Ordinary: 2 host + 2 srflx candidates, no gathered local relay candidate, a
+selected host/host UDP pair, 2 authenticated responses and connected DTLS/SCTP.
+This trace does not verify a working client-side Cloudflare relay path. It does
+not contradict the user's deliberate Force-off second trial or establish that
+all earlier ordinary sessions used the same route.
+
+The accessible local Parsec host log for the matching time window shows a
+failed connection at 11:38:07 with -6023 / -11004, and a connected SCTP peer at
+11:38:36. The successful peer address is in the CGNAT 100.64/10 range; no full
+address or account handle is retained here. The official Parsec documentation
+categorizes the accompanying code as a possible UPnP availability issue, not a
+unique diagnosis of this failure:
+https://support.parsec.app/hc/en-us/articles/32381913636244-Error-Codes-6023-and-6024-Unable-To-Negotiate-A-Successful-Connection
+
+Diagnostic limitation found during source review: relay send errors pass through
+webrtc-util's `IoError` formatter, which prefixes `io error: `. The permission
+subclassifier only matches a bare CreatePermission error string. Therefore the
+zero permission_403/other category counts do not establish absence of permission
+errors. The aggregate STUN send-failure count is valid; exact permission causes
+remain unknown. A future diagnostic correction should recognize the pinned
+wrapper and test the actual wrapped error, rather than infer a code from counts.
+
+No new production routing change is justified by this trace alone. Remaining
+questions concern the relay-to-host data path or handling/rejection of checks,
+not missing discovery or synchronization. Inspecting the real packet exchange
+or an independent TURN transport probe is needed to distinguish those cases.
