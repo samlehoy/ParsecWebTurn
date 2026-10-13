@@ -179,6 +179,7 @@ struct Progress {
     sync_received: bool,
     local_gathering_complete: bool,
     local_sync: LocalCandidateSync,
+    local_sync_queued: bool,
     transport_states: serde_json::Value,
     transport_states_before_close: serde_json::Value,
     transport_states_at_failure: serde_json::Value,
@@ -258,6 +259,7 @@ impl Completion {
                 self.progress.failed = true;
             } else {
                 self.events.push_back(marker);
+                self.progress.local_sync_queued = true;
             }
         }
     }
@@ -704,7 +706,7 @@ impl Attempt {
         snapshot["relay_only_policy"] = serde_json::json!(state.progress.relay_only);
         snapshot["local_gathering_complete"] =
             serde_json::json!(state.progress.local_gathering_complete);
-        snapshot["local_sync_queued"] = serde_json::json!(state.progress.local_sync.queued());
+        snapshot["local_sync_queued"] = serde_json::json!(state.progress.local_sync_queued);
         snapshot["ice_servers_configured"] =
             serde_json::json!(state.progress.resolved_ice_servers.map(|count| count != 0));
         snapshot["resolved_ice_server_entries"] =
@@ -1501,6 +1503,7 @@ mod tests {
         state.progress.remote_description_set = true;
         state.relay_gathering_sync("fixture");
         assert_eq!(state.events.len(), 2);
+        assert!(state.progress.local_sync_queued);
         assert_eq!(state.events.front().unwrap()["sync"], false);
         assert_eq!(state.events.back().unwrap()["sync"], true);
         state.relay_gathering_sync("fixture");
@@ -1524,6 +1527,7 @@ mod tests {
         full.progress.remote_description_set = true;
         full.relay_gathering_sync("full");
         assert!(full.progress.failed);
+        assert!(!full.progress.local_sync_queued);
         assert_eq!(full.events.len(), 64);
     }
 
