@@ -62,73 +62,76 @@ async fn observe(scenario: Scenario) -> Vec<Observation> {
             if request.typ.class == CLASS_INDICATION {
                 continue;
             }
-            let mut attributes: Vec<Box<dyn Setter>> = vec![Box::new(request.transaction_id)];
-            let mut error = None;
-            if method == METHOD_ALLOCATE {
-                if nonce.is_none() {
-                    error = Some(CODE_UNAUTHORIZED);
-                } else {
-                    attributes.push(Box::new(RelayedAddress {
-                        ip: "127.0.0.1".parse().unwrap(),
-                        port: 49999,
-                    }));
-                    attributes.push(Box::new(Lifetime(Duration::from_secs(
-                        if matches!(scenario, Scenario::BindStale) {
-                            600
-                        } else {
-                            2
-                        },
-                    ))));
+            let response = {
+                let mut attributes: Vec<Box<dyn Setter>> = vec![Box::new(request.transaction_id)];
+                let mut error = None;
+                if method == METHOD_ALLOCATE {
+                    if nonce.is_none() {
+                        error = Some(CODE_UNAUTHORIZED);
+                    } else {
+                        attributes.push(Box::new(RelayedAddress {
+                            ip: "127.0.0.1".parse().unwrap(),
+                            port: 49999,
+                        }));
+                        attributes.push(Box::new(Lifetime(Duration::from_secs(
+                            if matches!(scenario, Scenario::BindStale) {
+                                600
+                            } else {
+                                2
+                            },
+                        ))));
+                    }
+                } else if method == METHOD_REFRESH {
+                    let mut life = Lifetime::default();
+                    life.get_from(&request).unwrap();
+                    if !life.0.is_zero() {
+                        if matches!(scenario, Scenario::RefreshDenied) {
+                            error = Some(CODE_FORBIDDEN);
+                        } else if !challenged {
+                            challenged = true;
+                            error = Some(CODE_STALE_NONCE);
+                        }
+                    }
+                    if error.is_none() {
+                        attributes.push(Box::new(Lifetime(life.0)));
+                    }
+                } else if method == METHOD_CHANNEL_BIND && matches!(scenario, Scenario::BindStale) {
+                    error = Some(CODE_STALE_NONCE);
                 }
-            } else if method == METHOD_REFRESH {
-                let mut life = Lifetime::default();
-                life.get_from(&request).unwrap();
-                if !life.0.is_zero() {
-                    if matches!(scenario, Scenario::RefreshDenied) {
-                        error = Some(CODE_FORBIDDEN);
-                    } else if !challenged {
-                        challenged = true;
-                        error = Some(CODE_STALE_NONCE);
+                if let Some(code) = error {
+                    attributes.push(Box::new(ErrorCodeAttribute {
+                        code,
+                        reason: vec![],
+                    }));
+                    if code == CODE_UNAUTHORIZED || code == CODE_STALE_NONCE {
+                        attributes.push(Box::new(Realm::new(ATTR_REALM, "fixture".into())));
+                        attributes.push(Box::new(Nonce::new(
+                            ATTR_NONCE,
+                            if code == CODE_STALE_NONCE {
+                                "fixture-rotated"
+                            } else {
+                                "fixture-initial"
+                            }
+                            .into(),
+                        )));
                     }
                 }
-                if error.is_none() {
-                    attributes.push(Box::new(Lifetime(life.0)));
+                attributes.push(Box::new(MessageType::new(
+                    method,
+                    if error.is_some() {
+                        CLASS_ERROR_RESPONSE
+                    } else {
+                        CLASS_SUCCESS_RESPONSE
+                    },
+                )));
+                if nonce.is_some() {
+                    attributes.push(Box::new(integrity.clone()));
                 }
-            } else if method == METHOD_CHANNEL_BIND && matches!(scenario, Scenario::BindStale) {
-                error = Some(CODE_STALE_NONCE);
-            }
-            if let Some(code) = error {
-                attributes.push(Box::new(ErrorCodeAttribute {
-                    code,
-                    reason: vec![],
-                }));
-                if code == CODE_UNAUTHORIZED || code == CODE_STALE_NONCE {
-                    attributes.push(Box::new(Realm::new(ATTR_REALM, "fixture".into())));
-                    attributes.push(Box::new(Nonce::new(
-                        ATTR_NONCE,
-                        if code == CODE_STALE_NONCE {
-                            "fixture-rotated"
-                        } else {
-                            "fixture-initial"
-                        }
-                        .into(),
-                    )));
-                }
-            }
-            attributes.push(Box::new(MessageType::new(
-                method,
-                if error.is_some() {
-                    CLASS_ERROR_RESPONSE
-                } else {
-                    CLASS_SUCCESS_RESPONSE
-                },
-            )));
-            if nonce.is_some() {
-                attributes.push(Box::new(integrity.clone()));
-            }
-            attributes.push(Box::new(FINGERPRINT));
-            let mut response = Message::new();
-            response.build(&attributes).unwrap();
+                attributes.push(Box::new(FINGERPRINT));
+                let mut response = Message::new();
+                response.build(&attributes).unwrap();
+                response
+            };
             server.send_to(&response.raw, from).await.unwrap();
         }
     });
