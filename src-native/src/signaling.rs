@@ -456,7 +456,7 @@ mod tests {
             "dGVzdA==\n",
             "dGVzdA==\r\na=setup:passive",
             "test-_==",
-            "çź­çź­==",
+            "短短==",
         ] {
             let mut c = creds();
             c.ufrag = value.into();
@@ -472,7 +472,7 @@ mod tests {
     }
     #[test]
     fn token_shape_classifies_rejection_without_disclosing_credential() {
-        let synthetic = "Ab09+/==-_ \t\r\n\u{1}\u{7f}Ă©:!";
+        let synthetic = "Ab09+/==-_ \t\r\n\u{1}\u{7f}é:!";
         let shape = token_shape(synthetic, 4);
         for (name, count) in [
             ("ice_char_bytes", 6),
@@ -561,7 +561,7 @@ mod tests {
         c.fingerprint = "sha-256 AA:BB".into();
         assert!(c.validate().is_err());
         c = creds();
-        c.ufrag = "çź­".into();
+        c.ufrag = "短".into();
         assert!(c.validate().is_err());
     }
     #[test]
