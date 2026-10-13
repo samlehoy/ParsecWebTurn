@@ -69,6 +69,9 @@ Audited read-only WAT evidence for this specific core:
 - `main_render_loop` calls `main_submit_ui_events`, which consumes message 6
   and calls `app_native_run_client`. Event 6 instead queues message 4 and
   must not be used for this reconnect operation.
+- Its message-6 handler refuses Connect while the byte at main state + 9476
+  is nonzero. The native binding reads that exact guard and defers dispatch;
+  consuming the backend cancellation event alone is not a core-ready proof.
 - That function reads the current configured peer, generates a new random
   attempt ID, calls `parsec_web_new_attempt`, and builds the signaling offer
   with the newly returned ICE credentials.

@@ -1712,7 +1712,8 @@ mod tests {
                 .fail_native_attempt(FailureStage::RelayEndpointTimeout)
                 .unwrap();
             assert_eq!(backend.poll_event().unwrap()["status"], -3);
-            assert!(backend.take_relay_reconnect().unwrap());
+            assert!(!backend.take_relay_reconnect(false).unwrap());
+            assert!(backend.take_relay_reconnect(true).unwrap());
             let next = backend.route_for_new_attempt().unwrap();
             assert!(next.next().is_none()); // exactly one advancement
             backend.fail_native_attempt(FailureStage::Worker).unwrap();

@@ -219,12 +219,27 @@ fn run_worker_callback(caller: &mut Caller<'_, HostState>, index: u32, opaque: i
         // UI event 7 queues message 6: the core's connect-current-peer request.
         // It creates fresh attempt IDs/ICE credentials through the core itself.
         if index == 84 {
+            // The core's message-6 handler refuses Connect while this byte is
+            // nonzero. Wait rather than consume a retry that it would discard.
+            // Read-only ABI, audited alongside the callback in the pinned core.
+            let core_ready = (|| -> Result<bool> {
+                let args = caller.data().memory.read(opaque as u32, 8)?;
+                let main = u32::from_le_bytes(args[..4].try_into()?);
+                if main == 0 || args[5] != 0 {
+                    return Ok(false);
+                }
+                let guard = main
+                    .checked_add(9476)
+                    .context("core reconnect address overflow")?;
+                Ok(caller.data().memory.read(guard, 1)?[0] == 0)
+            })()
+            .unwrap_or(false);
             let reconnect = caller
                 .data()
                 .backend
                 .lock()
                 .map_err(|_| anyhow::anyhow!("backend lock poisoned"))?
-                .take_relay_reconnect()?;
+                .take_relay_reconnect(core_ready)?;
             if reconnect {
                 let outcome = (|| -> Result<()> {
                     let args = caller.data().memory.read(opaque as u32, 8)?;

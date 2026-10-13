@@ -130,7 +130,7 @@ impl Backend {
 
     /// The GUI worker invokes the unchanged core's own Reconnect UI action.
     /// Only do so after the previous peer closed and its event was consumed.
-    pub fn take_relay_reconnect(&mut self) -> Result<bool> {
+    pub fn take_relay_reconnect(&mut self, core_ready: bool) -> Result<bool> {
         let Some(started) = self.relay_pending else {
             if self
                 .relay_launching
@@ -154,7 +154,8 @@ impl Backend {
             self.fail_native_attempt(crate::attempt::FailureStage::Deadline)?;
             return Ok(false);
         }
-        if self.status != Some(-3)
+        if !core_ready
+            || self.status != Some(-3)
             || !self.events.is_empty()
             || !self
                 .retiring_attempt
@@ -518,7 +519,7 @@ mod tests {
 
         backend.relay_launching =
             Some(std::time::Instant::now() - std::time::Duration::from_secs(3));
-        assert!(!backend.take_relay_reconnect().unwrap());
+        assert!(!backend.take_relay_reconnect(true).unwrap());
         assert!(backend.relay_launching.is_none());
         assert_eq!(backend.poll_event().unwrap()["status"], -6200);
     }
@@ -538,7 +539,7 @@ mod tests {
         assert!(backend.relay_launching.is_none());
         assert!(backend.relay_route.is_none());
         backend.relay_pending = Some(std::time::Instant::now());
-        assert!(!backend.take_relay_reconnect().unwrap()); // Force is absent
+        assert!(!backend.take_relay_reconnect(true).unwrap()); // Force is absent
         assert!(backend.relay_pending.is_none());
     }
     #[test]
