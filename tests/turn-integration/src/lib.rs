@@ -227,6 +227,7 @@ mod integration {
                     }
                     continue;
                 }
+                let gathering_finished = candidate.is_none();
                 if let Some((candidate, relay)) = candidate {
                     relay_candidates += usize::from(relay);
                     host_gate
@@ -248,6 +249,10 @@ mod integration {
                 if let Some(marker) =
                     local_sync.relay_ready("relay-readiness", true, relay_candidates)
                 {
+                    assert!(
+                        !gathering_finished,
+                        "readiness must precede gathering completion"
+                    );
                     assert_eq!(marker["sync"], true);
                     host_gate.sync("relay-readiness").unwrap();
                 }
@@ -370,7 +375,7 @@ mod integration {
     }
 
     #[tokio::test]
-    async fn relay_only_sync_after_gathering_releases_host_gate_and_connects_sctp() {
+    async fn relay_only_first_relay_sync_releases_host_gate_and_connects_sctp() {
         let url = "turn:localhost:43478?transport=udp";
         timeout(
             Duration::from_secs(40),
