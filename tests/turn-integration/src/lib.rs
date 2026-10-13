@@ -1,5 +1,8 @@
 //! Separate CI fixture; never linked into the shipped client.
 #[cfg(test)]
+#[path = "../../../src-native/src/signaling.rs"]
+mod signaling;
+#[cfg(test)]
 #[path = "../../../src-native/tests/turn_stream.rs"]
 mod stream;
 
@@ -153,6 +156,9 @@ mod integration {
         a.set_remote_description(b.local_description().await.unwrap())
             .await
             .unwrap();
+        let description =
+            crate::signaling::Description::from_sdp(&b.local_description().await.unwrap().sdp)
+                .unwrap();
         let remote = Arc::downgrade(&b);
         let forward_a = tokio::spawn(async move {
             while let Some(candidate) = arx.recv().await {
@@ -164,11 +170,33 @@ mod integration {
         });
         let remote = Arc::downgrade(&a);
         let forward_b = tokio::spawn(async move {
+            let mut gate = crate::signaling::CandidateGate::new("relay-no-sync").unwrap();
+            gate.allow_relay_trickle();
+            gate.remote_ready(
+                "relay-no-sync",
+                &description.mid,
+                &description.credentials.ufrag,
+            )
+            .unwrap();
             while let Some(candidate) = brx.recv().await {
                 let Some(remote) = remote.upgrade() else {
                     break;
                 };
-                remote.add_ice_candidate(candidate).await.unwrap();
+                if compact {
+                    let candidate = crate::signaling::Candidate::from_sdp_line(&format!(
+                        "a={}",
+                        candidate.candidate
+                    ))
+                    .unwrap();
+                    gate.push("relay-no-sync", candidate).unwrap();
+                    // No Parsec sync call: exercise the production gate that
+                    // previously withheld every host address indefinitely.
+                    while let Some(candidate) = gate.pop_ready() {
+                        remote.add_ice_candidate(candidate).await.unwrap();
+                    }
+                } else {
+                    remote.add_ice_candidate(candidate).await.unwrap();
+                }
             }
         });
         while channels.iter().any(|(a, b)| {
@@ -247,7 +275,7 @@ mod integration {
     }
 
     #[tokio::test]
-    async fn relay_only_connects_when_compact_signaling_omits_remote_relay_type() {
+    async fn relay_only_connects_without_parsec_sync_using_production_candidate_gate() {
         let url = "turn:localhost:43478?transport=udp";
         timeout(
             Duration::from_secs(40),

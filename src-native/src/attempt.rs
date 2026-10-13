@@ -861,12 +861,13 @@ fn worker(
             }
         })?;
     }
+    let relay_only = ice.ice_transport_policy
+        == webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy::Relay;
     #[cfg(any(test, feature = "diagnostics"))]
     {
         let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
         state.progress.resolved_ice_servers = Some(ice.ice_servers.len());
-        state.progress.relay_only = ice.ice_transport_policy
-            == webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy::Relay;
+        state.progress.relay_only = relay_only;
     }
     let peer = Arc::new(runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(5), api.new_peer_connection(ice)).await
@@ -1048,6 +1049,9 @@ fn worker(
         let (offer, description, channels) = prepared??;
         let mut offer = Some(offer);
         let mut gate = CandidateGate::new(id)?;
+        if relay_only {
+            gate.allow_relay_trickle();
+        }
         let mut sync_ack_scheduled = false;
         let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(output) = state.output.take() {

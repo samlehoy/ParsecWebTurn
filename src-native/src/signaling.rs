@@ -289,14 +289,16 @@ impl Candidate {
     }
 }
 
-// Parsec releases buffered candidates only after both begin_p2p and its
-// candidate-sync marker. Do not interpret the marker's placeholder address as
-// an endpoint. Queues are per attempt and bounded even before synchronization.
+// Preserve the original shim's batching for ordinary connections. Relay-only
+// ICE uses standard trickle after begin_p2p: Parsec's additional sync marker
+// may never arrive without host/srflx gathering. Never use its placeholder as
+// an endpoint. Identity, validation, deduplication and queue bounds still apply.
 pub struct CandidateGate {
     attempt: String,
     pending: VecDeque<Candidate>,
     seen: Vec<Candidate>,
     synced: bool,
+    require_sync: bool,
     remote: Option<(String, String)>,
 }
 
@@ -310,6 +312,7 @@ impl CandidateGate {
             pending: Default::default(),
             seen: Vec::new(),
             synced: false,
+            require_sync: true,
             remote: None,
         })
     }
@@ -318,6 +321,11 @@ impl CandidateGate {
             bail!("candidate belongs to a different attempt");
         }
         Ok(())
+    }
+    /// Only changes candidate delivery timing; the peer's Relay policy still
+    /// enforces routing. A validated remote description remains mandatory.
+    pub fn allow_relay_trickle(&mut self) {
+        self.require_sync = false;
     }
     pub fn push(&mut self, attempt: &str, candidate: Candidate) -> Result<()> {
         self.check(attempt)?;
@@ -347,7 +355,7 @@ impl CandidateGate {
         Ok(())
     }
     pub fn pop_ready(&mut self) -> Option<RTCIceCandidateInit> {
-        if !self.synced {
+        if self.require_sync && !self.synced {
             return None;
         }
         let (mid, ufrag) = self.remote.as_ref()?;
@@ -532,6 +540,28 @@ mod tests {
         assert!(Description::from_sdp(&(answer.clone() + "a=ice-ufrag:abcd\r\n")).is_err());
         assert!(Description::from_sdp(&(answer + "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n")).is_err());
     }
+    #[test]
+    fn relay_trickle_requires_remote_identity_but_not_parsec_sync() {
+        let mut gate = CandidateGate::new("relay-test").unwrap();
+        let candidate = Candidate::new("192.0.2.1", 1234, false).unwrap();
+        gate.push("relay-test", candidate.clone()).unwrap();
+        gate.allow_relay_trickle();
+        assert!(gate.pop_ready().is_none());
+        assert!(gate.remote_ready("stale", "0", "abcd").is_err());
+        gate.remote_ready("relay-test", "0", "abcd").unwrap();
+        assert!(gate
+            .pop_ready()
+            .unwrap()
+            .candidate
+            .contains("192.0.2.1 1234 typ host"));
+        assert!(!gate.synced);
+        gate.push("relay-test", candidate).unwrap();
+        assert!(gate.pop_ready().is_none());
+        assert!(gate.sync("stale").is_err());
+        gate.sync("relay-test").unwrap();
+        assert!(gate.pop_ready().is_none());
+    }
+
     #[test]
     fn candidates_wait_for_both_gates_and_reject_stale_attempts() {
         let mut gate = CandidateGate::new("test").unwrap();
