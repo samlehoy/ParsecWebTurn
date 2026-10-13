@@ -113,3 +113,27 @@ the resulting compact relay addresses through its existing candidate events;
 its host-side interoperability still needs investigation. Failure without the
 VPN points away from a VPN-only explanation but does not establish which
 endpoint, signaling step or relay connectivity check is responsible.
+
+
+## Follow-up diagnostic trace
+
+The next 2649bc9 trace confirms real gathering completion, local readiness
+queued, three local relay candidates and six submitted remote candidates. The
+peer sync is still absent and ICE remains checking until the deadline; DTLS
+never starts. Queueing is not proof of delivery to the signaling server/host.
+The ordinary attempt connects. The trace cannot distinguish an absent network
+response from TURN permission/send failures or rejected ICE checks.
+
+A separate diagnostics-only observation window now counts fixed, sanitized
+pinned-library ICE/TURN log categories and snapshots public candidate-pair
+states before close (500 ms collection bound). The window is process-scoped,
+not a strict per-peer logger correlation. Check-attempt events are not proof of
+NIC transmission. The selected candidate types and TURN transport are included
+without IPs, candidate IDs, URLs, credentials or raw messages. Unimplemented
+upstream request/packet counters stay null; unavailable logger/stats stay null.
+No library log category controls production routing.
+
+Cloudflare denies permissions for private peer addresses even without a VPN;
+this is a possible diagnostic category, not an established cause of this
+failure. Its FAQ documents the restriction:
+https://developers.cloudflare.com/realtime/turn/faq/

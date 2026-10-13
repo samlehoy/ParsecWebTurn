@@ -180,6 +180,8 @@ struct Progress {
     local_gathering_complete: bool,
     local_sync: LocalCandidateSync,
     local_sync_queued: bool,
+    #[cfg(feature = "diagnostics")]
+    ice_checks_before_close: serde_json::Value,
     transport_states: serde_json::Value,
     transport_states_before_close: serde_json::Value,
     transport_states_at_failure: serde_json::Value,
@@ -707,6 +709,10 @@ impl Attempt {
         snapshot["local_gathering_complete"] =
             serde_json::json!(state.progress.local_gathering_complete);
         snapshot["local_sync_queued"] = serde_json::json!(state.progress.local_sync_queued);
+        #[cfg(feature = "diagnostics")]
+        {
+            snapshot["ice_checks_before_close"] = state.progress.ice_checks_before_close.clone();
+        }
         snapshot["ice_servers_configured"] =
             serde_json::json!(state.progress.resolved_ice_servers.map(|count| count != 0));
         snapshot["resolved_ice_server_entries"] =
@@ -902,6 +908,8 @@ fn worker(
         state.progress.resolved_ice_servers = Some(ice.ice_servers.len());
         state.progress.relay_only = relay_only;
     }
+    #[cfg(feature = "diagnostics")]
+    let ice_trace = crate::transport_diagnostics::start_ice_window();
     let peer = Arc::new(runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(5), api.new_peer_connection(ice)).await
     })??);
@@ -1271,6 +1279,24 @@ fn worker(
         drop((offer, channels));
         Ok(())
     })();
+    #[cfg(feature = "diagnostics")]
+    {
+        let pairs = runtime.block_on(async {
+            tokio::time::timeout(
+                Duration::from_millis(500),
+                crate::transport_diagnostics::peer_ice_summary(&peer),
+            )
+            .await
+            .ok()
+        });
+        let trace = crate::transport_diagnostics::finish_ice_window(ice_trace);
+        shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .progress
+            .ice_checks_before_close =
+            serde_json::json!({"trace_window":trace,"candidate_pairs":pairs});
+    }
     {
         let states = transport_states(&peer);
         let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
