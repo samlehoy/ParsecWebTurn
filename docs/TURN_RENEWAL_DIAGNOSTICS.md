@@ -40,6 +40,11 @@ returns ChannelBind 438 and checks whether another authenticated bind is sent.
 The current-behavior observation is explicitly labeled; update it when fixing
 the library rather than treating those limitations as the desired contract.
 
+Verified in [CI 38399910659](https://github.com/vampywiz17/ParsecWebTurn/actions/runs/38399910659):
+25 isolated tests passed, including both new renewal observations. The client
+retries allocation 438 with the rotated nonce. A rejected Refresh produces
+three requests; ChannelBind 438 is not retried even after a subsequent send.
+
 The normal isolated TURN CI also runs these tests. No external service, account,
 Parsec host or user settings are accessed.
 
@@ -50,8 +55,8 @@ core, and `turn-diagnostics.json` as report path. `Start-TURN-Diagnostics.cmd` i
 the test package supplies these arguments. Copy your existing `settings.json`
 beside the diagnostic executable; settings and secrets are not packaged.
 
-1. Start a fresh process and make just one ExpressTURN connection. Keep the same
-   transport and Force TURN setting as the failing trial.
+1. Start a fresh process with just one ExpressTURN URL and make one connection.
+   Keep the same transport and Force TURN setting as the failing trial.
 2. Keep the stream active for at least 15 minutes or until error 6200 occurs.
 3. After the error, close the client normally so it writes the report. Do not
    reconnect in that process. Forced termination may prevent report export.
