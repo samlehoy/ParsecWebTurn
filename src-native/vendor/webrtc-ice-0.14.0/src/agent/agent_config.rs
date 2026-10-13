@@ -60,6 +60,9 @@ pub type IpFilterFn = Box<dyn (Fn(IpAddr) -> bool) + Send + Sync>;
 pub struct AgentConfig {
     /// Local opt-in UDP > TLS > TCP TURN gathering policy.
     pub prefer_turn_udp: bool,
+    /// Project extension: retain discovery candidates, but use only local
+    /// relays for connectivity and data. Not an address-privacy policy.
+    pub relay_only_connectivity: bool,
     pub urls: Vec<Url>,
 
     /// Controls how the UDP network stack works.
@@ -163,6 +166,7 @@ impl AgentConfig {
     /// Populates an agent and falls back to defaults if fields are unset.
     pub(crate) fn init_with_defaults(&self, a: &mut AgentInternal) {
         a.prefer_turn_udp = self.prefer_turn_udp;
+        a.relay_only_connectivity = self.relay_only_connectivity;
         if let Some(max_binding_requests) = self.max_binding_requests {
             a.max_binding_requests = max_binding_requests;
         } else {

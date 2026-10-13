@@ -137,3 +137,37 @@ Cloudflare denies permissions for private peer addresses even without a VPN;
 this is a possible diagnostic category, not an established cause of this
 failure. Its FAQ documents the restriction:
 https://developers.cloudflare.com/realtime/turn/faq/
+
+
+## Full discovery with enforced relay connectivity
+
+At the user's request, the next test separates gathering/signaling from the
+allowed data path. The settings resolver still expresses Force TURN as a relay
+request. The native worker translates this into `RTCIceTransportPolicy::All`
+plus the project-owned `SettingEngine::set_relay_only_connectivity(true)`.
+Actual host, srflx and relay candidates are gathered and signaled unchanged to
+the pinned Parsec core. No candidate type or address is fabricated.
+
+This is an explicit local Rust library extension, not the W3C `relay` policy and
+not an upstream webrtc-rs API. It preserves standard ICE messages, authentication
+and fingerprint checks. It intentionally does not hide LAN/public discovery
+addresses from the peer. It enforces the user's requested TURN data path instead.
+There is no connect-direct-then-switch interval: the restriction is set before
+the peer is created. Candidate-pair creation, selected-pair assignment, outbound
+ICE checks, inbound ICE checks and inbound non-STUN traffic all reject local
+non-relay candidates. Normal STUN discovery traffic to configured servers still
+works through the existing gathering implementation. If no relay works, the
+connection fails closed. Default-off behavior is unchanged.
+
+The regression fixture verifies actual host/srflx/relay discovery with coturn,
+full candidate exchange, all three bidirectional DTLS/SCTP data channels and a
+selected local relay. A separate negative fixture first establishes that the
+host-only route works, then enables the restriction with no TURN server and
+verifies that neither endpoint opens its data channel and the restricted peer
+has no selected pair/checklist. The unchanged WASM and real Parsec host are not
+executed by that fixture; a successful fixture is not proof of live compatibility.
+
+Diagnostics distinguish `ice_gathering_policy: all`, `relay_only_policy: false`
+(the literal W3C policy) and `relay_only_connectivity: true` (the project routing
+restriction). Selected candidate types provide independent routing evidence.
+The added observation counters remain exclusive to separate diagnostic builds.

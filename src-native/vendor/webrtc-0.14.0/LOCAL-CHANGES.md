@@ -38,3 +38,21 @@ policy to the patched ICE crate. The native app opts into UDP, then TLS, then
 plain TCP timed fallback. No certificate checks or ICE roles are changed.
 The app's separate Force TURN relay option uses `RTCIceTransportPolicy::Relay`;
 that routing policy is not imposed on other users of the vendored library.
+
+
+## Full discovery, relay-only connectivity extension
+
+`SettingEngine::set_relay_only_connectivity(true)` (webrtc) propagates to
+`AgentConfig::relay_only_connectivity` (webrtc-ice). This locally maintained API
+is not provided by upstream and is not equivalent to W3C `iceTransportPolicy:
+relay`: gathering/signaling retains real host and srflx addresses under policy
+All, so it makes no address-privacy promise. The default is false.
+
+The agent permits only local relay candidates in pair creation, pair selection,
+outbound connectivity checks, inbound connectivity checks and inbound non-STUN
+traffic. Gathering is unchanged. The restriction is installed at construction,
+not after a direct connection has opened. If relay is unavailable it fails closed;
+there is no fallback to host, srflx or peer-reflexive local data paths. DTLS
+fingerprint verification and STUN authentication are unchanged. Separate coturn
+fixtures cover full discovery with a relay-selected SCTP path and a usable direct
+path that must remain disconnected when the restriction is enabled without TURN.

@@ -8,7 +8,13 @@ mod stream;
 
 #[cfg(test)]
 mod integration {
-    use std::{sync::Arc, time::Duration};
+    use std::{
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        time::Duration,
+    };
     use tokio::{
         sync::mpsc,
         time::{sleep, timeout},
@@ -30,13 +36,14 @@ mod integration {
     }
 
     async fn exchange_urls(urls: &[&str], url: &str, prefer_udp: bool) {
-        exchange_with_compact_candidates(urls, url, prefer_udp, false).await;
+        exchange_with_compact_candidates(urls, url, prefer_udp, false, false).await;
     }
     async fn exchange_with_compact_candidates(
         urls: &[&str],
         url: &str,
         prefer_udp: bool,
         compact: bool,
+        full_discovery: bool,
     ) {
         let mut settings = SettingEngine::default();
         settings.set_network_types(vec![NetworkType::Udp4]);
@@ -46,22 +53,40 @@ mod integration {
         settings.set_sctp_max_message_size_can_send(
             webrtc::api::setting_engine::SctpMaxMessageSize::Bounded(262144),
         );
+        let host_api = APIBuilder::new()
+            .with_setting_engine(settings.clone())
+            .build();
+        settings.set_relay_only_connectivity(full_discovery);
         let api = APIBuilder::new().with_setting_engine(settings).build();
         let a = Arc::new(
             api.new_peer_connection(RTCConfiguration {
-                ice_transport_policy: RTCIceTransportPolicy::Relay,
-                ice_servers: vec![RTCIceServer {
-                    urls: urls.iter().map(|url| (*url).into()).collect(),
-                    username: "fixture".into(),
-                    credential: "fixture-password".into(),
-                }],
+                ice_transport_policy: if full_discovery {
+                    RTCIceTransportPolicy::All
+                } else {
+                    RTCIceTransportPolicy::Relay
+                },
+                ice_servers: {
+                    let mut servers = vec![RTCIceServer {
+                        urls: urls.iter().map(|url| (*url).into()).collect(),
+                        username: "fixture".into(),
+                        credential: "fixture-password".into(),
+                    }];
+                    if full_discovery {
+                        servers.push(RTCIceServer {
+                            urls: vec!["stun:localhost:43478".into()],
+                            ..Default::default()
+                        });
+                    }
+                    servers
+                },
                 ..Default::default()
             })
             .await
             .unwrap(),
         );
         let b = Arc::new(
-            api.new_peer_connection(RTCConfiguration::default())
+            host_api
+                .new_peer_connection(RTCConfiguration::default())
                 .await
                 .unwrap(),
         );
@@ -117,13 +142,29 @@ mod integration {
         // connectivity until gathering-complete, just like the native client.
         let (atx, mut arx) = mpsc::unbounded_channel();
         let (btx, mut brx) = mpsc::unbounded_channel();
+        let discovered = Arc::new(AtomicUsize::new(0));
+        let discovery = discovered.clone();
         a.on_ice_candidate(Box::new(move |candidate| {
             let tx = atx.clone();
+            let discovery = discovery.clone();
             Box::pin(async move {
                 if let Some(candidate) = candidate {
-                    assert_eq!(candidate.typ.to_string(), "relay");
+                    let kind = candidate.typ.to_string();
+                    let relay = kind == "relay";
+                    if !full_discovery {
+                        assert!(relay);
+                    }
+                    discovery.fetch_or(
+                        match kind.as_str() {
+                            "host" => 1,
+                            "srflx" => 2,
+                            "relay" => 4,
+                            _ => 0,
+                        },
+                        Ordering::SeqCst,
+                    );
                     let mut init = candidate.to_json().unwrap();
-                    if compact {
+                    if compact && relay {
                         // Parsec's compact address/port/fromStun ABI cannot carry
                         // a relay type. Its remote adapter rebuilds typ host for
                         // fromStun=false. The real local candidate stays relay.
@@ -132,7 +173,7 @@ mod integration {
                             candidate.address, candidate.port
                         );
                     }
-                    let _ = tx.send(Some(init));
+                    let _ = tx.send(Some((init, relay)));
                 } else {
                     let _ = tx.send(None);
                 }
@@ -181,13 +222,13 @@ mod integration {
                     break;
                 };
                 if !compact {
-                    if let Some(candidate) = candidate {
+                    if let Some((candidate, _)) = candidate {
                         remote.add_ice_candidate(candidate).await.unwrap();
                     }
                     continue;
                 }
-                if let Some(candidate) = candidate {
-                    relay_candidates += 1;
+                if let Some((candidate, relay)) = candidate {
+                    relay_candidates += usize::from(relay);
                     host_gate
                         .push(
                             "relay-readiness",
@@ -250,6 +291,13 @@ mod integration {
                 || b.ready_state() != RTCDataChannelState::Open
         }) {
             sleep(Duration::from_millis(10)).await;
+        }
+        if full_discovery {
+            assert_eq!(
+                discovered.load(Ordering::SeqCst) & 7,
+                7,
+                "real host, srflx and relay discovery must all be signaled"
+            );
         }
         // SCTP fragments a realistic video-sized message across TURN frames.
         for (id, (a, b)) in channels.iter().enumerate() {
@@ -325,10 +373,104 @@ mod integration {
         let url = "turn:localhost:43478?transport=udp";
         timeout(
             Duration::from_secs(40),
-            exchange_with_compact_candidates(&[url], url, true, true),
+            exchange_with_compact_candidates(&[url], url, true, true, false),
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn full_stun_discovery_preserves_signaling_but_selects_only_relay() {
+        let url = "turn:localhost:43478?transport=udp";
+        timeout(
+            Duration::from_secs(40),
+            exchange_with_compact_candidates(&[url], url, true, true, true),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn relay_connectivity_never_falls_back_to_available_direct_path() {
+        for force in [false, true] {
+            let mut settings = SettingEngine::default();
+            settings.set_network_types(vec![NetworkType::Udp4]);
+            settings.set_data_channel_only(true);
+            let host_api = APIBuilder::new()
+                .with_setting_engine(settings.clone())
+                .build();
+            settings.set_relay_only_connectivity(force);
+            let api = APIBuilder::new().with_setting_engine(settings).build();
+            let a = api
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .unwrap();
+            let b = host_api
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .unwrap();
+            let config = Some(RTCDataChannelInit {
+                negotiated: Some(0),
+                ..Default::default()
+            });
+            let ca = a
+                .create_data_channel("fixture", config.clone())
+                .await
+                .unwrap();
+            let cb = b.create_data_channel("fixture", config).await.unwrap();
+            let mut done = a.gathering_complete_promise().await;
+            a.set_local_description(a.create_offer(None).await.unwrap())
+                .await
+                .unwrap();
+            done.recv().await;
+            let offer = a.local_description().await.unwrap();
+            assert!(offer.sdp.contains(" typ host"));
+            b.set_remote_description(offer).await.unwrap();
+            let mut done = b.gathering_complete_promise().await;
+            b.set_local_description(b.create_answer(None).await.unwrap())
+                .await
+                .unwrap();
+            done.recv().await;
+            a.set_remote_description(b.local_description().await.unwrap())
+                .await
+                .unwrap();
+            if force {
+                sleep(Duration::from_secs(2)).await;
+                assert_ne!(ca.ready_state(), RTCDataChannelState::Open);
+                assert_ne!(cb.ready_state(), RTCDataChannelState::Open);
+                assert!(a
+                    .sctp()
+                    .transport()
+                    .ice_transport()
+                    .get_selected_candidate_pair()
+                    .await
+                    .is_none());
+                assert!(!a
+                    .get_stats()
+                    .await
+                    .reports
+                    .values()
+                    .any(|v| matches!(v, webrtc::stats::StatsReportType::CandidatePair(_))));
+            } else {
+                timeout(Duration::from_secs(5), async {
+                    while ca.ready_state() != RTCDataChannelState::Open
+                        || cb.ready_state() != RTCDataChannelState::Open
+                    {
+                        sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("control: the same host-only path must actually work");
+            }
+            timeout(Duration::from_secs(5), a.close())
+                .await
+                .unwrap()
+                .unwrap();
+            timeout(Duration::from_secs(5), b.close())
+                .await
+                .unwrap()
+                .unwrap();
+        }
     }
 
     #[tokio::test]

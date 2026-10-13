@@ -101,6 +101,7 @@ pub struct SettingEngine {
     pub(crate) disable_media_engine_copy: bool,
     pub(crate) data_channel_only: bool,
     pub(crate) prefer_turn_udp: bool,
+    pub(crate) relay_only_connectivity: bool,
     pub(crate) srtp_protection_profiles: Vec<SrtpProtectionProfile>,
     pub(crate) receive_mtu: usize,
     pub(crate) mid_generator: Option<Arc<dyn Fn(isize) -> String + Send + Sync>>,
@@ -114,6 +115,14 @@ impl SettingEngine {
     /// Each available tier gets a three-second connectivity head start.
     pub fn set_prefer_turn_udp(&mut self, enabled: bool) {
         self.prefer_turn_udp = enabled;
+    }
+
+    /// Project extension: gather and signal normally with policy All, but
+    /// permit connectivity and data only through local relay candidates.
+    /// This does not provide the address-privacy semantics of policy Relay.
+    /// Without a working relay the peer fails closed; it never selects direct.
+    pub fn set_relay_only_connectivity(&mut self, enabled: bool) {
+        self.relay_only_connectivity = enabled;
     }
     /// get_receive_mtu returns the configured MTU. If SettingEngine's MTU is configured to 0 it returns the default
     pub(crate) fn get_receive_mtu(&self) -> usize {

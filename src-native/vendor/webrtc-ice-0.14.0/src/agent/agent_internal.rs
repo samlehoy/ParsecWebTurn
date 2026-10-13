@@ -71,6 +71,7 @@ pub struct AgentInternal {
     pub(crate) prflx_acceptance_min_wait: Duration,
     pub(crate) relay_acceptance_min_wait: Duration,
     pub(crate) prefer_turn_udp: bool,
+    pub(crate) relay_only_connectivity: bool,
     // How long connectivity checks can fail before the ICE Agent
     // goes to disconnected
     pub(crate) disconnected_timeout: Duration,
@@ -85,6 +86,10 @@ pub struct AgentInternal {
 }
 
 impl AgentInternal {
+    fn allows_connectivity(&self, local: &Arc<dyn Candidate + Send + Sync>) -> bool {
+        !self.relay_only_connectivity || local.candidate_type() == CandidateType::Relay
+    }
+
     pub(super) fn new(config: &AgentConfig) -> (Self, ChanReceivers) {
         let (chan_state_tx, chan_state_rx) = mpsc::channel(1);
         let (chan_candidate_tx, chan_candidate_rx) = mpsc::channel(1);
@@ -133,6 +138,7 @@ impl AgentInternal {
             prflx_acceptance_min_wait: Duration::from_secs(0),
             relay_acceptance_min_wait: Duration::from_secs(0),
             prefer_turn_udp: false,
+            relay_only_connectivity: false,
 
             // How long connectivity checks can fail before the ICE Agent
             // goes to disconnected
@@ -328,6 +334,11 @@ impl AgentInternal {
     }
 
     pub(crate) async fn set_selected_pair(&self, p: Option<Arc<CandidatePair>>) {
+        if p.as_ref()
+            .is_some_and(|pair| !self.allows_connectivity(&pair.local))
+        {
+            return;
+        }
         log::trace!(
             "[{}]: Set selected candidate pair: {:?}",
             self.get_name(),
@@ -411,6 +422,9 @@ impl AgentInternal {
         local: Arc<dyn Candidate + Send + Sync>,
         remote: Arc<dyn Candidate + Send + Sync>,
     ) {
+        if !self.allows_connectivity(&local) {
+            return;
+        }
         let p = Arc::new(CandidatePair::new(
             local,
             remote,
@@ -827,6 +841,9 @@ impl AgentInternal {
         local: &Arc<dyn Candidate + Send + Sync>,
         remote: SocketAddr,
     ) {
+        if !self.allows_connectivity(local) {
+            return;
+        }
         if m.typ.method != METHOD_BINDING
             || !(m.typ.class == CLASS_SUCCESS_RESPONSE
                 || m.typ.class == CLASS_REQUEST
@@ -981,6 +998,9 @@ impl AgentInternal {
         local: &Arc<dyn Candidate + Send + Sync>,
         remote: SocketAddr,
     ) -> bool {
+        if !self.allows_connectivity(local) {
+            return false;
+        }
         self.find_remote_candidate(local.network_type(), remote)
             .await
             .is_some_and(|remote_candidate| {
@@ -1013,6 +1033,9 @@ impl AgentInternal {
         local: &Arc<dyn Candidate + Send + Sync>,
         remote: &Arc<dyn Candidate + Send + Sync>,
     ) {
+        if !self.allows_connectivity(local) {
+            return;
+        }
         if let Err(err) = local.write_to(&msg.raw, &**remote).await {
             log::trace!(
                 "[{}]: failed to send STUN message: {}",

@@ -151,6 +151,8 @@ struct Progress {
     #[cfg(any(test, feature = "diagnostics"))]
     relay_only: bool,
     #[cfg(any(test, feature = "diagnostics"))]
+    relay_only_connectivity: bool,
+    #[cfg(any(test, feature = "diagnostics"))]
     resolved_ice_servers: Option<usize>,
     ready: bool,
     closed: bool,
@@ -706,6 +708,13 @@ impl Attempt {
                 state.progress.local_host_candidates + state.progress.local_srflx_candidates
             ));
         snapshot["relay_only_policy"] = serde_json::json!(state.progress.relay_only);
+        snapshot["relay_only_connectivity"] =
+            serde_json::json!(state.progress.relay_only_connectivity);
+        snapshot["ice_gathering_policy"] = serde_json::json!(if state.progress.relay_only {
+            "relay"
+        } else {
+            "all"
+        });
         snapshot["local_gathering_complete"] =
             serde_json::json!(state.progress.local_gathering_complete);
         snapshot["local_sync_queued"] = serde_json::json!(state.progress.local_sync_queued);
@@ -883,7 +892,6 @@ fn worker(
     // Explicit legacy key-size compatibility only. Signature and SDP fingerprint
     // verification remain enabled; insecure hashes are not enabled.
     settings.allow_insecure_verification_algorithm(legacy_rsa_1024);
-    let api = APIBuilder::new().with_setting_engine(settings).build();
     // Resolve short-lived credentials on the async worker, never the UI/WASM
     // thread. Snapshot settings once; a save affects only the next attempt.
     let mut ice = ice_configuration(stun_provider);
@@ -902,11 +910,21 @@ fn worker(
     }
     let relay_only = ice.ice_transport_policy
         == webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy::Relay;
+    if relay_only {
+        // Parsec still sees real host/srflx discovery. A separate ICE routing
+        // policy rejects non-relay pairs and inbound data from the outset.
+        ice.ice_transport_policy =
+            webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy::All;
+        settings.set_relay_only_connectivity(true);
+    }
+    let api = APIBuilder::new().with_setting_engine(settings).build();
     #[cfg(any(test, feature = "diagnostics"))]
     {
         let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
         state.progress.resolved_ice_servers = Some(ice.ice_servers.len());
-        state.progress.relay_only = relay_only;
+        state.progress.relay_only = ice.ice_transport_policy
+            == webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy::Relay;
+        state.progress.relay_only_connectivity = relay_only;
     }
     #[cfg(feature = "diagnostics")]
     let ice_trace = crate::transport_diagnostics::start_ice_window();
