@@ -1208,7 +1208,8 @@ fn worker(
                                 .unwrap_or_else(|e| e.into_inner())
                                 .progress
                                 .sync_received = true;
-                            if !sync_ack_scheduled
+                            if !relay_only
+                                && !sync_ack_scheduled
                                 && !shared
                                     .lock()
                                     .unwrap_or_else(|e| e.into_inner())
