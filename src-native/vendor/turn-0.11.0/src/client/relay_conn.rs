@@ -503,7 +503,7 @@ impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
             let mut code = ErrorCodeAttribute::default();
             let result = code.get_from(&res);
             if result.is_ok() {
-                log::debug!("TURN renewal allocation-error code={}", code.code);
+                log::debug!("TURN renewal allocation-error code={}", code.code.0);
             }
             if result.is_err() {
                 return Err(Error::Other(format!("{}", res.typ)));
@@ -586,7 +586,7 @@ impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
         if res.typ != MessageType::new(METHOD_CHANNEL_BIND, CLASS_SUCCESS_RESPONSE) {
             let mut code = ErrorCodeAttribute::default();
             if res.typ.class == CLASS_ERROR_RESPONSE && code.get_from(&res).is_ok() {
-                log::debug!("TURN renewal channel-bind-error code={}", code.code);
+                log::debug!("TURN renewal channel-bind-error code={}", code.code.0);
             }
             return Err(Error::ErrUnexpectedResponse);
         }
