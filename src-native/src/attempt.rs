@@ -657,17 +657,22 @@ impl Attempt {
     #[cfg(any(test, feature = "diagnostics"))]
     pub fn snapshot(&self) -> serde_json::Value {
         let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
-        serde_json::json!({ "offer_ready": state.progress.ready, "mid":state.progress.mid, "peer_closed": state.progress.closed, "failed": state.progress.failed, "failure_stage": state.progress.failure_stage, "negotiated_channels": state.progress.channels, "channels_open": state.progress.open_mask.count_ones(), "transport_connected":state.progress.transport_connected, "local_candidates":state.progress.local_candidates, "remote_candidates":state.progress.remote_candidates, "messages_received":state.progress.messages_received, "worker_finished": *self.finished.0.lock().unwrap_or_else(|e| e.into_inner()), "host_connected": false,
+        let mut snapshot = serde_json::json!({ "offer_ready": state.progress.ready, "mid":state.progress.mid, "peer_closed": state.progress.closed, "failed": state.progress.failed, "failure_stage": state.progress.failure_stage, "negotiated_channels": state.progress.channels, "channels_open": state.progress.open_mask.count_ones(), "transport_connected":state.progress.transport_connected, "local_candidates":state.progress.local_candidates, "remote_candidates":state.progress.remote_candidates, "messages_received":state.progress.messages_received, "worker_finished": *self.finished.0.lock().unwrap_or_else(|e| e.into_inner()), "host_connected": false,
         "local_description_set":state.progress.local_description_set,"remote_description_set":state.progress.remote_description_set,"sync_received":state.progress.sync_received,"transport_states":state.progress.transport_states,"transport_states_before_close":state.progress.transport_states_before_close,"transport_states_at_failure":state.progress.transport_states_at_failure,
         "local_host_candidates":state.progress.local_host_candidates,"local_srflx_candidates":state.progress.local_srflx_candidates,
-        "local_relay_candidates":state.progress.local_candidates.saturating_sub(state.progress.local_host_candidates + state.progress.local_srflx_candidates),"relay_only_policy":state.progress.relay_only,
         "data_channel_only":true,"legacy_rsa_1024_enabled":state.progress.legacy_rsa_1024,"ice_servers_configured":state.progress.stun_provider.server().is_some(),"stun_provider":state.progress.stun_provider.server().map(|(name, _)| name),"network_types":["udp4"],"connection_deadline_seconds":30,"connection_deadline_scope":"establishment-only","connection_established":state.progress.connection_established,
         "channel_receive_api":"detached","unavailable_media_bypasses_control_queue":state.discard_unavailable_media,"queued_messages":state.messages.len(),"queued_message_bytes":state.message_bytes,"channel_message_limit_bytes":MAX_CHANNEL_MESSAGE,
         "channel_messages_received":state.progress.channel_messages_received,
         "channel_bytes_received":state.progress.channel_bytes_received,
         "channel_max_message_bytes":state.progress.channel_max_message_bytes,
         "failure_channel":state.progress.failure_channel,"failure_elapsed_ms":state.progress.failure_elapsed_ms,
-        "last_send_elapsed_ms":state.progress.last_send_elapsed_ms,"last_sent_control_kind":state.progress.last_sent_control_kind })
+        "last_send_elapsed_ms":state.progress.last_send_elapsed_ms,"last_sent_control_kind":state.progress.last_sent_control_kind });
+        snapshot["local_relay_candidates"] =
+            serde_json::json!(state.progress.local_candidates.saturating_sub(
+                state.progress.local_host_candidates + state.progress.local_srflx_candidates
+            ));
+        snapshot["relay_only_policy"] = serde_json::json!(state.progress.relay_only);
+        snapshot
     }
 
     fn command(&self, id: &str, command: Command) -> Result<()> {
