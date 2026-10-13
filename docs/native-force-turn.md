@@ -236,8 +236,11 @@ complete and sync queued, six remote candidates, connected ICE/DTLS, all three
 data channels open, and `video_rendered: true`. This snapshot was taken while
 the worker was active; `ice_checks_before_close` is null, so it does not record
 the selected pair's types or TURN transport. The routing restriction was active.
-This narrows the earlier failure to a difference associated with multiple TURN
-URLs/allocations and their signaling timing; it does not prove a specific cause.
+The user subsequently clarified that this successful test used ExpressTURN,
+whereas the failed multi-URL trials used Cloudflare. Provider and endpoint count
+therefore changed together. This proves a forced relay connection can work, but
+does not isolate URL count/timing as the Cloudflare failure cause. The new
+single-endpoint selection still needs a same-provider Cloudflare retest.
 
 Production configuration now applies single-endpoint selection after resolving
 credentials, including cache hits, for both Cloudflare and custom providers:
