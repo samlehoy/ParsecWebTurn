@@ -150,6 +150,8 @@ impl Output {
 struct Progress {
     #[cfg(any(test, feature = "diagnostics"))]
     relay_only: bool,
+    #[cfg(any(test, feature = "diagnostics"))]
+    resolved_ice_servers: Option<usize>,
     ready: bool,
     closed: bool,
     failed: bool,
@@ -672,6 +674,10 @@ impl Attempt {
                 state.progress.local_host_candidates + state.progress.local_srflx_candidates
             ));
         snapshot["relay_only_policy"] = serde_json::json!(state.progress.relay_only);
+        snapshot["ice_servers_configured"] =
+            serde_json::json!(state.progress.resolved_ice_servers.map(|count| count != 0));
+        snapshot["resolved_ice_server_entries"] =
+            serde_json::json!(state.progress.resolved_ice_servers);
         snapshot
     }
 
@@ -857,11 +863,9 @@ fn worker(
     }
     #[cfg(any(test, feature = "diagnostics"))]
     {
-        shared
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .progress
-            .relay_only = ice.ice_transport_policy
+        let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+        state.progress.resolved_ice_servers = Some(ice.ice_servers.len());
+        state.progress.relay_only = ice.ice_transport_policy
             == webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy::Relay;
     }
     let peer = Arc::new(runtime.block_on(async {
