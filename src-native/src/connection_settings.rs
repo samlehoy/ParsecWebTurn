@@ -9,7 +9,7 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
-#[cfg(any(test, not(feature = "diagnostics")))]
+#[cfg(any(test, windows, not(feature = "diagnostics")))]
 use std::{io::Read, sync::Arc};
 use webrtc::{
     ice::url::{ProtoType, SchemeType, Url},
@@ -92,7 +92,7 @@ impl Default for Settings {
     }
 }
 impl Settings {
-    #[cfg(any(test, not(feature = "diagnostics")))]
+    #[cfg(any(test, windows, not(feature = "diagnostics")))]
     fn fresh() -> Self {
         Self {
             provider: "custom".into(),
@@ -253,7 +253,7 @@ struct Cached {
 }
 
 impl Manager {
-    #[cfg(any(test, not(feature = "diagnostics")))]
+    #[cfg(any(test, windows, not(feature = "diagnostics")))]
     pub fn open(path: PathBuf) -> Arc<Self> {
         let loaded = (|| -> Result<Settings> {
             let file = match std::fs::File::open(&path) {

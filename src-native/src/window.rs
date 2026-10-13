@@ -309,7 +309,6 @@ impl Window {
             .as_ref()
             .and_then(|manager| manager.view().0.video_gpu)
     }
-    #[cfg(not(feature = "diagnostics"))]
     pub fn install_connection_settings(&self, manager: Arc<crate::connection_settings::Manager>) {
         *self
             .connection_settings
