@@ -171,3 +171,17 @@ Diagnostics distinguish `ice_gathering_policy: all`, `relay_only_policy: false`
 (the literal W3C policy) and `relay_only_connectivity: true` (the project routing
 restriction). Selected candidate types provide independent routing evidence.
 The added observation counters remain exclusive to separate diagnostic builds.
+
+
+## Full-discovery client live retest
+
+On 2026-10-13 the user reported that the a514d4c normal client still does not
+connect with Force TURN. Full discovery with restricted relay connectivity is
+therefore not a verified resolution of this real-host failure. Its CI run
+38374995044 passed, including both new routing fixtures, Windows tests/Clippy
+and original-WASM probes; those fixtures do not establish Parsec host behavior.
+The matching detailed diagnostic package is available and must be used to check
+actual gathered candidate types, permission/check observations and the selected
+path of the ordinary attempt. Do not assume that an ordinary connection selected
+TURN solely because TURN was configured or a relay candidate was allocated.
+No further production routing experiment is justified by the old trace alone.
