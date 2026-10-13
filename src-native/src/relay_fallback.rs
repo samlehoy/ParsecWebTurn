@@ -53,6 +53,16 @@ struct Plan {
     started: Instant,
 }
 impl Route {
+    #[cfg(test)]
+    pub fn fixture() -> Self {
+        Self {
+            plan: Arc::new(Mutex::new(Some(Plan {
+                configurations: vec![RTCConfiguration::default(), RTCConfiguration::default()],
+                started: Instant::now(),
+            }))),
+            index: 0,
+        }
+    }
     pub async fn resolve(
         &self,
         manager: &crate::connection_settings::Manager,

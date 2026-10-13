@@ -631,7 +631,7 @@ impl Attempt {
             return false;
         }
         let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
-        !state.progress.ready || state.progress.closed
+        state.progress.closed
     }
 
     pub fn control_ready(&self) -> bool {
@@ -1641,6 +1641,84 @@ mod tests {
         assert!(full.progress.failed);
         assert!(!full.progress.local_sync_queued);
         assert_eq!(full.events.len(), 64);
+    }
+
+    #[test]
+    fn relay_retry_requires_peer_closure_and_stops_after_success_or_cancellation() {
+        let mut state = empty_completion();
+        state.progress.ready = true;
+        state.progress.relay_route = Some(crate::relay_fallback::Route::fixture());
+        let attempt = Attempt {
+            commands: None,
+            id: "fixture".into(),
+            completion: Arc::new(Mutex::new(state)),
+            finished: Arc::new((Mutex::new(true), Condvar::new())),
+            wake: Arc::new(Condvar::new()),
+        };
+        assert!(attempt
+            .relay_retry_target(FailureStage::RelayEndpointTimeout)
+            .is_some());
+        assert!(attempt
+            .relay_retry_target(FailureStage::DtlsTransport)
+            .is_none());
+        assert!(!attempt.retry_cleanup_finished());
+        attempt.completion.lock().unwrap().progress.closed = true;
+        assert!(attempt.retry_cleanup_finished());
+        attempt
+            .completion
+            .lock()
+            .unwrap()
+            .progress
+            .connection_established = true;
+        assert!(attempt
+            .relay_retry_target(FailureStage::IceTransport)
+            .is_none());
+        attempt
+            .completion
+            .lock()
+            .unwrap()
+            .progress
+            .connection_established = false;
+        attempt.completion.lock().unwrap().cancelled = true;
+        assert!(attempt
+            .relay_retry_target(FailureStage::IceTransport)
+            .is_none());
+        attempt.completion.lock().unwrap().cancelled = false;
+        #[cfg(windows)]
+        {
+            // Exercise the actual backend handoff, using an isolated synthetic
+            // settings file and no network/account/profile.
+            let mut nonce = [0; 16];
+            getrandom::fill(&mut nonce).unwrap();
+            let name: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+            let path = std::env::temp_dir().join(format!("parsec-relay-fixture-{name}.json"));
+            let manager = crate::connection_settings::Manager::open(path.clone());
+            let settings = crate::connection_settings::Settings {
+                provider: "custom".into(),
+                force_relay: true,
+                turn_urls: vec!["turn:relay.invalid:3478".into()],
+                custom_username: "fixture".into(),
+                ..Default::default()
+            };
+            manager
+                .save(settings, "fixture-secret", "", false, false)
+                .unwrap();
+            let mut backend = crate::backend::Backend::default();
+            backend.init();
+            backend.connection_settings = Some(manager);
+            backend.native_attempt = Some(attempt);
+            backend.status = Some(20);
+            backend
+                .fail_native_attempt(FailureStage::RelayEndpointTimeout)
+                .unwrap();
+            assert_eq!(backend.poll_event().unwrap()["status"], -3);
+            assert!(backend.take_relay_reconnect().unwrap());
+            let next = backend.route_for_new_attempt().unwrap();
+            assert!(next.next().is_none()); // exactly one advancement
+            backend.fail_native_attempt(FailureStage::Worker).unwrap();
+            assert_eq!(backend.poll_event().unwrap()["status"], -6200);
+            std::fs::remove_file(path).unwrap();
+        }
     }
 
     fn empty_completion() -> Completion {
