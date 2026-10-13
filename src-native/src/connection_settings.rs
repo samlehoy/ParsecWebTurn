@@ -340,8 +340,14 @@ impl Manager {
         if error.is_some() {
             bail!("Fix connection settings before connecting");
         }
+        let servers = self.resolve_settings(&settings).await?;
+        let servers = if settings.force_relay {
+            single_relay_endpoint(servers)?
+        } else {
+            servers
+        };
         Ok(RTCConfiguration {
-            ice_servers: self.resolve_settings(&settings).await?,
+            ice_servers: servers,
             ice_transport_policy: if settings.force_relay {
                 RTCIceTransportPolicy::Relay
             } else {
@@ -392,6 +398,48 @@ impl Manager {
         result.extend(servers);
         Ok(result)
     }
+}
+
+/// Keep discovery intact, but offer only one TURN allocation to the Parsec host.
+/// Select the first UDP URL, or TLS then TCP when no UDP URL was configured.
+/// Apply after credential resolution so cached and freshly fetched servers agree;
+/// never modify saved URLs or the credential cache.
+fn single_relay_endpoint(servers: Vec<RTCIceServer>) -> Result<Vec<RTCIceServer>> {
+    let mut discovery = Vec::new();
+    let mut selected: Option<(u8, RTCIceServer)> = None;
+    for mut server in servers {
+        let mut stun_urls = Vec::new();
+        for raw in &server.urls {
+            let url = Url::parse_url(raw).map_err(|_| anyhow::anyhow!("Invalid STUN/TURN URL"))?;
+            let rank = match (url.scheme, url.proto) {
+                (SchemeType::Stun, _) => {
+                    stun_urls.push(raw.clone());
+                    continue;
+                }
+                (SchemeType::Turn, ProtoType::Udp) => 0,
+                (SchemeType::Turns, ProtoType::Tcp) => 1,
+                (SchemeType::Turn, ProtoType::Tcp) => 2,
+                _ => bail!("Unsupported STUN/TURN transport"),
+            };
+            if selected.as_ref().is_none_or(|(best, _)| rank < *best) {
+                selected = Some((
+                    rank,
+                    RTCIceServer {
+                        urls: vec![raw.clone()],
+                        username: server.username.clone(),
+                        credential: server.credential.clone(),
+                    },
+                ));
+            }
+        }
+        if !stun_urls.is_empty() {
+            server.urls = stun_urls;
+            discovery.push(server);
+        }
+    }
+    let (_, relay) = selected.context("Force TURN relay requires a supported TURN server")?;
+    discovery.push(relay);
+    Ok(discovery)
 }
 
 async fn cloudflare_request(endpoint: &str, token: &str, ttl: u32) -> Result<Vec<RTCIceServer>> {
@@ -518,6 +566,66 @@ fn atomic_write(path: &std::path::Path, raw: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_relay_keeps_discovery_and_the_selected_servers_credentials() {
+        let servers = vec![
+            RTCIceServer {
+                urls: vec!["stun:discovery.example.invalid:3478".into()],
+                ..Default::default()
+            },
+            RTCIceServer {
+                urls: vec!["turns:tls.example.invalid:443".into()],
+                username: "tls-user".into(),
+                credential: "tls-secret".into(),
+            },
+            RTCIceServer {
+                urls: vec![
+                    "turn:relay.example.invalid:3478?transport=tcp".into(),
+                    "stun:second.example.invalid:3478".into(),
+                    "turn:relay.example.invalid:3478".into(), // implicit UDP
+                    "turn:relay.example.invalid:443?transport=udp".into(),
+                ],
+                username: "udp-user".into(),
+                credential: "udp-secret".into(),
+            },
+        ];
+        let selected = single_relay_endpoint(servers.clone()).unwrap();
+        assert_eq!(selected.len(), 3);
+        assert_eq!(selected[0].urls, ["stun:discovery.example.invalid:3478"]);
+        assert_eq!(selected[1].urls, ["stun:second.example.invalid:3478"]);
+        assert_eq!(selected[2].urls, ["turn:relay.example.invalid:3478"]);
+        assert_eq!(selected[2].username, "udp-user");
+        assert_eq!(selected[2].credential, "udp-secret");
+        assert_eq!(servers[2].urls.len(), 4); // source/cache remains complete
+    }
+
+    #[test]
+    fn single_relay_accepts_explicit_tls_or_tcp_without_direct_fallback() {
+        let tcp = RTCIceServer {
+            urls: vec!["turn:relay.example.invalid:3478?transport=tcp".into()],
+            username: "fixture".into(),
+            credential: "fixture-secret".into(),
+        };
+        let tls = RTCIceServer {
+            urls: vec!["turns:relay.example.invalid:443".into()],
+            ..tcp.clone()
+        };
+        assert_eq!(
+            single_relay_endpoint(vec![tcp.clone(), tls.clone()]).unwrap()[0].urls,
+            tls.urls
+        );
+        assert_eq!(
+            single_relay_endpoint(vec![tcp.clone()]).unwrap()[0].urls,
+            tcp.urls
+        );
+        assert!(single_relay_endpoint(vec![RTCIceServer {
+            urls: vec![PARSEC_STUN.into()],
+            ..Default::default()
+        }])
+        .is_err());
+    }
+
     #[tokio::test]
     async fn relay_policy_is_persisted_and_cannot_fall_back_to_direct() {
         use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
@@ -527,7 +635,11 @@ mod tests {
         assert!(!s.force_relay);
         s.force_relay = true;
         assert!(s.validate().is_err()); // no TURN server
-        s.turn_urls = vec!["turn:relay.example.invalid:3478?transport=udp".into()];
+        s.turn_urls = vec![
+            "turns:relay.example.invalid:443".into(),
+            "turn:relay.example.invalid:3478?transport=udp".into(),
+            "turn:relay.example.invalid:3478?transport=tcp".into(),
+        ];
         s.custom_username = "fixture".into();
         manager
             .save(s, "fixture-password", "", false, false)
@@ -536,20 +648,22 @@ mod tests {
         assert!(manager.view().0.force_relay);
         let config = manager.resolve_configuration().await.unwrap();
         assert_eq!(config.ice_transport_policy, RTCIceTransportPolicy::Relay);
+        assert_eq!(config.ice_servers.len(), 2);
+        assert_eq!(config.ice_servers[0].urls, [PARSEC_STUN]);
+        assert_eq!(
+            config.ice_servers[1].urls,
+            ["turn:relay.example.invalid:3478?transport=udp"]
+        );
+        assert_eq!(manager.view().0.turn_urls.len(), 3);
         let mut s = manager.view().0;
         s.stun_only = true;
         assert!(s.validate().is_err());
         s.stun_only = false;
         s.force_relay = false;
         manager.save(s, "", "", false, false).unwrap();
-        assert_eq!(
-            manager
-                .resolve_configuration()
-                .await
-                .unwrap()
-                .ice_transport_policy,
-            RTCIceTransportPolicy::All
-        );
+        let config = manager.resolve_configuration().await.unwrap();
+        assert_eq!(config.ice_transport_policy, RTCIceTransportPolicy::All);
+        assert_eq!(config.ice_servers[1].urls, manager.view().0.turn_urls);
         assert!(!serde_json::from_str::<Settings>("{}").unwrap().force_relay);
     }
     struct Directory(PathBuf);
@@ -758,6 +872,10 @@ mod tests {
         let servers = parse_cloudflare(br#"{"iceServers":[{"urls":["stun:stun.example.org"]},{"urls":["turn:example.org:3478?transport=udp","turn:example.org:3478?transport=tcp","turns:example.org:443?transport=tcp"],"username":"fixture","credential":"fixture-password"}]}"#).unwrap();
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].urls.len(), 3);
+        let forced = single_relay_endpoint(servers).unwrap();
+        assert_eq!(forced[0].urls, ["turn:example.org:3478?transport=udp"]);
+        assert_eq!(forced[0].username, "fixture");
+        assert_eq!(forced[0].credential, "fixture-password");
         assert!(parse_cloudflare(
             br#"{"iceServers":[{"urls":"turns:example.org","username":"fixture"}]}"#
         )

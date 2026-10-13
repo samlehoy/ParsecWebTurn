@@ -226,3 +226,38 @@ No new production routing change is justified by this trace alone. Remaining
 questions concern the relay-to-host data path or handling/rejection of checks,
 not missing discovery or synchronization. Inspecting the real packet exchange
 or an independent TURN transport probe is needed to distinguish those cases.
+
+
+## Single-endpoint forced relay (2026-10-13)
+
+The user's next a514d4c diagnostic trial with a single TURN URL succeeded:
+`relay_only_connectivity: true`, one local relay candidate, local gathering
+complete and sync queued, six remote candidates, connected ICE/DTLS, all three
+data channels open, and `video_rendered: true`. This snapshot was taken while
+the worker was active; `ice_checks_before_close` is null, so it does not record
+the selected pair's types or TURN transport. The routing restriction was active.
+This narrows the earlier failure to a difference associated with multiple TURN
+URLs/allocations and their signaling timing; it does not prove a specific cause.
+
+Production configuration now applies single-endpoint selection after resolving
+credentials, including cache hits, for both Cloudflare and custom providers:
+retain all configured STUN discovery URLs, select the first UDP TURN URL, or
+prefer one TLS then TCP URL only when UDP is absent. The standard URL parser
+recognizes implicit UDP (`turn:`) and implicit TLS (`turns:`). Credentials stay
+with their original server entry. Saved settings and the credential cache keep
+the complete server list. Force-off configuration retains every TURN URL and
+its existing timed allocation tiers.
+
+The selected endpoint is the only TURN URL passed to the peer, so later
+transport tiers cannot delay gathering completion/readiness. Full host/srflx
+signaling, relay-only connectivity guards and readiness semantics stay intact.
+There is no automatic retry of alternative endpoints in forced mode. On a
+UDP-blocking network the user can select Custom servers with a TLS/TCP-only
+TURN URL; this preserves the forced routing policy without introducing another
+connection lifecycle or silently falling back to direct traffic.
+
+Regression tests cover mixed STUN/TURN entries, correct credential association,
+implicit transports, stable first-UDP selection, TLS/TCP-only configurations,
+missing TURN rejection, persisted complete settings and Force-off restoration.
+The earlier isolated coturn relay-only/no-direct-fallback fixtures remain
+applicable. The new packaged build still requires a real Parsec host retest.

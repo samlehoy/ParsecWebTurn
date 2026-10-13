@@ -118,9 +118,14 @@ and enter your TURN Key ID and API token. Changes apply on the next connection.
 
 Enable **Force TURN relay** to use TURN even when a direct route is available,
 for example when a VPN's direct route gives unstable playback. This requires a
-configured TURN provider and cannot be combined with STUN only. UDP TURN gets
-first preference; TLS and then plain TCP are timed fallbacks if it has not
-connected. Without this checkbox, ICE continues to allow direct connections.
+configured TURN provider and cannot be combined with STUN only. Forced mode uses
+one TURN URL: the first UDP URL, or the first TLS URL then TCP URL if UDP was not
+configured. STUN discovery stays enabled. This avoids waiting for several relay
+allocations before notifying the Parsec host. If your network blocks UDP, choose
+Custom servers and configure a TLS/TCP-only TURN URL; forced mode does not retry
+other URLs automatically. Saved server lists remain intact. Without this
+checkbox, ICE allows direct connections and retains the timed UDP/TLS/TCP relay
+fallbacks.
 
 The embedded Parsec **Hotkeys** page remains responsible for configuring and
 saving stream shortcuts. Custom bindings take priority over conflicting native
