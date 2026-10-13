@@ -327,6 +327,7 @@ impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
                         b.set_state(BindingState::Refresh);
                     }
                 }
+                log::debug!("TURN renewal channel-bind-refresh-start");
                 tokio::spawn(async move {
                     let result =
                         RelayConnInternal::bind(rc_obs, bind_addr, bind_number, nonce, integrity)
@@ -463,6 +464,10 @@ impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
         lifetime: Duration,
         dont_wait: bool,
     ) -> Result<(), Error> {
+        log::debug!(
+            "TURN renewal allocation-request lifetime_s={}",
+            lifetime.as_secs()
+        );
         let res = {
             let mut obs = self.obs.lock().await;
 
@@ -497,6 +502,9 @@ impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
         if res.typ.class == CLASS_ERROR_RESPONSE {
             let mut code = ErrorCodeAttribute::default();
             let result = code.get_from(&res);
+            if result.is_ok() {
+                log::debug!("TURN renewal allocation-error code={}", code.code);
+            }
             if result.is_err() {
                 return Err(Error::Other(format!("{}", res.typ)));
             } else if code.code == CODE_STALE_NONCE {
@@ -512,6 +520,10 @@ impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
         updated_lifetime.get_from(&res)?;
 
         self.lifetime = updated_lifetime.0;
+        log::debug!(
+            "TURN renewal allocation-success lifetime_s={}",
+            self.lifetime.as_secs()
+        );
         log::debug!("updated lifetime: {} seconds", self.lifetime.as_secs());
         Ok(())
     }
@@ -572,6 +584,10 @@ impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
         let res = tr_res.msg;
 
         if res.typ != MessageType::new(METHOD_CHANNEL_BIND, CLASS_SUCCESS_RESPONSE) {
+            let mut code = ErrorCodeAttribute::default();
+            if res.typ.class == CLASS_ERROR_RESPONSE && code.get_from(&res).is_ok() {
+                log::debug!("TURN renewal channel-bind-error code={}", code.code);
+            }
             return Err(Error::ErrUnexpectedResponse);
         }
 

@@ -196,13 +196,110 @@ pub struct Event {
     reason: &'static str,
 }
 
+#[derive(Clone, serde::Serialize)]
+struct RenewalEvent {
+    elapsed_ms: u64,
+    kind: &'static str,
+    value: Option<u64>,
+}
+
+#[derive(Default)]
+struct RenewalTrace {
+    started: Option<std::time::Instant>,
+    events: std::collections::VecDeque<RenewalEvent>,
+    omitted: u64,
+}
+
+fn renewal_category(message: &str) -> Option<(&'static str, Option<u64>)> {
+    for (prefix, suffix, kind, max) in [
+        (
+            "initial lifetime: ",
+            " seconds",
+            "allocation-initial-lifetime-seconds",
+            u32::MAX as u64,
+        ),
+        (
+            "TURN renewal allocation-request lifetime_s=",
+            "",
+            "allocation-request-lifetime-seconds",
+            u32::MAX as u64,
+        ),
+        (
+            "TURN renewal allocation-success lifetime_s=",
+            "",
+            "allocation-success-lifetime-seconds",
+            u32::MAX as u64,
+        ),
+        (
+            "TURN renewal allocation-error code=",
+            "",
+            "allocation-error-code",
+            699,
+        ),
+        (
+            "TURN renewal channel-bind-error code=",
+            "",
+            "channel-bind-error-code",
+            699,
+        ),
+    ] {
+        if let Some(value) = message
+            .strip_prefix(prefix)
+            .and_then(|s| s.strip_suffix(suffix))
+        {
+            if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let value = value.parse::<u64>().ok()?;
+            return (value <= max).then_some((kind, Some(value)));
+        }
+    }
+    let kind = match message {
+        "refresh timer Alloc expired" => "allocation-timer",
+        "refresh timer Perms expired" => "permission-timer",
+        "TURN renewal channel-bind-refresh-start" => "channel-bind-refresh-start",
+        "refresh allocation failed" => "allocation-refresh-failed",
+        "refresh permissions failed" => "permission-refresh-failed",
+        "refresh permissions successful" => "permission-refresh-success",
+        _ if message.starts_with("channel binding successful: ") => "channel-bind-success",
+        _ if message.starts_with("bind() for refresh failed: ") => "channel-bind-refresh-failed",
+        _ => return None,
+    };
+    Some((kind, None))
+}
+
+impl RenewalTrace {
+    fn record(&mut self, message: &str, now: std::time::Instant) {
+        let Some((kind, value)) = renewal_category(message) else {
+            return;
+        };
+        let start = *self.started.get_or_insert(now);
+        if self.events.len() == 128 {
+            self.events.pop_front();
+            self.omitted = self.omitted.saturating_add(1);
+        }
+        self.events.push_back(RenewalEvent {
+            elapsed_ms: u64::try_from(now.saturating_duration_since(start).as_millis())
+                .unwrap_or(u64::MAX),
+            kind,
+            value,
+        });
+    }
+}
+
 struct Collector {
     events: Mutex<(Vec<Event>, usize)>,
+    renewal: Mutex<RenewalTrace>,
     #[cfg(any(test, feature = "diagnostics"))]
     checks: Mutex<[u64; CHECK_LABELS.len()]>,
 }
 static COLLECTOR: Collector = Collector {
     events: Mutex::new((Vec::new(), 0)),
+    renewal: Mutex::new(RenewalTrace {
+        started: None,
+        events: std::collections::VecDeque::new(),
+        omitted: 0,
+    }),
     #[cfg(any(test, feature = "diagnostics"))]
     checks: Mutex::new([0; CHECK_LABELS.len()]),
 };
@@ -215,6 +312,9 @@ pub struct Snapshot {
     logger_installed: bool,
     events: Vec<Event>,
     omitted: usize,
+    turn_renewal_time_origin: &'static str,
+    turn_renewal_events: Vec<RenewalEvent>,
+    turn_renewal_omitted: u64,
 }
 
 #[cfg(feature = "diagnostics")]
@@ -244,12 +344,16 @@ pub fn contains_reason(reason: &str) -> bool {
 #[cfg(feature = "diagnostics")]
 pub fn snapshot(installed: bool) -> Snapshot {
     let events = COLLECTOR.events.lock().unwrap_or_else(|e| e.into_inner());
+    let renewal = COLLECTOR.renewal.lock().unwrap_or_else(|e| e.into_inner());
     Snapshot {
         source: "webrtc-rs-0.14.0-log-experimental",
         process_scoped: true,
         logger_installed: installed,
         events: events.0.clone(),
         omitted: events.1,
+        turn_renewal_time_origin: "first-observed-renewal-event-process-scoped",
+        turn_renewal_events: renewal.events.iter().cloned().collect(),
+        turn_renewal_omitted: renewal.omitted,
     }
 }
 
@@ -386,6 +490,12 @@ impl log::Log for Collector {
         let Ok(message) = std::str::from_utf8(&buffer.bytes[..buffer.len]) else {
             return;
         };
+        if record.target() == TURN_TARGET && renewal_category(message).is_some() {
+            self.renewal
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .record(message, std::time::Instant::now());
+        }
         #[cfg(any(test, feature = "diagnostics"))]
         {
             let categories = check_categories(record.target(), message);
@@ -412,10 +522,50 @@ impl log::Log for Collector {
 mod tests {
     use super::*;
     #[test]
+    fn renewal_trace_is_numeric_bounded_and_keeps_last_events() {
+        let mut trace = RenewalTrace::default();
+        let now = std::time::Instant::now();
+        trace.record("initial lifetime: 600 seconds", now);
+        trace.record(
+            "TURN renewal allocation-error code=438",
+            now + std::time::Duration::from_secs(300),
+        );
+        trace.record(
+            "TURN renewal allocation-success lifetime_s=600",
+            now + std::time::Duration::from_secs(301),
+        );
+        assert_eq!(trace.events[1].elapsed_ms, 300000);
+        assert_eq!(trace.events[1].value, Some(438));
+        for rejected in [
+            "TURN renewal allocation-error code=438 secret",
+            "TURN renewal allocation-error code=700",
+            "TURN renewal allocation-success lifetime_s=4294967296",
+            "private-password",
+        ] {
+            trace.record(rejected, now);
+        }
+        assert_eq!(trace.events.len(), 3);
+        trace.record(
+            "channel binding successful: private-address private-port",
+            now,
+        );
+        assert!(!serde_json::to_string(&trace.events)
+            .unwrap()
+            .contains("private"));
+        for _ in 0..130 {
+            trace.record("refresh timer Alloc expired", now);
+        }
+        assert_eq!(trace.events.len(), 128);
+        assert_eq!(trace.omitted, 6);
+        assert_eq!(trace.events.back().unwrap().kind, "allocation-timer");
+    }
+
+    #[test]
     fn ice_observations_count_fixed_categories_without_retaining_messages() {
         use log::Log;
         let collector = Collector {
             events: Mutex::new((Vec::new(), 0)),
+            renewal: Mutex::new(RenewalTrace::default()),
             checks: Mutex::new([0; CHECK_LABELS.len()]),
         };
         let before = [0; CHECK_LABELS.len()];
@@ -536,6 +686,7 @@ mod tests {
     fn log_collection_is_bounded_and_oversized_errors_are_discarded() {
         let collector = Collector {
             events: Mutex::new((Vec::new(), 0)),
+            renewal: Mutex::new(RenewalTrace::default()),
             checks: Mutex::new([0; CHECK_LABELS.len()]),
         };
         use log::Log;
