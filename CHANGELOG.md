@@ -5,7 +5,7 @@ builds, not published stable releases.
 
 ## Unreleased
 
-- **Force TURN connection setup:** forced relay connections now use a single TURN endpoint, preferring UDP, while keeping STUN discovery enabled. This follows a successful single-endpoint connection test and avoids waiting for several relay allocations. For networks that block UDP, a custom TLS/TCP-only relay can be selected. Normal automatic routing keeps its existing fallback options.
+- **Automatic Force TURN fallback:** forced relay connections try the available endpoints one at a time, preferring UDP, then TLS and TCP. A failed route is closed before a fresh connection starts with the next endpoint. STUN discovery stays enabled. Unresponsive routes use a shorter wait, while connections that reach DTLS get time to finish. Normal automatic routing and established streams keep their existing behavior.
 - **Public Parsec core version:** About shows the embedded WASM version alongside the version currently served by Parsec's web client, and indicates whether they differ. The check never installs or executes the public core; changing the embedded core still requires compatibility testing and a new app build.
 - **Stable release updates:** Help > Check for updates shows newer stable GitHub releases and their notes in a native window. Startup checks run in the background. Download the official Windows ZIP through your browser, then close the app and replace the EXE manually. Development builds can upgrade to the matching stable version; older stable releases are not offered as downgrades.
 

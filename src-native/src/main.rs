@@ -79,6 +79,7 @@ mod platform_probe;
 #[cfg(windows)]
 mod platform_windows;
 mod poll;
+mod relay_fallback;
 mod secure_storage;
 #[cfg(any(test, feature = "diagnostics"))]
 mod session_probe;

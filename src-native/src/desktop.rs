@@ -214,6 +214,43 @@ fn run_worker_callback(caller: &mut Caller<'_, HostState>, index: u32, opaque: i
     while !window.closing.load(Ordering::Acquire) && (window.live || Instant::now() < until) {
         let started = Instant::now();
         caller.set_fuel(if first { 500_000_000 } else { 50_000_000 })?;
+        // SHA-pinned 150-104a: table 84 is main_render_loop, whose opaque
+        // app_args is also the argument to table 80 (main_app_ui_event).
+        // UI event 6 queues the core's normal connect-current-peer request.
+        // It creates fresh attempt IDs/ICE credentials through the core itself.
+        if index == 84 {
+            let reconnect = caller
+                .data()
+                .backend
+                .lock()
+                .map_err(|_| anyhow::anyhow!("backend lock poisoned"))?
+                .take_relay_reconnect()?;
+            if reconnect {
+                let outcome = (|| -> Result<()> {
+                    let args = caller.data().memory.read(opaque as u32, 8)?;
+                    anyhow::ensure!(
+                        args[5] <= 1 && args[..4] != [0, 0, 0, 0],
+                        "invalid core reconnect context"
+                    );
+                    let action = match table.get(&mut *caller, 80) {
+                        Some(wasmtime::Ref::Func(Some(f))) => {
+                            f.typed::<(i32, i32, i32), ()>(&*caller)?
+                        }
+                        _ => bail!("core reconnect callback unavailable"),
+                    };
+                    action.call(&mut *caller, (opaque, 6, 0))?;
+                    Ok(())
+                })();
+                if outcome.is_err() {
+                    caller
+                        .data()
+                        .backend
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("backend lock poisoned"))?
+                        .fail_native_attempt(crate::attempt::FailureStage::Worker)?;
+                }
+            }
+        }
         if callback.call(&mut *caller, opaque)? == 0 {
             return Ok(());
         }
@@ -347,6 +384,14 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
             let app = store.data().app_pointer.context("app pointer missing")? as i32;
             let events = window.events.drain();
             for event in events {
+                if matches!(event, Event::Button(true, ..) | Event::Key(true, ..)) {
+                    store
+                        .data()
+                        .backend
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("backend lock poisoned"))?
+                        .cancel_pending_relay_retry();
+                }
                 let (name, values) = match event {
                     Event::Fullscreen(active) => {
                         ("mty_window_update_fullscreen", vec![app, active as i32])

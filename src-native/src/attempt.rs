@@ -75,6 +75,7 @@ pub enum FailureStage {
     CommandQueueClosed,
     Cancelled,
     Deadline,
+    RelayEndpointTimeout,
 }
 impl std::fmt::Display for FailureStage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -148,6 +149,7 @@ impl Output {
 
 #[derive(Default)]
 struct Progress {
+    relay_route: Option<crate::relay_fallback::Route>,
     #[cfg(any(test, feature = "diagnostics"))]
     relay_only: bool,
     #[cfg(any(test, feature = "diagnostics"))]
@@ -447,7 +449,7 @@ impl Attempt {
 
     #[cfg(test)]
     pub fn spawn_named(id: &str, output: Output) -> Result<Self> {
-        Self::spawn_configured(id, output, None, StunProvider::None, false, None)
+        Self::spawn_configured(id, output, None, StunProvider::None, false, None, None)
     }
 
     pub fn spawn_configured(
@@ -457,6 +459,7 @@ impl Attempt {
         stun_provider: StunProvider,
         legacy_rsa_1024: bool,
         connection_settings: Option<Arc<crate::connection_settings::Manager>>,
+        relay_route: Option<crate::relay_fallback::Route>,
     ) -> Result<Self> {
         CandidateGate::new(id)?;
         let mut active = ACTIVE_WORKERS.load(Ordering::SeqCst);
@@ -524,6 +527,7 @@ impl Attempt {
                         stun_provider,
                         legacy_rsa_1024,
                         connection_settings,
+                        relay_route,
                     },
                 );
                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -604,6 +608,30 @@ impl Attempt {
             .progress
             .failed
             .then_some(state.progress.failure_stage.unwrap_or(FailureStage::Worker))
+    }
+
+    pub fn relay_retry_target(&self, stage: FailureStage) -> Option<crate::relay_fallback::Route> {
+        let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
+        if state.cancelled
+            || state.progress.connection_established
+            || !matches!(
+                stage,
+                FailureStage::RelayEndpointTimeout
+                    | FailureStage::IceTransport
+                    | FailureStage::PeerTransport
+            )
+        {
+            return None;
+        }
+        state.progress.relay_route.as_ref()?.next()
+    }
+
+    pub fn retry_cleanup_finished(&self) -> bool {
+        if !*self.finished.0.lock().unwrap_or_else(|e| e.into_inner()) {
+            return false;
+        }
+        let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
+        !state.progress.ready || state.progress.closed
     }
 
     pub fn control_ready(&self) -> bool {
@@ -838,6 +866,7 @@ struct NetworkOptions {
     stun_provider: StunProvider,
     legacy_rsa_1024: bool,
     connection_settings: Option<Arc<crate::connection_settings::Manager>>,
+    relay_route: Option<crate::relay_fallback::Route>,
 }
 
 fn worker(
@@ -852,6 +881,7 @@ fn worker(
         stun_provider,
         legacy_rsa_1024,
         connection_settings,
+        relay_route,
     } = network;
     if let Some(config) = &mut config {
         // Capability work stays on this worker, outside the WASM/backend lock.
@@ -898,7 +928,12 @@ fn worker(
     if let Some(manager) = connection_settings {
         ice = runtime.block_on(async {
             tokio::select! {
-                result = manager.resolve_configuration() => result,
+                result = async {
+                    match &relay_route {
+                        Some(route) => route.resolve(&manager).await,
+                        None => manager.resolve_configuration().await,
+                    }
+                } => result,
                 _ = async {
                     loop {
                         if shared.lock().unwrap_or_else(|e| e.into_inner()).cancelled { break; }
@@ -911,6 +946,11 @@ fn worker(
     let relay_only = ice.ice_transport_policy
         == webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy::Relay;
     if relay_only {
+        shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .progress
+            .relay_route = relay_route.clone();
         // Parsec still sees real host/srflx discovery. A separate ICE routing
         // policy rejects non-relay pairs and inbound data from the outset.
         ice.ice_transport_policy =
@@ -1135,8 +1175,19 @@ fn worker(
             bail!("native offer publication failed or was cancelled");
         }
         let mut deadline = EstablishmentDeadline::new(std::time::Instant::now());
+        if let Some(budget) = relay_route.as_ref().and_then(|route| route.budget()) {
+            deadline.0 = Some(std::time::Instant::now() + budget.min(Duration::from_secs(30)));
+        }
+        let mut relay_check = crate::relay_fallback::CheckDeadline::new(
+            relay_only
+                && relay_route
+                    .as_ref()
+                    .and_then(|route| route.next())
+                    .is_some(),
+        );
         #[cfg(windows)]
         let mut next_video_recovery_check = std::time::Instant::now();
+        drop(relay_route);
         loop {
             // Read only documented native state enums; never serialize SDP,
             // addresses, certificates or underlying error strings.
@@ -1145,10 +1196,26 @@ fn worker(
                 state.progress.transport_states = transport_states(&peer);
                 state.progress.connection_established |=
                     state.progress.transport_connected && state.progress.open_mask == 7;
-                deadline.poll_wait(
-                    std::time::Instant::now(),
-                    state.progress.connection_established,
-                )?
+                if state.progress.connection_established {
+                    state.progress.relay_route = None;
+                }
+                let now = std::time::Instant::now();
+                if relay_only {
+                    use webrtc::dtls_transport::dtls_transport_state::RTCDtlsTransportState;
+                    let dtls_progress = matches!(
+                        peer.dtls_transport().state(),
+                        RTCDtlsTransportState::Connecting | RTCDtlsTransportState::Connected
+                    );
+                    if relay_check.expired(
+                        now,
+                        state.progress.remote_description_set,
+                        dtls_progress,
+                        state.progress.connection_established,
+                    ) {
+                        return Err(FailureStage::RelayEndpointTimeout.into());
+                    }
+                }
+                deadline.poll_wait(now, state.progress.connection_established)?
             };
             #[cfg(windows)]
             if std::time::Instant::now() >= next_video_recovery_check {
