@@ -216,7 +216,7 @@ fn run_worker_callback(caller: &mut Caller<'_, HostState>, index: u32, opaque: i
         caller.set_fuel(if first { 500_000_000 } else { 50_000_000 })?;
         // SHA-pinned 150-104a: table 84 is main_render_loop, whose opaque
         // app_args is also the argument to table 80 (main_app_ui_event).
-        // UI event 6 queues the core's normal connect-current-peer request.
+        // UI event 7 queues message 6: the core's connect-current-peer request.
         // It creates fresh attempt IDs/ICE credentials through the core itself.
         if index == 84 {
             let reconnect = caller
@@ -238,7 +238,7 @@ fn run_worker_callback(caller: &mut Caller<'_, HostState>, index: u32, opaque: i
                         }
                         _ => bail!("core reconnect callback unavailable"),
                     };
-                    action.call(&mut *caller, (opaque, 6, 0))?;
+                    action.call(&mut *caller, (opaque, 7, 0))?;
                     Ok(())
                 })();
                 if outcome.is_err() {

@@ -65,8 +65,10 @@ Audited read-only WAT evidence for this specific core:
 
 - Function table 84 is `main_render_loop`; its opaque pointer is `app_args`.
 - Function table 80 is `main_app_ui_event(app_args, event, payload)`.
-- Event 6 ignores payload and queues message type 4 for the selected client.
-- `main_render_loop` consumes that message and calls `app_native_run_client`.
+- Event 7 ignores payload and queues message type 6 for the selected client.
+- `main_render_loop` calls `main_submit_ui_events`, which consumes message 6
+  and calls `app_native_run_client`. Event 6 instead queues message 4 and
+  must not be used for this reconnect operation.
 - That function reads the current configured peer, generates a new random
   attempt ID, calls `parsec_web_new_attempt`, and builds the signaling offer
   with the newly returned ICE credentials.
