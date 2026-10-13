@@ -270,6 +270,35 @@ unsafe extern "system" fn scroll_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
 }
 
 #[cfg(test)]
+pub unsafe fn verify_enter(page: HWND, edit: HWND, first: &str, second: &str) {
+    SetWindowTextW(edit, wide(first).as_ptr());
+    SetFocus(edit);
+    SendMessageW(edit, EM_SETSEL, first.len(), first.len() as isize);
+    let mut key: MSG = std::mem::zeroed();
+    key.hwnd = edit;
+    key.message = WM_KEYDOWN;
+    key.wParam = VK_RETURN as usize;
+    key.lParam = 1 | ((MapVirtualKeyW(VK_RETURN as u32, MAPVK_VK_TO_VSC) as isize) << 16);
+    // Use the application's dialog routing, not WM_SETTEXT with a newline.
+    if IsDialogMessageW(page, &key) == 0 {
+        TranslateMessage(&key);
+        DispatchMessageW(&key);
+    }
+    let mut character: MSG = std::mem::zeroed();
+    while PeekMessageW(&mut character, edit, WM_CHAR, WM_CHAR, PM_REMOVE) != 0 {
+        DispatchMessageW(&character);
+    }
+    SendMessageW(edit, EM_REPLACESEL, 1, wide(second).as_ptr() as isize);
+    let length = GetWindowTextLengthW(edit);
+    let mut text = vec![0u16; length as usize + 1];
+    GetWindowTextW(edit, text.as_mut_ptr(), text.len() as i32);
+    assert_eq!(
+        String::from_utf16_lossy(&text[..length as usize]),
+        format!("{first}\r\n{second}")
+    );
+}
+
+#[cfg(test)]
 pub unsafe fn verify_multiline(edit: HWND) {
     let value = (0..20)
         .map(|n| format!("stun:server{n}.example:3478"))

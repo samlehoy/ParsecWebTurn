@@ -240,7 +240,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     );
     row(hwnd, page, "STUN servers",
         "Discover a direct route. One stun: URL per line.\nLeave blank to use the default discovery server.",
-        STUN, &s.stun_urls.join("\r\n"), 242, 76, 0, ES_MULTILINE as u32 | ES_AUTOVSCROLL as u32 | WS_CLIPCHILDREN);
+        STUN, &s.stun_urls.join("\r\n"), 242, 76, 0, ES_MULTILINE as u32 | ES_WANTRETURN as u32 | ES_AUTOVSCROLL as u32 | WS_CLIPCHILDREN);
     row_label(
         hwnd,
         page,
@@ -299,7 +299,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     row(hwnd, page, "TURN servers",
         "coturn, eturnal, ExpressTURN and other providers.\nUDP, TCP or TLS; e.g. turns:host:443. One URL per line.",
         TURN, &s.turn_urls.join("\r\n"), 502, 76, CUSTOM,
-        ES_MULTILINE as u32 | ES_AUTOVSCROLL as u32 | WS_CLIPCHILDREN);
+        ES_MULTILINE as u32 | ES_WANTRETURN as u32 | ES_AUTOVSCROLL as u32 | WS_CLIPCHILDREN);
     row(
         hwnd,
         page,
@@ -1146,13 +1146,17 @@ mod tests {
             SendMessageW(GetDlgItem(page, PROVIDER as i32), CB_SETCURSEL, 0, 0);
             update_enabled(page);
             assert_eq!(text(page, USERNAME), "unsaved-user");
-            SetWindowTextW(
+            controls::verify_enter(
+                page,
                 GetDlgItem(page, STUN as i32),
-                wide("stun:stun.example.org:3478").as_ptr(),
+                "stun:stun.example.org:3478",
+                "stun:second.example.invalid:3478",
             );
-            SetWindowTextW(
+            controls::verify_enter(
+                page,
                 GetDlgItem(page, TURN as i32),
-                wide("turn:relay.example.invalid:3478?transport=udp").as_ptr(),
+                "turn:relay.example.invalid:3478?transport=udp",
+                "turns:relay.example.invalid:443?transport=tcp",
             );
             SetWindowTextW(
                 GetDlgItem(page, PASSWORD as i32),
@@ -1161,6 +1165,8 @@ mod tests {
             check(page, FORCE_RELAY, true);
             SendMessageW(page, WM_COMMAND, SAVE, 0);
             assert!(manager.view().0.force_relay);
+            assert_eq!(manager.view().0.stun_urls.len(), 2);
+            assert_eq!(manager.view().0.turn_urls.len(), 2);
             check(page, STUN_ONLY, true);
             SendMessageW(
                 page,
@@ -1182,7 +1188,11 @@ mod tests {
             assert!(manager.view().0.prefer_hevc);
             DestroyWindow(page);
             let page = open(parent, manager.clone());
-            assert_eq!(text(page, STUN), "stun:stun.example.org:3478");
+            assert_eq!(
+                text(page, STUN),
+                "stun:stun.example.org:3478\r\nstun:second.example.invalid:3478"
+            );
+            assert_eq!(text(page, TURN), "turn:relay.example.invalid:3478?transport=udp\r\nturns:relay.example.invalid:443?transport=tcp");
             assert!(checked(page, STUN_ONLY));
             assert!(checked(page, HEVC));
             assert_eq!(
