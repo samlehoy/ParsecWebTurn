@@ -1041,7 +1041,7 @@ impl Driver {
             #[cfg(feature = "external-video")]
             if self.external_controls {
                 self.emit.send(Event::ExternalControl {
-                    bytes: inbound[..len].to_vec(),
+                    bytes: inbound.get(..len).unwrap_or_default().to_vec(),
                 });
             }
             if let Some(outcome) = self.on_control(&message) {

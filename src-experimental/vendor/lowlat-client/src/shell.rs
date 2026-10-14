@@ -258,9 +258,10 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
             while let Some(request) = requests.pop() {
                 match request {
                     #[cfg(feature = "external-video")]
-                    Request::External { bytes, len } => {
-                        driving.send_external(endpoint.session(), &bytes[..usize::from(len)])
-                    }
+                    Request::External { bytes, len } => driving.send_external(
+                        endpoint.session(),
+                        bytes.get(..usize::from(len)).unwrap_or_default(),
+                    ),
                     Request::Input(input) => driving.send_input(endpoint.session(), &input),
                     Request::Viewport(viewport) => driving.set_viewport(viewport),
                     Request::Video(flags) => driving.set_flags(endpoint.session(), flags),

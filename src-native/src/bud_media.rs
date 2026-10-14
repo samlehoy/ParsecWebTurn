@@ -36,12 +36,14 @@ impl Media {
             .sender()
             .ok_or_else(|| anyhow::anyhow!("native audio sender unavailable"))?;
         let video = crate::video_windows::Pipeline::start(window);
+        let mut inspector = crate::video_stream::Inspector::default();
+        inspector.enable_hevc(hevc_available);
         Ok((
             Self {
                 video,
                 audio,
                 audio_sender,
-                inspector: Default::default(),
+                inspector,
                 waiting_for_keyframe: true,
                 hevc_available,
             },
@@ -54,6 +56,8 @@ impl Media {
             Video::Metadata(metadata) => {
                 if metadata.rebuilt {
                     self.waiting_for_keyframe = true;
+                    self.inspector = Default::default();
+                    self.inspector.enable_hevc(self.hevc_available);
                 }
                 Ok(false)
             }

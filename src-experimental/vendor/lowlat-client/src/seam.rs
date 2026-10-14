@@ -929,6 +929,14 @@ impl Client {
             seed,
             init: {
                 let init = attempt.config.init(&self.caps);
+                #[cfg(feature = "external-video")]
+                let init = {
+                    let mut init = init;
+                    if self.external_video {
+                        init.caches_cursor = false;
+                    }
+                    init
+                };
                 self.telemetry
                     .asked_flags
                     .store(attempt.config.video.asked(), Ordering::Relaxed);
@@ -1108,11 +1116,14 @@ impl Client {
             return false;
         }
         // Session initialization, disconnect, and reports remain SDK-owned.
-        if matches!(bytes[12], 10 | 11 | 21 | 25) {
+        if matches!(bytes.get(12), Some(10 | 11 | 21 | 25)) {
             return false;
         }
         let mut packet = [0; 256];
-        packet[..bytes.len()].copy_from_slice(bytes);
+        let Some(destination) = packet.get_mut(..bytes.len()) else {
+            return false;
+        };
+        destination.copy_from_slice(bytes);
         let Some(attempt) = self.attempt.as_ref() else {
             return false;
         };
