@@ -84,6 +84,8 @@ fn main() -> anyhow::Result<()> {
                     include_bytes!("../../src-experimental/fixtures/synthetic-720p-hevc.bin");
                 let mut frames = 0;
                 let mut presented = 0;
+                let mut decoded = 0;
+                let mut busy = 0;
                 let origin = Instant::now();
                 while !bytes.is_empty() {
                     ensure!(bytes.len() >= 4, "fixture header");
@@ -123,19 +125,23 @@ fn main() -> anyhow::Result<()> {
                         },
                     )?;
                     presented += output.presented;
+                    decoded += output.decoded;
+                    busy += output.busy;
                     frames += 1;
                     bytes = &bytes[len..];
-                    std::thread::sleep(
-                        (origin + Duration::from_nanos(frames as u64 * 1_000_000_000 / 60))
-                            .saturating_duration_since(Instant::now()),
-                    );
+                    if mode != "--burst" {
+                        std::thread::sleep(
+                            (origin + Duration::from_nanos(frames as u64 * 1_000_000_000 / 60))
+                                .saturating_duration_since(Instant::now()),
+                        );
+                    }
                 }
                 ensure!(
-                    frames == 120 && presented == 120,
-                    "not all synthetic frames submitted"
+                    frames == 120 && decoded == 120 && presented > 0 && presented + busy == 120,
+                    "not all synthetic frames decoded/accounted for"
                 );
                 println!(
-                    "PASS: {presented} original NV12 frames submitted; no application conversion/copy or CPU readback. Actual scanout mode not verified."
+                    "PASS: {decoded} frames decoded; {presented} original NV12 frames submitted, {busy} busy display updates skipped; no application conversion/copy or CPU readback. Actual scanout mode not verified."
                 );
                 Ok(())
             })();

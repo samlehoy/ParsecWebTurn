@@ -973,6 +973,7 @@ impl Session {
                 s.frames_submitted += 1;
                 s.frames_decoded += output.decoded as u64;
                 s.frames_presented += output.presented as u64;
+                s.presentations_busy += output.busy as u64;
                 if let Some(layout) = output.layout {
                     s.width = Some(layout.width);
                     s.height = Some(layout.height);

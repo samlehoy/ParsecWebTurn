@@ -139,6 +139,9 @@ impl direct::SurfaceLease for Lease {
     }
 }
 
+// Same bounded presentation behavior as the normal double-buffered path:
+// never let a burst pin the entire decoder picture buffer awaiting scanout.
+const MAX_OUTSTANDING: usize = 2;
 struct Presenter {
     manager: IPresentationManager,
     surface: IPresentationSurface,
@@ -191,6 +194,19 @@ impl Presenter {
                 buffers: Vec::new(),
             })
         }
+    }
+    fn has_room(&self) -> Result<bool> {
+        let mut held = 0;
+        for (_, lease) in &self.buffers {
+            // No waiting: only decide whether to submit this display update.
+            if unsafe { lease.buffer.IsAvailable()? } == 0 {
+                held += 1;
+                if held >= MAX_OUTSTANDING {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
     }
     fn present(
         &mut self,
@@ -290,6 +306,7 @@ pub struct Session {
 pub struct Output {
     pub decoded: usize,
     pub presented: usize,
+    pub busy: usize,
     pub layout: Option<Layout>,
 }
 impl Session {
@@ -346,6 +363,10 @@ impl Session {
                 if !visible {
                     return Ok(None);
                 }
+                if !state.presenter.has_room()? {
+                    output.busy += 1;
+                    return Ok(None);
+                }
                 let lease = state
                     .presenter
                     .present(texture, layout, client, target(layout)?)?;
@@ -358,5 +379,50 @@ impl Session {
             }
             Ok(output)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lowlat_decode::hevc::{Read, Stream};
+    fn units() -> Vec<&'static [u8]> {
+        let mut bytes: &[u8] =
+            include_bytes!("../../src-experimental/fixtures/synthetic-720p-hevc.bin");
+        let mut result = Vec::new();
+        while !bytes.is_empty() {
+            let len = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
+            bytes = &bytes[4..];
+            result.push(&bytes[..len]);
+            bytes = &bytes[len..];
+        }
+        result
+    }
+    fn burst(limit: usize) -> std::result::Result<usize, lowlat_decode::ParseError> {
+        let mut stream = Stream::new();
+        let mut decoded = 0;
+        let mut outstanding = 0;
+        for bytes in units() {
+            assert_eq!(stream.read(bytes)?, Read::Picture);
+            stream.finish()?;
+            decoded += 1;
+            while let Some(output) = stream.next_output() {
+                if outstanding < limit {
+                    outstanding += 1;
+                } else {
+                    stream.dpb.taken(output.slot);
+                }
+            }
+        }
+        Ok(decoded)
+    }
+    #[test]
+    fn startup_burst_cannot_pin_every_decoder_slot_before_the_first_scanout() {
+        // Model the compositor not retiring any frame during a startup burst.
+        // The previous unbounded submission exhausts the actual HEVC DPB.
+        assert!(burst(usize::MAX).is_err());
+        // Bounding only display submissions keeps every encoded picture
+        // decodable without waiting, copying pixels or losing references.
+        assert_eq!(burst(MAX_OUTSTANDING), Ok(120));
     }
 }

@@ -64,3 +64,20 @@ probe has explicit --empty-close and --failed-start regression cases.
 The initial live WebRTC decoder rejection still needs identification; a
 successful safe fallback must not be reported as working original-surface
 presentation for that stream.
+
+### Startup burst backpressure
+
+The normal direct D3D11 decoder was confirmed working in WebRTC without
+fallback. Unlike its immediate processor read, the new presentation path
+retains DPB slots until scanout/composition releases them. Unbounded display
+submission can exhaust the 18-slot HEVC DPB before the first retirement.
+A synthetic test with the actual HEVC parser/DPB models no retirement and
+compares the old unbounded submission against the new two-buffer limit.
+The limit applies only to the experimental presenter. Every encoded picture
+still decodes, including reference pictures; a busy display update is skipped
+without pinning its slot, copying pixels or waiting for scanout. The existing
+presentations_busy counter accounts for these skips. No network/encoded queue
+policy, decoder algorithm or normal renderer pacing changes. The standalone
+--burst GPU probe verifies 120 decoded pictures with no producer pacing.
+Live-host confirmation remains necessary to establish whether this is the
+initial WebRTC rejection observed in the crash dumps.
