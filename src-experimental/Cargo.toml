@@ -4,10 +4,6 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-[[bin]]
-name = "mf-baseline-probe"
-path = "../tests/latency-probes/src/bin/decoder-wait.rs"
-
 # Deliberately independent from src-native: no change to the WebRTC binary.
 [dependencies]
 anyhow = "1"

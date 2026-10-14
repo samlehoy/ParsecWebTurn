@@ -32,7 +32,12 @@ the same adapter, and MFT trials with `low_latency_requested: true` and
 `request_accepted: true`. Both exclude the first 16 outputs as warm-up. The MFT
 probe does not measure GPU completion; do not compare it to VPL's GPU completion
 array. Disabled-low-latency MFT trials are controls, not the production baseline.
-A single VPL trial remains screening evidence, not a repeatability guarantee.
+VPL runs five trials at the same 60 FPS input cadence. Output timestamps must
+correlate to their original submissions. Match the adapter LUID from both
+reports; names alone are insufficient. Compare upper-middle p50 and nearest-rank
+p95 over the 64 post-warm-up outputs, then summarize the five trials. This is
+screening evidence; neither report measures presentation, and it cannot establish
+end-to-end playback improvement or internal driver copy counts.
 
 Acceptance for live integration: at most the existing GPU output/conversion
 write, no CPU video path, no added decoded-frame GPU copy, correctly retained

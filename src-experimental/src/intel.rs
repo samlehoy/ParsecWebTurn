@@ -48,10 +48,21 @@ pub fn probe() -> Result<Value> {
             let session = vpl.session(&device, index)?;
             let version = session.version()?;
             let caps = lowlat_decode::vpl::caps(&session, Runtime::Current);
-            let fixture = match fixture::decode(&session, &device) {
-                Ok(value) => value,
-                Err(error) => json!({"refused":format!("{error:#}")}),
-            };
+            let mut h264_trials = Vec::new();
+            for round in 0..5 {
+                let result = match fixture::decode(&session, &device) {
+                    Ok(mut value) => {
+                        value["round"] = json!(round);
+                        value
+                    }
+                    Err(error) => json!({"round":round,"refused":format!("{error:#}")}),
+                };
+                let failed = result.get("refused").is_some();
+                h264_trials.push(result);
+                if failed {
+                    break;
+                }
+            }
             let hevc_fixture = match fixture::hevc(&session, &device) {
                 Ok(value) => value,
                 Err(error) => json!({"refused":format!("{error:#}")}),
@@ -61,7 +72,8 @@ pub fn probe() -> Result<Value> {
                 "hevc_8bit":caps.hevc, "device_fences":device.has_fences(),
                 "d3d11_hevc_main_nv12":d3d11_hevc,
                 "output_contract":"caller D3D11 device, video memory",
-                "h264_fixture":fixture,
+                "h264_fixture":h264_trials.first(),
+                "h264_trials":h264_trials,
                 "hevc_fixture":hevc_fixture,
                 "decode_performance_verified":false, "renderer_integration_verified":false}),
             )

@@ -1,4 +1,4 @@
-//! Offline H.264 MFT output-availability comparison; never maps decoded pixels.
+// Offline H.264 MFT output-availability comparison; never maps decoded pixels.
 #[cfg(windows)]
 mod probe {
     use anyhow::{ensure, Context, Result};
@@ -82,6 +82,7 @@ mod probe {
                 };
                 let mut status = 0;
                 let result = decoder.ProcessOutput(0, std::slice::from_mut(&mut out), &mut status);
+                let output_ready = Instant::now();
                 let sample = ManuallyDrop::take(&mut out.pSample);
                 drop(ManuallyDrop::take(&mut out.pEvents));
                 match result {
@@ -110,7 +111,8 @@ mod probe {
                     usize::from(desc.BindFlags & D3D11_BIND_DECODER.0 as u32 != 0);
                 self.decoded += 1;
                 if index >= WARMUP {
-                    self.delay_us.push(submitted.elapsed().as_micros() as u64);
+                    self.delay_us
+                        .push(output_ready.duration_since(submitted).as_micros() as u64);
                     self.lag_frames.push(latest.saturating_sub(index));
                 }
             }
@@ -225,13 +227,13 @@ mod probe {
         samples.delay_us.sort_unstable();
         samples.lag_frames.sort_unstable();
         let n = samples.delay_us.len();
-        Ok(
-            json!({"round":round,"adapter":adapter,"low_latency_requested":low_latency,"request_accepted":accepted,
+        Ok(json!({"round":round,"adapter":adapter,
+            "adapter_luid":format!("luid:{:08x}:{:08x}",desc.AdapterLuid.HighPart as u32,desc.AdapterLuid.LowPart),
+            "low_latency_requested":low_latency,"request_accepted":accepted,
             "frames_decoded":samples.decoded,"decoder_surface_outputs":samples.decoder_surfaces,
             "held_before_drain":held_before_drain,"measured_frames":n,
-            "output_available_p50_us":samples.delay_us[n/2],"output_available_p95_us":samples.delay_us[(n-1)*95/100],
-            "output_available_max_us":samples.delay_us[n-1],"max_later_inputs_before_output":samples.lag_frames[n-1]}),
-        )
+            "output_available_p50_us":samples.delay_us[n/2],"output_available_p95_us":samples.delay_us[(n*95).div_ceil(100)-1],
+            "output_available_max_us":samples.delay_us[n-1],"max_later_inputs_before_output":samples.lag_frames[n-1]}))
     }
 
     pub fn run() -> Result<()> {
@@ -260,6 +262,8 @@ mod probe {
             serde_json::to_string_pretty(
                 &json!({"scope":"offline-h264-mft-d3d11-output-availability",
             "fixture":"synthetic-1920x1080.h264, no B frames", "includes_network_queue_present_or_gpu_completion":false,
+            "measurement_revision":2,"input_pacing_fps":60,"warmup_frames":16,
+            "p50_definition":"upper middle","p95_definition":"nearest rank",
             "decoded_pixel_readback":false,"live_client_changed":false,"trials":trials})
             )?
         );

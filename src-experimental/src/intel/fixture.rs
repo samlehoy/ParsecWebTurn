@@ -6,6 +6,7 @@ use lowlat_drivers::{
     vpl::{Decoded, Session},
 };
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 use windows::{
     Win32::Graphics::{Direct3D11::*, Dxgi::Common::DXGI_FORMAT_NV12},
@@ -71,7 +72,11 @@ fn decode_units(
         let mut output_us = Vec::new();
         let mut completed_us = Vec::new();
         let mut warnings = 0;
+        let mut pending = BTreeMap::new();
+        let origin = Instant::now();
         for (sequence, unit) in units.iter().enumerate() {
+            let deadline = origin + Duration::from_nanos(sequence as u64 * 16_666_667);
+            std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
             // SAFETY: zeroed public bitstream is valid. The compressed bytes
             // remain live until decode returns; the runtime does not write them.
             let mut bits: mfxBitstream = unsafe { std::mem::zeroed() };
@@ -81,6 +86,7 @@ fn decode_units(
             bits.DataFlag = MFX_BITSTREAM_COMPLETE_FRAME as u16;
             bits.TimeStamp = sequence as u64 + 1;
             let submitted = Instant::now();
+            pending.insert(bits.TimeStamp, submitted);
             loop {
                 ensure!(
                     submitted.elapsed() < Duration::from_secs(2),
@@ -92,7 +98,12 @@ fn decode_units(
                     .context("VPL DecodeFrameAsync")?
                 {
                     Decoded::Picture(picture) => {
-                        output_us.push(submitted.elapsed().as_micros() as u64);
+                        let output_ready = Instant::now();
+                        let output_submitted = pending
+                            .remove(&picture.timestamp())
+                            .ok_or_else(|| anyhow!("uncorrelated VPL output timestamp"))?;
+                        output_us
+                            .push(output_ready.duration_since(output_submitted).as_micros() as u64);
                         let raw = picture.texture();
                         ensure!(!raw.is_null(), "Intel output has no native GPU texture");
                         // SAFETY: Picture keeps the native texture alive. This
@@ -119,7 +130,7 @@ fn decode_units(
                             );
                             std::thread::yield_now();
                         }
-                        completed_us.push(submitted.elapsed().as_micros() as u64);
+                        completed_us.push(output_submitted.elapsed().as_micros() as u64);
                         outputs += 1;
                         // A picture need not consume the entire access unit.
                         // Keep feeding its remainder as the SDK backend does.
@@ -156,6 +167,7 @@ fn decode_units(
             json!({"frames":outputs,"native_nv12_texture":true,"same_d3d11_device":true,
             "submission_to_output_us":output_us,"submission_to_gpu_completion_us":completed_us,
             "nonfatal_warnings":warnings,
+            "input_pacing_fps":60,"warmup_frames":16,"output_timestamp_correlated":true,
             "application_decoded_frame_copies":0,"cpu_readback":false,
             "includes_presentation":false,"runtime_internal_copies":"unknown"}),
         )
