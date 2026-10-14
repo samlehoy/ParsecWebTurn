@@ -1462,12 +1462,28 @@ mod tests {
         window.install_connection_settings(crate::connection_settings::Manager::open(path.clone()));
         for _ in 0..3 {
             unsafe {
-                SendMessageW(
-                    window.handle(),
-                    WM_COMMAND,
-                    crate::connection_settings_ui::OPEN,
-                    0,
+                // Queue behind menu installation, as a real menu command would
+                // be. SendMessage could overtake it and change client height
+                // halfway through the test when the menu is finally installed.
+                assert_ne!(
+                    PostMessageW(
+                        window.handle(),
+                        WM_COMMAND,
+                        crate::connection_settings_ui::OPEN,
+                        0,
+                    ),
+                    0
                 );
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while window.settings_page.load(Ordering::Acquire) == 0
+                || window.input_suspended.load(Ordering::Acquire)
+            {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "Settings did not open"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
             let page = window.settings_page.load(Ordering::Acquire) as HWND;
             assert!(!page.is_null());
