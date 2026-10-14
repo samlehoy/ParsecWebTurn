@@ -18,6 +18,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-native
+      - name: Fetch the unchanged pinned core for the native build
+        shell: pwsh
+        run: ./src-native/fetch-core.ps1
       - name: Compile native BUD media handoff with existing MF and Opus paths
         shell: pwsh
         run: |
@@ -25,7 +28,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native formatting failed' }
           cargo clippy --locked --manifest-path src-native/Cargo.toml --features experimental-bud --all-targets -- -D warnings
           if ($LASTEXITCODE -ne 0) { throw 'Native BUD handoff Clippy failed' }
-          cargo test --locked --manifest-path src-native/Cargo.toml --features experimental-bud
+          cargo test --locked --manifest-path src-native/Cargo.toml --features experimental-bud -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw 'Native BUD handoff tests failed' }
   validate:
     strategy:

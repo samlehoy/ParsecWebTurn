@@ -4,7 +4,7 @@ MIT-licensed source copied from nomi-san/lowlat `feat/win-seams`, revision
 `5f8db5689e55de0d396b0520824caa9fc053dd86`, `crates/client/src`.
 Copyright (c) 2026 Nguyen Duy; original license in `LICENSE`.
 
-Only `src/seam.rs` has behavioral changes. The standalone Cargo manifest pins
+Only `src/seam.rs` and `src/sound.rs` have behavioral changes. The standalone Cargo manifest pins
 all sibling lowlat crates to the same revision; upstream integration-test-only
 dependencies and workspace lint inheritance are not copied. Upstream unit tests
 inside source files are preserved. There is no GPL codec feature enabled.
@@ -23,7 +23,12 @@ consumer before teardown/reconnect and must not keep borrowed compressed units
 beyond the pool lease. ParsecWebTurn's `Session::with_video` provides synchronous
 lease ownership; no `Units` handle is exposed from that adapter.
 
+External mode also lends compressed audio packet leases and disables the SDK's
+decoded-audio consumer. The application's existing Opus decoder remains in use;
+native audio headers are removed without re-encoding or copying the payload.
+
 This patch is not a new decoder or renderer. It is isolated to the experimental
 crate; the standard WebRTC client does not depend on this copy. The compressed
-sink will feed the existing Media Foundation/D3D11 pipeline unchanged. This is
+sink feeds the existing Media Foundation/D3D11 pipeline under the optional native
+`experimental-bud` feature. This is
 not yet account/UI integration or proof of stock-host media compatibility.

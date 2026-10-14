@@ -54,14 +54,21 @@ TCP/TLS reinterpretation or shared WebRTC state.
 
 `signaling::Signaling` emits native offers (`mode: 1`, including the native media
 key), scopes incoming answers/candidates by attempt and bounds message size.
-It neither authenticates an account nor opens a websocket. Its offer output is
+It does not authenticate an account itself. `account_socket::AccountSocket`
+provides a separate certificate-verified native WSS socket using an existing
+account session token; it never changes the WebRTC socket or global TLS provider.
+Its offer output is
 sensitive: send it only to authenticated account signaling; never log it.
 
-The current session constructor is **transport-only** and deliberately drops
-video. It is not a remote desktop implementation. This prevents the SDK's
-split-plane export from being adopted as equivalent to our existing direct NV12
-renderer. A playable integration still needs the GPU output contract, account
-connection, input/audio/UI wiring and stock-host acceptance for both routes.
+`Session::transport_probe` is transport-only and deliberately drops video.
+`Session::external_video` instead hands borrowed compressed video/audio leases
+to the application: the SDK's video decoder/export and audio decoder do not run.
+The narrow vendored client seam is documented in `vendor/lowlat-client/PARSECWEBTURN.md`.
+The optional `src-native` feature `experimental-bud` connects these payloads to
+the existing MF/D3D11 video and libopus pipelines. It adds no alternate decoder,
+plane-splitting renderer or GPU copy path. Normal builds do not include it.
+A playable integration still needs account/UI lifecycle wiring and stock-host
+acceptance for both routes. It is not yet a selectable remote desktop client.
 
 Tests run real UDP connectivity between two native SDK peers, directly and
 through an isolated coturn instance. This does not prove encrypted media,

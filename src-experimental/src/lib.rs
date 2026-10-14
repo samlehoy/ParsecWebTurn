@@ -1,4 +1,5 @@
 //! Experimental native adapters. Never linked by the default WebRTC client.
+pub mod account_socket;
 pub mod bud;
 #[cfg(windows)]
 pub mod intel;
