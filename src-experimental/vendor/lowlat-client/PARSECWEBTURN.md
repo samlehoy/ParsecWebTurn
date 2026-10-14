@@ -43,3 +43,8 @@ by the user over direct and relay paths; new automatic direct-to-relay retry
 still needs acceptance on a network where direct access is unavailable.
 The normal WebRTC build does not link this subset. Offline Intel probes remain
 a separate feature and are never part of the live BUD decoder path.
+
+UDP totals are published from the native IO shell, independently of delivered
+media/control counters. The narrow socket-accounting copy and its exact scope
+are documented in ../lowlat-net/PARSECWEBTURN.md. Browser/SCTP transport code is
+omitted from this optional native-only dependency; our WebRTC path is unchanged.

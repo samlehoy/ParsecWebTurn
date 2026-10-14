@@ -15,6 +15,6 @@ external-video = []
 [dependencies]
 lowlat-common = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
 lowlat-core = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
-lowlat-net = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
+lowlat-net = { path = "../lowlat-net" }
 lowlat-crypto = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
 zeroize = "1"

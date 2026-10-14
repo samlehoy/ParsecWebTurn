@@ -280,6 +280,7 @@ mod tests {
                 ..Default::default()
             }),
             received: Some(100),
+            sent: Some(200),
             audio_bytes: 10,
             video: Some(crate::video_output::Snapshot {
                 decoder_initialized: true,
@@ -291,16 +292,14 @@ mod tests {
         assert!(rates.update(&sample).fps.is_none());
         sample.at += std::time::Duration::from_secs(2);
         sample.received = Some(250_100);
+        sample.sent = Some(25_200);
         sample.audio_bytes = 32_010;
         sample.video.as_mut().unwrap().frames_decoded = 130;
         let values = rates.update(&sample);
         assert_eq!(values.fps, Some(60.0));
         assert_eq!(values.incoming, Some(1.0));
         assert_eq!(values.audio, Some(128.0));
-        assert!(
-            values.outgoing.is_none(),
-            "no outgoing byte counter is available"
-        );
+        assert_eq!(values.outgoing, Some(0.1));
         sample.at += std::time::Duration::from_secs(1);
         sample.bud.as_mut().unwrap().connected = false;
         let stopped = rates.update(&sample);

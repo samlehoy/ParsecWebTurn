@@ -158,7 +158,8 @@ impl Session {
         Ok(Some(received.event))
     }
 
-    /// SDK counters describe delivered native messages/fragments, not NIC traffic.
+    /// Per-channel counters describe delivered messages. UDP totals count
+    /// socket payload bytes, including protocol/relay overhead, not IP headers.
     pub fn snapshot(&self) -> Snapshot {
         use std::sync::atomic::Ordering::Relaxed;
         let t = self.client.telemetry();
@@ -166,6 +167,8 @@ impl Session {
         let rtt = t.rtt_ms.load(Relaxed);
         let encode = t.encode_us.load(Relaxed);
         Snapshot {
+            udp_received: t.udp_received.load(Relaxed),
+            udp_sent: t.udp_sent.load(Relaxed),
             connected,
             relay: connected && t.path_relayed.load(Relaxed),
             cipher: connected.then_some(self.cipher).flatten(),
@@ -236,6 +239,8 @@ pub struct Channel {
 }
 #[derive(Clone, Default)]
 pub struct Snapshot {
+    pub udp_received: u64,
+    pub udp_sent: u64,
     pub connected: bool,
     pub relay: bool,
     pub cipher: Option<&'static str>,

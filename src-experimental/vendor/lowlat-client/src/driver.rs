@@ -199,6 +199,9 @@ pub struct Lag {
 /// What the loop publishes about itself, for the seam to read from any thread.
 #[derive(Debug, Default)]
 pub struct Telemetry {
+    /// UDP payload bytes, including protocol/crypto/relay traffic.
+    pub udp_received: AtomicU64,
+    pub udp_sent: AtomicU64,
     /// The seam's state word: 0 connecting, 1 established, 2 over.
     pub state: AtomicU32,
     /// The status the host's disconnect carried, or zero.

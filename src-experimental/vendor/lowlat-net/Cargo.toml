@@ -1,0 +1,48 @@
+[package]
+name = "lowlat-net"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/nomi-san/lowlat"
+authors = ["Nguyen Duy"]
+
+[dependencies]
+lowlat-common = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
+lowlat-core = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
+lowlat-crypto = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+# The system's own declarations for the socket, the completion port and the
+# interface walk: layouts from the platform's metadata rather than structs we
+# maintain, which matters most for the ones the system writes after a call has
+# returned. Declarations only, linked by name at build time with no import
+# libraries; the QoS service is not among them, since it is loaded at run time.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_WindowsProgramming",
+] }
+
+[dev-dependencies]
+lowlat-common = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86", features = ["alloc-counter"] }
+
+# The churn test's counts on Windows: open handles, the process's threads and
+# its working set, where Linux reads the same from /proc.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
+
+

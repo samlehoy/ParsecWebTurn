@@ -251,6 +251,9 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
                 return;
             }
         };
+        let io = shell.stats();
+        telemetry.udp_received.store(io.bytes_in, Ordering::Relaxed);
+        telemetry.udp_sent.store(io.bytes_out, Ordering::Relaxed);
         let now = turn.now;
         if let Some(outcome) = driver.turn(shell.endpoint(), now) {
             ended = Some(outcome);

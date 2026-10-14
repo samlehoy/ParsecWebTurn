@@ -19,7 +19,7 @@ path = "src/bin/mf-baseline-probe.rs"
 required-features = ["gpu-probes"]
 
 [workspace]
-members = ["vendor/lowlat-client"]
+members = ["vendor/lowlat-client", "vendor/lowlat-net"]
 resolver = "2"
 
 # Deliberately independent from src-native: no change to the WebRTC binary.

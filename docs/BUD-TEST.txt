@@ -28,7 +28,8 @@ Also check audio, cursor, immersive mode and disconnect/reconnect.
 Connection stats uses native BUD counters: direct/relay route, BUD RTT, host
 encode time when reported, AES-GCM, late fragments, duplicates, NACKs and
 compressed-media backlog/drops. ICE candidates and DTLS are WebRTC-specific
-and are hidden. Delivered-message traffic excludes UDP/retransmission overhead.
+and are hidden. Incoming/outgoing traffic measures UDP payload bytes, including BUD and TURN
+protocol traffic; IP/UDP headers and account HTTPS/WSS traffic are excluded.
 
 Direct and isolated UDP TURN connectivity and encrypted control delivery are
 covered by automated tests. Stock-host direct and relay playback were confirmed

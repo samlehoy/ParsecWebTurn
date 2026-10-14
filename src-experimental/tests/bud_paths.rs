@@ -117,6 +117,14 @@ fn connect(route: Route, relay_expected: bool) {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_eq!(delivered, [true, true], "native control round trip failed");
+    // Native telemetry must cover real UDP traffic in both directions,
+    // including protocol traffic beyond the delivered application message.
+    for session in [&left, &right] {
+        let stats = session.snapshot();
+        assert!(stats.udp_sent > 13);
+        assert!(stats.udp_received > 13);
+        assert!(stats.udp_received >= stats.channels.iter().map(|c| c.bytes).sum());
+    }
     left.close();
     right.close();
 }

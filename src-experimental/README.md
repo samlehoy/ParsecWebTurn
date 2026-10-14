@@ -73,7 +73,8 @@ checkbox. The user confirmed stock-host playback over direct and UDP TURN routes
 It now retries an unestablished direct connection once through UDP TURN, using a
 fresh native attempt and cancelling the old offer. This retry needs real-network
 acceptance. Force TURN starts on relay immediately; STUN-only never retries.
-Native BUD statistics hide ICE/DTLS and display actual transport counters.
+Native BUD statistics hide ICE/DTLS and display actual transport counters,
+including incoming/outgoing UDP payload traffic with protocol overhead.
 
 The vendored client is now a transport-only subset: unused decoder/exporter,
 audio-decode, microphone, cursor-cache, input-mapper and port-mapping code and

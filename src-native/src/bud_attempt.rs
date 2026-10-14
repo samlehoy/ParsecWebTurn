@@ -577,7 +577,8 @@ fn run(
                     .into(),
                     bud: Some(transport.clone()),
                     rtt_ms: transport.rtt_ms,
-                    received: Some(transport.channels.iter().map(|c| c.bytes).sum()),
+                    received: Some(transport.udp_received),
+                    sent: Some(transport.udp_sent),
                     dtls: String::new(),
                     protocol: "BUD / UDP".into(),
                     route: if transport.connected {

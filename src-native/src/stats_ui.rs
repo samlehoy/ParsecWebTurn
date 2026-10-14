@@ -436,7 +436,7 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
     let cards = if page.sample.bud.is_some() {
         cards
             .into_iter()
-            .filter(|(label, value)| *label != "Outgoing traffic" && value != "—")
+            .filter(|(_, value)| value != "—")
             .collect::<Vec<_>>()
     } else {
         cards.into()
@@ -514,7 +514,7 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
     y += 14;
     #[cfg(feature = "experimental-bud")]
     let footer = if page.sample.bud.is_some() {
-        "Traffic counts delivered BUD application data. RTT is the native transport estimate. Late fragments indicate reordering or retransmission, not proven packet loss. NACKs request missing fragments. Compressed backlog is before Media Foundation; no GPU timings are inferred."
+        "Traffic counts UDP payload bytes accepted for send or received, including BUD/crypto/TURN control and retransmissions; IP/UDP headers and account HTTPS/WSS traffic are excluded. RTT is the native transport estimate. Late fragments indicate reordering or retransmission, not proven packet loss. NACKs request missing fragments. Compressed backlog is before Media Foundation; no GPU timings are inferred."
     } else {
         "Traffic is measured usage, not available bandwidth. RTT is the active ICE path's round-trip time, not ICMP ping. Local dropped frames are not network packet loss. Missing values remain unknown."
     };
