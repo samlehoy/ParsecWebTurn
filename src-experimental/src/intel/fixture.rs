@@ -73,6 +73,7 @@ fn decode_units(
         let mut completed_us = Vec::new();
         let mut warnings = 0;
         let mut pending = BTreeMap::new();
+        let mut uncorrelated_stamps = Vec::new();
         let origin = Instant::now();
         for (sequence, unit) in units.iter().enumerate() {
             let deadline = origin + Duration::from_nanos(sequence as u64 * 16_666_667);
@@ -99,11 +100,15 @@ fn decode_units(
                 {
                     Decoded::Picture(picture) => {
                         let output_ready = Instant::now();
-                        let output_submitted = pending
-                            .remove(&picture.timestamp())
-                            .ok_or_else(|| anyhow!("uncorrelated VPL output timestamp"))?;
-                        output_us
-                            .push(output_ready.duration_since(output_submitted).as_micros() as u64);
+                        let output_submitted = pending.remove(&picture.timestamp());
+                        if let Some(when) = output_submitted {
+                            output_us.push(output_ready.duration_since(when).as_micros() as u64);
+                        } else {
+                            // Decoded-order output may carry an unknown stamp.
+                            // Retain GPU validation, but never invent correlation
+                            // with whichever input happened to be submitted last.
+                            uncorrelated_stamps.push(picture.timestamp());
+                        }
                         let raw = picture.texture();
                         ensure!(!raw.is_null(), "Intel output has no native GPU texture");
                         // SAFETY: Picture keeps the native texture alive. This
@@ -130,7 +135,9 @@ fn decode_units(
                             );
                             std::thread::yield_now();
                         }
-                        completed_us.push(output_submitted.elapsed().as_micros() as u64);
+                        if let Some(when) = output_submitted {
+                            completed_us.push(when.elapsed().as_micros() as u64);
+                        }
                         outputs += 1;
                         // A picture need not consume the entire access unit.
                         // Keep feeding its remainder as the SDK backend does.
@@ -167,7 +174,9 @@ fn decode_units(
             json!({"frames":outputs,"native_nv12_texture":true,"same_d3d11_device":true,
             "submission_to_output_us":output_us,"submission_to_gpu_completion_us":completed_us,
             "nonfatal_warnings":warnings,
-            "input_pacing_fps":60,"warmup_frames":16,"output_timestamp_correlated":true,
+            "input_pacing_fps":60,"warmup_frames":16,
+            "output_timestamp_correlated":uncorrelated_stamps.is_empty() && pending.is_empty(),
+            "uncorrelated_output_timestamps":uncorrelated_stamps,
             "application_decoded_frame_copies":0,"cpu_readback":false,
             "includes_presentation":false,"runtime_internal_copies":"unknown"}),
         )
