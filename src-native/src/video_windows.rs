@@ -857,13 +857,10 @@ impl Session {
         window: &crate::window::Window,
     ) -> Result<()> {
         #[cfg(feature = "vendor-video")]
-        if self.vendor.is_some() {
+        if let Some(vendor) = &mut self.vendor {
             let renderer = &mut self.renderer;
             let generation = self.surface_generation;
-            return self
-                .vendor
-                .as_mut()
-                .unwrap()
+            return vendor
                 .feed(&frame.bytes, |picture| {
                     let layout = picture.layout;
                     let source = RECT {

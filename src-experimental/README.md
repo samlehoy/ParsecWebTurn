@@ -6,7 +6,9 @@ No lowlat GPL codec feature is enabled. These are isolated implementation gates 
 claim that a faster Intel decoder or BUD has shipped in the default client.
 The native client's optional `experimental-bud` feature links the transport/media
 adapter only. Offline decoder probes require the separate `gpu-probes` feature;
-they are not part of that BUD feature or the normal client.
+they are not part of that BUD feature or the normal client. The separate `vendor-video`
+native feature optionally enables measured HEVC backends without changing the
+transport; the BUD test artifact enables both features.
 
 ## Intel first
 
@@ -50,9 +52,11 @@ Foundation. A capability probe alone cannot satisfy that acceptance.
 ## AMD/NVIDIA 8-bit screening
 
 `vendor-gpu-probe.exe` runs the same 120-frame synthetic 720p H.264 and HEVC Main clips on each physical AMD/NVIDIA adapter. It compares AMF
-against the current low-latency MF requests on AMD; NVIDIA uses MF plus separate
-NVDEC decoder-creation checks. NVDEC's pinned D3D11 plane exporter adds copies
-and is deliberately not used. This is not a measured NVDEC decoding comparison.
+against the current low-latency MF requests and direct D3D11 decode on AMD.
+NVIDIA compares MF with direct D3D11. No NVDEC exporter is used. The raw D3D11
+parameter staging is shared with the independent `src-video` module; its
+original decoder NV12 array slices are consumed directly. An additional
+integrated-only probe validates the owned decoder/device/context module itself.
 
 Every decoded output must be GPU-only NV12 on the caller's D3D11 device.
 Its original texture is the video processor input; the final probe also executes

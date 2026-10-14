@@ -1,8 +1,8 @@
 # 8-bit GPU decoder comparison
 
-The live test client retains Media Foundation and its existing D3D11 video
-processor/DXGI renderer. The proprietary WASM is unchanged. AMF and NVDEC are
-offline research dependencies, never linked by the BUD or default WebRTC client.
+The standard client retains Media Foundation. The optional vendor-video test
+build uses measured HEVC backends with the existing D3D11 processor/DXGI renderer.
+The proprietary WASM is unchanged. No NVDEC exporter is used.
 
 ## Copy contract
 
@@ -72,16 +72,61 @@ changed when conversion was enabled. Do not present those numbers as isolated
 GPU decode times or compare unlike diagnostics as a renderer benchmark.
 No live AMF/NVDEC backend was enabled by these measurements.
 
-## NVIDIA boundary
+## Direct D3D11 comparison and integration (2026-10-14)
 
-On RTX 3060 the driver creates H.264 and HEVC Main NVDEC decoders.
-This is a capability/creation check, not an NVDEC decode latency measurement.
-Lowlat's pinned Windows NVDEC exporter copies decoded planes into D3D textures;
-that implementation does not meet our current no-additional-copy acceptance.
-It is not integrated. NVIDIA hardware is tested through our existing MF path.
-This is not evidence that every possible NVDEC renderer must add a copy.
+[Raw three-way results](measurements/gpu-direct-2026-10-14.json), source
+`a4ff06d92c2156a7c0c013cf07a42f79ee7ca664`: **60 trials / 7200 frames**, all
+passed on the same Radeon 780M and RTX 3060. H.264 and HEVC were each tested
+at 30/60 FPS, three alternating rounds per backend. Original decoder NV12
+array slices feed the same processor directly. The same visible 1280x720 area
+is consumed regardless of padded decoder allocation height. No decoded-frame
+copy, shader plane split or CPU pixel access is used.
 
-Sources: [lowlat's pinned Windows exporter](https://github.com/nomi-san/lowlat/blob/5f8db5689e55de0d396b0520824caa9fc053dd86/crates/decode/src/nvdec/windows.rs),
-[NVIDIA D3D11 interop format restrictions](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__D3D11.html),
-[AMD decoder API](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/master/amf/doc/AMF_Video_Decode_API.md),
-[AMD decoder properties](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/master/amf/public/include/components/VideoDecoderUVD.h).
+60 FPS p50 ranges across rounds, submission through offline GPU conversion
+completion, milliseconds (includes repeated diagnostic resource setup):
+
+| GPU | Codec | MF | AMF | Direct D3D11 |
+| --- | --- | ---: | ---: | ---: |
+| RTX 3060 | H.264 | 3.206–3.266 | — | 3.182–3.289 |
+| RTX 3060 | HEVC | 19.217–19.257 | — | 2.574–2.617 |
+| Radeon 780M | H.264 | 5.248–5.406 | 3.716–5.112 | 4.800–6.158 |
+| Radeon 780M | HEVC | 21.676–23.320 | 4.152–5.418 | 5.144–6.254 |
+
+For HEVC both direct D3D11 and AMF eliminate the MF one-later-input output lag
+on these clips; the lag also appears at 30 FPS in MF. Direct D3D11's AMD output
+availability is faster (0.175–0.194 ms p50) than AMF's (0.515–0.576 ms), but
+that alone is misleading: through conversion completion, AMF is generally the
+better AMD candidate. NVIDIA direct D3D11 improves both availability and
+completion compared with MF. H.264 has no comparable one-frame lag; overlapping
+rounds/tails do not justify changing its existing MF path. These are synthetic
+screening results, not a guarantee of equal savings on every host/driver.
+
+The optional `vendor-video` native build feature therefore selects **AMD AMF
+for AMD HEVC** and **direct D3D11 for NVIDIA HEVC**. H.264, Intel and other GPUs
+retain MF. The GPU module is independent of BUD/WebRTC and feeds the existing
+single video-processor/DXGI path. Normal builds keep the original MF decoder.
+The experimental BUD test artifact enables both optional features so either
+transport can be tested with the new HEVC paths.
+
+Initialization failures retain MF. A live vendor failure or unsupported format
+change enters the existing keyframe recovery and disables vendor acceleration
+for the remainder of that connection. The actual decoder and any fallback are
+reported in Connection stats. No transport rerouting accompanies decoder fallback.
+AMF refuses reordered, non-8-bit or non-4:2:0 input; unsupported streams stay on
+MF. Surfaces are leased through queuing of the processor read on the same GPU.
+No per-frame CPU wait for GPU completion is used in playback.
+
+Before normal distribution, verify stock-host picture colors/cropping, sustained
+motion, resolution changes and disconnect/reconnect on both GPUs. Offline API
+success/frame completeness is not a pixel-correctness or real-host acceptance
+claim. The existing output remains BGRA8. High-depth experiments were removed.
+
+Source: [documented D3D11 decode ownership and operations](https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation).
+
+[Integrated ownership/metadata validation](measurements/gpu-integrated-2026-10-14.json)
+from `7c2c0a053a3a23955aa28a58cccdda06a8991183` also passed 120 HEVC frames on
+AMD AMF and 120 on NVIDIA direct D3D11, using the exact owned module linked by
+the test client. It verified timestamp correlation, original-device NV12 input
+and the same single GPU conversion, with zero later-input lag and no pixel
+readback. This is a separate functionality/ownership check, not an additional
+controlled backend speed comparison.

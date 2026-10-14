@@ -104,6 +104,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'External media seam formatting failed' }
           cargo clippy --locked --manifest-path src-experimental/Cargo.toml --target ${{ matrix.target }} --features gpu-probes --all-targets -- -D warnings
           if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
+          cargo clippy --locked --manifest-path src-video/Cargo.toml --target ${{ matrix.target }} --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'GPU backend Clippy failed' }
           cargo test --locked --manifest-path src-video/Cargo.toml --target ${{ matrix.target }}
           if ($LASTEXITCODE -ne 0) { throw 'GPU backend contract tests failed' }
           cargo test --locked --manifest-path src-experimental/Cargo.toml --target ${{ matrix.target }}

@@ -1,0 +1,95 @@
+{
+  "adapters": [
+    {
+      "adapter": "NVIDIA GeForce RTX 3060",
+      "driver": [
+        32,
+        0,
+        16,
+        1742
+      ],
+      "luid": "luid:00000000:00010f57",
+      "trials": [
+        {
+          "backend": "Integrated GPU decoder",
+          "codec": "HEVC Main",
+          "fps": 60,
+          "result": {
+            "actual_backend": "Direct D3D11 HEVC",
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 2348,
+              "p50": 1775,
+              "p95": 2171
+            },
+            "submission_to_output_us": {
+              "max": 365,
+              "p50": 227,
+              "p95": 330
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        }
+      ]
+    },
+    {
+      "adapter": "AMD Radeon 780M Graphics",
+      "driver": [
+        32,
+        0,
+        31041,
+        1004
+      ],
+      "luid": "luid:00000000:0001477a",
+      "trials": [
+        {
+          "backend": "Integrated GPU decoder",
+          "codec": "HEVC Main",
+          "fps": 60,
+          "result": {
+            "actual_backend": "AMD AMF HEVC",
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 8313,
+              "p50": 5794,
+              "p95": 7106
+            },
+            "submission_to_output_us": {
+              "max": 1583,
+              "p50": 560,
+              "p95": 1349
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        }
+      ]
+    }
+  ],
+  "includes_network_or_present": false,
+  "p50_definition": "upper middle",
+  "p95_definition": "nearest rank",
+  "scope": "isolated GPU-only decode, same synthetic 720p clips; no live changes",
+  "warning": "Output availability is not GPU completion. Completion includes offline input-view validation. No live performance or zero-copy claim.",
+  "measurement_source_commit": "7c2c0a053a3a23955aa28a58cccdda06a8991183",
+  "measured_frames_total": 240
+}
