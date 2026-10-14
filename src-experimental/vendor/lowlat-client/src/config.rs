@@ -234,10 +234,7 @@ mod tests {
             chroma_444: true,
             ..Video::default()
         };
-        assert_eq!(
-            all.flags(&EVERYTHING),
-            FLAG_HEVC | FLAG_COLOR444
-        );
+        assert_eq!(all.flags(&EVERYTHING), FLAG_HEVC | FLAG_COLOR444);
         // No second codec at all: the first codec, declared as nothing.
         let h264_only = Caps {
             h264: true,
