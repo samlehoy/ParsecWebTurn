@@ -78,6 +78,12 @@ impl Signaling {
         let value: Value =
             serde_json::from_str(text).map_err(|_| anyhow!("invalid native signaling JSON"))?;
         let payload = &value["payload"];
+        if payload["attempt_id"]
+            .as_str()
+            .is_some_and(|id| id != self.attempt)
+        {
+            return Ok(());
+        }
         if value["action"] == "close" {
             anyhow::bail!("native signaling service closed the session");
         }
@@ -171,6 +177,14 @@ mod tests {
             signal
                 .receive(
                     r#"{"action":"answer_relay","payload":{"attempt_id":"stale"}}"#,
+                    &mut session
+                )
+                .is_ok()
+        );
+        assert!(
+            signal
+                .receive(
+                    r#"{"action":"close","payload":{"attempt_id":"stale"}}"#,
                     &mut session
                 )
                 .is_ok()

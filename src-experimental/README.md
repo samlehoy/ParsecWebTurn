@@ -17,7 +17,9 @@ D3D11 device, requires all 80 outputs and records CPU output availability
 separately from GPU completion. It does not map pixels, export planes, create
 staging textures or copy decoded frames. The completion wait is offline-only;
 it must not be copied into a playback loop. Runtime-internal copies are unknown.
-This does not validate HEVC playback, image correctness or presentation yet.
+An additional 120-frame, 8-bit HEVC fixture checks the same native texture
+contract. Neither fixture validates live playback, image correctness or
+presentation yet; the two different clips are not a codec speed comparison.
 
 The first target is the user's Core Ultra 5 235U integrated Intel GPU. Its actual
 adapter and driver report, rather than the generic Windows display name, decide

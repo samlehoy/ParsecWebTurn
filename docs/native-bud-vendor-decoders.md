@@ -58,7 +58,7 @@ VideoProcessor input.
 
 Only after a repeatable benefit is established should an opt-in decoder adapter
 be connected to the existing media path. Keep Media Foundation usable. NVIDIA
-NVDEC and Intel VPL follow with their own hardware tests; SDK names alone do not
+NVDEC follows with its own hardware tests; SDK names alone do not
 prove lower delay, and Intel's driver issue is not assumed fixed by a new API.
 This work is separate from BUD: a vendor decoder can receive the same compressed
 WebRTC media without changing its network transport. Ten-bit and 4:4:4 remain
