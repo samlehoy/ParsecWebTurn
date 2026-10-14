@@ -9,6 +9,8 @@ use std::{
 use webrtc::{peer_connection::RTCPeerConnection, stats::StatsReportType};
 #[derive(Clone)]
 pub struct Sample {
+    #[cfg(feature = "experimental-bud")]
+    pub bud: Option<parsec_native_experimental::bud::Snapshot>,
     pub at: Instant,
     pub generation: u64,
     pub state: String,
@@ -32,6 +34,8 @@ pub struct Sample {
 impl Default for Sample {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "experimental-bud")]
+            bud: None,
             at: Instant::now(),
             generation: 0,
             state: "Waiting for a connection".into(),

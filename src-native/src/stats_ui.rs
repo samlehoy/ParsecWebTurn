@@ -121,13 +121,7 @@ fn reported(s: &str) -> String {
         s.into()
     }
 }
-fn rows(
-    s: &Sample,
-    v: &Values,
-    cpu: (Option<f64>, Option<f64>, Option<f64>),
-) -> Vec<(String, String)> {
-    let mut rows = Vec::new();
-    let mut row = |a: &str, b: String| rows.push((a.into(), b));
+fn webrtc_network_rows(s: &Sample, row: &mut impl FnMut(&str, String)) {
     row("NETWORK", String::new());
     row(
         "Route",
@@ -156,6 +150,78 @@ fn rows(
             .clone()
             .unwrap_or_else(|| "Not reported".into()),
     );
+}
+fn webrtc_security_rows(s: &Sample, row: &mut impl FnMut(&str, String)) {
+    row("SECURITY", String::new());
+    row("DTLS state", s.dtls.clone());
+    row(
+        "Encryption",
+        if s.dtls == "connected" {
+            "DTLS protects SCTP data channels".into()
+        } else {
+            "Not reported".into()
+        },
+    );
+}
+fn rows(
+    s: &Sample,
+    v: &Values,
+    cpu: (Option<f64>, Option<f64>, Option<f64>),
+) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    let mut row = |a: &str, b: String| rows.push((a.into(), b));
+    #[cfg(feature = "experimental-bud")]
+    if let Some(bud) = &s.bud {
+        row("NETWORK", String::new());
+        row("Transport", "BUD / UDP".into());
+        if bud.connected {
+            row(
+                "Route",
+                if bud.relay { "TURN relay" } else { "Direct" }.into(),
+            );
+        }
+        if bud.relay {
+            row("TURN transport", "UDP".into());
+        }
+        if let Some(encode) = bud.encode_ms {
+            row("Host encode time", number(Some(encode), "ms"));
+        }
+        row("BUD DELIVERY", String::new());
+        for (name, channel) in ["Control", "Video", "Audio"].iter().zip(&bud.channels) {
+            row(&format!("{name} late fragments"), channel.late.to_string());
+            row(&format!("{name} NACK requests"), channel.nacks.to_string());
+        }
+        row(
+            "Duplicate fragments",
+            bud.channels
+                .iter()
+                .map(|c| c.duplicates)
+                .sum::<u64>()
+                .to_string(),
+        );
+        row(
+            "Outside receive window",
+            bud.channels
+                .iter()
+                .map(|c| c.window_drops)
+                .sum::<u64>()
+                .to_string(),
+        );
+        row(
+            "Compressed video backlog",
+            format!(
+                "{} messages / {} ms",
+                bud.video_backlog, bud.video_backlog_ms
+            ),
+        );
+        row("Skipped encoded pictures", bud.skipped_video.to_string());
+        row("Audio receive pool drops", bud.audio_pool_drops.to_string());
+        row("Input queue drops", bud.input_drops.to_string());
+    } else {
+        webrtc_network_rows(s, &mut row);
+    }
+    #[cfg(not(feature = "experimental-bud"))]
+    webrtc_network_rows(s, &mut row);
     row("VIDEO", String::new());
     let video = s.video.as_ref();
     row(
@@ -284,19 +350,24 @@ fn rows(
         );
     }
     row("Measured audio traffic", number(v.audio, "kbps"));
-    row("SECURITY", String::new());
-    row("DTLS state", s.dtls.clone());
-    row(
-        "Encryption",
-        if s.dtls == "connected" {
-            "DTLS protects SCTP data channels".into()
-        } else {
-            "Not reported".into()
-        },
-    );
+    #[cfg(feature = "experimental-bud")]
+    if let Some(bud) = &s.bud {
+        if let Some(cipher) = bud.cipher {
+            row("SECURITY", String::new());
+            row("Media encryption", cipher.into());
+        }
+    } else {
+        webrtc_security_rows(s, &mut row);
+    }
+    #[cfg(not(feature = "experimental-bud"))]
+    webrtc_security_rows(s, &mut row);
     row("APP PERFORMANCE", String::new());
     row("CPU (all cores)", number(cpu.0, "%"));
     row("GPU (busiest engine)", number(cpu.1, "%"));
+    #[cfg(feature = "experimental-bud")]
+    if s.bud.is_some() {
+        rows.retain(|(_, value)| value != "Not reported" && value != "—");
+    }
     rows
 }
 unsafe fn text(dc: HDC, font: HFONT, color: u32, s: &str, mut rect: RECT) {
@@ -355,12 +426,21 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
         },
     );
     y += 40;
-    let cards = [
+    let cards = vec![
         ("Connection RTT", number(page.sample.rtt_ms, "ms")),
         ("Decoded video", number(page.values.fps, "fps")),
         ("Incoming traffic", number(page.values.incoming, "Mbps")),
         ("Outgoing traffic", number(page.values.outgoing, "Mbps")),
     ];
+    #[cfg(feature = "experimental-bud")]
+    let cards = if page.sample.bud.is_some() {
+        cards
+            .into_iter()
+            .filter(|(label, value)| *label != "Outgoing traffic" && value != "—")
+            .collect::<Vec<_>>()
+    } else {
+        cards
+    };
     let width = (right - left - 16) / 2;
     for (i, (label, value)) in cards.iter().enumerate() {
         let x = left + (i as i32 % 2) * (width + 16);
@@ -399,7 +479,7 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
             },
         );
     }
-    y += 218;
+    y += (cards.len().div_ceil(2) * 100) as i32 + 18;
     for (label, value) in rows(&page.sample, &page.values, page.usage) {
         let section = value.is_empty();
         let h = if section { 48 } else { 44 };
@@ -432,7 +512,26 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
         y += h;
     }
     y += 14;
-    text(memory,page.font,MUTED,"Traffic is measured usage, not available bandwidth. RTT is the active ICE path's round-trip time, not ICMP ping. Local dropped frames are not network packet loss. Missing values remain unknown.",RECT{left,top:y,right,bottom:y+100});
+    #[cfg(feature = "experimental-bud")]
+    let footer = if page.sample.bud.is_some() {
+        "Traffic counts delivered BUD application data. RTT is the native transport estimate. Late fragments indicate reordering or retransmission, not proven packet loss. NACKs request missing fragments. Compressed backlog is before Media Foundation; no GPU timings are inferred."
+    } else {
+        "Traffic is measured usage, not available bandwidth. RTT is the active ICE path's round-trip time, not ICMP ping. Local dropped frames are not network packet loss. Missing values remain unknown."
+    };
+    #[cfg(not(feature = "experimental-bud"))]
+    let footer = "Traffic is measured usage, not available bandwidth. RTT is the active ICE path's round-trip time, not ICMP ping. Local dropped frames are not network packet loss. Missing values remain unknown.";
+    text(
+        memory,
+        page.font,
+        MUTED,
+        footer,
+        RECT {
+            left,
+            top: y,
+            right,
+            bottom: y + 100,
+        },
+    );
     y += 110;
     page.height = y + page.scroll;
     let info = SCROLLINFO {
@@ -562,6 +661,34 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
 }
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "experimental-bud")]
+    #[test]
+    fn bud_statistics_use_native_counters_and_hide_ice_dtls_and_unknowns() {
+        let mut native = parsec_native_experimental::bud::Snapshot {
+            connected: true,
+            relay: true,
+            cipher: Some("AES-256-GCM"),
+            ..Default::default()
+        };
+        native.channels[1].late = 7;
+        native.channels[1].nacks = 2;
+        let sample = Sample {
+            bud: Some(native),
+            dtls: "connected".into(),
+            ..Default::default()
+        };
+        let rows = rows(&sample, &Values::default(), (None, None, None));
+        assert!(rows
+            .iter()
+            .any(|(k, v)| k == "Video late fragments" && v == "7"));
+        assert!(rows
+            .iter()
+            .any(|(k, v)| k == "Media encryption" && v == "AES-256-GCM"));
+        assert!(!rows
+            .iter()
+            .any(|(k, v)| k.contains("candidate") || k.contains("DTLS") || v == "Not reported"));
+    }
+
     use super::*;
     #[test]
     fn modeless_window_scroll_resize_and_lifetime() {

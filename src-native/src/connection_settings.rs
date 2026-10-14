@@ -348,6 +348,14 @@ impl Manager {
         Ok((settings, servers))
     }
 
+    #[cfg(all(windows, feature = "experimental-bud"))]
+    pub async fn resolve_bud_relay(&self, settings: &Settings) -> Result<Vec<RTCIceServer>> {
+        if settings.stun_only {
+            bail!("TURN is disabled by STUN-only settings");
+        }
+        self.resolve_settings(settings).await
+    }
+
     /// Resolve credentials and routing from the same settings snapshot.
     pub async fn resolve_configuration(
         &self,

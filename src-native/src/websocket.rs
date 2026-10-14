@@ -564,7 +564,13 @@ pub fn dispatch(
                     .unwrap_or_else(|e| e.into_inner());
                 if let Some(attempt) = &backend.bud_attempt {
                     match attempt.incoming(&text) {
-                        Ok(Some(rewritten)) => memory.c_string(output, size, &rewritten)?,
+                        Ok(Some(rewritten)) => {
+                            if rewritten.is_empty() {
+                                out[0] = Val::I32(2);
+                                return Ok(());
+                            }
+                            memory.c_string(output, size, &rewritten)?;
+                        }
                         Ok(None) => {}
                         Err(_) => {
                             attempt.fail();
@@ -588,7 +594,17 @@ pub fn dispatch(
                             .lock()
                             .unwrap_or_else(|e| e.into_inner());
                         match &backend.bud_attempt {
-                            Some(attempt) => match attempt.outgoing(&text) {
+                            Some(attempt) => match attempt.outgoing(
+                                &text,
+                                Some({
+                                    let socket = socket.clone();
+                                    Arc::new(move |text| socket.write(text))
+                                }),
+                            ) {
+                                Ok(Some(rewritten)) if rewritten.is_empty() => {
+                                    out[0] = Val::I32(1);
+                                    return Ok(());
+                                }
                                 Ok(rewritten) => rewritten.unwrap_or(text),
                                 Err(_) => {
                                     attempt.fail();

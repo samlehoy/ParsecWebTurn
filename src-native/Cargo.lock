@@ -1951,16 +1951,11 @@ name = "parsec-native-experimental"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "futures-util",
  "lowlat-client",
  "lowlat-core",
  "lowlat-crypto",
- "rustls",
  "serde_json",
  "tokio",
- "tokio-tungstenite",
- "url",
- "webpki-roots 1.0.9",
 ]
 
 [[package]]

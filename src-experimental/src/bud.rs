@@ -39,6 +39,7 @@ pub struct Session {
     attempt: Option<String>,
     external_units: Option<Units>,
     prefer_hevc: bool,
+    cipher: Option<&'static str>,
 }
 
 impl Session {
@@ -57,6 +58,7 @@ impl Session {
             attempt: None,
             external_units: None,
             prefer_hevc: false,
+            cipher: None,
         })
     }
 
@@ -79,6 +81,7 @@ impl Session {
             attempt: None,
             external_units: Some(units),
             prefer_hevc: hevc_available,
+            cipher: None,
         })
     }
 
@@ -173,10 +176,17 @@ impl Session {
     }
 
     pub fn answer(&mut self, id: &str, peer: Peer) -> Result<()> {
+        let cipher = if peer.aes256.as_ref().is_some_and(|v| !v.is_empty()) {
+            "AES-256-GCM"
+        } else {
+            "AES-128-GCM"
+        };
         self.matches(id)?;
         self.client
             .begin_p2p(id, &peer)
-            .map_err(|e| anyhow!("BUD answer: {e:?}"))
+            .map_err(|e| anyhow!("BUD answer: {e:?}"))?;
+        self.cipher = Some(cipher);
+        Ok(())
     }
 
     pub fn candidate(&mut self, id: &str, addr: SocketAddr, kind: Kind) -> Result<()> {
@@ -205,6 +215,35 @@ impl Session {
             "BUD signaling events lost; end attempt"
         );
         Ok(Some(received.event))
+    }
+
+    /// SDK counters describe delivered native messages/fragments, not NIC traffic.
+    pub fn snapshot(&self) -> Snapshot {
+        use std::sync::atomic::Ordering::Relaxed;
+        let t = self.client.telemetry();
+        let connected = t.state.load(Relaxed) == 1;
+        let rtt = t.rtt_ms.load(Relaxed);
+        let encode = t.encode_us.load(Relaxed);
+        Snapshot {
+            connected,
+            relay: connected && t.path_relayed.load(Relaxed),
+            cipher: connected.then_some(self.cipher).flatten(),
+            rtt_ms: (connected && rtt > 0).then_some(f64::from(rtt)),
+            encode_ms: (connected && encode > 0).then_some(f64::from(encode) / 1000.0),
+            channels: std::array::from_fn(|i| Channel {
+                fragments: t.fragments[i].load(Relaxed),
+                late: t.late[i].load(Relaxed),
+                duplicates: t.duplicates[i].load(Relaxed),
+                window_drops: t.out_of_window[i].load(Relaxed),
+                nacks: t.nacks_sent[i].load(Relaxed),
+                bytes: t.bytes[i].load(Relaxed),
+            }),
+            video_backlog: t.behind.load(Relaxed),
+            video_backlog_ms: t.behind_ms.load(Relaxed),
+            skipped_video: t.skipped.load(Relaxed),
+            audio_pool_drops: t.audio_dropped.load(Relaxed),
+            input_drops: t.input_dropped.load(Relaxed),
+        }
     }
 
     pub fn close(&mut self) {
@@ -243,6 +282,30 @@ impl MediaSource {
         };
         sink(packet.bytes()).map(Some)
     }
+}
+
+#[derive(Clone, Default)]
+pub struct Channel {
+    pub fragments: u64,
+    pub late: u64,
+    pub duplicates: u64,
+    pub window_drops: u64,
+    pub nacks: u64,
+    pub bytes: u64,
+}
+#[derive(Clone, Default)]
+pub struct Snapshot {
+    pub connected: bool,
+    pub relay: bool,
+    pub cipher: Option<&'static str>,
+    pub rtt_ms: Option<f64>,
+    pub encode_ms: Option<f64>,
+    pub channels: [Channel; 3],
+    pub video_backlog: u32,
+    pub video_backlog_ms: u32,
+    pub skipped_video: u64,
+    pub audio_pool_drops: u32,
+    pub input_drops: u32,
 }
 
 #[cfg(test)]

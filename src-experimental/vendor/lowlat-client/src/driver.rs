@@ -1056,6 +1056,15 @@ impl Driver {
             clippy::cast_possible_wrap,
             reason = "a status is signed and travels in an unsigned argument"
         )]
+        #[cfg(feature = "external-video")]
+        if self.external_controls
+            && !matches!(
+                message.opcode,
+                op::DISCONNECT | op::ENCODE_LATENCY | op::ENCODER_GENERATION | op::GUEST_LIST
+            )
+        {
+            return None;
+        }
         match message.opcode {
             op::CURSOR => {
                 if let Ok(pointer) = cursor::parse(message) {
@@ -1143,6 +1152,10 @@ impl Driver {
             op::GUEST_LIST => {
                 self.number = Some(message.a1);
                 self.telemetry.number.store(message.a1, Ordering::Relaxed);
+                #[cfg(feature = "external-video")]
+                if self.external_controls {
+                    return None;
+                }
                 let body = message.body.strip_suffix(&[0]).unwrap_or(message.body);
                 self.emit.send(Event::GuestList {
                     number: message.a1,

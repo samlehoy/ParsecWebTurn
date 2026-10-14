@@ -5,6 +5,7 @@ use parsec_native_experimental::{
     signaling::Signaling,
 };
 use serde_json::{json, Value};
+pub type SignalingWrite = Arc<dyn Fn(String) -> bool + Send + Sync>;
 type SharedAudio = Arc<Mutex<Option<Arc<crate::audio_stream::Pipeline>>>>;
 
 use std::{
@@ -21,6 +22,12 @@ struct State {
     offer: Option<Value>,
     output_finished: bool,
     web_mode: Option<Value>,
+    wire_id: String,
+    retired_wire: Option<String>,
+    template: Option<Value>,
+    writer: Option<SignalingWrite>,
+    established: bool,
+    guest_answer_sent: bool,
     events: VecDeque<Value>,
     controls: VecDeque<bytes::Bytes>,
     ingress: crate::media_ingress::Ingress,
@@ -87,7 +94,7 @@ impl Attempt {
         })
     }
 
-    pub fn outgoing(&self, text: &str) -> Result<Option<String>> {
+    pub fn outgoing(&self, text: &str, writer: Option<SignalingWrite>) -> Result<Option<String>> {
         let Ok(mut value) = serde_json::from_str::<Value>(text) else {
             return Ok(None);
         };
@@ -96,16 +103,24 @@ impl Attempt {
         }
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if value["action"] == "offer" {
+            if let Some(writer) = writer {
+                state.writer = Some(writer);
+            }
+            state.template = Some(value.clone());
             state.web_mode = value["payload"]["data"].get("mode").cloned();
             let offer = state.offer.as_ref().context("BUD offer not ready")?;
             // Preserve account destination, authorization secret, and envelope.
             value["payload"]["data"] = offer.clone();
+            if !state.wire_id.is_empty() {
+                value["payload"]["attempt_id"] = json!(state.wire_id);
+            }
             return Ok(Some(serde_json::to_string(&value)?));
         }
         if value["action"] == "candex" {
-            value["payload"]["data"]["ver_data"] = json!(1);
-            value["payload"]["data"]["versions"] =
-                json!({"p2p":1,"bud":1,"init":1,"video":1,"audio":1,"control":1});
+            return Ok(Some(String::new()));
+        }
+        if value["action"] == "offer_cancel" && !state.wire_id.is_empty() {
+            value["payload"]["attempt_id"] = json!(state.wire_id);
             return Ok(Some(serde_json::to_string(&value)?));
         }
         Ok(None)
@@ -115,13 +130,26 @@ impl Attempt {
         let Ok(mut value) = serde_json::from_str::<Value>(text) else {
             return Ok(None);
         };
-        if !matches!(
-            value["action"].as_str(),
-            Some("answer_relay" | "candex_relay")
-        ) || value["payload"]["attempt_id"].as_str() != Some(self.id.as_str())
+        let wire = value["payload"]["attempt_id"].as_str().unwrap_or("");
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.retired_wire.as_deref() == Some(wire) {
+            return Ok(Some(String::new()));
+        }
+        let current = if state.wire_id.is_empty() {
+            self.id.as_str()
+        } else {
+            &state.wire_id
+        };
+        if wire != current
+            || !matches!(
+                value["action"].as_str(),
+                Some("answer_relay" | "candex_relay" | "close")
+            )
         {
             return Ok(None);
         }
+        let duplicate_answer = state.guest_answer_sent && value["action"] == "answer_relay";
+        drop(state);
         ensure!(text.len() <= 16 * 1024, "BUD signaling exceeds limit");
         if value["action"] == "answer_relay" && value["payload"]["approved"] == true {
             ensure!(
@@ -134,6 +162,16 @@ impl Attempt {
             .try_send(text.to_owned())
             .context("BUD signaling queue unavailable")?;
         self.thread.unpark();
+        if value["action"] == "answer_relay" {
+            self.state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .guest_answer_sent = true;
+            if duplicate_answer {
+                return Ok(Some(String::new()));
+            }
+        }
+        value["payload"]["attempt_id"] = json!(self.id);
         if value["action"] == "answer_relay" && value["payload"]["data"].is_object() {
             let mode = self
                 .state
@@ -149,7 +187,7 @@ impl Attempt {
             }
             return Ok(Some(serde_json::to_string(&value)?));
         }
-        Ok(None)
+        Ok(Some(serde_json::to_string(&value)?))
     }
 
     pub fn send(&self, frame: &[u8]) -> Result<()> {
@@ -216,6 +254,59 @@ impl Drop for Attempt {
     }
 }
 
+fn send_candidate(state: &Mutex<State>, event: &Event) -> Result<()> {
+    let (writer, message) = {
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
+        let peer = state
+            .template
+            .as_ref()
+            .and_then(|v| v["payload"]["to"].as_str())
+            .context("BUD account destination missing")?;
+        let message = Signaling::new(peer, &state.wire_id)?
+            .candidate(event)
+            .context("not a BUD candidate")?;
+        (
+            state.writer.clone().context("BUD account writer missing")?,
+            serde_json::to_string(&message)?,
+        )
+    };
+    ensure!(writer(message), "BUD candidate send failed");
+    Ok(())
+}
+
+fn switch_offer(state: &Mutex<State>, cancel: &AtomicBool, id: &str, data: Value) -> Result<bool> {
+    let (writer, previous, next) = {
+        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        if cancel.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        let mut next = state
+            .template
+            .clone()
+            .context("BUD account offer missing")?;
+        let mut previous = next.clone();
+        previous["action"] = json!("offer_cancel");
+        previous["payload"]["attempt_id"] = json!(state.wire_id);
+        previous["payload"]["data"] = json!({});
+        next["payload"]["attempt_id"] = json!(id);
+        next["payload"]["data"] = data.clone();
+        state.retired_wire = Some(std::mem::replace(&mut state.wire_id, id.into()));
+        state.offer = Some(data);
+        state.events.clear();
+        state.controls.clear();
+        (
+            state.writer.clone().context("BUD account writer missing")?,
+            serde_json::to_string(&previous)?,
+            serde_json::to_string(&next)?,
+        )
+    };
+    ensure!(
+        writer(previous) && writer(next),
+        "BUD relay offer send failed"
+    );
+    Ok(true)
+}
+
 // Serialize guest completion against retirement. A delayed offer must never
 // write credentials or wake a guest buffer reused by the next attempt.
 fn complete_offer(
@@ -241,7 +332,9 @@ fn complete_offer(
 
 // BUD uses an explicit direct route, or one UDP relay when Force TURN is selected.
 // TCP/TLS URLs are never interpreted as UDP and there is no silent fallback.
-async fn route(manager: &crate::connection_settings::Manager) -> Result<(Route, bool)> {
+async fn route(
+    manager: &crate::connection_settings::Manager,
+) -> Result<(Route, crate::connection_settings::Settings)> {
     let (settings, servers) = manager.resolve_bud().await?;
     if settings.force_relay {
         for server in servers {
@@ -256,7 +349,7 @@ async fn route(manager: &crate::connection_settings::Manager) -> Result<(Route, 
                         .context("BUD UDP TURN has no IPv4 address")?;
                     return Ok((
                         Route::turn_udp(addr, &server.username, &server.credential),
-                        settings.prefer_hevc,
+                        settings,
                     ));
                 }
             }
@@ -278,7 +371,29 @@ async fn route(manager: &crate::connection_settings::Manager) -> Result<(Route, 
             }
         }
     }
-    Ok((Route::Direct { stun }, settings.prefer_hevc))
+    Ok((Route::Direct { stun }, settings))
+}
+
+async fn relay_route(
+    manager: &crate::connection_settings::Manager,
+    settings: &crate::connection_settings::Settings,
+) -> Result<Route> {
+    let servers = manager.resolve_bud_relay(settings).await?;
+    for server in servers {
+        for raw in server.urls {
+            let url = webrtc::ice::url::Url::parse_url(&raw)?;
+            if url.scheme == webrtc::ice::url::SchemeType::Turn
+                && url.proto == webrtc::ice::url::ProtoType::Udp
+            {
+                let addr = tokio::net::lookup_host((url.host.as_str(), url.port))
+                    .await?
+                    .find(|a| a.is_ipv4())
+                    .context("BUD UDP TURN has no IPv4 address")?;
+                return Ok(Route::turn_udp(addr, &server.username, &server.credential));
+            }
+        }
+    }
+    bail!("BUD automatic relay requires a configured UDP TURN server")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -296,16 +411,15 @@ fn run(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let (route, prefer_hevc) = runtime.block_on(async {
+    let (route, settings) = runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(15), route(manager)).await
     })??;
     if cancel.load(Ordering::Acquire) {
         return Ok(());
     }
-    let relay = matches!(route, Route::TurnUdp(_));
     // Probe before the lifecycle lock: a slow driver must not stall Cancel.
     let hevc_available =
-        prefer_hevc && crate::video_windows::hevc_available(window.video_gpu().as_ref());
+        settings.prefer_hevc && crate::video_windows::hevc_available(window.video_gpu().as_ref());
     let (mut media, mut session, generation) = {
         let _state = state.lock().unwrap_or_else(|e| e.into_inner());
         if cancel.load(Ordering::Acquire) {
@@ -318,10 +432,11 @@ fn run(
             crate::bud_media::Media::start_verified(window.clone(), hevc_available)?;
         (media, session, window.stats.begin())
     };
+    state.lock().unwrap_or_else(|e| e.into_inner()).wire_id = id.into();
     session.wake_consumer(std::thread::current());
     let creds = session.offer(id, route)?;
     let mut source = session.take_media()?;
-    let signaling = Signaling::new("host", id)?;
+    let mut signaling = Signaling::new("host", id)?;
     *audio.lock().unwrap_or_else(|e| e.into_inner()) = Some(media.audio_pipeline());
     *shared_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
     if !complete_offer(
@@ -335,6 +450,9 @@ fn run(
     }
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut established = false;
+    let mut answered_at: Option<Instant> = None;
+    let mut retried = settings.force_relay || settings.stun_only;
+    let mut wire_id = id.to_owned();
     let mut last_stats = Instant::now();
     while !cancel.load(Ordering::Acquire) {
         ensure!(
@@ -348,6 +466,13 @@ fn run(
                 break;
             };
             signaling.receive(&text, session)?;
+            if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                if value["action"] == "answer_relay"
+                    && value["payload"]["attempt_id"].as_str() == Some(&wire_id)
+                {
+                    answered_at = Some(Instant::now());
+                }
+            }
         }
         let mut events = Vec::new();
         for _ in 0..64 {
@@ -356,9 +481,16 @@ fn run(
             };
             events.push(event);
         }
+        let transport = session.snapshot();
         media.recover(session);
         drop(guard);
         let pumped = media.pump(&mut source)?;
+        let mut ended = false;
+        for event in &events {
+            if matches!(event, Event::Candidate { .. } | Event::Ready) {
+                send_candidate(state, event)?;
+            }
+        }
         let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
         for event in events {
             ensure!(
@@ -366,13 +498,18 @@ fn run(
                 "BUD application queue full"
             );
             match event {
-                Event::Candidate { addr, lan, from_stun } => shared.events.push_back(json!({"type":8,"attemptID":id,"ip":addr.ip().to_string(),"port":addr.port(),"lan":lan,"fromStun":from_stun,"sync":false})),
-                Event::Ready => shared.events.push_back(json!({"type":8,"attemptID":id,"ip":"","port":0,"lan":false,"fromStun":false,"sync":true})),
-                Event::Established { .. } => { established = true; shared.events.push_back(json!({"type":7,"status":0,"state":4,"attemptID":id,"duration":0})); },
-                Event::Ended { .. } => bail!("BUD transport ended"),
+                Event::Candidate { .. } | Event::Ready => {}
+                Event::Established { .. } => {
+                    established = true;
+                    shared.established = true;
+                    shared.events.push_back(
+                        json!({"type":7,"status":0,"state":4,"attemptID":id,"duration":0}),
+                    );
+                }
+                Event::Ended { .. } => ended = true,
                 Event::ExternalControl { bytes } => shared.controls.push_back(bytes.into()),
                 // Semantic SDK events are already represented by original control frames.
-                _ => {},
+                _ => {}
             }
         }
         let mut ingress = media.ingress();
@@ -395,10 +532,13 @@ fn run(
                         "Connecting (experimental BUD)"
                     }
                     .into(),
-                    dtls: "Not applicable (native BUD)".into(),
+                    bud: Some(transport.clone()),
+                    rtt_ms: transport.rtt_ms,
+                    received: Some(transport.channels.iter().map(|c| c.bytes).sum()),
+                    dtls: String::new(),
                     protocol: "BUD / UDP".into(),
-                    route: if established {
-                        if relay {
+                    route: if transport.connected {
+                        if transport.relay {
                             "TURN relay"
                         } else {
                             "Direct"
@@ -406,7 +546,7 @@ fn run(
                     } else {
                         "Unknown"
                     },
-                    turn_protocol: relay.then(|| "udp".into()),
+                    turn_protocol: transport.relay.then(|| "udp".into()),
                     audio_bytes: shared.ingress.audio_bytes_received,
                     video: shared.ingress.video_output.clone(),
                     codec: shared.ingress.video_stream.codec,
@@ -423,6 +563,44 @@ fn run(
             last_stats = Instant::now();
         }
         drop(shared);
+        let fallback_due = !established
+            && (ended || answered_at.is_some_and(|t| t.elapsed() >= Duration::from_secs(4)));
+        if fallback_due && !retried {
+            retried = true;
+            drop(source);
+            let mut old = shared_session
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(old) = &mut old {
+                old.close();
+            }
+            drop(old);
+            let relay = runtime.block_on(async {
+                tokio::time::timeout(Duration::from_secs(8), relay_route(manager, &settings)).await
+            })??;
+            if cancel.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            wire_id = format!("{}-turn-1", id.chars().take(200).collect::<String>());
+            let mut next = Session::external_video(hevc_available)?;
+            next.wake_consumer(std::thread::current());
+            let creds = next.offer(&wire_id, relay)?;
+            source = next.take_media()?;
+            signaling = Signaling::new("host", &wire_id)?;
+            *shared_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(next);
+            if !switch_offer(
+                state,
+                cancel,
+                &wire_id,
+                signaling.offer(&creds)["payload"]["data"].take(),
+            )? {
+                return Ok(());
+            }
+            answered_at = None;
+            continue;
+        }
+        ensure!(!ended, "BUD transport ended");
         if pumped.video_messages >= 8 || pumped.audio_messages >= 8 {
             continue;
         }
@@ -458,7 +636,7 @@ mod tests {
         let (attempt, _) = isolated();
         let source = json!({"action":"offer","payload":{"attempt_id":"isolated","to":"host","secret":"authorization-sentinel","data":{"mode":2,"creds":{"ice_pwd":"web-placeholder"}}}}).to_string();
         let wire: Value =
-            serde_json::from_str(&attempt.outgoing(&source).unwrap().unwrap()).unwrap();
+            serde_json::from_str(&attempt.outgoing(&source, None).unwrap().unwrap()).unwrap();
         assert_eq!(wire["payload"]["secret"], "authorization-sentinel");
         assert_eq!(wire["payload"]["to"], "host");
         assert_eq!(wire["payload"]["data"]["mode"], 1);
@@ -467,10 +645,13 @@ mod tests {
             "isolated-key-sentinel"
         );
         assert!(attempt
-            .outgoing(r#"{"action":"offer","payload":{"attempt_id":"stale"}}"#)
+            .outgoing(
+                r#"{"action":"offer","payload":{"attempt_id":"stale"}}"#,
+                None
+            )
             .unwrap()
             .is_none());
-        assert!(attempt.outgoing("__ping__").unwrap().is_none());
+        assert!(attempt.outgoing("__ping__", None).unwrap().is_none());
     }
     #[test]
     fn native_answer_keeps_aes_out_of_guest_and_rejects_stale_delivery() {
@@ -488,6 +669,51 @@ mod tests {
             .is_none());
         assert!(incoming.try_recv().is_err());
     }
+    #[test]
+    fn relay_retry_withdraws_old_offer_preserves_authorization_and_ignores_old_answer() {
+        let (attempt, incoming) = isolated();
+        attempt.state.lock().unwrap().wire_id = "isolated".into();
+        let writes = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let collected = writes.clone();
+        let writer: SignalingWrite = Arc::new(move |text| {
+            collected
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(&text).unwrap());
+            true
+        });
+        let offer = json!({"action":"offer","payload":{"attempt_id":"isolated","to":"real-host","secret":"authorization-sentinel","data":{"mode":2}}}).to_string();
+        attempt.outgoing(&offer, Some(writer)).unwrap();
+        assert!(switch_offer(
+            &attempt.state,
+            &attempt.cancel,
+            "isolated-turn-1",
+            json!({"mode":1,"creds":{"aes256":"new-native-key"}})
+        )
+        .unwrap());
+        let sent = writes.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0]["action"], "offer_cancel");
+        assert_eq!(sent[0]["payload"]["attempt_id"], "isolated");
+        assert_eq!(sent[1]["action"], "offer");
+        assert_eq!(sent[1]["payload"]["attempt_id"], "isolated-turn-1");
+        assert_eq!(sent[1]["payload"]["secret"], "authorization-sentinel");
+        drop(sent);
+        assert_eq!(attempt.incoming(r#"{"action":"answer_relay","payload":{"attempt_id":"isolated","approved":true,"data":{}}}"#).unwrap(), Some(String::new()));
+        assert!(incoming.try_recv().is_err());
+        let response = json!({"action":"answer_relay","payload":{"attempt_id":"isolated-turn-1","approved":true,"data":{"mode":1,"creds":{"aes256":"key"}}}}).to_string();
+        let guest: Value =
+            serde_json::from_str(&attempt.incoming(&response).unwrap().unwrap()).unwrap();
+        assert_eq!(guest["payload"]["attempt_id"], "isolated");
+        assert_eq!(incoming.try_recv().unwrap(), response);
+        assert_eq!(attempt.outgoing(r#"{"action":"candex","payload":{"attempt_id":"isolated","data":{"ip":"stale"}}}"#, None).unwrap(), Some(String::new()));
+        send_candidate(&attempt.state, &Event::Ready).unwrap();
+        let sent = writes.lock().unwrap();
+        assert_eq!(sent[2]["payload"]["to"], "real-host");
+        assert_eq!(sent[2]["payload"]["attempt_id"], "isolated-turn-1");
+        assert_eq!(sent[2]["payload"]["data"]["sync"], true);
+    }
+
     #[test]
     fn malformed_active_answer_fails_without_mutating_guest_or_queue() {
         let (attempt, incoming) = isolated();
