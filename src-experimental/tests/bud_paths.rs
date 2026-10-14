@@ -96,10 +96,12 @@ fn connect(route: Route, relay_expected: bool) {
     let mut delivered = [false; 2];
     while !delivered.iter().all(|v| *v) && Instant::now() < until {
         while let Some(event) = left.poll().unwrap() {
-            if let Event::ExternalControl { bytes } = event {
-                if bytes.len() == 13 && bytes[12] == 28 && bytes[..4] == 41u32.to_be_bytes() {
-                    delivered[0] = true;
-                }
+            if let Event::ExternalControl { bytes } = event
+                && bytes.len() == 13
+                && bytes[12] == 28
+                && bytes[..4] == 41u32.to_be_bytes()
+            {
+                delivered[0] = true;
             }
         }
         while let Some(event) = right.poll().unwrap() {
