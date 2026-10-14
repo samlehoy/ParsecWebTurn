@@ -133,6 +133,14 @@ mod probe {
             Some(&mut context),
         )?;
         let device = device.context("missing D3D11 device")?;
+        let dxgi: windows::Win32::Graphics::Dxgi::IDXGIDevice = device.cast()?;
+        let desc = dxgi.GetAdapter()?.GetDesc()?;
+        let name_length = desc
+            .Description
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(desc.Description.len());
+        let adapter = String::from_utf16_lossy(&desc.Description[..name_length]);
         let _video: ID3D11VideoDevice =
             device.cast().context("D3D11 video interface unavailable")?;
         let context = context.context("missing D3D11 context")?;
@@ -190,7 +198,7 @@ mod probe {
             sample.AddBuffer(&buffer)?;
             let stamp = index as i64 * 166_667;
             sample.SetSampleTime(stamp)?;
-            if index % frames.len() == 0 {
+            if index.is_multiple_of(frames.len()) {
                 sample.SetUINT32(&MFSampleExtension_CleanPoint, 1)?;
             }
             samples.pending.insert(stamp, Instant::now());
@@ -218,7 +226,7 @@ mod probe {
         samples.lag_frames.sort_unstable();
         let n = samples.delay_us.len();
         Ok(
-            json!({"round":round,"low_latency_requested":low_latency,"request_accepted":accepted,
+            json!({"round":round,"adapter":adapter,"low_latency_requested":low_latency,"request_accepted":accepted,
             "frames_decoded":samples.decoded,"decoder_surface_outputs":samples.decoder_surfaces,
             "held_before_drain":held_before_drain,"measured_frames":n,
             "output_available_p50_us":samples.delay_us[n/2],"output_available_p95_us":samples.delay_us[(n-1)*95/100],

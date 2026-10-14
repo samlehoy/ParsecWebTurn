@@ -107,7 +107,7 @@ async fn trial(batch: bool, width: usize, round: usize) -> Result<Value> {
                 let delay = (begin.elapsed().as_nanos() as u64).saturating_sub(sent);
                 if seq >= 16 * width {
                     latency.push(delay);
-                    if seq % width == 0 {
+                    if seq.is_multiple_of(width) {
                         control.push(delay);
                     }
                 }
