@@ -952,6 +952,7 @@ impl Session {
             let result = display.feed(
                 &frame.bytes,
                 window.direct_presentation_allowed(),
+                size,
                 |layout| {
                     crate::viewport::Viewport {
                         source: (layout.width, layout.height),

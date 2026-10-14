@@ -77,23 +77,31 @@ fn main() -> anyhow::Result<()> {
                     }
                     let mut client = RECT::default();
                     GetClientRect(hwnd, &mut client)?;
-                    let output = decoder.feed(&bytes[..len], true, |layout| {
-                        let (cw, ch) = (
-                            (client.right - client.left) as f64,
-                            (client.bottom - client.top) as f64,
-                        );
-                        let scale = (cw / layout.width as f64).min(ch / layout.height as f64);
-                        let (w, h) = (
-                            (layout.width as f64 * scale).round() as i32,
-                            (layout.height as f64 * scale).round() as i32,
-                        );
-                        Ok([
-                            (cw as i32 - w) / 2,
-                            (ch as i32 - h) / 2,
-                            (cw as i32 + w) / 2,
-                            (ch as i32 + h) / 2,
-                        ])
-                    })?;
+                    let output = decoder.feed(
+                        &bytes[..len],
+                        true,
+                        (
+                            (client.right - client.left) as u32,
+                            (client.bottom - client.top) as u32,
+                        ),
+                        |layout| {
+                            let (cw, ch) = (
+                                (client.right - client.left) as f64,
+                                (client.bottom - client.top) as f64,
+                            );
+                            let scale = (cw / layout.width as f64).min(ch / layout.height as f64);
+                            let (w, h) = (
+                                (layout.width as f64 * scale).round() as i32,
+                                (layout.height as f64 * scale).round() as i32,
+                            );
+                            Ok([
+                                (cw as i32 - w) / 2,
+                                (ch as i32 - h) / 2,
+                                (cw as i32 + w) / 2,
+                                (ch as i32 + h) / 2,
+                            ])
+                        },
+                    )?;
                     presented += output.presented;
                     frames += 1;
                     bytes = &bytes[len..];

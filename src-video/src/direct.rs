@@ -199,6 +199,7 @@ fn create_decoder(
     shape: Shape,
     width: u32,
     height: u32,
+    independent: bool,
 ) -> Result<(Com<ID3D11VideoDecoder>, D3D11_VIDEO_DECODER_CONFIG)> {
     if !offers(device, shape) {
         return Err(Error::NoProfile);
@@ -234,7 +235,10 @@ fn create_decoder(
             )
         }
         .ok_or(Error::NoProfile)?;
-        if hr < 0 || config.ConfigBitstreamRaw != shape.short_slices() {
+        if hr < 0
+            || config.ConfigBitstreamRaw != shape.short_slices()
+            || (independent && config.ConfigDecoderSpecific & (1 << 14) == 0)
+        {
             continue;
         }
         let mut decoder: *mut ID3D11VideoDecoder = core::ptr::null_mut();
@@ -405,12 +409,8 @@ impl<'a> Backend<'a> {
         if coded.0 > self.ceiling.0 || coded.1 > self.ceiling.1 {
             return Err(Error::TooLarge);
         }
-        let (decoder, config) = create_decoder(self.device, shape, coded.0, coded.1)?;
-        // Bit 14 advertises support/recommendation for independent decode
-        // textures. Never force an unsupported allocation or add a copy.
-        if self.displayable && config.ConfigDecoderSpecific & (1 << 14) == 0 {
-            return Err(Error::NoProfile);
-        }
+        // Use only configurations advertising independent decode textures.
+        let (decoder, _) = create_decoder(self.device, shape, coded.0, coded.1, self.displayable)?;
         let desc = D3D11_TEXTURE2D_DESC {
             Width: coded.0.next_multiple_of(shape.alignment()),
             Height: coded.1.next_multiple_of(shape.alignment()),

@@ -196,6 +196,7 @@ impl Presenter {
         &mut self,
         texture: &ID3D11Texture2D,
         layout: Layout,
+        client: (u32, u32),
         target: [i32; 4],
     ) -> Result<Rc<dyn direct::SurfaceLease>> {
         // SAFETY: live device, texture and HWND on the owning video thread.
@@ -221,11 +222,15 @@ impl Presenter {
             } else {
                 DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709
             })?;
+            self.surface.SetLetterboxingMargins(
+                target[0] as f32,
+                target[1] as f32,
+                (client.0 as i32 - target[2]) as f32,
+                (client.1 as i32 - target[3]) as f32,
+            )?;
             self.surface.SetTransform(&PresentationTransform {
                 M11: (target[2] - target[0]) as f32 / layout.width as f32,
                 M22: (target[3] - target[1]) as f32 / layout.height as f32,
-                M31: target[0] as f32,
-                M32: target[1] as f32,
                 ..Default::default()
             })?;
             self.surface.SetBuffer(&lease.buffer)?;
@@ -310,6 +315,7 @@ impl Session {
         &mut self,
         bytes: &[u8],
         visible: bool,
+        client: (u32, u32),
         target: impl Fn(Layout) -> Result<[i32; 4]>,
     ) -> Result<Output> {
         let stamp = self.sequence;
@@ -338,7 +344,9 @@ impl Session {
                 if !visible {
                     return Ok(None);
                 }
-                let lease = state.presenter.present(texture, layout, target(layout)?)?;
+                let lease = state
+                    .presenter
+                    .present(texture, layout, client, target(layout)?)?;
                 output.presented += 1;
                 Ok(Some(lease))
             })? {}
