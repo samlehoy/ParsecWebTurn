@@ -6,6 +6,13 @@ use lowlat_drivers::{
     vpl::{Runtime, Vpl},
 };
 use serde_json::{Value, json};
+use windows::{
+    Win32::Graphics::{
+        Direct3D11::{D3D11_DECODER_PROFILE_HEVC_VLD_MAIN, ID3D11VideoDevice},
+        Dxgi::Common::DXGI_FORMAT_NV12,
+    },
+    core::Interface,
+};
 mod fixture;
 
 pub fn probe() -> Result<Value> {
@@ -27,6 +34,17 @@ pub fn probe() -> Result<Value> {
                 .ok_or_else(|| anyhow!("Intel DXGI index unavailable"))?;
             let device = d3d.open(adapter.luid)?;
             ensure!(device.protect(), "D3D11 multithread protection unavailable");
+            let raw_video = device.video().cast();
+            // SAFETY: the Device owns the borrowed video interface for this scope.
+            let video = unsafe { ID3D11VideoDevice::from_raw_borrowed(&raw_video) }
+                .ok_or_else(|| anyhow!("D3D11 video interface unavailable"))?;
+            let d3d11_hevc = match unsafe {
+                video
+                    .CheckVideoDecoderFormat(&D3D11_DECODER_PROFILE_HEVC_VLD_MAIN, DXGI_FORMAT_NV12)
+            } {
+                Ok(supported) => json!({"supported":supported.as_bool()}),
+                Err(error) => json!({"unknown":error.to_string()}),
+            };
             let session = vpl.session(&device, index)?;
             let version = session.version()?;
             let caps = lowlat_decode::vpl::caps(&session, Runtime::Current);
@@ -41,6 +59,7 @@ pub fn probe() -> Result<Value> {
             Ok(
                 json!({"vpl_version":[version.0,version.1], "h264":caps.h264,
                 "hevc_8bit":caps.hevc, "device_fences":device.has_fences(),
+                "d3d11_hevc_main_nv12":d3d11_hevc,
                 "output_contract":"caller D3D11 device, video memory",
                 "h264_fixture":fixture,
                 "hevc_fixture":hevc_fixture,
