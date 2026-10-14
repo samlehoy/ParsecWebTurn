@@ -410,10 +410,7 @@ fn run(
                 s.renderer = Some(native.renderer_name());
                 s.adapter = Some(native.adapter_name());
                 s.zero_copy_status = if zero_failed {
-                    Some(
-                        "Fallback: direct presentation failed; using the normal GPU renderer"
-                            .into(),
-                    )
+                    zero_fallback.clone()
                 } else {
                     native.zero_copy_status.clone()
                 };

@@ -23,7 +23,7 @@ BUD does not support TURN TCP/TLS and does not silently fall back to WebRTC.
 Uncheck Experimental BUD, save and reconnect to return to WebRTC.
 
 Check Connection stats: it must say experimental BUD, show actual codec,
-resolution, Media Foundation decoder and D3D11 decoder surface once playing.
+resolution, the actual decoder and D3D11 decoder surface once playing.
 Test H.264 first; then test HEVC if it already works on this GPU/driver.
 Also check audio, cursor, immersive mode and disconnect/reconnect.
 

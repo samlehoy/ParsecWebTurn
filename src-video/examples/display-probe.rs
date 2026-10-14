@@ -16,6 +16,15 @@ fn main() -> anyhow::Result<()> {
         },
         core::w,
     };
+    unsafe extern "system" fn window_proc(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        // SAFETY: forward the system-provided window message unchanged.
+        unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+    }
     unsafe {
         CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
         let result = (|| -> anyhow::Result<()> {
@@ -27,7 +36,7 @@ fn main() -> anyhow::Result<()> {
             let instance = GetModuleHandleW(None)?;
             let class = w!("ParsecOriginalSurfaceProbe");
             let wc = WNDCLASSW {
-                lpfnWndProc: Some(DefWindowProcW),
+                lpfnWndProc: Some(window_proc),
                 hInstance: instance.into(),
                 lpszClassName: class,
                 hbrBackground: HBRUSH((COLOR_WINDOW.0 + 1) as _),
