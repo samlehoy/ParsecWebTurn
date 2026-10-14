@@ -289,6 +289,9 @@ fn rows(
             .and_then(|x| x.adapter.clone())
             .unwrap_or_else(|| "Not reported".into()),
     );
+    if let Some(status) = video.and_then(|v| v.zero_copy_status.clone()) {
+        row("Zero copy (experimental)", status);
+    }
     if video.is_some_and(|v| v.recovering) {
         row(
             "Video status",

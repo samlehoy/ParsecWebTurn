@@ -1,6 +1,7 @@
 //! Optional 8-bit GPU video backends. No transport, pixels on CPU or exporter.
 #![cfg(windows)]
 pub mod direct;
+pub mod display;
 use anyhow::{Context as _, Result, ensure};
 use lowlat_core::video::Codec;
 use lowlat_decode::{Fed, hevc, nal};

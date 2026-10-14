@@ -15,6 +15,55 @@ use lowlat_drivers::{
     },
     vcall,
 };
+use std::rc::Rc;
+/// The decoder only needs these documented device operations. The normal
+/// lowlat device stays unchanged; displayable output uses its own flagged device.
+pub trait DeviceAccess {
+    fn video(&self) -> *mut ID3D11VideoDevice;
+    fn video_context(&self) -> *mut ID3D11VideoContext;
+    fn texture(
+        &self,
+        desc: &D3D11_TEXTURE2D_DESC,
+    ) -> core::result::Result<Com<ID3D11Texture2D>, RuntimeError>;
+}
+impl DeviceAccess for Device {
+    fn video(&self) -> *mut ID3D11VideoDevice {
+        self.video()
+    }
+    fn video_context(&self) -> *mut ID3D11VideoContext {
+        self.video_context()
+    }
+    fn texture(
+        &self,
+        desc: &D3D11_TEXTURE2D_DESC,
+    ) -> core::result::Result<Com<ID3D11Texture2D>, RuntimeError> {
+        self.texture(desc)
+    }
+}
+/// Presentation retains a decoder surface until it can be safely written again.
+pub trait SurfaceLease {
+    fn available(&self) -> bool;
+}
+struct SurfaceLeases(Vec<Option<Rc<dyn SurfaceLease>>>);
+impl SurfaceLeases {
+    fn new() -> Self {
+        Self((0..SURFACES).map(|_| None).collect())
+    }
+    fn retire(&mut self, mut released: impl FnMut(usize)) {
+        for (slot, lease) in self.0.iter_mut().enumerate() {
+            if lease.as_ref().is_some_and(|l| l.available()) {
+                *lease = None;
+                released(slot);
+            }
+        }
+    }
+    fn pinned(&self, slot: usize) -> bool {
+        self.0[slot].is_some()
+    }
+    fn writable(&self, slot: usize) -> bool {
+        self.0[slot].as_ref().is_none_or(|lease| lease.available())
+    }
+}
 const SURFACES: usize = h264::dpb::MAX_FRAMES;
 const MAX_SLICES: usize = h264::MAX_SLICES;
 const START_CODE: [u8; 3] = [0, 0, 1];
@@ -52,6 +101,7 @@ pub enum Error {
     Status(i32),
     /// A picture larger than the surfaces or the buffers.
     TooLarge,
+    SurfaceBusy,
 }
 
 impl fmt::Display for Error {
@@ -60,6 +110,7 @@ impl fmt::Display for Error {
             Self::Runtime(e) => write!(f, "{e}"),
             Self::NoProfile => f.write_str("device decodes no profile this stream needs"),
             Self::Status(s) => write!(f, "system video call returned 0x{s:08x}"),
+            Self::SurfaceBusy => f.write_str("presentation still owns decoder surface"),
             Self::TooLarge => f.write_str("picture larger than the surfaces"),
         }
     }
@@ -128,7 +179,7 @@ impl Shape {
         if self.codec == Codec::H264 { 16 } else { 128 }
     }
 }
-fn offers(device: &Device, shape: Shape) -> bool {
+fn offers(device: &dyn DeviceAccess, shape: Shape) -> bool {
     let mut supported: BOOL = 0;
     // SAFETY: the device and the profile/output pointers remain live.
     let hr = unsafe {
@@ -144,7 +195,7 @@ fn offers(device: &Device, shape: Shape) -> bool {
 }
 
 fn create_decoder(
-    device: &Device,
+    device: &dyn DeviceAccess,
     shape: Shape,
     width: u32,
     height: u32,
@@ -223,11 +274,12 @@ struct Built {
     shape: Shape,
     coded: (u32, u32),
     decoder: Com<ID3D11VideoDecoder>,
-    surfaces: Com<ID3D11Texture2D>,
+    surfaces: Vec<Com<ID3D11Texture2D>>,
+    leases: SurfaceLeases,
     views: Vec<Com<ID3D11VideoDecoderOutputView>>,
 }
 pub struct Backend<'a> {
-    device: &'a Device,
+    device: &'a dyn DeviceAccess,
     ceiling: (u32, u32),
     codec: Codec,
     built: Option<Built>,
@@ -238,9 +290,10 @@ pub struct Backend<'a> {
     report: u32,
     sequence: usize,
     stamps: [Option<usize>; SURFACES],
+    displayable: bool,
 }
 impl<'a> Backend<'a> {
-    pub fn new(device: &'a Device, codec: Codec) -> Self {
+    pub fn new(device: &'a dyn DeviceAccess, codec: Codec) -> Self {
         Self {
             device,
             ceiling: (4096, 4096),
@@ -260,10 +313,22 @@ impl<'a> Backend<'a> {
             report: 0,
             sequence: 0,
             stamps: [None; SURFACES],
+            displayable: false,
         }
+    }
+    pub fn displayable(device: &'a dyn DeviceAccess) -> Self {
+        let mut decoder = Self::new(device, Codec::H265);
+        decoder.displayable = true;
+        decoder
     }
     pub fn feed(&mut self, bytes: &[u8], sequence: usize) -> Result<Fed> {
         self.sequence = sequence;
+        if let Some(built) = &mut self.built {
+            built.leases.retire(|slot| match self.codec {
+                Codec::H264 => self.h264.dpb.taken(slot),
+                Codec::H265 => self.hevc.dpb.taken(slot),
+            });
+        }
         match self.codec {
             Codec::H264 => self.decode_h264(bytes),
             Codec::H265 => self.decode_hevc(bytes),
@@ -294,24 +359,42 @@ impl<'a> Backend<'a> {
         &mut self,
         consume: impl FnOnce(*mut ID3D11Texture2D, u32, usize) -> anyhow::Result<()>,
     ) -> anyhow::Result<bool> {
+        self.take_leased(|texture, slice, stamp| consume(texture, slice, stamp).map(|_| None))
+    }
+    pub fn take_leased(
+        &mut self,
+        consume: impl FnOnce(
+            *mut ID3D11Texture2D,
+            u32,
+            usize,
+        ) -> anyhow::Result<Option<Rc<dyn SurfaceLease>>>,
+    ) -> anyhow::Result<bool> {
         let slot = match self.codec {
             Codec::H264 => self.h264.next_output().map(|o| o.slot),
             Codec::H265 => self.hevc.next_output().map(|o| o.slot),
         };
         let Some(slot) = slot else { return Ok(false) };
         let result = (|| {
-            let built = self.built.as_ref().ok_or(Error::NoProfile)?;
+            let built = self.built.as_mut().ok_or(Error::NoProfile)?;
             let stamp = self
                 .stamps
                 .get_mut(slot)
                 .and_then(Option::take)
                 .ok_or(Error::Status(-1))?;
-            consume(built.surfaces.as_ptr(), slot as u32, stamp)
+            let (texture, slice) = if self.displayable {
+                (&built.surfaces[slot], 0)
+            } else {
+                (&built.surfaces[0], slot as u32)
+            };
+            built.leases.0[slot] = consume(texture.as_ptr(), slice, stamp)?;
+            Ok::<_, anyhow::Error>(())
         })();
-        match self.codec {
-            Codec::H264 => self.h264.dpb.taken(slot),
-            Codec::H265 => self.hevc.dpb.taken(slot),
-        };
+        if self.built.as_ref().is_none_or(|b| !b.leases.pinned(slot)) {
+            match self.codec {
+                Codec::H264 => self.h264.dpb.taken(slot),
+                Codec::H265 => self.hevc.dpb.taken(slot),
+            };
+        }
         result?;
         Ok(true)
     }
@@ -322,12 +405,17 @@ impl<'a> Backend<'a> {
         if coded.0 > self.ceiling.0 || coded.1 > self.ceiling.1 {
             return Err(Error::TooLarge);
         }
-        let (decoder, _) = create_decoder(self.device, shape, coded.0, coded.1)?;
+        let (decoder, config) = create_decoder(self.device, shape, coded.0, coded.1)?;
+        // Bit 14 advertises support/recommendation for independent decode
+        // textures. Never force an unsupported allocation or add a copy.
+        if self.displayable && config.ConfigDecoderSpecific & (1 << 14) == 0 {
+            return Err(Error::NoProfile);
+        }
         let desc = D3D11_TEXTURE2D_DESC {
             Width: coded.0.next_multiple_of(shape.alignment()),
             Height: coded.1.next_multiple_of(shape.alignment()),
             MipLevels: 1,
-            ArraySize: SURFACES as u32,
+            ArraySize: if self.displayable { 1 } else { SURFACES as u32 },
             Format: DXGI_FORMAT_NV12,
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
@@ -336,18 +424,39 @@ impl<'a> Backend<'a> {
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: D3D11_BIND_DECODER as u32,
             CPUAccessFlags: 0,
-            MiscFlags: 0,
+            MiscFlags: if self.displayable {
+                use windows::Win32::Graphics::Direct3D11::{
+                    D3D11_RESOURCE_MISC_SHARED, D3D11_RESOURCE_MISC_SHARED_DISPLAYABLE,
+                    D3D11_RESOURCE_MISC_SHARED_EXCLUSIVE_WRITER,
+                    D3D11_RESOURCE_MISC_SHARED_NTHANDLE,
+                };
+                (D3D11_RESOURCE_MISC_SHARED.0
+                    | D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0
+                    | D3D11_RESOURCE_MISC_SHARED_DISPLAYABLE.0
+                    | D3D11_RESOURCE_MISC_SHARED_EXCLUSIVE_WRITER.0) as u32
+            } else {
+                0
+            },
         };
-        let surfaces = self.device.texture(&desc)?;
+        let mut surfaces = Vec::new();
         let mut views = Vec::with_capacity(SURFACES);
         for slice in 0..SURFACES {
-            views.push(self.view(shape, &surfaces, slice)?);
+            if slice == 0 || self.displayable {
+                surfaces.push(self.device.texture(&desc)?);
+            }
+            let index = if self.displayable { slice } else { 0 };
+            views.push(self.view(
+                shape,
+                &surfaces[index],
+                if self.displayable { 0 } else { slice },
+            )?);
         }
         self.built = Some(Built {
             shape,
             coded,
             decoder,
             surfaces,
+            leases: SurfaceLeases::new(),
             views,
         });
         Ok(true)
@@ -851,6 +960,10 @@ impl<'a> Backend<'a> {
         }
         .ok_or(Error::Status(-1))?;
         let built = self.built.as_ref().ok_or(Error::NoProfile)?;
+        if !built.leases.writable(slot) {
+            // No sleep and no overwrite while scanout/presentation owns it.
+            return Err(Error::SurfaceBusy);
+        }
         let decoder = built.decoder.as_ptr();
         let view = built.views.get(slot).ok_or(Error::TooLarge)?.as_ptr();
         let context = self.device.video_context();
@@ -1192,4 +1305,44 @@ fn slice_bytes<T>(slices: &[T]) -> &[u8] {
     // SAFETY: plain-data structures read as the bytes they are made of,
     // for as long as they are borrowed.
     unsafe { core::slice::from_raw_parts(slices.as_ptr().cast::<u8>(), size_of_val(slices)) }
+}
+
+#[cfg(test)]
+mod presentation_ownership_tests {
+    use super::*;
+    use std::cell::Cell;
+    struct Lease(Cell<bool>);
+    impl SurfaceLease for Lease {
+        fn available(&self) -> bool {
+            self.0.get()
+        }
+    }
+    #[test]
+    fn held_scanout_surface_is_not_reused_until_presentation_releases_it() {
+        let mut leases = SurfaceLeases::new();
+        let lease = Rc::new(Lease(Cell::new(false)));
+        leases.0[2] = Some(lease.clone());
+        let mut released = Vec::new();
+        leases.retire(|slot| released.push(slot));
+        assert!(leases.pinned(2));
+        assert!(!leases.writable(2));
+        assert!(leases.writable(3));
+        assert!(released.is_empty());
+        lease.0.set(true);
+        leases.retire(|slot| released.push(slot));
+        assert!(!leases.pinned(2));
+        assert!(leases.writable(2));
+        leases.retire(|slot| released.push(slot));
+        assert_eq!(released, vec![2]);
+    }
+    #[test]
+    fn decoder_reset_cannot_bypass_the_presentation_write_guard() {
+        let mut leases = SurfaceLeases::new();
+        leases.0[0] = Some(Rc::new(Lease(Cell::new(false))));
+        // The parser may clear its own pending-output flags at an IDR. This
+        // independent ownership guard must still refuse the physical write.
+        let mut dpb = hevc::dpb::Dpb::new();
+        dpb.clear();
+        assert!(!leases.writable(0));
+    }
 }

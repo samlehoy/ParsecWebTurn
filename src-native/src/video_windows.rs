@@ -280,6 +280,11 @@ fn run(
     let mut parameters = crate::video_stream::ParameterCache::default();
     let mut awaiting_random_access = true;
     let mut vendor_failed = false;
+    let mut zero_failed = false;
+    #[cfg(feature = "vendor-video")]
+    let zero_requested = window.experimental_zero_copy();
+    #[cfg(not(feature = "vendor-video"))]
+    let zero_requested = false;
     loop {
         let (next_generation, frame) = {
             let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -390,7 +395,10 @@ fn run(
                     frame.codec,
                     hevc,
                     surface_generation,
-                    !vendor_failed && !verify_synthetic_pixels,
+                    (
+                        !vendor_failed && !verify_synthetic_pixels,
+                        zero_requested && !zero_failed,
+                    ),
                 )?
             };
             update(shared, |s| {
@@ -398,8 +406,16 @@ fn run(
                 s.low_latency_request_accepted = native.low_latency_request_accepted;
                 s.decoder = Some(native.name(frame.codec));
                 s.decoder_fallback = native.fallback.clone();
-                s.renderer = Some("D3D11 VideoProcessor / DXGI");
-                s.adapter = Some(native.renderer.adapter.clone());
+                s.renderer = Some(native.renderer_name());
+                s.adapter = Some(native.adapter_name());
+                s.zero_copy_status = if zero_failed {
+                    Some(
+                        "Fallback: direct presentation failed; using the normal GPU renderer"
+                            .into(),
+                    )
+                } else {
+                    native.zero_copy_status.clone()
+                };
             });
             session = Some(native);
         }
@@ -443,8 +459,12 @@ fn run(
                     | "video-process-output"
                     | "video-output-iteration-limit"
                     | "video-vendor-process"
+                    | "video-zero-copy-process"
             ) {
                 return Err(error);
+            }
+            if error.stage == "video-zero-copy-process" {
+                zero_failed = true;
             }
             if error.stage == "video-vendor-process" {
                 vendor_failed = true;
@@ -621,13 +641,30 @@ struct Session {
     decoder: Option<IMFTransform>,
     #[cfg(feature = "vendor-video")]
     vendor: Option<parsec_gpu_video::Decoder>,
+    #[cfg(feature = "vendor-video")]
+    display: Option<parsec_gpu_video::display::Session>,
+    zero_copy_status: Option<String>,
     fallback: Option<String>,
     _manager: Option<IMFDXGIDeviceManager>,
-    renderer: Renderer,
+    renderer: Option<Renderer>,
     output_format: Option<OutputFormat>,
     _runtime: Option<Runtime>,
 }
 impl Session {
+    fn renderer_name(&self) -> &'static str {
+        #[cfg(feature = "vendor-video")]
+        if self.display.is_some() {
+            return "Original NV12 / Windows Presentation API";
+        }
+        "D3D11 VideoProcessor / DXGI"
+    }
+    fn adapter_name(&self) -> String {
+        #[cfg(feature = "vendor-video")]
+        if let Some(display) = &self.display {
+            return display.adapter().into();
+        }
+        self.renderer.as_ref().unwrap().adapter.clone()
+    }
     unsafe fn create(
         hwnd: HWND,
         verify_synthetic_pixels: bool,
@@ -635,9 +672,14 @@ impl Session {
         codec: crate::video_stream::Codec,
         hevc: Option<crate::video_stream::HevcConfiguration>,
         surface_generation: u64,
-        _allow_vendor: bool,
+        policy: (bool, bool),
     ) -> Result<Self> {
+        let (_allow_vendor, _zero_copy) = policy;
         let mut fallback = None;
+        let zero_copy_status =
+            _zero_copy.then(|| "Unavailable: select NVIDIA and enable HEVC".into());
+        #[cfg(feature = "vendor-video")]
+        let mut zero_copy_status = zero_copy_status;
         #[cfg(feature = "vendor-video")]
         if _allow_vendor && codec == crate::video_stream::Codec::Hevc {
             let candidate = (|| -> anyhow::Result<Option<Self>> {
@@ -656,6 +698,28 @@ impl Session {
                 let luid = (u64::from(adapter.AdapterLuid.HighPart as u32) << 32)
                     | u64::from(adapter.AdapterLuid.LowPart);
                 drop((probe_context, probe));
+                if _zero_copy && mode == parsec_gpu_video::Mode::DirectD3d11 {
+                    match parsec_gpu_video::display::Session::open(luid, hwnd) {
+                        Ok(display) => {
+                            return Ok(Some(Self {
+                                surface_generation,
+                                low_latency_request_accepted: false,
+                                decoder: None,
+                                vendor: None,
+                                display: Some(display),
+                                zero_copy_status: Some(
+                                    "Starting original NV12 surface presentation".into(),
+                                ),
+                                fallback: None,
+                                _manager: None,
+                                renderer: None,
+                                output_format: None,
+                                _runtime: None,
+                            }))
+                        }
+                        Err(error) => zero_copy_status = Some(format!("Fallback: {error}")),
+                    }
+                }
                 let vendor =
                     parsec_gpu_video::Decoder::open(mode, luid, (config.width, config.height))?;
                 let device = vendor.native_device()?;
@@ -667,9 +731,11 @@ impl Session {
                     low_latency_request_accepted: vendor.low_latency_request_accepted(),
                     decoder: None,
                     vendor: Some(vendor),
+                    display: None,
+                    zero_copy_status: zero_copy_status.clone(),
                     fallback: None,
                     _manager: None,
-                    renderer,
+                    renderer: Some(renderer),
                     output_format: None,
                     _runtime: None,
                 }))
@@ -783,9 +849,12 @@ impl Session {
             decoder: Some(decoder),
             #[cfg(feature = "vendor-video")]
             vendor: None,
+            #[cfg(feature = "vendor-video")]
+            display: None,
+            zero_copy_status,
             fallback,
             _manager: Some(manager),
-            renderer,
+            renderer: Some(renderer),
             output_format: None,
             _runtime: Some(runtime),
         };
@@ -811,6 +880,11 @@ impl Session {
     }
     fn name(&self, codec: crate::video_stream::Codec) -> &'static str {
         #[cfg(feature = "vendor-video")]
+        if self.display.is_some() {
+            return "Direct D3D11 HEVC";
+        }
+
+        #[cfg(feature = "vendor-video")]
         if let Some(vendor) = &self.vendor {
             return vendor.name();
         }
@@ -833,7 +907,7 @@ impl Session {
                 // Geometry can remain unspecified until the first decoded sample.
                 self.output_format = None;
                 // A stream change may replace the decoder's texture pool.
-                self.renderer.processor = None;
+                self.renderer.as_mut().unwrap().processor = None;
                 let stream = api(
                     "video-output-stream-info",
                     self.mf()?.GetOutputStreamInfo(0),
@@ -857,8 +931,58 @@ impl Session {
         window: &crate::window::Window,
     ) -> Result<()> {
         #[cfg(feature = "vendor-video")]
+        if let Some(display) = &mut self.display {
+            let hwnd = window
+                .ensure_video_surface()
+                .map_err(|_| unavailable("video-surface-create"))?;
+            let mut rect = windows_sys::Win32::Foundation::RECT::default();
+            if windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd as _, &mut rect) == 0
+            {
+                return Err(unavailable("video-surface-size"));
+            }
+            let size = (
+                (rect.right - rect.left).max(1) as u32,
+                (rect.bottom - rect.top).max(1) as u32,
+            );
+            let result = display.feed(
+                &frame.bytes,
+                window.direct_presentation_allowed(),
+                |layout| {
+                    crate::viewport::Viewport {
+                        source: (layout.width, layout.height),
+                        client: size,
+                    }
+                    .rect()
+                    .ok_or_else(|| anyhow::anyhow!("invalid viewport"))
+                },
+            );
+            let output = result.map_err(|_| unavailable("video-zero-copy-process"))?;
+            update(shared, |s| {
+                s.frames_submitted += 1;
+                s.frames_decoded += output.decoded as u64;
+                s.frames_presented += output.presented as u64;
+                if let Some(layout) = output.layout {
+                    s.width = Some(layout.width);
+                    s.height = Some(layout.height);
+                    s.nominal_range = Some(if layout.full_range { 1 } else { 2 });
+                    s.gpu_surface_output = true;
+                    s.d3d11_decoder_surface = Some(true);
+                }
+                if output.presented > 0 {
+                    s.zero_copy_status = Some(
+                        "Original NV12 surfaces; no app conversion pass. Scanout not verified."
+                            .into(),
+                    );
+                }
+            });
+            if output.presented > 0 {
+                window.set_video_ready_for(self.surface_generation, true);
+            }
+            return Ok(());
+        }
+        #[cfg(feature = "vendor-video")]
         if let Some(vendor) = &mut self.vendor {
-            let renderer = &mut self.renderer;
+            let renderer = self.renderer.as_mut().unwrap();
             let generation = self.surface_generation;
             return vendor
                 .feed(&frame.bytes, |picture| {
@@ -1033,11 +1157,17 @@ impl Session {
                 s.color_matrix = matrix;
                 s.nominal_range = nominal;
             });
-            let presented =
-                self.renderer
-                    .present(&texture, subresource, source, color, shared, window)?;
+            let presented = self.renderer.as_mut().unwrap().present(
+                &texture,
+                subresource,
+                source,
+                color,
+                shared,
+                window,
+            )?;
             update(shared, |s| {
-                s.synthetic_pixel_variation_verified = self.renderer.synthetic_pixels_verified
+                s.synthetic_pixel_variation_verified =
+                    self.renderer.as_ref().unwrap().synthetic_pixels_verified
             });
             update(shared, |s| match presented {
                 Presentation::Presented => {

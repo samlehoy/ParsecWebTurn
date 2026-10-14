@@ -46,3 +46,18 @@ Decoder fallback explains it. Please verify image colors/cropping, motion,
 resolution changes and disconnect/reconnect on both AMD and NVIDIA.
 This is an experimental test artifact. Only 8-bit 4:2:0 video is supported.
 4:4:4 remains disabled. The default non-test build retains MF.
+
+Experimental original-surface presentation (NVIDIA HEVC only):
+Settings -> Zero copy (experimental, NVIDIA HEVC), select NVIDIA, enable
+Prefer HEVC, Save settings and reconnect. Default is OFF. Both WebRTC and
+BUD can use this GPU-only presentation option. Windows 11 and a compatible
+WDDM 3.0 driver/decoder configuration are required. AMD, Intel and H.264
+keep their existing renderer. The software UI overlay remains separate.
+Connection stats shows the actual renderer and Zero copy status/fallback.
+Original NV12 surfaces go directly to Windows Presentation API; the client
+performs no intermediate frame copy or RGB conversion pass in this mode.
+Windows can still compose the surface. Direct scanout is not claimed.
+A support/lifetime/format error returns to the normal GPU renderer using
+keyframe recovery; it never changes the selected network transport.
+Please test colors/cropping, resizing/fullscreen, overlays, Settings/F8 and
+repeated disconnect/reconnect. Uncheck the option to compare the normal path.

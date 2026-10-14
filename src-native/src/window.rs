@@ -315,6 +315,20 @@ impl Window {
             PostMessageW(self.handle(), WM_APP + 15, 0, 0);
         }
     }
+    #[cfg(feature = "vendor-video")]
+    pub fn direct_presentation_allowed(&self) -> bool {
+        self.video_visible.load(Ordering::Acquire)
+            && !self.settings_open()
+            && !self.closing.load(Ordering::Acquire)
+    }
+    #[cfg(feature = "vendor-video")]
+    pub fn experimental_zero_copy(&self) -> bool {
+        self.connection_settings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|manager| manager.view().0.experimental_zero_copy)
+    }
     pub fn video_gpu(&self) -> Option<crate::connection_settings::GpuPreference> {
         self.connection_settings
             .lock()

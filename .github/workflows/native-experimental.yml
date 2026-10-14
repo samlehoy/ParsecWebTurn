@@ -120,6 +120,8 @@ jobs:
             cargo test --locked --manifest-path src-experimental/Cargo.toml --target ${{ matrix.target }} --test bud_paths turn_udp_connectivity -- --ignored --exact
             if ($LASTEXITCODE -ne 0) { throw 'Native BUD UDP TURN connectivity failed' }
           }
+          cargo build --release --locked --manifest-path src-video/Cargo.toml --target ${{ matrix.target }} --example display-probe
+          if ($LASTEXITCODE -ne 0) { throw 'Original NV12 presentation probe build failed' }
           cargo build --release --locked --manifest-path src-experimental/Cargo.toml --target ${{ matrix.target }} --features gpu-probes
           if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
       - uses: actions/upload-artifact@v4
@@ -132,6 +134,7 @@ jobs:
         with:
           name: Experimental-Intel-BUD-gates
           path: |
+            src-video/target/x86_64-pc-windows-msvc/release/examples/display-probe.exe
             src-experimental/target/x86_64-pc-windows-msvc/release/vendor-gpu-probe.exe
             src-experimental/target/x86_64-pc-windows-msvc/release/intel-gpu-probe.exe
             src-experimental/target/x86_64-pc-windows-msvc/release/mf-baseline-probe.exe

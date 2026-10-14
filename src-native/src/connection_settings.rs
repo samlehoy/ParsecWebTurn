@@ -51,6 +51,8 @@ pub struct Settings {
     #[cfg(feature = "experimental-bud")]
     pub experimental_bud: bool,
     pub prefer_hevc: bool,
+    #[cfg(feature = "vendor-video")]
+    pub experimental_zero_copy: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video_gpu: Option<GpuPreference>,
     pub provider: String,
@@ -77,6 +79,8 @@ impl Default for Settings {
             #[cfg(feature = "experimental-bud")]
             experimental_bud: false,
             prefer_hevc: false,
+            #[cfg(feature = "vendor-video")]
+            experimental_zero_copy: false,
             video_gpu: None,
             provider: "cloudflare".into(),
             custom_urls: vec![],

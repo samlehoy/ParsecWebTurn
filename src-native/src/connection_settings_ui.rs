@@ -49,6 +49,13 @@ const BUD_EXTRA: i32 = if cfg!(feature = "experimental-bud") {
 } else {
     0
 };
+const ZERO_EXTRA: i32 = if cfg!(feature = "vendor-video") {
+    94
+} else {
+    0
+};
+#[cfg(feature = "vendor-video")]
+const ZERO_COPY: usize = 4120;
 const BG: u32 = 0x00282828;
 const FIELD: u32 = 0x00212121;
 const FG: u32 = 0x00eeeeee;
@@ -534,9 +541,26 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         );
         check(hwnd, BUD, s.experimental_bud);
     }
+    #[cfg(feature = "vendor-video")]
+    {
+        let y = 1110 + BUD_EXTRA;
+        row_label(hwnd, page, "Video presentation", "Experimental NVIDIA HEVC: present decoder surfaces directly.\nWindows 11 / compatible driver. Reconnect after changing.", y, 0, 40);
+        add(
+            hwnd,
+            page,
+            "BUTTON",
+            "Zero copy (experimental, NVIDIA HEVC)",
+            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+            [420, y, 400, 36],
+            ZERO_COPY,
+            0,
+            page.font,
+        );
+        check(hwnd, ZERO_COPY, s.experimental_zero_copy);
+    }
     add(hwnd, page, "STATIC",
         "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection.",
-        0, [0, 1110 + BUD_EXTRA, 820, 48], NOTICE, 0, page.small);
+        0, [0, 1110 + BUD_EXTRA + ZERO_EXTRA, 820, 48], NOTICE, 0, page.small);
     let status = error.unwrap_or_else(|| {
         "Saved in settings.json. Secrets are protected for your Windows user.".into()
     });
@@ -546,7 +570,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         "STATIC",
         &status,
         0,
-        [0, 1172 + BUD_EXTRA, 820, 40],
+        [0, 1172 + BUD_EXTRA + ZERO_EXTRA, 820, 40],
         STATUS,
         0,
         page.small,
@@ -557,7 +581,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         "BUTTON",
         "Back",
         BS_OWNERDRAW as u32 | WS_TABSTOP,
-        [550, 1228 + BUD_EXTRA, 110, 40],
+        [550, 1228 + BUD_EXTRA + ZERO_EXTRA, 110, 40],
         BACK,
         0,
         page.font,
@@ -568,7 +592,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         "BUTTON",
         "Save settings",
         BS_OWNERDRAW as u32 | WS_TABSTOP,
-        [676, 1228 + BUD_EXTRA, 144, 40],
+        [676, 1228 + BUD_EXTRA + ZERO_EXTRA, 144, 40],
         SAVE,
         0,
         page.font,
@@ -686,7 +710,7 @@ unsafe fn layout(hwnd: HWND) {
     GetClientRect(hwnd, &mut client);
     let cloudflare = SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1;
     let shift = if cloudflare { 0 } else { 44 };
-    let height = 1294 + HEADER_EXTRA + BUD_EXTRA - shift;
+    let height = 1294 + HEADER_EXTRA + BUD_EXTRA + ZERO_EXTRA - shift;
     page.scroll = page.scroll.clamp(0, (height - client.bottom).max(0));
     let info = SCROLLINFO {
         cbSize: size_of::<SCROLLINFO>() as u32,
@@ -859,6 +883,10 @@ unsafe fn update_enabled(hwnd: HWND) {
 unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
     let mut s = page.saved.clone();
     s.prefer_hevc = checked(hwnd, HEVC);
+    #[cfg(feature = "vendor-video")]
+    {
+        s.experimental_zero_copy = checked(hwnd, ZERO_COPY);
+    }
     #[cfg(feature = "experimental-bud")]
     {
         s.experimental_bud = checked(hwnd, BUD);
@@ -1235,6 +1263,13 @@ mod tests {
             SendMessageW(page, WM_COMMAND, SAVE, 0);
             assert!(text(page, STATUS).starts_with("Settings saved"));
             assert_eq!(manager.view().0.video_gpu, expected_gpu);
+            #[cfg(feature = "vendor-video")]
+            {
+                assert!(!manager.view().0.experimental_zero_copy);
+                check(page, ZERO_COPY, true);
+                SendMessageW(page, WM_COMMAND, SAVE, 0);
+                assert!(manager.view().0.experimental_zero_copy);
+            }
             assert!(manager.view().0.prefer_hevc);
             DestroyWindow(page);
             let page = open(parent, manager.clone());
@@ -1244,6 +1279,8 @@ mod tests {
             );
             assert_eq!(text(page, TURN), "turn:relay.example.invalid:3478?transport=udp\r\nturns:relay.example.invalid:443?transport=tcp");
             assert!(checked(page, STUN_ONLY));
+            #[cfg(feature = "vendor-video")]
+            assert!(checked(page, ZERO_COPY));
             assert!(checked(page, HEVC));
             assert_eq!(
                 SendMessageW(GetDlgItem(page, GPU as i32), CB_GETCURSEL, 0, 0),
