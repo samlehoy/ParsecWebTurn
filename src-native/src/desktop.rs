@@ -268,6 +268,77 @@ impl CallbackCadence {
     }
 }
 
+fn dispatch_input_event(
+    store: &mut Store<HostState>,
+    instance: &Instance,
+    app: i32,
+    event: Event,
+) -> Result<()> {
+    let (name, values, count) = match event {
+        Event::Fullscreen(active) => (
+            "mty_window_update_fullscreen",
+            [app, active as i32, 0, 0, 0],
+            2,
+        ),
+        Event::Size(w, h) => {
+            export(
+                store,
+                instance,
+                "mty_window_update_size",
+                &[
+                    Val::I32(app),
+                    Val::F64((w as f64).to_bits()),
+                    Val::F64((h as f64).to_bits()),
+                ],
+            )?;
+            ("mty_window_size", [app, 0, 0, 0, 0], 1)
+        }
+        Event::Focus(f) => {
+            export(
+                store,
+                instance,
+                "mty_window_update_focus",
+                &[Val::I32(app), Val::I32(f as i32)],
+            )?;
+            ("mty_window_focus", [app, f as i32, 0, 0, 0], 2)
+        }
+        Event::RelativeMode(active) => (
+            "mty_window_update_relative_mouse",
+            [app, active as i32, 0, 0, 0],
+            2,
+        ),
+        Event::RelativeMotion(x, y) => ("mty_window_motion", [app, 1, x, y, 0], 4),
+        Event::Motion(x, y) => ("mty_window_motion", [app, 0, x, y, 0], 4),
+        Event::Button(down, button, x, y) => {
+            ("mty_window_button", [app, down as i32, button, x, y], 5)
+        }
+        Event::Scroll(x, y) => ("mty_window_scroll", [app, x, y, 0, 0], 3),
+        Event::Key(down, code, mods) => {
+            let Some(key) = store.data().key_codes.get(code).copied() else {
+                return Ok(());
+            };
+            ("mty_window_keyboard", [app, down as i32, key, 0, mods], 5)
+        }
+        Event::Text(code) => {
+            let Some(ch) = char::from_u32(code) else {
+                return Ok(());
+            };
+            if ch.is_control() {
+                return Ok(());
+            }
+            let mut bytes = [0; 4];
+            ch.encode_utf8(&mut bytes);
+            (
+                "mty_window_keyboard",
+                [app, 1, 0, u32::from_le_bytes(bytes) as i32, 0],
+                5,
+            )
+        }
+    };
+    let arguments = values.map(Val::I32);
+    export(store, instance, name, &arguments[..count])
+}
+
 fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> Result<()> {
     let window = store
         .data()
@@ -301,6 +372,7 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
         next: Instant::now(),
         period: frame_period,
     };
+    let mut input_batch = std::collections::VecDeque::new();
     while !window.closing.load(Ordering::Acquire) && (window.live || Instant::now() < until) {
         let frame_started = Instant::now();
         // The first render callback decompresses/rasterizes the embedded font
@@ -365,70 +437,9 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
                 }
             }
             let app = store.data().app_pointer.context("app pointer missing")? as i32;
-            let events = window.events.drain();
-            for event in events {
-                let (name, values) = match event {
-                    Event::Fullscreen(active) => {
-                        ("mty_window_update_fullscreen", vec![app, active as i32])
-                    }
-                    Event::Size(w, h) => {
-                        export(
-                            store,
-                            instance,
-                            "mty_window_update_size",
-                            &[
-                                Val::I32(app),
-                                Val::F64((w as f64).to_bits()),
-                                Val::F64((h as f64).to_bits()),
-                            ],
-                        )?;
-                        ("mty_window_size", vec![app])
-                    }
-                    Event::Focus(f) => {
-                        export(
-                            store,
-                            instance,
-                            "mty_window_update_focus",
-                            &[Val::I32(app), Val::I32(f as i32)],
-                        )?;
-                        ("mty_window_focus", vec![app, f as i32])
-                    }
-                    Event::RelativeMode(active) => {
-                        ("mty_window_update_relative_mouse", vec![app, active as i32])
-                    }
-                    Event::RelativeMotion(x, y) => ("mty_window_motion", vec![app, 1, x, y]),
-                    Event::Motion(x, y) => ("mty_window_motion", vec![app, 0, x, y]),
-                    Event::Button(down, button, x, y) => {
-                        ("mty_window_button", vec![app, down as i32, button, x, y])
-                    }
-                    Event::Scroll(x, y) => ("mty_window_scroll", vec![app, x, y]),
-                    Event::Key(down, code, mods) => {
-                        let Some(key) = store.data().key_codes.get(code).copied() else {
-                            continue;
-                        };
-                        ("mty_window_keyboard", vec![app, down as i32, key, 0, mods])
-                    }
-                    Event::Text(code) => {
-                        let Some(ch) = char::from_u32(code) else {
-                            continue;
-                        };
-                        if ch.is_control() {
-                            continue;
-                        }
-                        let mut bytes = [0; 4];
-                        ch.encode_utf8(&mut bytes);
-                        (
-                            "mty_window_keyboard",
-                            vec![app, 1, 0, u32::from_le_bytes(bytes) as i32, 0],
-                        )
-                    }
-                };
-                export(
-                    store,
-                    instance,
-                    name,
-                    &values.into_iter().map(Val::I32).collect::<Vec<_>>(),
-                )?;
+            window.events.take_batch(&mut input_batch);
+            for event in input_batch.drain(..) {
+                dispatch_input_event(store, instance, app, event)?;
             }
         }
         // Input exports can send synchronously, without waiting for the next
@@ -475,6 +486,59 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stack_input_arguments_preserve_the_guest_abi_and_signed_motion() {
+        let mut config = wasmtime::Config::new();
+        config
+            .wasm_threads(true)
+            .consume_fuel(true)
+            .epoch_interruption(true);
+        let engine = wasmtime::Engine::new(&config).unwrap();
+        let mut wat = String::from("(module (import \"env\" \"memory\" (memory 1 1 shared))");
+        for (name, count) in [
+            ("mty_window_motion", 4),
+            ("mty_window_button", 5),
+            ("mty_window_scroll", 3),
+            ("mty_window_keyboard", 5),
+            ("mty_window_update_fullscreen", 2),
+            ("mty_window_update_relative_mouse", 2),
+        ] {
+            wat.push_str(&format!(
+                "(func (export \"{name}\") (param {} )",
+                "i32 ".repeat(count)
+            ));
+            for argument in 0..count {
+                wat.push_str(&format!(
+                    " i32.const {} local.get {argument} i32.store",
+                    argument * 4
+                ));
+            }
+            wat.push_str(&format!(" i32.const 32 i32.const {count} i32.store)"));
+        }
+        wat.push(')');
+        let module = wasmtime::Module::new(&engine, wat).unwrap();
+        let (mut store, instance) = crate::instantiate(&engine, &module).unwrap();
+        store.data_mut().key_codes.insert("KeyA".into(), 99);
+        for (event, expected) in [
+            (Event::RelativeMotion(-7, 13), vec![42, 1, -7, 13]),
+            (Event::Motion(123, 456), vec![42, 0, 123, 456]),
+            (Event::Button(false, 2, 17, 19), vec![42, 0, 2, 17, 19]),
+            (Event::Scroll(-1, 3), vec![42, -1, 3]),
+            (Event::Key(true, "KeyA", 5), vec![42, 1, 99, 0, 5]),
+            (Event::Text('a' as u32), vec![42, 1, 0, 97, 0]),
+            (Event::Fullscreen(true), vec![42, 1]),
+            (Event::RelativeMode(false), vec![42, 0]),
+        ] {
+            let memory = store.data().memory.clone();
+            memory.write(0, &[0xff; 36]).unwrap();
+            dispatch_input_event(&mut store, &instance, 42, event).unwrap();
+            assert_eq!(memory.u32(32).unwrap() as usize, expected.len());
+            for (index, expected) in expected.into_iter().enumerate() {
+                assert_eq!(memory.u32((index * 4) as u32).unwrap() as i32, expected);
+            }
+        }
+    }
 
     #[test]
     fn input_wakeups_do_not_accelerate_regular_callbacks_or_trigger_catchup() {

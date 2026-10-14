@@ -334,10 +334,22 @@ impl Completion {
             self.fail_channel(FailureStage::InboundQueueFull, channel);
             return None;
         }
-        self.message_bytes += bytes.len();
-        self.messages
-            .push_back((channel, text, Bytes::copy_from_slice(bytes)));
         Some(Delivery::Queued)
+    }
+
+    fn queue_received(&mut self, channel: u16, text: bool, bytes: Bytes) -> bool {
+        // Own the already copied payload; never copy a detached read buffer
+        // while holding the connection lock.
+        if self.cancelled || self.closing || self.progress.failed {
+            return false;
+        }
+        if self.messages.len() >= 16 || self.message_bytes + bytes.len() > 4 * MAX_CHANNEL_MESSAGE {
+            self.fail_channel(FailureStage::InboundQueueFull, channel);
+            return false;
+        }
+        self.message_bytes += bytes.len();
+        self.messages.push_back((channel, text, bytes));
+        true
     }
 
     #[cfg(test)]
@@ -345,6 +357,9 @@ impl Completion {
         let Some(delivery) = self.prepare_receive(channel, text, bytes) else {
             return false;
         };
+        if matches!(delivery, Delivery::Queued) {
+            return self.queue_received(channel, text, Bytes::copy_from_slice(bytes));
+        }
         if let Some(discarded) = delivery.submit(bytes) {
             self.media_ingress.record(channel, bytes.len(), discarded);
         }
@@ -361,6 +376,13 @@ async fn read_channel(
     channel: Arc<webrtc::data::data_channel::DataChannel>,
 ) {
     let mut buffer = vec![0; MAX_CHANNEL_MESSAGE];
+    // This session mode is immutable. Native media goes straight to its sink;
+    // only control/probe receipts need an owned copy for the guest queue.
+    let queue_receipts = id == 0
+        || !shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .discard_unavailable_media;
     loop {
         let read = channel.read_data_channel(&mut buffer).await;
         let len = read.as_ref().map_or(0, |(len, _)| *len);
@@ -370,10 +392,19 @@ async fn read_channel(
                 state.fail_channel(FailureStage::DataChannelClosed, id);
                 None
             }
-            Ok((len, text)) => shared
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .prepare_receive(id, text, &buffer[..len]),
+            Ok((len, text)) => {
+                let payload = (queue_receipts && !text && len <= MAX_CHANNEL_MESSAGE)
+                    .then(|| Bytes::copy_from_slice(&buffer[..len]));
+                let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+                match state.prepare_receive(id, text, &buffer[..len]) {
+                    Some(Delivery::Queued) => payload.and_then(|payload| {
+                        state
+                            .queue_received(id, text, payload)
+                            .then_some(Delivery::Queued)
+                    }),
+                    delivery => delivery,
+                }
+            }
             Err(_) => {
                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                 state.fail_channel(FailureStage::DataChannelRead, id);
@@ -1632,6 +1663,49 @@ mod tests {
         assert_eq!(delivery.submit(&[0xf8, 0xff, 0xfe]), Some(true));
         assert!(audio.snapshot().worker_finished);
         assert_eq!(audio.snapshot().queued_samples, 0);
+    }
+
+    #[test]
+    fn receipt_queue_takes_ownership_and_rejects_retired_deliveries() {
+        let mut state = empty_completion();
+        let payload = Bytes::from(vec![0x5a; MAX_CHANNEL_MESSAGE]);
+        let pointer = payload.as_ptr();
+        assert!(state.queue_received(0, false, payload));
+        assert_eq!(state.messages.front().unwrap().2.as_ptr(), pointer);
+        assert_eq!(state.message_bytes, MAX_CHANNEL_MESSAGE);
+        for closing in [false, true] {
+            let mut retired = empty_completion();
+            assert!(matches!(
+                retired.prepare_receive(0, false, b"control"),
+                Some(Delivery::Queued)
+            ));
+            retired.closing = closing;
+            retired.cancelled = !closing;
+            assert!(!retired.queue_received(0, false, Bytes::from_static(b"control")));
+            assert!(retired.messages.is_empty());
+            assert_eq!(retired.message_bytes, 0);
+        }
+    }
+
+    #[test]
+    fn prepared_receipts_still_enforce_the_shared_queue_budget() {
+        let mut state = empty_completion();
+        for _ in 0..2 {
+            assert!(matches!(
+                state.prepare_receive(0, false, b"control"),
+                Some(Delivery::Queued)
+            ));
+        }
+        for _ in 0..16 {
+            assert!(state.queue_received(0, false, Bytes::from_static(b"control")));
+        }
+        assert!(!state.queue_received(0, false, Bytes::from_static(b"overflow")));
+        assert_eq!(state.messages.len(), 16);
+        assert_eq!(state.message_bytes, 16 * 7);
+        assert!(matches!(
+            state.progress.failure_stage,
+            Some(FailureStage::InboundQueueFull)
+        ));
     }
 
     #[test]

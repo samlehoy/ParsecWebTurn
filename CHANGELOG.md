@@ -3,6 +3,11 @@
 User-facing changes are listed below. Native versions marked **dev** are development
 builds, not published stable releases.
 
+## Unreleased
+
+- **Less input overhead:** reuse the bounded event-batch storage and pass native input arguments on the stack, avoiding repeated temporary vectors while preserving event order and immediate input wakeups.
+- **Shorter network lock holds:** copy queued control messages outside the shared connection lock so large control payloads do not hold that lock throughout the copy. Audio/video hand-off, queue limits and WebRTC reliability remain unchanged.
+
 ## 0.9.3 - Native Windows client (2026-10-14)
 
 Changes since the previous stable release, v0.7.0.

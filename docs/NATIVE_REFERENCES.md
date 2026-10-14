@@ -28,6 +28,13 @@ see [HEVC negotiation evidence and limitations](hevc-negotiation.md). No lowlat
 library, host implementation, socket/crypto replacement or copied source is
 included in our binary.
 
+The client-side reuse/critical-section changes inspired by the IO design are
+documented in [native input and network hand-off](native-input-network-handoff.md).
+They do not implement BUD in the WebRTC client. The `pmtu` source explicitly says
+its probing mechanism has no callers in this revision; its presence alone is not
+evidence of an active optimization. Host encoder settings similarly do not prove
+the internal behavior of a stock client's decoder.
+
 ## libparsec
 
 [nomi-san/libparsec](https://github.com/nomi-san/libparsec) is another useful
