@@ -120,11 +120,18 @@ impl Attempt {
             return Ok(None);
         }
         ensure!(text.len() <= 16 * 1024, "BUD signaling exceeds limit");
+        if value["action"] == "answer_relay" && value["payload"]["approved"] == true {
+            ensure!(
+                value["payload"]["data"].is_object()
+                    && value["payload"]["data"]["creds"].is_object(),
+                "malformed BUD answer"
+            );
+        }
         self.commands
             .try_send(text.to_owned())
             .context("BUD signaling queue unavailable")?;
         self.thread.unpark();
-        if value["action"] == "answer_relay" {
+        if value["action"] == "answer_relay" && value["payload"]["data"].is_object() {
             let mode = self
                 .state
                 .lock()
@@ -433,6 +440,14 @@ mod tests {
             .is_none());
         assert!(incoming.try_recv().is_err());
     }
+    #[test]
+    fn malformed_active_answer_fails_without_mutating_guest_or_queue() {
+        let (attempt, incoming) = isolated();
+        attempt.state.lock().unwrap().web_mode = Some(json!(2));
+        assert!(attempt.incoming(r#"{"action":"answer_relay","payload":{"attempt_id":"isolated","approved":true,"data":42}}"#).is_err());
+        assert!(incoming.try_recv().is_err());
+    }
+
     #[test]
     fn bud_is_explicit_and_default_settings_remain_webrtc() {
         let settings: crate::connection_settings::Settings = serde_json::from_str("{}").unwrap();

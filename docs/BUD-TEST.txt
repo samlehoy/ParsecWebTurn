@@ -5,7 +5,8 @@ and Opus audio decoders are unchanged.
 
 Extract to a separate directory. Copy your existing settings.json into that
 directory if you need your TURN settings; do not send that file to anyone.
-Start ParsecWebTurn.exe and sign in through the existing account screen.
+Close other native ParsecWebTurn instances before starting this test client.
+The normal protected account profile is reused; sign in if prompted.
 
 Settings -> Experimental BUD (UDP only) -> Save settings.
 Connect to a stock Parsec host using the normal computer picker.

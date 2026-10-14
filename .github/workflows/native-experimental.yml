@@ -38,6 +38,13 @@ jobs:
           New-Item -ItemType Directory -Path dist/bud-test -Force | Out-Null
           Copy-Item src-native/target/x86_64-pc-windows-msvc/release/parsec-web-turn.exe dist/bud-test/ParsecWebTurn.exe
           Copy-Item src-experimental/vendor/lowlat-client/LICENSE dist/bud-test/LOWLAT-LICENSE.txt
+          Copy-Item LICENSE dist/bud-test/LICENSE.txt
+          Copy-Item src-native/vendor/webrtc-0.14.0/LICENSE-MIT dist/bud-test/WEBRTC-LICENSE-MIT.txt
+          Copy-Item src-native/vendor/webrtc-0.14.0/LICENSE-APACHE dist/bud-test/WEBRTC-LICENSE-APACHE.txt
+          $opus = Get-ChildItem -Path (Join-Path $env:CARGO_HOME "registry/src/*/libopus_sys-0.3.3") -Directory | Select-Object -First 1
+          if (!$opus) { throw "Bundled Opus license directory missing" }
+          Copy-Item (Join-Path $opus.FullName "LICENSE") dist/bud-test/LIBOPUS-SYS-LICENSE.txt
+          Copy-Item (Join-Path $opus.FullName "opus/COPYING") dist/bud-test/OPUS-LICENSE.txt
           Copy-Item docs/BUD-TEST.txt dist/bud-test/README.txt
           git rev-parse HEAD | Set-Content dist/bud-test/SOURCE.txt -Encoding ascii
       - uses: actions/upload-artifact@v4
