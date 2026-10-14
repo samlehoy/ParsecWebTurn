@@ -277,27 +277,6 @@ fn pace(origin: Instant, index: usize, fps: u64) {
     std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
 }
 
-fn nvidia_capabilities() -> Result<Value> {
-    use lowlat_drivers::{cuda::Cuda, cuvid::Cuvid};
-    let cuda = Cuda::load()?;
-    let cuvid = Cuvid::load()?;
-    let mut devices = Vec::new();
-    for ordinal in 0..cuda.device_count()? {
-        let device = cuda.device(ordinal)?;
-        let context = cuda.retain_primary(&device)?;
-        context.make_current()?;
-        let caps = lowlat_decode::nvdec::caps(&cuvid);
-        let mut name = [0; 96];
-        let len = cuda.device_name(&device, &mut name)?;
-        devices.push(json!({"device":String::from_utf8_lossy(&name[..len]),"pci":device.address().as_str(),
-            "h264_decoder_created":caps.h264,"hevc_decoder_created":caps.hevc,
-            "async_surface_api":cuvid.asynchronous(),"decode_measured":false,
-            "integration_refused":"Pinned NVDEC D3D11 export copies decoded planes; no equivalent direct texture handoff verified"}));
-        context.release_current()?;
-    }
-    Ok(json!(devices))
-}
-
 pub fn probe() -> Result<Value> {
     let _runtime = Runtime::start()?;
     let d3d = D3d11::load()?;
@@ -341,7 +320,7 @@ pub fn probe() -> Result<Value> {
     }
     Ok(
         json!({"scope":"isolated GPU-only decode, same synthetic 720p clips; no live changes",
-        "adapters":adapters,"nvdec":match nvidia_capabilities() {Ok(v)=>v,Err(e)=>json!({"refused":format!("{e:#}")})},
+        "adapters":adapters,
         "p50_definition":"upper middle","p95_definition":"nearest rank","includes_network_or_present":false,
         "warning":"Output availability is not GPU completion. Completion includes offline input-view validation. No live performance or zero-copy claim."}),
     )

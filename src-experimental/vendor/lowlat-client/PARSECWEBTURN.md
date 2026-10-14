@@ -48,3 +48,6 @@ UDP totals are published from the native IO shell, independently of delivered
 media/control counters. The narrow socket-accounting copy and its exact scope
 are documented in ../lowlat-net/PARSECWEBTURN.md. Browser/SCTP transport code is
 omitted from this optional native-only dependency; our WebRTC path is unchanged.
+
+The 10-bit video preference/capability fields and associated tests were removed
+on 2026-10-14 at the application owner's request. Initialization remains 8-bit.

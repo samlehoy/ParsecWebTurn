@@ -128,6 +128,21 @@ impl Shape {
         if self.codec == Codec::H264 { 16 } else { 128 }
     }
 }
+fn offers(device: &Device, shape: Shape) -> bool {
+    let mut supported: BOOL = 0;
+    // SAFETY: the device and the profile/output pointers remain live.
+    let hr = unsafe {
+        vcall!(
+            device.video(),
+            CheckVideoDecoderFormat,
+            shape.profile(),
+            shape.surface(),
+            &raw mut supported
+        )
+    };
+    hr.is_some_and(|hr| hr >= 0) && supported != 0
+}
+
 fn create_decoder(
     device: &Device,
     shape: Shape,

@@ -610,12 +610,6 @@ mod tests {
                 assert!(hevc_configuration(&bytes[..end]).is_none());
             }
         }
-        assert_eq!(
-            hevc_configuration(&sps_fixture(3840, 2160, 0, 10))
-                .unwrap()
-                .bit_depth,
-            10
-        );
         for (w, h) in [(0, 1080), (1920, 0), (16385, 1080)] {
             assert!(hevc_configuration(&sps_fixture(w, h, 0, 8)).is_none());
         }

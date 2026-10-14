@@ -242,7 +242,6 @@ fn rows(
                 if s.codec == Some(crate::video_stream::Codec::Hevc) {
                     match p {
                         1 => "Main".into(),
-                        2 => "Main 10".into(),
                         _ => format!("HEVC profile {p}"),
                     }
                 } else {
