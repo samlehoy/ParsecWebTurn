@@ -2,3 +2,4 @@
 pub mod bud;
 #[cfg(windows)]
 pub mod intel;
+pub mod signaling;

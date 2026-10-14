@@ -29,7 +29,7 @@ fn connect(route: Route, relay_expected: bool) {
     let mut connected = [false; 2];
     let mut left_candidates = 0;
     while !connected.iter().all(|x| *x) && began.elapsed() < Duration::from_secs(10) {
-        for side in 0..2 {
+        for (side, established) in connected.iter_mut().enumerate() {
             let (source, target, target_id) = if side == 0 {
                 (&mut left, &mut right, "right")
             } else {
@@ -59,7 +59,7 @@ fn connect(route: Route, relay_expected: bool) {
                             .unwrap();
                     }
                     Event::Ready => target.ready(target_id).unwrap(),
-                    Event::Established { .. } => connected[side] = true,
+                    Event::Established { .. } => *established = true,
                     Event::Ended { outcome } => panic!("BUD path ended: {outcome:?}"),
                     _ => {}
                 }
