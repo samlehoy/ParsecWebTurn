@@ -461,7 +461,9 @@ fn run(
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut established = false;
     let mut answered_at: Option<Instant> = None;
-    let mut retried = settings.force_relay || settings.stun_only;
+    let mut retried = settings.force_relay
+        || settings.stun_only
+        || (settings.provider == "custom" && settings.turn_urls.is_empty());
     let mut wire_id = id.to_owned();
     let mut last_stats = Instant::now();
     while !cancel.load(Ordering::Acquire) {
@@ -715,6 +717,11 @@ mod tests {
         assert_eq!(guest["payload"]["attempt_id"], "isolated");
         assert_eq!(incoming.try_recv().unwrap(), response);
         assert_eq!(attempt.outgoing(r#"{"action":"candex","payload":{"attempt_id":"isolated","data":{"ip":"stale"}}}"#, None).unwrap(), Some(String::new()));
+        attempt.state.lock().unwrap().established = true;
+        withdraw_pending(&attempt.state);
+        assert_eq!(writes.lock().unwrap().len(), 2);
+        assert!(attempt.state.lock().unwrap().template.is_some());
+        attempt.state.lock().unwrap().established = false;
         send_candidate(&attempt.state, &Event::Ready).unwrap();
         let sent = writes.lock().unwrap();
         assert_eq!(sent[2]["payload"]["to"], "real-host");
