@@ -531,7 +531,6 @@ dependencies = [
 [[package]]
 name = "lowlat-client"
 version = "0.0.0"
-source = "git+https://github.com/nomi-san/lowlat?rev=5f8db5689e55de0d396b0520824caa9fc053dd86#5f8db5689e55de0d396b0520824caa9fc053dd86"
 dependencies = [
  "lowlat-audio",
  "lowlat-common",

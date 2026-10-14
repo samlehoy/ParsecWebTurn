@@ -1,0 +1,1264 @@
+//! The client's side of the signaling seam, and the one attempt it makes.
+//!
+//! The four calls of docs/04-signaling.md section 9, mirrored: a client makes
+//! the offer, so `new_attempt` produces the credentials the application puts
+//! in it, candidates come out as events for the application to relay, and
+//! `begin_p2p` takes what the answer carried. Nothing here speaks to a
+//! signaling service.
+
+use std::net::{SocketAddr, SocketAddrV4};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use lowlat_common::events;
+use lowlat_common::spsc::Ring;
+use lowlat_core::conn::Kind;
+use lowlat_core::envelope::Cipher;
+use lowlat_crypto::Credentials;
+use lowlat_decode::software;
+use lowlat_net::{Guest, Wake};
+use lowlat_portmap::Mapper;
+
+use crate::config::{Backend, Caps, Config, Decoding, FrameKind, Mapping, Port, Video};
+use crate::driver::{Telemetry, Units};
+use crate::event::{Arrival, Ask, DecoderStage, Error, Event, LEAVE_GRACE_MS, Peer, Transport};
+use crate::frames::{Frames, Held};
+use crate::input::{
+    Framer, Input, MICROPHONE_DEPTH, MicFrame, RING_DEPTH, ReportKind, Request, Viewport,
+};
+use crate::sound::{self, Packets, Sound};
+use lowlat_core::pad::{self, Product};
+
+/// Which decoders a configuration opens, and on which device, which is the
+/// platform's; the seam around them is written once.
+#[cfg(target_os = "linux")]
+#[path = "seam/linux.rs"]
+pub(crate) mod sys;
+#[cfg(windows)]
+#[path = "seam/windows.rs"]
+pub(crate) mod sys;
+
+pub use sys::Opened;
+
+#[cfg(all(test, feature = "external-video"))]
+mod external_media_tests {
+    use super::*;
+
+    fn begin(client: &mut Client) {
+        let theirs = lowlat_crypto::credentials().unwrap();
+        client
+            .new_attempt("external-test", Config::default(), Transport::Bud)
+            .unwrap();
+        client
+            .begin_p2p(
+                "external-test",
+                &Peer {
+                    ufrag: theirs.ufrag,
+                    pwd: theirs.pwd,
+                    fingerprint: theirs.fingerprint,
+                    aes256: Some(theirs.aes256),
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn application_owned_units_have_no_competing_decoder() {
+        let mut client = Client::new_external_video(
+            Caps {
+                h264: true,
+                ..Caps::default()
+            },
+            Port::Any,
+        )
+        .unwrap();
+        assert!(client.opened().is_none());
+        assert!(client.set_decoder(Backend::System, "").is_err());
+        assert!(client.set_frame_kind(FrameKind::Planes).is_err());
+        begin(&mut client);
+        assert!(client.attempt.as_ref().unwrap().decode.is_none());
+        assert!(
+            client.sound().is_none(),
+            "SDK audio decode must also remain unused"
+        );
+        assert!(client.acquire_frame(Duration::ZERO).is_err());
+        let units = client.units();
+        units.hand_over(b"original-compressed-access-unit");
+        std::thread::sleep(Duration::from_millis(10));
+        assert_eq!(units.queued(), 1, "an internal consumer stole the unit");
+        {
+            let lease = units.take().unwrap();
+            assert_eq!(lease.bytes(), b"original-compressed-access-unit");
+        }
+        assert!(client.request_external_keyframe());
+        client.end_connection("external-test");
+        assert!(!client.request_external_keyframe());
+    }
+
+    #[test]
+    fn normal_constructor_still_starts_the_sdk_consumer() {
+        let mut client = Client::new(
+            &Decoding {
+                backend: Backend::None,
+                ..Decoding::default()
+            },
+            Port::Any,
+        )
+        .unwrap();
+        begin(&mut client);
+        assert!(client.attempt.as_ref().unwrap().decode.is_some());
+        client.end_connection("external-test");
+    }
+}
+
+/// How a pad is sent: as the sixteen-button messages, or as its own reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Family {
+    Standard,
+    Raw,
+}
+
+/// How many pads' families are remembered; past that the rule cannot be
+/// applied and the pad goes through as sent.
+const PADS: usize = 8;
+
+struct Attempt {
+    id: String,
+    config: Config,
+    ours: Credentials,
+    pending: Vec<Arrival>,
+    inject: Option<mpsc::Sender<Arrival>>,
+    ask: Option<mpsc::Sender<Ask>>,
+    /// Input and the viewport, in order, to the session thread. Fixed depth;
+    /// a full ring drops the newest and counts it, never blocks the caller.
+    requests: Option<Arc<Ring<Request, RING_DEPTH>>>,
+    /// The microphone's whole frames to the session thread, the same way, and
+    /// what the application handed over that does not make one yet.
+    microphone: Option<Arc<Ring<MicFrame, MICROPHONE_DEPTH>>>,
+    framer: Framer,
+    /// The pads the application has named and which family each is sent
+    /// as, so the other family is refused until an unplug.
+    pads: [Option<(u32, Family)>; PADS],
+    thread: Option<Guest>,
+    decode: Option<(JoinHandle<()>, Arc<AtomicBool>)>,
+    /// The session thread's epoch, once it is running: the clock the sound
+    /// packets' arrival stamps are on.
+    epoch: Arc<OnceLock<lowlat_common::clock::Time>>,
+}
+
+/// The client. One attempt at a time, one session.
+#[derive(Debug)]
+pub struct Client {
+    /// ParsecWebTurn-only opt-in: the application consumes compressed units.
+    /// No SDK video decoder or decoded-frame exporter is started in this mode.
+    #[cfg(feature = "external-video")]
+    external_video: bool,
+    attempt: Option<Attempt>,
+    emit: events::Sender<Event>,
+    events: Option<events::Receiver<Event>>,
+    telemetry: Arc<Telemetry>,
+    units: Units,
+    /// The decoder opened at creation, or chosen since; none for a client
+    /// without one.
+    opened: Option<Opened>,
+    /// What that decoder takes, which the declaration is masked with.
+    caps: Caps,
+    /// A decoder chosen mid-session, for the decode thread to take once the
+    /// session thread has said the word.
+    pending: crate::decode::Pending,
+    frames: Arc<Frames>,
+    /// The newest picture handed out, so the next acquire waits for newer.
+    last_seq: u64,
+    /// The producer's handle on the sound pool, given to each session thread.
+    packets: Packets,
+    /// The consumer: decoded on the application's thread, behind a lock held
+    /// for the decode alone and never for the wait, so two callers serialise
+    /// and each takes the next packet.
+    sound: Arc<Mutex<Sound>>,
+    /// Set while an attempt taken out by [`Client::detach`] is still leaving:
+    /// its threads share the unit pool, the picture queue and the sound pool
+    /// with whatever session comes next, so no next one begins until it is
+    /// cleared.
+    leaving: Arc<AtomicBool>,
+    /// The port every attempt asks for first; zero for any.
+    port: u16,
+    /// With a mapping kept, that port itself, held between attempts: bound at
+    /// creation, lent to each attempt, and taken back by the attempt's thread
+    /// as it ends. Empty while an attempt has it, or once it was lost to
+    /// another socket in between, when the next attempt walks.
+    held: Option<Arc<Mutex<Option<lowlat_net::Socket>>>>,
+    /// The gateway keeping that port open, for the handle's life. Dropped
+    /// after the attempt, which deletes the mapping within its bound.
+    mapper: Option<Mapper>,
+    /// The translation in front of the port, as last probed or read off an
+    /// attempt.
+    nat: crate::nat::Shared,
+    /// A probe running on the port, or one that has finished and is not yet
+    /// joined.
+    probing: Option<crate::nat::Probing>,
+}
+
+/// An attempt taken out of its client and still leaving: everything the
+/// departure and the joins need, so they run without the client and whatever
+/// lock the client is behind.
+#[derive(Debug)]
+pub struct Leaving {
+    attempt: Attempt,
+    units: Units,
+    frames: Arc<Frames>,
+    sound: Arc<Mutex<Sound>>,
+    packets: Packets,
+    leaving: Arc<AtomicBool>,
+}
+
+impl Leaving {
+    /// The departure and the joins: the one call that waits.
+    pub fn finish(mut self) {
+        let attempt = &mut self.attempt;
+        if let (Some(ask), Some(thread)) = (attempt.ask.as_ref(), attempt.thread.as_mut()) {
+            // A clean departure says so on the control channel, and the loop
+            // gives the message its grace before it stops itself.
+            if ask.send(Ask::Leave).is_ok() {
+                let _ = thread.wake_handle().notify();
+                let began = lowlat_common::clock::Time::now();
+                while thread.alive()
+                    && lowlat_common::clock::elapsed_ms(began) < LEAVE_GRACE_MS * 2.0
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            thread.stop();
+        }
+        if let Some((decode, stopping)) = attempt.decode.take() {
+            // Teardown wakes before it joins: the flag, then the word the
+            // thread waits on, then the picture queue's waiters.
+            stopping.store(true, Ordering::Release);
+            self.units.wake();
+            self.frames.close();
+            let _ = decode.join();
+        }
+        // What the session left in the sound pool is its own; the next
+        // session's first packet is not to wait behind it.
+        if let Ok(mut sound) = self.sound.lock() {
+            sound.clear();
+        }
+        self.packets.wake();
+        // Release: everything above is done before a new attempt, which
+        // loads the mark with Acquire, can begin.
+        self.leaving.store(false, Ordering::Release);
+    }
+}
+
+/// Probe the machine's own codec library: found, of a licence this build
+/// loads, laid out as expected and opening a codec, or refused with the
+/// stage that says which.
+fn probe_software(dir: Option<&Path>) -> Result<Caps, DecoderStage> {
+    let lavc = lowlat_drivers::lavc::Lavc::load(dir).map_err(|refusal| {
+        use lowlat_drivers::lavc::Refusal;
+        match refusal {
+            Refusal::Licence => DecoderStage::Licence,
+            Refusal::NoDecoder => DecoderStage::Profile,
+            _ => DecoderStage::Runtime,
+        }
+    })?;
+    Ok(software::caps(&lavc))
+}
+
+/// The directory a software decoder is asked for, from the device field:
+/// none for the loader's own search.
+fn software_dir(device: &str) -> Option<PathBuf> {
+    (!device.is_empty()).then(|| PathBuf::from(device))
+}
+
+/// Of two stages the automatic order met, the one worth reporting: a
+/// library found and refused for its licence over a node that decodes
+/// nothing, that over a runtime that is absent, that over a node that did
+/// not open.
+fn most_telling(a: DecoderStage, b: DecoderStage) -> DecoderStage {
+    let rank = |stage: DecoderStage| match stage {
+        DecoderStage::Device => 0,
+        DecoderStage::Runtime => 1,
+        DecoderStage::Profile => 2,
+        DecoderStage::Licence => 3,
+        DecoderStage::Unsupported => 4,
+    };
+    if rank(b) > rank(a) { b } else { a }
+}
+
+impl std::fmt::Debug for Attempt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Attempt").field("id", &self.id).finish()
+    }
+}
+
+/// The handle's port, bound at creation with the walk an attempt makes, so
+/// that what the gateway is asked to keep open is a port this handle holds:
+/// a second handle with the same seed walks past it here, before anything is
+/// mapped. One that does not bind is logged and done without, mapping
+/// included.
+fn hold(first: u16) -> Option<(u16, lowlat_net::Socket)> {
+    let held = lowlat_net::Socket::open_or_any_port(first)
+        .and_then(|socket| Ok((socket.local_addr()?.port(), socket)));
+    match held {
+        Ok(held) => Some(held),
+        Err(error) => {
+            lowlat_common::log_warn!(
+                "client: no port mapping, the port did not bind, port={first} err={error}"
+            );
+            None
+        }
+    }
+}
+
+/// Bind `port` again into the handle's slot the moment an attempt's socket
+/// has let it go, so nothing else takes it between attempts. Taken by another
+/// socket in that moment, the walk holds the next free one, and the next
+/// attempt's mapping follows; none at all, and the next attempt walks.
+fn retake(held: &Mutex<Option<lowlat_net::Socket>>, port: u16) {
+    match lowlat_net::Socket::open(port) {
+        Ok(socket) => *held.lock().unwrap_or_else(PoisonError::into_inner) = Some(socket),
+        Err(error) => {
+            lowlat_common::log_warn!(
+                "client: the port was not taken back, port={port} err={error}"
+            );
+        }
+    }
+}
+
+/// The gateway asked to keep `port` open, on a thread of its own. One that
+/// cannot start is logged and done without: a mapping is never in the way of
+/// an attempt.
+fn mapped(port: u16, mapping: Mapping) -> Option<Mapper> {
+    let config = lowlat_portmap::Config {
+        port,
+        count: 1,
+        description: mapping.description,
+        gateway: mapping.gateway,
+    };
+    match Mapper::start(config) {
+        Ok(mapper) => Some(mapper),
+        Err(error) => {
+            lowlat_common::log_warn!(
+                "client: no port mapping, the mapper did not start, err={error}"
+            );
+            None
+        }
+    }
+}
+
+impl Client {
+    /// Create a client, opening its decoder's device once to see that it
+    /// decodes: a machine without one is refused here, with the stage named,
+    /// rather than after it has connected. A port to keep mapped is asked of
+    /// the gateway from here on, so the mapping is usually in before the
+    /// first answer.
+    pub fn new(decoding: &Decoding, port: Port) -> Result<Self, Error> {
+        let (opened, caps) = sys::choose(decoding)?;
+        let (first, held, mapper) = match port {
+            Port::Stable {
+                first,
+                mapping: Some(mapping),
+            } => match hold(first.get()) {
+                Some((bound, socket)) => (
+                    bound,
+                    Some(Arc::new(Mutex::new(Some(socket)))),
+                    mapped(bound, mapping),
+                ),
+                None => (first.get(), None, None),
+            },
+            other => (other.first(), None, None),
+        };
+        let (emit, events) = events::queue();
+        let telemetry = Arc::new(Telemetry::default());
+        let packets = Packets::new();
+        Ok(Self {
+            #[cfg(feature = "external-video")]
+            external_video: false,
+            attempt: None,
+            emit,
+            events: Some(events),
+            telemetry: Arc::clone(&telemetry),
+            units: Units::new(),
+            opened,
+            caps,
+            pending: Arc::new(Mutex::new(None)),
+            frames: Arc::new(Frames::new(decoding.ceiling(), decoding.kind)),
+            last_seq: 0,
+            sound: Arc::new(Mutex::new(Sound::new(packets.clone(), telemetry))),
+            packets,
+            leaving: Arc::new(AtomicBool::new(false)),
+            port: first,
+            held,
+            mapper,
+            nat: Arc::default(),
+            probing: None,
+        })
+    }
+
+    /// Application-owned video decode. `caps` must describe the application's
+    /// verified decoder, not the GPU's theoretical capabilities. Consume `units`
+    /// on exactly one thread, release every lease, and stop that consumer before
+    /// ending/restarting an attempt. No decoded pictures leave this client.
+    #[cfg(feature = "external-video")]
+    pub fn new_external_video(caps: Caps, port: Port) -> Result<Self, Error> {
+        if !caps.h264 {
+            return Err(Error::Decoder(DecoderStage::Profile));
+        }
+        let mut client = Self::new(
+            &Decoding {
+                backend: Backend::None,
+                ..Decoding::default()
+            },
+            port,
+        )?;
+        client.external_video = true;
+        client.caps = caps;
+        Ok(client)
+    }
+
+    /// Wake the native protocol loop after the application's decoder requests
+    /// a new keyframe. No video decoder is started or replaced here.
+    #[cfg(feature = "external-video")]
+    pub fn request_external_keyframe(&self) -> bool {
+        if !self.external_video {
+            return false;
+        }
+        let Some(thread) = self.attempt.as_ref().and_then(|a| a.thread.as_ref()) else {
+            return false;
+        };
+        self.telemetry.request.store(true, Ordering::Release);
+        let _ = thread.wake_handle().notify();
+        true
+    }
+
+    /// What the gateway states of the mapping kept for this client; none
+    /// when none is asked for.
+    pub fn mapping(&self) -> Option<lowlat_portmap::Status> {
+        self.mapper.as_ref().map(Mapper::status)
+    }
+
+    /// Ask `servers` where they see the handle's port, on a thread of its
+    /// own, until each has answered or `timeout` has passed: the port an
+    /// attempt binds, so the answers are what a peer would meet. Refused
+    /// while an attempt holds the port or another probe runs; an attempt
+    /// begun meanwhile stops it, and what was known before stands.
+    pub fn probe_nat(
+        &mut self,
+        servers: Vec<SocketAddrV4>,
+        timeout: Duration,
+    ) -> Result<(), Error> {
+        // Acquire, as at a new attempt: an attempt still leaving holds it.
+        let attempting = self.attempt.as_ref().is_some_and(|a| a.thread.is_some());
+        if attempting || self.leaving.load(Ordering::Acquire) {
+            return Err(Error::Busy);
+        }
+        let state = self
+            .nat
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .state;
+        if state == crate::nat::State::Probing {
+            return Err(Error::Busy);
+        }
+        if let Some(done) = self.probing.take() {
+            done.finish();
+        }
+        let seed = lowlat_crypto::transaction_seed().map_err(|_| Error::Crypto)?;
+        // The handle's own port, lent and given back as it was; without one
+        // held, the port an attempt would bind, for the probe alone.
+        let lent = self
+            .held
+            .as_ref()
+            .and_then(|held| held.lock().unwrap_or_else(PoisonError::into_inner).take());
+        let (socket, held) = match lent {
+            Some(socket) => (socket, self.held.clone()),
+            None => (
+                lowlat_net::Socket::open_or_any_port(self.port).map_err(|_| Error::Io)?,
+                None,
+            ),
+        };
+        let probing = crate::nat::Probing::start(socket, held, servers, seed, timeout, &self.nat)
+            .map_err(|_| Error::Io)?;
+        self.probing = Some(probing);
+        Ok(())
+    }
+
+    /// The translation in front of the port, as last probed or read off an
+    /// attempt, with the gateway's view as it stands now.
+    pub fn nat(&self) -> crate::nat::Nat {
+        let observed = *self.nat.lock().unwrap_or_else(PoisonError::into_inner);
+        crate::nat::read(&observed, self.mapping())
+    }
+
+    /// Another decoder, chosen by the application: probed here, on the
+    /// caller's thread, exactly as creation probes; a kind that does not
+    /// open answers with its stage and **nothing changes**. Before an attempt
+    /// the choice is replaced and that is all. During a session it is one
+    /// act: the declaration re-masked by the new decoder's capability and
+    /// restated where it changed, the running decoder torn down, the new one
+    /// opened on the decode thread, and exactly one keyframe request once
+    /// it can take one. **The frame kind is a preference here**: in a session
+    /// asking for handles, a decoder that hands out none is taken all the
+    /// same and its pictures come as planes, and a move back to one that
+    /// hands them out returns to handles; each slot carries its own backing,
+    /// so a picture still held stays valid where it was made.
+    pub fn set_decoder(&mut self, backend: Backend, device: &str) -> Result<(), Error> {
+        #[cfg(feature = "external-video")]
+        if self.external_video {
+            return Err(Error::Decoder(DecoderStage::Unsupported));
+        }
+        if backend == Backend::None {
+            return Err(Error::Decoder(DecoderStage::Unsupported));
+        }
+        let asked = |kind| Decoding {
+            backend,
+            device: device.to_string(),
+            kind,
+            ceiling: self.frames.ceiling(),
+        };
+        let (opened, caps) = match sys::choose(&asked(self.frames.kind())) {
+            Err(Error::Decoder(DecoderStage::Unsupported))
+                if self.frames.kind() == FrameKind::Handle =>
+            {
+                sys::choose(&asked(FrameKind::Planes))?
+            }
+            other => other?,
+        };
+        let Some(opened) = opened else {
+            return Err(Error::Decoder(DecoderStage::Unsupported));
+        };
+        self.opened = Some(opened.clone());
+        self.caps = caps;
+        let Some(attempt) = self.attempt.as_ref().filter(|a| a.thread.is_some()) else {
+            // No session: the next one starts on the new choice.
+            return Ok(());
+        };
+        let flags = attempt.config.video.flags(&caps);
+        self.telemetry
+            .declared_flags
+            .store(flags, Ordering::Relaxed);
+        if let Ok(mut slot) = self.pending.lock() {
+            *slot = Some(opened);
+        }
+        // The word travels behind the flags on the session thread, which
+        // restates the declaration first and then tells the decode thread.
+        self.request(Request::Decoder(flags));
+        Ok(())
+    }
+
+    /// Hand pictures out as `kind` from the next one on, with no keyframe:
+    /// the decoder keeps running and keeps its references, and only how its
+    /// pictures leave changes. Handles are refused by a decoder that hands
+    /// out none, and nothing changes then.
+    pub fn set_frame_kind(&mut self, kind: FrameKind) -> Result<(), Error> {
+        #[cfg(feature = "external-video")]
+        if self.external_video {
+            return Err(Error::Decoder(DecoderStage::Unsupported));
+        }
+        let exports = self.opened.as_ref().is_some_and(Opened::exports);
+        if kind == FrameKind::Handle && !exports {
+            return Err(Error::Decoder(DecoderStage::Unsupported));
+        }
+        self.frames.set_kind(kind);
+        Ok(())
+    }
+
+    /// The decoder opened at creation, or chosen since, if there is one.
+    pub fn opened(&self) -> Option<&Opened> {
+        self.opened.as_ref()
+    }
+
+    /// What the decoder takes.
+    pub fn caps(&self) -> &Caps {
+        &self.caps
+    }
+
+    /// The picture queue.
+    pub fn frames(&self) -> &Arc<Frames> {
+        &self.frames
+    }
+
+    /// The newest picture, newer than the last one handed out, waiting up
+    /// to `timeout`. `Ok(None)` when none came in time.
+    pub fn acquire_frame(&mut self, timeout: Duration) -> Result<Option<Held>, Error> {
+        #[cfg(feature = "external-video")]
+        if self.external_video {
+            return Err(Error::Decoder(DecoderStage::Unsupported));
+        }
+        if self.attempt.is_none() {
+            return Err(Error::NoSession);
+        }
+        match self.frames.acquire(self.last_seq, timeout) {
+            Ok(Some(held)) => {
+                self.last_seq = held.seq;
+                Ok(Some(held))
+            }
+            Ok(None) => Ok(None),
+            Err(crate::frames::TooManyHeld) => Err(Error::TooManyHeld),
+        }
+    }
+
+    /// The sequence of the newest picture handed out, for a caller that
+    /// waits on the queue itself and reports back what it took.
+    pub fn last_seq(&self) -> u64 {
+        self.last_seq
+    }
+
+    pub fn set_last_seq(&mut self, seq: u64) {
+        self.last_seq = self.last_seq.max(seq);
+    }
+
+    /// When an arrival stamp was taken, in microseconds of the named
+    /// monotonic clock: its age on the session loop's epoch, taken from a
+    /// reading of that clock made at once. Zero without a running loop or
+    /// the clock.
+    pub fn arrived_us(&self, stamp: u32) -> u64 {
+        let Some(epoch) = self.attempt.as_ref().and_then(|a| a.epoch.get().copied()) else {
+            return 0;
+        };
+        let named = lowlat_common::clock::monotonic_us();
+        if named == 0 {
+            return 0;
+        }
+        let age = crate::driver::stamp_age_us(lowlat_common::clock::elapsed_ms(epoch), stamp);
+        named.saturating_sub(u64::from(age))
+    }
+
+    /// The application is done with a picture.
+    pub fn release_frame(&mut self, index: usize) {
+        self.frames.release(index);
+    }
+
+    /// What a caller waits on for sound outside the handle's lock: the
+    /// consumer, the pool's handle, and the session thread's epoch for the
+    /// age. `None` without a session.
+    pub fn sound(&self) -> Option<Listening> {
+        #[cfg(feature = "external-video")]
+        if self.external_video {
+            return None;
+        }
+        let attempt = self
+            .attempt
+            .as_ref()
+            .filter(|attempt| attempt.thread.is_some())?;
+        Some(Listening {
+            sound: Arc::clone(&self.sound),
+            packets: self.packets.clone(),
+            epoch: Arc::clone(&attempt.epoch),
+        })
+    }
+
+    /// Sole compressed-audio consumer in application-decoded media mode.
+    #[cfg(feature = "external-video")]
+    pub fn take_external_audio(&mut self) -> Result<Option<sound::EncodedAudio<'_>>, Error> {
+        if !self.external_video {
+            return Err(Error::Decoder(DecoderStage::Unsupported));
+        }
+        if self.attempt.is_none() {
+            return Err(Error::NoSession);
+        }
+        Ok(self.packets.take_encoded())
+    }
+
+    /// Sound packets handed over by the session thread and not yet taken.
+    pub fn sound_queued(&self) -> usize {
+        self.packets.queued()
+    }
+}
+
+/// The handles an `acquire_audio` needs, taken from the seam under its lock
+/// and used outside it.
+#[derive(Debug, Clone)]
+pub struct Listening {
+    sound: Arc<Mutex<Sound>>,
+    packets: Packets,
+    epoch: Arc<OnceLock<lowlat_common::clock::Time>>,
+}
+
+impl Listening {
+    /// The next sound packet into `out`, waiting up to `timeout`. The lock
+    /// on the consumer is taken for the decode and not for the wait.
+    pub fn acquire(
+        &self,
+        timeout: Duration,
+        out: &mut [i16],
+    ) -> Result<Option<sound::Acquired>, Error> {
+        let began = lowlat_common::clock::Time::now();
+        let mut remaining = timeout;
+        loop {
+            let now_ms = self
+                .epoch
+                .get()
+                .map_or(0.0, |base| lowlat_common::clock::elapsed_ms(*base));
+            let taken = {
+                let mut guard = self.sound.lock().map_err(|_| Error::NoSession)?;
+                guard.acquire(now_ms, Duration::ZERO, out)
+            };
+            match taken {
+                Ok(Some(acquired)) => return Ok(Some(acquired)),
+                Ok(None) => {}
+                Err(sound::TooSmall(frames)) => return Err(Error::TooSmall(frames)),
+            }
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            self.packets.wait(remaining);
+            let elapsed = lowlat_common::clock::elapsed_ms(began);
+            let total = timeout.as_secs_f64() * 1000.0;
+            remaining = if elapsed >= total {
+                Duration::ZERO
+            } else {
+                Duration::from_secs_f64((total - elapsed) / 1000.0)
+            };
+        }
+    }
+}
+
+impl Client {
+    /// Mint the credentials the offer carries.
+    ///
+    /// **The media key is a capability signal.** An offer that carries one
+    /// tells the host both sides can take the 256-bit cipher; the key that
+    /// actually seals the session is the host's, from its answer. Leaving it
+    /// out is how a client asks for the legacy cipher.
+    pub fn new_attempt(
+        &mut self,
+        id: &str,
+        config: Config,
+        transport: Transport,
+    ) -> Result<Credentials, Error> {
+        if transport == Transport::Web {
+            return Err(Error::Transport);
+        }
+        // An attempt still leaving is still one: its threads are running.
+        // Acquire, pairing with the Release that clears the mark once they
+        // are joined.
+        if self.attempt.is_some() || self.leaving.load(Ordering::Acquire) {
+            return Err(Error::Busy);
+        }
+        let mut ours = lowlat_crypto::credentials().map_err(|_| Error::Crypto)?;
+        // **The attempt starts from nothing the last session left**, and no
+        // thread of that session is running: there is no attempt and none is
+        // leaving. Its figures are not this one's, so the status reads as
+        // connecting and counts from zero; its events are not handed out under
+        // this one's name; its units are not the next decoder's first.
+        let telemetry = Arc::new(Telemetry::default());
+        if let Ok(mut sound) = self.sound.lock() {
+            *sound = Sound::new(self.packets.clone(), Arc::clone(&telemetry));
+        }
+        self.telemetry = telemetry;
+        self.emit.clear();
+        self.units.clear();
+        // The departure closed the queue so no waiter was stranded; this
+        // attempt's pictures are waited for again from here, the answer's
+        // wait included.
+        self.frames.reopen();
+        if config.legacy_cipher {
+            ours.aes256 = String::new();
+        }
+        self.attempt = Some(Attempt {
+            id: id.to_string(),
+            config,
+            ours: ours.clone(),
+            pending: Vec::new(),
+            inject: None,
+            ask: None,
+            requests: None,
+            microphone: None,
+            framer: Framer::default(),
+            pads: [None; PADS],
+            thread: None,
+            decode: None,
+            epoch: Arc::new(OnceLock::new()),
+        });
+        Ok(ours)
+    }
+
+    /// A candidate arrived from the host. `sync` marks a readiness signal,
+    /// not an address; unknown attempts are a no-op.
+    pub fn add_candidate(&mut self, id: &str, addr: SocketAddr, sync: bool, kind: Kind) {
+        let Some(attempt) = self.attempt.as_mut().filter(|attempt| attempt.id == id) else {
+            return;
+        };
+        // The marker's address is never read, so the family is asked of real
+        // candidates only.
+        if !sync && !attempt.config.admits(addr) {
+            lowlat_common::log_info!(
+                "client: attempt={} declined an IPv6 candidate, addr={}",
+                id,
+                addr
+            );
+            return;
+        }
+        let arrival = if sync {
+            Arrival::PeerReady
+        } else {
+            Arrival::Candidate(addr, kind)
+        };
+        match (&attempt.inject, &attempt.thread) {
+            (Some(inject), Some(thread)) => {
+                if inject.send(arrival).is_ok() {
+                    let _ = thread.wake_handle().notify();
+                }
+            }
+            _ => attempt.pending.push(arrival),
+        }
+    }
+
+    /// The answer arrived. Bind, start connectivity, and begin trickling
+    /// candidates as events.
+    pub fn begin_p2p(&mut self, id: &str, theirs: &Peer) -> Result<(), Error> {
+        let attempt = self
+            .attempt
+            .as_mut()
+            .filter(|attempt| attempt.id == id)
+            .ok_or(Error::UnknownAttempt)?;
+        if attempt.thread.is_some() {
+            return Err(Error::AlreadyBegun);
+        }
+
+        // **Keyed from the answer's block.** The host seals both directions
+        // with its own material: its media key when both ends offered one,
+        // its certificate digest under the legacy cipher when either did not.
+        // The cipher is decided by presence, never by a string's length.
+        let (cipher, source) = match (&theirs.aes256, attempt.ours.aes256.is_empty()) {
+            (Some(key), false) if !key.is_empty() => (Cipher::Aes256, key.as_str()),
+            _ => (Cipher::Aes128, theirs.fingerprint.as_str()),
+        };
+        let key_len = cipher.key_len();
+        let (key, prefix) =
+            lowlat_crypto::key_material(source, key_len).map_err(|_| Error::Credentials)?;
+        let mut material = [0u8; 36];
+        material
+            .get_mut(..key_len)
+            .ok_or(Error::Credentials)?
+            .copy_from_slice(key.get(..key_len).ok_or(Error::Credentials)?);
+        material
+            .get_mut(key_len..key_len + prefix.len())
+            .ok_or(Error::Credentials)?
+            .copy_from_slice(&prefix);
+        if cipher == Cipher::Aes128 {
+            lowlat_common::log_info!(
+                "client: attempt={} takes the legacy cipher, the exchange carried no media key",
+                id
+            );
+        }
+        let seed = lowlat_crypto::transaction_seed().map_err(|_| Error::Crypto)?;
+        let relay_seed = lowlat_crypto::transaction_seed().map_err(|_| Error::Crypto)?;
+        // What an earlier attempt's relay left in the status is not this
+        // attempt's.
+        self.telemetry.relayed.store(0, Ordering::Relaxed);
+        self.telemetry.path_relayed.store(false, Ordering::Relaxed);
+
+        // A probe on the port gives way: stopped, and the port given back.
+        if let Some(probing) = self.probing.take() {
+            probing.finish();
+        }
+        // The handle's own port when it holds one, lent for the attempt;
+        // otherwise bound here, the walk stepping past a port that is taken.
+        let lent = self
+            .held
+            .as_ref()
+            .and_then(|held| held.lock().unwrap_or_else(PoisonError::into_inner).take());
+        let socket = match lent {
+            Some(socket) => socket,
+            None => lowlat_net::Socket::open_or_any_port(self.port).map_err(|_| Error::Io)?,
+        };
+        let bound = socket.local_addr().map_err(|_| Error::Io)?.port();
+        // A port taken by something else walked the bind up, and the mapping
+        // follows it; and the gateway is looked at again for the attempt.
+        if let Some(mapper) = &self.mapper {
+            mapper.set_port(bound);
+            mapper.refresh();
+        }
+        let wake = Wake::new().map_err(|_| Error::Io)?;
+        let shell_wake = wake.handle().map_err(|_| Error::Io)?;
+
+        let (inject, arrivals) = mpsc::channel::<Arrival>();
+        for arrival in attempt.pending.drain(..) {
+            let _ = inject.send(arrival);
+        }
+        let (ask, asked) = mpsc::channel::<Ask>();
+        let requests: Arc<Ring<Request, RING_DEPTH>> = Arc::new(Ring::new());
+        let microphone: Arc<Ring<MicFrame, MICROPHONE_DEPTH>> = Arc::new(Ring::new());
+
+        if attempt.config.ipv4_only {
+            lowlat_common::log_info!("client: attempt={} offers and checks IPv4 only", id);
+        }
+        // Gathered before the session thread starts, which is handed them: a
+        // reflexive answer that repeats one is not offered again.
+        let hosts: Vec<SocketAddr> = if attempt.config.relay.is_none() {
+            lowlat_net::host_addresses(attempt.config.shared_address_space)
+                .into_iter()
+                .map(|ip| SocketAddr::new(ip, bound))
+                .filter(|addr| attempt.config.admits(*addr))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let args = crate::shell::Attached {
+            socket,
+            servers: attempt
+                .config
+                .servers
+                .iter()
+                .copied()
+                .filter(|server| attempt.config.admits(*server))
+                .collect(),
+            hosts: hosts.clone(),
+            relay: attempt.config.relay.clone(),
+            relay_seed,
+            mapping: self.mapper.as_ref().map(Mapper::reader),
+            nat: Arc::clone(&self.nat),
+            ours: (attempt.ours.ufrag.clone(), attempt.ours.pwd.clone()),
+            theirs: (theirs.ufrag.clone(), theirs.pwd.clone()),
+            material,
+            cipher,
+            seed,
+            init: {
+                let init = attempt.config.init(&self.caps);
+                self.telemetry
+                    .asked_flags
+                    .store(attempt.config.video.asked(), Ordering::Relaxed);
+                self.telemetry
+                    .declared_flags
+                    .store(init.flags, Ordering::Relaxed);
+                init
+            },
+            arrivals,
+            asked,
+            requests: Arc::clone(&requests),
+            microphone: Arc::clone(&microphone),
+            emit: self.emit.clone(),
+            telemetry: Arc::clone(&self.telemetry),
+            units: self.units.clone(),
+            packets: self.packets.clone(),
+            epoch: Arc::clone(&attempt.epoch),
+        };
+        let held = self.held.clone();
+        let thread = Guest::spawn(wake, move |wake, running| {
+            crate::shell::run(args, wake, running);
+            // The attempt's socket closed with its loop: the port is taken
+            // back at once, before anything else can bind it in between.
+            if let Some(held) = held {
+                retake(&held, bound);
+            }
+        })
+        .map_err(|_| Error::Io)?;
+        attempt.inject = Some(inject);
+        attempt.ask = Some(ask);
+        attempt.requests = Some(requests);
+        attempt.microphone = Some(microphone);
+        attempt.thread = Some(thread);
+
+        // The decode thread, beside it. It opens the device itself and
+        // holds it for its life. Without a decoder the units are dropped
+        // where they land, so the pool never fills.
+        #[cfg(feature = "external-video")]
+        let internal_video = !self.external_video;
+        #[cfg(not(feature = "external-video"))]
+        let internal_video = true;
+        if internal_video {
+            let stopping = Arc::new(AtomicBool::new(false));
+            let decode_args = crate::decode::Attached {
+                opened: self.opened.clone(),
+                pending: Arc::clone(&self.pending),
+                units: self.units.clone(),
+                frames: Arc::clone(&self.frames),
+                telemetry: Arc::clone(&self.telemetry),
+                shell: shell_wake,
+                stopping: Arc::clone(&stopping),
+            };
+            let decode = std::thread::Builder::new()
+                .name("lowlat-decode".into())
+                .spawn(move || crate::decode::run(decode_args))
+                .map_err(|_| Error::Io)?;
+            attempt.decode = Some((decode, stopping));
+        }
+        self.last_seq = 0;
+
+        // A relay attempt offers the relayed address and nothing else, once the
+        // relay has one; the session thread raises it and the readiness
+        // marker after it.
+        if attempt.config.relay.is_none() {
+            for addr in hosts {
+                self.emit.send(Event::Candidate {
+                    addr,
+                    from_stun: false,
+                    lan: true,
+                });
+            }
+            // After the candidates, which is the order a peer expects: "that
+            // is all of mine, now yours".
+            self.emit.send(Event::Ready);
+        }
+        Ok(())
+    }
+
+    /// Leave, or abandon an attempt that never began. Emits nothing: the
+    /// application caused this.
+    pub fn end_connection(&mut self, id: &str) {
+        if let Some(leaving) = self.detach(id) {
+            leaving.finish();
+        }
+    }
+
+    /// Take the attempt out to leave it, and wait for nothing. From here the
+    /// client answers as having no attempt and refuses a new one until
+    /// [`Leaving::finish`] has joined the threads: the departure's grace and
+    /// the joins take a quarter of a second or more, and a caller holding the
+    /// client behind a lock makes every other call wait that long unless it
+    /// finishes outside it.
+    pub fn detach(&mut self, id: &str) -> Option<Leaving> {
+        let attempt = self.attempt.take_if(|attempt| attempt.id == id)?;
+        // Relaxed: set and read by whoever holds the client exclusively; only
+        // the clearing crosses to another thread.
+        self.leaving.store(true, Ordering::Relaxed);
+        Some(Leaving {
+            attempt,
+            units: self.units.clone(),
+            frames: Arc::clone(&self.frames),
+            sound: Arc::clone(&self.sound),
+            packets: self.packets.clone(),
+            leaving: Arc::clone(&self.leaving),
+        })
+    }
+
+    /// Hand the session thread one request and wake it.
+    ///
+    /// **A full ring drops the request and counts it.** The caller is the
+    /// application's thread and is never blocked; a ring that fills is a
+    /// session thread that is not running.
+    fn request(&mut self, request: Request) -> bool {
+        let Some(attempt) = self.attempt.as_ref() else {
+            return false;
+        };
+        let (Some(requests), Some(thread)) = (attempt.requests.as_ref(), attempt.thread.as_ref())
+        else {
+            return false;
+        };
+        if requests.push(request).is_err() {
+            self.telemetry.input_dropped.fetch_add(1, Ordering::Relaxed);
+        } else {
+            // Every push wakes the loop. Waking only when the ring was empty
+            // loses the wake that lands between the consumer's last pop and
+            // its sleep, and the report then waits for the next timer.
+            let _ = thread.wake_handle().notify();
+        }
+        true
+    }
+
+    /// A new preference for the picture, mid-session. The declaration is
+    /// masked by capability as at the attempt, restated to the host, and the
+    /// decoder torn down with a keyframe asked for, so the next one builds
+    /// for whatever the host now sends. Refused without an attempt to apply
+    /// it to.
+    pub fn set_video(&mut self, video: Video) -> Result<(), Error> {
+        let Some(attempt) = self.attempt.as_mut() else {
+            return Err(Error::UnknownAttempt);
+        };
+        attempt.config.video = video;
+        let flags = video.flags(&self.caps);
+        self.telemetry
+            .asked_flags
+            .store(video.asked(), Ordering::Relaxed);
+        self.telemetry
+            .declared_flags
+            .store(flags, Ordering::Relaxed);
+        self.request(Request::Video(flags));
+        Ok(())
+    }
+
+    /// Where the application drew the picture, in the units its positions
+    /// use. False if there is no session.
+    pub fn set_viewport(&mut self, viewport: Viewport) -> bool {
+        self.request(Request::Viewport(viewport))
+    }
+
+    /// One input report. `Err(NoSession)` without one; a full ring drops it
+    /// and counts it rather than saying so here. A state, button or axis for
+    /// a pad sent as its own reports is refused (`PadFamily`); an unplug
+    /// forgets the pad's family. The application's own message is refused for
+    /// an opcode it may not carry (`Opcode`), session or not, and forgets
+    /// nothing.
+    pub fn send_input(&mut self, input: Input) -> Result<(), Error> {
+        let pad = match input {
+            Input::PadState { pad, .. }
+            | Input::PadButton { pad, .. }
+            | Input::PadAxis { pad, .. } => Some(pad),
+            Input::PadUnplug { pad } => {
+                self.forget_pad(pad);
+                None
+            }
+            Input::Control { opcode, .. } if !crate::input::sendable(opcode) => {
+                return Err(Error::Opcode);
+            }
+            _ => None,
+        };
+        if let Some(pad) = pad {
+            self.claim_pad(pad, Family::Standard)?;
+        }
+        if self.request(Request::Input(input)) {
+            Ok(())
+        } else {
+            Err(Error::NoSession)
+        }
+    }
+
+    /// A DualShock 4's or a DualSense's own report, as the pad delivered it
+    /// (docs/10-client.md section 8): normalised to the USB form here, on the
+    /// application's thread, and handed to the session thread with the
+    /// product and the transport. `Report` for one this path does not carry,
+    /// `PadFamily` for a pad already sent as states.
+    pub fn send_pad_report(
+        &mut self,
+        pad: u32,
+        product: Product,
+        kind: ReportKind,
+        report: &[u8],
+    ) -> Result<(), Error> {
+        let mut normalised = [0u8; pad::INPUT_LEN];
+        let (transport, len) = match kind {
+            ReportKind::Input => {
+                let transport = pad::normalize_input(product, report, &mut normalised)
+                    .map_err(|_| Error::Report)?;
+                (transport, pad::INPUT_LEN)
+            }
+            ReportKind::Feature => {
+                let mut feature = [0u8; pad::FEATURE_MAX];
+                let (_, len) = pad::normalize_feature(product, report, &mut feature)
+                    .map_err(|_| Error::Report)?;
+                if let (Some(dst), Some(src)) = (normalised.get_mut(..len), feature.get(..len)) {
+                    dst.copy_from_slice(src);
+                }
+                // A feature report says nothing about the transport: a
+                // wireless pad's checksum was stripped above, and the mapper
+                // keeps what the input reports said.
+                (pad::Transport::Usb, len)
+            }
+        };
+        self.claim_pad(pad, Family::Raw)?;
+        let input = Input::PadReport {
+            pad,
+            product,
+            kind,
+            transport,
+            len: u8::try_from(len).unwrap_or(u8::MAX),
+            report: normalised,
+        };
+        if self.request(Request::Input(input)) {
+            Ok(())
+        } else {
+            Err(Error::NoSession)
+        }
+    }
+
+    /// Record which family a pad is sent as, refusing the other.
+    fn claim_pad(&mut self, pad: u32, family: Family) -> Result<(), Error> {
+        let Some(attempt) = self.attempt.as_mut() else {
+            return Err(Error::NoSession);
+        };
+        if let Some((_, known)) = attempt.pads.iter().flatten().find(|(id, _)| *id == pad) {
+            return if *known == family {
+                Ok(())
+            } else {
+                Err(Error::PadFamily)
+            };
+        }
+        if let Some(slot) = attempt.pads.iter_mut().find(|s| s.is_none()) {
+            *slot = Some((pad, family));
+        }
+        Ok(())
+    }
+
+    fn forget_pad(&mut self, pad: u32) {
+        if let Some(attempt) = self.attempt.as_mut() {
+            for slot in attempt.pads.iter_mut() {
+                if slot.is_some_and(|(id, _)| id == pad) {
+                    *slot = None;
+                }
+            }
+        }
+    }
+
+    /// Send the host's application a message. False if there is no session.
+    pub fn send_user_data(&mut self, id: u32, text: &[u8]) -> bool {
+        let Some(attempt) = self.attempt.as_ref() else {
+            return false;
+        };
+        match (attempt.ask.as_ref(), attempt.thread.as_ref()) {
+            (Some(ask), Some(thread)) => {
+                ask.send(Ask::UserData(id, text.to_vec())).is_ok()
+                    && thread.wake_handle().notify().is_ok()
+            }
+            _ => false,
+        }
+    }
+
+    /// The application's microphone, as many samples as it has: cut into
+    /// whole frames here, the remainder carried to the next call, and handed
+    /// to the session thread (docs/10-client.md section 6). `MicrophoneOff`
+    /// while the host's answer is no, the partial frame forgotten with it;
+    /// `NoSession` without one. A full ring drops the newest frame and counts
+    /// it rather than blocking.
+    pub fn send_microphone(&mut self, samples: &[i16]) -> Result<(), Error> {
+        let Some(attempt) = self.attempt.as_mut() else {
+            return Err(Error::NoSession);
+        };
+        if self.telemetry.microphone_off.load(Ordering::Relaxed) {
+            attempt.framer.clear();
+            return Err(Error::MicrophoneOff);
+        }
+        let (Some(ring), Some(thread)) = (attempt.microphone.as_ref(), attempt.thread.as_ref())
+        else {
+            return Err(Error::NoSession);
+        };
+        let telemetry = &self.telemetry;
+        let mut pushed = false;
+        attempt.framer.feed(samples, |frame| {
+            if ring.push(*frame).is_err() {
+                telemetry.microphone_dropped.fetch_add(1, Ordering::Relaxed);
+            } else {
+                pushed = true;
+            }
+        });
+        if pushed {
+            let _ = thread.wake_handle().notify();
+        }
+        Ok(())
+    }
+
+    /// What the loop reports about itself.
+    pub fn telemetry(&self) -> &Telemetry {
+        &self.telemetry
+    }
+
+    /// Where received access units come out, for the consumer of them.
+    pub fn units(&self) -> Units {
+        self.units.clone()
+    }
+
+    pub fn poll_event(&mut self) -> Option<events::Received<Event>> {
+        self.events.as_ref().and_then(events::Receiver::try_recv)
+    }
+
+    /// Give the application the queue itself, once, so it can wait on it.
+    pub fn take_events(&mut self) -> Option<events::Receiver<Event>> {
+        self.events.take()
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        if let Some(id) = self.attempt.as_ref().map(|attempt| attempt.id.clone()) {
+            self.end_connection(&id);
+        }
+        if let Some(probing) = self.probing.take() {
+            probing.finish();
+        }
+    }
+}

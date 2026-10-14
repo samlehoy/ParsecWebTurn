@@ -1,0 +1,459 @@
+//! The session's thread: the shell around the driver.
+//!
+//! Builds the connectivity engine and the session on the socket the seam
+//! opened, lends them their rings for the life of the thread, and runs the
+//! shell's loop with the driver as its application.
+
+use std::net::{SocketAddr, SocketAddrV4};
+use std::sync::mpsc;
+use std::sync::{Arc, OnceLock};
+
+use lowlat_common::clock::Time;
+use lowlat_common::events;
+use lowlat_common::spsc::Ring;
+use lowlat_core::channel::{RecvRing, SlotMeta};
+use lowlat_core::conn::{Conn, Credentials};
+use lowlat_core::control::CONTROL_CHANNEL;
+use lowlat_core::endpoint::Endpoint;
+use lowlat_core::envelope::{Cipher, Envelope};
+use lowlat_core::init::Init;
+use lowlat_core::relay::{Relay, State as RelayState};
+use lowlat_core::send::{SendRing, SendSlot};
+use lowlat_core::session::Session;
+use lowlat_core::stun::canonical;
+use lowlat_net::{Running, Shell, Socket, Wake};
+use lowlat_portmap::{Reader, confirmed};
+use std::sync::atomic::Ordering;
+
+use crate::config;
+use crate::driver::{Driver, Telemetry, Units, pack_relayed};
+use crate::event::{Arrival, Ask, Event, Outcome};
+use crate::input::{MICROPHONE_DEPTH, MicFrame, RING_DEPTH, Request};
+use crate::sound::Packets;
+use crate::{
+    AUDIO_CHANNEL, AUDIO_RECV_SLOTS, BODY, CONTROL_RECV_SLOTS, CONTROL_SEND_SLOTS, VIDEO_CHANNEL,
+    VIDEO_RECV_SLOTS,
+};
+
+/// How often the loop trickles reflexive candidates, in passes.
+const REPORT_EVERY: u32 = 16;
+
+/// Everything the thread is handed at spawn.
+pub(crate) struct Attached {
+    pub socket: Socket,
+    pub servers: Vec<SocketAddr>,
+    /// The host candidates the seam raises as the thread starts. A reflexive
+    /// answer that repeats one is not raised again.
+    pub hosts: Vec<SocketAddr>,
+    /// The relay a relay attempt goes through, and the seed its transaction
+    /// identifiers are derived from.
+    pub relay: Option<config::Relay>,
+    pub relay_seed: [u8; 16],
+    /// The gateway's mapping of the attempt's port, read without a lock;
+    /// none when no mapping is kept.
+    pub mapping: Option<Reader>,
+    /// Where the translation in front of the port is kept, for what the
+    /// attempt's own reflexive answers say of it.
+    pub nat: crate::nat::Shared,
+    pub ours: (String, String),
+    pub theirs: (String, String),
+    pub material: [u8; 36],
+    pub cipher: Cipher,
+    pub seed: [u8; 16],
+    pub init: Init,
+    pub arrivals: mpsc::Receiver<Arrival>,
+    pub asked: mpsc::Receiver<Ask>,
+    /// The consumer end of the input ring; the seam holds the producer.
+    pub requests: Arc<Ring<Request, RING_DEPTH>>,
+    /// The consumer end of the microphone's ring, likewise.
+    pub microphone: Arc<Ring<MicFrame, MICROPHONE_DEPTH>>,
+    pub emit: events::Sender<Event>,
+    pub telemetry: Arc<Telemetry>,
+    pub units: Units,
+    pub packets: Packets,
+    /// Set to the loop's epoch once it has one, so the application's
+    /// thread can read the arrival stamps sound packets carry.
+    pub epoch: Arc<OnceLock<Time>>,
+}
+
+fn attach_recv<'a>(
+    session: &mut Session<'a>,
+    channel: u8,
+    bodies: &'a mut [u8],
+    meta: &'a mut [SlotMeta],
+) -> bool {
+    match RecvRing::new(bodies, meta, BODY) {
+        Ok(ring) => session.attach_recv(channel, ring).is_ok(),
+        Err(_) => false,
+    }
+}
+
+fn attach_send<'a>(
+    session: &mut Session<'a>,
+    channel: u8,
+    bodies: &'a mut [u8],
+    meta: &'a mut [SendSlot],
+) -> bool {
+    match SendRing::new(bodies, meta, BODY, channel) {
+        Ok(ring) => session.attach_send(channel, ring).is_ok(),
+        Err(_) => false,
+    }
+}
+
+pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
+    let Attached {
+        socket,
+        servers,
+        hosts,
+        relay,
+        relay_seed,
+        mapping,
+        nat,
+        ours,
+        theirs,
+        material,
+        cipher,
+        seed,
+        init,
+        arrivals,
+        asked,
+        requests,
+        microphone,
+        emit,
+        telemetry,
+        units,
+        packets,
+        epoch,
+    } = args;
+    let mut conn = Conn::new(
+        Credentials {
+            local_ufrag: &ours.0,
+            local_pwd: &ours.1,
+            remote_ufrag: &theirs.0,
+            remote_pwd: &theirs.1,
+        },
+        seed,
+        0.0,
+    );
+    // A relay attempt asks no reflexive server: its socket talks to the
+    // relay alone.
+    if relay.is_none() {
+        for server in &servers {
+            let _ = conn.add_server(*server);
+        }
+    }
+
+    // Allocated once, here, and lent to the rings for the life of the
+    // thread. **Video and sound are received and never sent**, so those
+    // channels have no send ring; control goes both ways.
+    let mut control_recv_bodies = vec![0u8; BODY * CONTROL_RECV_SLOTS];
+    let mut control_recv_meta = vec![SlotMeta::default(); CONTROL_RECV_SLOTS];
+    let mut control_send_bodies = vec![0u8; BODY * CONTROL_SEND_SLOTS];
+    let mut control_send_meta = vec![SendSlot::default(); CONTROL_SEND_SLOTS];
+    let mut video_recv_bodies = vec![0u8; BODY * VIDEO_RECV_SLOTS];
+    let mut video_recv_meta = vec![SlotMeta::default(); VIDEO_RECV_SLOTS];
+    let mut audio_recv_bodies = vec![0u8; BODY * AUDIO_RECV_SLOTS];
+    let mut audio_recv_meta = vec![SlotMeta::default(); AUDIO_RECV_SLOTS];
+
+    // The cipher, kept here for the thread's life and lent to the envelope.
+    let Ok(record) = lowlat_crypto::Record::new(&material, cipher) else {
+        emit.send(Event::Ended {
+            outcome: Outcome::TransportFailed,
+        });
+        return;
+    };
+    let Ok(envelope) = Envelope::lent(&record, &material, cipher) else {
+        emit.send(Event::Ended {
+            outcome: Outcome::TransportFailed,
+        });
+        return;
+    };
+    let mut session = Session::new(envelope, 1, 0.0);
+    if !attach_recv(
+        &mut session,
+        CONTROL_CHANNEL,
+        &mut control_recv_bodies,
+        &mut control_recv_meta,
+    ) || !attach_send(
+        &mut session,
+        CONTROL_CHANNEL,
+        &mut control_send_bodies,
+        &mut control_send_meta,
+    ) || !attach_recv(
+        &mut session,
+        VIDEO_CHANNEL,
+        &mut video_recv_bodies,
+        &mut video_recv_meta,
+    ) || !attach_recv(
+        &mut session,
+        AUDIO_CHANNEL,
+        &mut audio_recv_bodies,
+        &mut audio_recv_meta,
+    ) {
+        emit.send(Event::Ended {
+            outcome: Outcome::TransportFailed,
+        });
+        return;
+    }
+    let endpoint = match &relay {
+        Some(relay) => Endpoint::relayed(
+            conn,
+            session,
+            Relay::new(
+                relay.server,
+                &relay.username,
+                &relay.password,
+                relay_seed,
+                0.0,
+            ),
+        ),
+        None => Endpoint::new(conn, session),
+    };
+    let mut shell = Shell::new(socket, wake, endpoint);
+    let _ = epoch.set(shell.base());
+    let mut driver = Driver::new(init, units, packets, emit.clone(), Arc::clone(&telemetry));
+    let mut reported: Vec<SocketAddr> = Vec::new();
+    let mut offered = false;
+    let mut mapped = false;
+    let mut pass: u32 = 0;
+
+    while !running.stopping() {
+        let arrivals = &arrivals;
+        let asked = &asked;
+        let requests = &requests;
+        let microphone = &microphone;
+        let driving = &mut driver;
+        let mut leaving = false;
+        let mut ended: Option<Outcome> = None;
+        let turn = match shell.turn(|endpoint| {
+            while let Ok(arrival) = arrivals.try_recv() {
+                match arrival {
+                    Arrival::Candidate(addr, kind) => {
+                        let _ = endpoint.add_candidate(addr, kind);
+                    }
+                    Arrival::PeerReady => endpoint.conn().set_peer_ready(),
+                }
+            }
+            // Asks need the session, which is only here.
+            while let Ok(ask) = asked.try_recv() {
+                match ask {
+                    Ask::UserData(id, text) => {
+                        driving.send_user_data(endpoint.session(), id, &text);
+                    }
+                    Ask::Leave => leaving = true,
+                }
+            }
+            // Input in the order the application gave it, the viewport
+            // taking effect for what follows it.
+            while let Some(request) = requests.pop() {
+                match request {
+                    Request::Input(input) => driving.send_input(endpoint.session(), &input),
+                    Request::Viewport(viewport) => driving.set_viewport(viewport),
+                    Request::Video(flags) => driving.set_flags(endpoint.session(), flags),
+                    Request::Decoder(flags) => {
+                        driving.switch_decoder(endpoint.session(), flags);
+                    }
+                }
+            }
+            // The microphone, oldest frame first; the driver decides whether
+            // the host takes it.
+            while let Some(frame) = microphone.pop() {
+                driving.send_microphone(endpoint.session(), &frame);
+            }
+        }) {
+            Ok(turn) => turn,
+            Err(error) => {
+                lowlat_common::log_warn!("client: the transport stopped, err={error}");
+                telemetry.state.store(2, Ordering::Relaxed);
+                emit.send(Event::Ended {
+                    outcome: Outcome::TransportFailed,
+                });
+                return;
+            }
+        };
+        let now = turn.now;
+        if let Some(outcome) = driver.turn(shell.endpoint(), now) {
+            ended = Some(outcome);
+        }
+        // An ending the loop decided is said, a departure of its own
+        // included -- a decoder that failed for good ends the session that
+        // way -- before a departure the application asked for is let go
+        // without a word.
+        if let Some(outcome) = ended {
+            release(&mut shell);
+            telemetry.state.store(2, Ordering::Relaxed);
+            emit.send(Event::Ended { outcome });
+            return;
+        }
+        if leaving && driver.established() {
+            driver.leave(shell.endpoint().session(), now);
+        }
+        if driver.left(now) || (leaving && !driver.established()) {
+            release(&mut shell);
+            // The application caused this; it needs no event back.
+            telemetry.state.store(2, Ordering::Relaxed);
+            return;
+        }
+
+        // A relay attempt offers the relayed address once the relay's own
+        // machine is permitted, then says it has offered everything. Looked
+        // at every pass: the pass that readies the relay may be the last for
+        // a while.
+        if !offered
+            && let Some(std::net::SocketAddr::V4(relayed)) =
+                shell.endpoint().relay().and_then(Relay::relayed)
+        {
+            offered = true;
+            telemetry
+                .relayed
+                .store(pack_relayed(relayed), Ordering::Relaxed);
+            lowlat_common::log_info!("client: the relay is ready, relayed={relayed}");
+            // Marked as a reflexive server's report: what a peer checks
+            // after the readiness marker and draws its one probe toward.
+            emit.send(Event::Candidate {
+                addr: std::net::SocketAddr::V4(relayed),
+                from_stun: true,
+                lan: false,
+            });
+            emit.send(Event::Ready);
+        }
+
+        pass = pass.wrapping_add(1);
+        if pass % REPORT_EVERY != 0 {
+            continue;
+        }
+        // Trickled as they are found. The engine retains them, so this
+        // reports what is new rather than what was returned by one call.
+        let fresh: Vec<SocketAddr> = shell
+            .endpoint()
+            .conn()
+            .reflexive()
+            .filter(|addr| !reported.contains(addr))
+            .collect();
+        if !fresh.is_empty() {
+            // What the answers so far say of the translation, once they can.
+            let answers: Vec<_> = shell.endpoint().conn().answers().collect();
+            let port = shell.socket().local_addr().map_or(0, |local| local.port());
+            if let Some(observed) = crate::nat::attempt(&answers, &servers, port) {
+                crate::nat::publish(&nat, observed);
+            }
+        }
+        for addr in fresh {
+            reported.push(addr);
+            // Raised already, as a host candidate: where nothing translates --
+            // any server on IPv6 -- the answer is this machine's own address.
+            if hosts.contains(&addr) {
+                continue;
+            }
+            emit.send(Event::Candidate {
+                addr,
+                from_stun: addr.is_ipv4(),
+                lan: addr.is_ipv6(),
+            });
+        }
+        // The gateway's mapping, once it is confirmed.
+        if !mapped {
+            match offer(mapping.as_ref().and_then(Reader::external), &reported) {
+                Offer::Unconfirmed => {}
+                Offer::Known(addr) => {
+                    mapped = true;
+                    lowlat_common::log_info!(
+                        "client: the gateway's mapping confirmed, mapped={addr} offered=0"
+                    );
+                }
+                Offer::New(addr) => {
+                    mapped = true;
+                    lowlat_common::log_info!(
+                        "client: the gateway's mapping confirmed, mapped={addr} offered=1"
+                    );
+                    reported.push(addr);
+                    emit.send(mapped_candidate(addr));
+                }
+            }
+        }
+    }
+    telemetry.state.store(2, Ordering::Relaxed);
+}
+
+/// What the gateway's mapping adds to the candidates.
+#[derive(Debug, PartialEq, Eq)]
+enum Offer {
+    /// Nothing yet: no reflexive server has seen the gateway's own address,
+    /// or one saw another, a translator beyond the gateway.
+    Unconfirmed,
+    /// Confirmed, and a reflexive candidate is the mapped address already,
+    /// as behind a gateway that keeps ports.
+    Known(SocketAddr),
+    /// Confirmed, and the one address of the client's a peer can reach
+    /// behind a gateway that moves source ports.
+    New(SocketAddr),
+}
+
+/// The mapping a mapper states, against the reflexive addresses reported so
+/// far: offered when a reflexive server saw the gateway's own address, so
+/// nothing translates beyond it and the mapped port is open to anyone.
+fn offer(external: Option<SocketAddrV4>, reported: &[SocketAddr]) -> Offer {
+    let Some(addr) = external.and_then(|external| confirmed(external, reported)) else {
+        return Offer::Unconfirmed;
+    };
+    if reported.iter().any(|seen| canonical(*seen) == addr) {
+        Offer::Known(addr)
+    } else {
+        Offer::New(addr)
+    }
+}
+
+/// The mapped address as a peer is offered it: unmarked, neither an address
+/// of this machine nor a reflexive server's report of this socket, so a peer
+/// checks it once the readiness marker has come, as it does a reflexive one.
+fn mapped_candidate(addr: SocketAddr) -> Event {
+    Event::Candidate {
+        addr,
+        from_stun: false,
+        lan: false,
+    }
+}
+
+/// Release the relay's allocation on the way out, rather than hold a relay
+/// port until it expires. After everything else, so a departure goes out
+/// through the relay before the relay is let go.
+fn release(shell: &mut Shell<'_, Session<'_>>) {
+    let Some(relay) = shell.endpoint().relay_mut() else {
+        return;
+    };
+    if matches!(relay.state(), RelayState::Setup | RelayState::Ready(_)) {
+        relay.release();
+        let _ = shell.turn(|_| {});
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    /// Offered once a reflexive server saw the gateway's address, at
+    /// whatever port and in either notation; not again where a reflexive
+    /// candidate is it already; and unmarked.
+    #[test]
+    fn the_mapping_is_offered_once_confirmed_and_unmarked() {
+        let external = SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 7), 25637);
+        let beyond: SocketAddr = "198.51.100.9:25637".parse().unwrap();
+        let moved: SocketAddr = "203.0.113.7:51461".parse().unwrap();
+        let kept: SocketAddr = "[::ffff:203.0.113.7]:25637".parse().unwrap();
+        let mapped = SocketAddr::V4(external);
+        assert_eq!(offer(None, &[moved]), Offer::Unconfirmed);
+        assert_eq!(offer(Some(external), &[]), Offer::Unconfirmed);
+        assert_eq!(offer(Some(external), &[beyond]), Offer::Unconfirmed);
+        assert_eq!(offer(Some(external), &[beyond, moved]), Offer::New(mapped));
+        assert_eq!(offer(Some(external), &[kept]), Offer::Known(mapped));
+        assert!(matches!(
+            mapped_candidate(mapped),
+            Event::Candidate {
+                from_stun: false,
+                lan: false,
+                ..
+            }
+        ));
+    }
+}

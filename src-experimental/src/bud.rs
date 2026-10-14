@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 
 use anyhow::{Result, anyhow, ensure};
 use lowlat_client::config::{Backend, Decoding, FrameKind, Port, Relay};
+use lowlat_client::driver::Units;
 use lowlat_client::{Client, Config, Event, Peer, Transport};
 use lowlat_core::conn::Kind;
 use lowlat_crypto::Credentials;
@@ -34,6 +35,8 @@ impl Route {
 pub struct Session {
     client: Client,
     attempt: Option<String>,
+    external_units: Option<Units>,
+    prefer_hevc: bool,
 }
 
 impl Session {
@@ -50,15 +53,85 @@ impl Session {
         Ok(Self {
             client,
             attempt: None,
+            external_units: None,
+            prefer_hevc: false,
         })
+    }
+
+    /// Native transport with application-owned video decode. The caller must
+    /// have verified its existing MF decoder's HEVC support before setting it.
+    /// Only 8-bit 4:2:0 is advertised. No SDK video decoder is created.
+    pub fn external_video(hevc_available: bool) -> Result<Self> {
+        let client = Client::new_external_video(
+            lowlat_client::config::Caps {
+                h264: true,
+                hevc: hevc_available,
+                ..Default::default()
+            },
+            Port::Any,
+        )
+        .map_err(|e| anyhow!("BUD external video: {e:?}"))?;
+        let units = client.units();
+        Ok(Self {
+            client,
+            attempt: None,
+            external_units: Some(units),
+            prefer_hevc: hevc_available,
+        })
+    }
+
+    /// The sole compressed-video consumer. The SDK pool lease stays live
+    /// throughout the callback, and is returned even if the sink rejects it.
+    /// The callback must not retain a borrowed pointer after returning.
+    pub fn with_video<T>(
+        &mut self,
+        sink: impl FnOnce(&[u8], u64) -> Result<T>,
+    ) -> Result<Option<T>> {
+        ensure!(self.attempt.is_some(), "no BUD attempt");
+        let units = self
+            .external_units
+            .as_ref()
+            .ok_or_else(|| anyhow!("transport-only BUD probe has no video consumer"))?;
+        let Some(unit) = units.take() else {
+            return Ok(None);
+        };
+        let arrived_us = self.client.arrived_us(unit.stamp());
+        sink(unit.bytes(), arrived_us).map(Some)
+    }
+
+    pub fn request_keyframe(&self) -> bool {
+        self.client.request_external_keyframe()
+    }
+
+    pub fn send_input(&mut self, input: lowlat_client::input::Input) -> Result<()> {
+        self.client
+            .send_input(input)
+            .map_err(|e| anyhow!("BUD input: {e:?}"))
+    }
+
+    pub fn set_viewport(&mut self, viewport: lowlat_client::input::Viewport) -> bool {
+        self.client.set_viewport(viewport)
+    }
+
+    pub fn with_audio<T>(&mut self, sink: impl FnOnce(&[u8]) -> Result<T>) -> Result<Option<T>> {
+        let Some(packet) = self
+            .client
+            .take_external_audio()
+            .map_err(|e| anyhow!("BUD external audio: {e:?}"))?
+        else {
+            return Ok(None);
+        };
+        sink(packet.bytes()).map(Some)
     }
 
     pub fn offer(&mut self, id: &str, route: Route) -> Result<Credentials> {
         ensure!(!id.is_empty() && id.len() <= 256, "invalid BUD attempt id");
         ensure!(self.attempt.is_none(), "BUD attempt already active");
+        let mut config = route.configure();
+        config.video.hevc = self.prefer_hevc;
         let ours = self
             .client
-            .new_attempt(id, route.configure(), Transport::Bud)
+            .new_attempt(id, config, Transport::Bud)
             .map_err(|e| anyhow!("BUD offer: {e:?}"))?;
         self.attempt = Some(id.to_owned());
         Ok(ours)
@@ -108,6 +181,9 @@ impl Session {
         if let Some(id) = self.attempt.take() {
             // No GUI or WebRTC lock held while SDK joins its own worker threads.
             self.client.end_connection(&id);
+            if let Some(units) = &self.external_units {
+                units.clear();
+            }
         }
     }
 }
