@@ -40,7 +40,6 @@ jobs:
           Copy-Item src-experimental/vendor/lowlat-client/LICENSE dist/bud-test/LOWLAT-LICENSE.txt
           $cell = Get-ChildItem -Path (Join-Path $env:CARGO_HOME "registry/src/*/self_cell-1.3.0") -Directory | Select-Object -First 1
           if (!$cell) { throw "GPU lifetime helper license directory missing" }
-          Copy-Item (Join-Path $cell.FullName "LICENSE-MIT") dist/bud-test/SELF-CELL-LICENSE-MIT.txt
           Copy-Item (Join-Path $cell.FullName "LICENSE-APACHE") dist/bud-test/SELF-CELL-LICENSE-APACHE.txt
           Copy-Item LICENSE dist/bud-test/LICENSE.txt
           Copy-Item src-native/vendor/webrtc-0.14.0/LICENSE-MIT dist/bud-test/WEBRTC-LICENSE-MIT.txt

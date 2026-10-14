@@ -290,6 +290,7 @@ fn pace(origin: Instant, index: usize, fps: u64) {
 }
 
 pub fn probe() -> Result<Value> {
+    let integrated_only = std::env::args().any(|a| a == "--integrated-only");
     let _runtime = Runtime::start()?;
     let d3d = D3d11::load()?;
     let mut adapters = Vec::new();
@@ -302,7 +303,11 @@ pub fn probe() -> Result<Value> {
         let device = d3d.open(adapter.luid)?;
         ensure!(device.protect(), "D3D11 multithread protection required");
         let mut trials = Vec::new();
-        for clip in [Clip::H264, Clip::Hevc] {
+        for clip in if integrated_only {
+            Vec::new()
+        } else {
+            vec![Clip::H264, Clip::Hevc]
+        } {
             let units = clip.units()?;
             for fps in [30, 60] {
                 for round in 0..3 {
@@ -327,6 +332,34 @@ pub fn probe() -> Result<Value> {
                     }
                 }
             }
+        }
+        if let Some(mode) = parsec_gpu_video::preferred(adapter.vendor, true) {
+            let units = Clip::Hevc.units()?;
+            let result = (|| -> Result<Value> {
+                let mut decoder =
+                    parsec_gpu_video::Decoder::open(mode, adapter.luid.value(), (1280, 720))?;
+                let name = decoder.name();
+                let mut samples = Samples::new();
+                let origin = Instant::now();
+                for (index, unit) in units.iter().enumerate() {
+                    pace(origin, index, 60);
+                    samples.submit(index);
+                    decoder.feed(unit, |picture| {
+                        samples.output(
+                            picture.sequence as i64 + 1,
+                            index,
+                            picture.texture,
+                            picture.slice,
+                            picture.device,
+                            Clip::Hevc,
+                        )
+                    })?;
+                }
+                let mut report = samples.finish(units.len())?;
+                report["actual_backend"] = json!(name);
+                Ok(report)
+            })();
+            trials.push(json!({"codec":"HEVC Main","backend":"Integrated GPU decoder","fps":60,"round":0,"result":match result {Ok(v)=>v,Err(e)=>json!({"refused":format!("{e:#}")})}}));
         }
         adapters.push(json!({"adapter":adapter.description,"luid":adapter.luid.to_string(),"driver":adapter.driver,"trials":trials}));
     }

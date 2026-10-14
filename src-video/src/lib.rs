@@ -61,6 +61,8 @@ impl Layout {
     }
 }
 pub struct Picture<'a> {
+    pub device: &'a Device,
+    pub sequence: usize,
     pub texture: &'a windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
     pub slice: u32,
     pub layout: Layout,
@@ -84,11 +86,12 @@ impl DeviceOwner {
         })
     }
 }
+type DirectBackend<'a> = direct::Backend<'a>;
 self_cell!(
     struct DirectCell {
         owner: DeviceOwner,
         #[covariant]
-        dependent: direct::Backend,
+        dependent: DirectBackend,
     }
 );
 struct AmfOwner {
@@ -200,22 +203,22 @@ impl Decoder {
         let sequence = self.sequence;
         self.sequence = self.sequence.wrapping_add(1);
         match &mut self.inner {
-            Inner::Direct(cell)=>cell.with_dependent_mut(|_,decoder| {
+            Inner::Direct(cell)=>cell.with_dependent_mut(|owner,decoder| {
                 let fed=decoder.feed(bytes,sequence)?;
                 ensure!(fed!=Fed::FormatChanged,"direct decoder format changed");
                 if fed!=Fed::Picture {return Ok(0);}
                 let layout=decoder.layout()?;
                 let mut count=0;
-                while decoder.take(|raw,slice,_| {
+                while decoder.take(|raw,slice,sequence| {
                     let raw=raw.cast();
                     // SAFETY: the DPB lease is held until consume queues the
                     // existing processor read on the very same device.
                     let texture=unsafe {windows::Win32::Graphics::Direct3D11::ID3D11Texture2D::from_raw_borrowed(&raw)}.context("missing direct decoder texture")?;
-                    consume(Picture {texture,slice,layout})?;count+=1;Ok(())
+                    consume(Picture {device:&owner.device,sequence,texture,slice,layout})?;count+=1;Ok(())
                 })? {}
                 Ok(count)
             }),
-            Inner::Amd(cell)=>cell.with_dependent_mut(|_,state| {
+            Inner::Amd(cell)=>cell.with_dependent_mut(|context,state| {
                 let mut picture=false;
                 for unit in nal::Units::new(bytes) {
                     let Some(&first)=unit.bytes.first() else {continue;};
@@ -241,7 +244,7 @@ impl Decoder {
                         // SAFETY: the AMF surface lives through consume; no
                         // CPU wait for GPU completion, readback or export.
                         let texture=unsafe {windows::Win32::Graphics::Direct3D11::ID3D11Texture2D::from_raw_borrowed(&raw)}.context("missing AMF texture")?;
-                        consume(Picture {texture,slice:0,layout})?;return Ok(1);
+                        consume(Picture {device:&context.borrow_owner().device.device,sequence:(surface.pts()-1) as usize,texture,slice:0,layout})?;return Ok(1);
                     }
                     ensure!(Instant::now()<until,"AMF output availability timeout");
                     std::thread::yield_now();
