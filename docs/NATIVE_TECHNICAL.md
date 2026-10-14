@@ -3,17 +3,17 @@
 For downloads, everyday use and the roadmap, start with the
 [project README](../README.md).
 
-The `dev` branch now runs the pinned Parsec WebAssembly core in a native Rust
+The `main` and `dev` branches run the pinned Parsec WebAssembly core in a native Rust
 application. It does not require Edge, WebView2, Tauri, a browser extension,
 Node.js or a separate WASM file at runtime. Start **ParsecWebTurn.exe** directly.
-The stable `main` branch remains the previous Tauri client until a later release.
+The previous Tauri/WebView2 client is preserved on `legacy` and in v0.7.0.
 
 ## What works
 
 - Original Parsec account interface, Computers list and stream overlay.
 - Native WebRTC data-channel transport, with certificate fingerprints and
   signatures checked. No forced Cloudflare STUN/TURN configuration.
-- H.264 video through Media Foundation, D3D11 NV12 GPU surfaces, GPU colour
+- H.264 and optional 8-bit HEVC video through Media Foundation, D3D11 NV12 GPU surfaces, GPU colour
   conversion and DXGI presentation. No live decoded-video CPU readback.
 - Opus audio, 48 kHz stereo, through shared-mode Windows WASAPI.
 - Keyboard, mouse buttons, wheel and absolute video-coordinate input. Relative
@@ -31,7 +31,7 @@ public Parsec SDK. A changed upstream core requires another ABI audit.
 ## Run and saved data
 
 Windows x64 with working D3D11 and OpenGL support is currently required.
-Unzip the development package and run `ParsecWebTurn.exe`. Only that executable
+Unzip the release package and run `ParsecWebTurn.exe`. Only that executable
 is needed to run the app; the other package files are documentation/licenses.
 No administrator rights or installation are required.
 
@@ -60,13 +60,15 @@ interface if needed. The original overlay controls relative mouse and audio volu
 
 ## Current limits
 
-This is the first native development build, not a claim that every original menu
-option is supported. Additional audio formats, physical gamepad discovery,
-keyboard grabbing and further menu compatibility are future work. Native
+Not every original menu option is supported. Additional audio formats, physical
+gamepad discovery and further menu compatibility remain future work. Immersive
+Mouse, Keyboard and Both modes are integrated while the app has focus. Native
 STUN/TURN configuration is available from Connection settings (Ctrl+,), including
 custom discovery, STUN-only, custom TURN and Cloudflare credential generation.
 An unconfigured installation uses `stun:stun.parsec.gg:3478` and no TURN. Native
-ICE keeps its automatic `all` policy; STUN-only omits relay servers. TURN supports
+ICE normally keeps its automatic `all` policy; STUN-only omits relay servers.
+Force TURN limits connectivity to relays while retaining discovery and all
+configured endpoints. TURN supports
 UDP, TCP and TLS client-to-server connections with UDP allocations toward the
 host. IPv4 relay gathering follows upstream; secure STUN discovery and HTTP
 proxy tunneling are unsupported. See the
