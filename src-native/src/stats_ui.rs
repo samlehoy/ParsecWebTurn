@@ -426,7 +426,7 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
         },
     );
     y += 40;
-    let cards = vec![
+    let cards = [
         ("Connection RTT", number(page.sample.rtt_ms, "ms")),
         ("Decoded video", number(page.values.fps, "fps")),
         ("Incoming traffic", number(page.values.incoming, "Mbps")),
@@ -439,7 +439,7 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
             .filter(|(label, value)| *label != "Outgoing traffic" && value != "—")
             .collect::<Vec<_>>()
     } else {
-        cards
+        cards.into()
     };
     let width = (right - left - 16) / 2;
     for (i, (label, value)) in cards.iter().enumerate() {

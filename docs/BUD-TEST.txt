@@ -10,7 +10,11 @@ The normal protected account profile is reused; sign in if prompted.
 
 Settings -> Experimental BUD (UDP only) -> Save settings.
 Connect to a stock Parsec host using the normal computer picker.
-BUD without Force TURN selects direct UDP with STUN discovery.
+BUD without Force TURN first tries direct UDP with STUN discovery. If the host
+answers but direct connectivity fails (or has not established after 4 seconds),
+the client makes one fresh BUD attempt through the first configured UDP TURN
+endpoint. STUN-only mode disables this retry. Established streams are not
+silently rerouted.
 BUD with Force TURN selects the first configured UDP TURN endpoint. The
 Cloudflare provider can generate temporary credentials as before.
 BUD does not support TURN TCP/TLS and does not silently fall back to WebRTC.
@@ -21,7 +25,15 @@ resolution, Media Foundation decoder and D3D11 decoder surface once playing.
 Test H.264 first; then test HEVC if it already works on this GPU/driver.
 Also check audio, cursor, immersive mode and disconnect/reconnect.
 
+Connection stats uses native BUD counters: direct/relay route, BUD RTT, host
+encode time when reported, AES-GCM, late fragments, duplicates, NACKs and
+compressed-media backlog/drops. ICE candidates and DTLS are WebRTC-specific
+and are hidden. Delivered-message traffic excludes UDP/retransmission overhead.
+
 Direct and isolated UDP TURN connectivity and encrypted control delivery are
-covered by automated tests. Stock-host media playback and real-provider TURN
-compatibility still need this test; this is not a release or a verified
-replacement for WebRTC. 10-bit, 4:4:4 and additional decoders are not enabled.
+covered by automated tests. Stock-host direct and relay playback were confirmed
+with the earlier test client. Please verify automatic TURN retry with Force TURN
+OFF on the network where direct access fails, then Force TURN ON, and direct
+access where available. Check disconnect/reconnect after each route.
+This is an experimental test artifact. 10-bit, 4:4:4 and additional decoders
+are not enabled.

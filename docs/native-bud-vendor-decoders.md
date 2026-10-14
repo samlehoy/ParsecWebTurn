@@ -7,9 +7,11 @@ Reference: lowlat `feat/win-seams`, pinned research revision
 Current direction: retain Media Foundation/D3D11 and the existing Opus decoder.
 BUD changes transport only. AMD/NVIDIA decoder comparisons are deferred at the
 user's request. The optional native `experimental-bud` module now hands compressed
-BUD payloads into those existing pipelines; it does not expose a usable GUI
-connection option yet. Account/UI lifecycle wiring and stock-host direct/relay
-acceptance remain outstanding. Offline GPU probes are a separate build feature.
+BUD payloads into those existing pipelines. Its optional test client now exposes
+account/UI selection; stock-host direct and UDP TURN playback were confirmed by
+the user. Automatic relay retry and native transport statistics are under test.
+The SDK copy contains transport and compressed-media pools only. Offline GPU
+probes are a separate build feature.
 
 ## 1. Vendor decoder backends, starting with Intel VPL
 

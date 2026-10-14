@@ -2,8 +2,8 @@
 
 This crate is **not linked or packaged by the WebRTC client**. It pins lowlat's
 MIT-licensed client/driver libraries to `5f8db5689e55de0d396b0520824caa9fc053dd86`.
-No lowlat GPL codec feature is enabled. These are implementation gates, not a
-claim that a playable BUD client or a faster Intel backend has shipped.
+No lowlat GPL codec feature is enabled. These are isolated implementation gates and optional BUD test builds, not a
+claim that a faster Intel decoder or BUD has shipped in the default client.
 The native client's optional `experimental-bud` feature links the transport/media
 adapter only. Offline decoder probes require the separate `gpu-probes` feature;
 they are not part of that BUD feature or the normal client.
@@ -57,26 +57,33 @@ TCP/TLS reinterpretation or shared WebRTC state.
 
 `signaling::Signaling` emits native offers (`mode: 1`, including the native media
 key), scopes incoming answers/candidates by attempt and bounds message size.
-It does not authenticate an account itself. `account_socket::AccountSocket`
-provides a separate certificate-verified native WSS socket using an existing
-account session token; it never changes the WebRTC socket or global TLS provider.
-Its offer output is
-sensitive: send it only to authenticated account signaling; never log it.
+It does not authenticate an account itself. The native adapter deliberately
+shares the existing certificate-verified account WSS interface: only active BUD
+attempt messages are adapted, and AES keys stay outside the WASM guest. Never
+log native offer/answer material. An unused standalone WSS prototype was removed.
 
-`Session::transport_probe` is transport-only and deliberately drops video.
-`Session::external_video` instead hands borrowed compressed video/audio leases
+`Session::external_video` hands borrowed compressed video/audio leases
 to the application: the SDK's video decoder/export and audio decoder do not run.
 The narrow vendored client seam is documented in `vendor/lowlat-client/PARSECWEBTURN.md`.
 The optional `src-native` feature `experimental-bud` connects these payloads to
 the existing MF/D3D11 video and libopus pipelines. It adds no alternate decoder,
 plane-splitting renderer or GPU copy path. Normal builds do not include it.
-The optional test client now has explicit account/UI lifecycle wiring and a
-Settings checkbox. Stock-host playback acceptance is still required for both routes.
+The optional test client has explicit account/UI lifecycle wiring and a Settings
+checkbox. The user confirmed stock-host playback over direct and UDP TURN routes.
+It now retries an unestablished direct connection once through UDP TURN, using a
+fresh native attempt and cancelling the old offer. This retry needs real-network
+acceptance. Force TURN starts on relay immediately; STUN-only never retries.
+Native BUD statistics hide ICE/DTLS and display actual transport counters.
+
+The vendored client is now a transport-only subset: unused decoder/exporter,
+audio-decode, microphone, cursor-cache, input-mapper and port-mapping code and
+dependencies have been removed. The app retains its existing MF/D3D11 and Opus
+paths, with no additional GPU processing or decoded-frame copy.
 
 Tests run real UDP connectivity between two native SDK peers, directly and
-through an isolated coturn instance, including encrypted control delivery. This does not prove stock-host media,
-stock-host compatibility or Cloudflare interoperability. Those remain explicit
-acceptance gates. The production WebRTC regression workflow is unchanged.
+through an isolated coturn instance, including encrypted control delivery. These tests do not by themselves prove stock-host media,
+stock-host compatibility or Cloudflare interoperability. Manual
+acceptance remains separate from these automated transport gates. The production WebRTC regression workflow is unchanged.
 
 Build/test (explicit target avoids the repository's Windows default on Linux):
 
@@ -95,9 +102,9 @@ BUD to the existing computer picker, account socket, input UI, MF/D3D11 and Opus
 pipelines. The opaque authenticated account WebSocket is a deliberately shared
 interface: only active BUD attempt messages are adapted; normal WebRTC messages
 are unchanged. Native AES credentials never enter the WASM guest. Direct UDP and
-explicit Force TURN/UDP are separate routes; no TCP/TLS reinterpretation or
-silent fallback. See [test instructions](../docs/BUD-TEST.txt).
+UDP TURN use separate native attempts; automatic relay retry stays within BUD.
+There is no TCP/TLS reinterpretation or automatic WebRTC fallback. See [test instructions](../docs/BUD-TEST.txt).
 
 Automated direct/isolated TURN tests include encrypted control delivery in both
-directions. Stock-host playback and Cloudflare compatibility remain pending real
-testing. This is an optional test artifact, not the distributed default client.
+directions. Stock-host direct and relay playback were confirmed by the user; automatic
+relay retry remains to be checked with the new test client. This is an optional test artifact, not the distributed default client.

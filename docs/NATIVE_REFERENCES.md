@@ -30,7 +30,8 @@ Its MIT-licensed documentation is useful for future protocol investigations:
 The HEVC investigation uses it as independent corroboration of `_flags` bit 0;
 see [HEVC negotiation evidence and limitations](hevc-negotiation.md). No lowlat
 library, host implementation, socket/crypto replacement or copied source is
-included in our binary.
+included in the default WebRTC binary. The optional BUD test build uses a pinned,
+transport-only subset of the client SDK; see its vendored provenance document.
 
 The client-side reuse/critical-section changes inspired by the IO design are
 documented in [native input and network hand-off](native-input-network-handoff.md).
@@ -53,8 +54,8 @@ Additional reviewed revision on `feat/win-seams` (2026-10-14):
   output is not equivalent to a GPU-only path.
 - `docs/10-client.md` section 11 and `docs/03-connectivity.md` section 7 describe
   BUD through a client-allocated UDP TURN relay, transparent to the host. This
-  has documented stock-host testing; compatibility with our Cloudflare setup
-  remains to be demonstrated. TURN/TCP and TURN/TLS are not provided by this path.
+  has documented stock-host testing; our user also confirmed direct and TURN
+  playback with the optional BUD test client. TURN/TCP and TURN/TLS are not provided by this path.
 
 The next development scope and isolation requirements are recorded in
 [BUD and vendor decoder investigation](native-bud-vendor-decoders.md). No lowlat

@@ -169,7 +169,7 @@ delivery commitment. There are no fixed release dates for these milestones.
 | More audio formats and menu integration | Planned | Support additional audio choices and review which Parsec settings need native integration. |
 | Native connection and playback statistics | Available | Separate native stats window: active direct/TURN route, relay server, RTT, traffic, decoded FPS, video/audio details, DTLS state and app CPU/GPU usage. Missing data stays unknown. |
 | Vendor-specific Windows decoders | Deferred | Intel H.264 screening did not justify replacing Media Foundation. Keep the existing GPU path; evaluate AMD and NVIDIA later. |
-| BUD transport with TURN/UDP | In development, experimental | Separate native signaling and direct/UDP TURN adapters. Compressed media feeds the existing MF/D3D11 and Opus paths; an optional test build adds account/UI selection, with stock-host playback acceptance pending. Preserve default WebRTC and its TURN over UDP, TCP and TLS. |
+| BUD transport with TURN/UDP | In development, experimental | Optional test client with direct UDP and UDP TURN playback confirmed against a stock host. Automatic direct-to-relay retry and native BUD statistics are under testing. Compressed media feeds the existing MF/D3D11 and Opus paths. Default WebRTC and its TURN over UDP, TCP and TLS remain available. |
 | Vulkan rendering backend | Planned | Add another GPU rendering option alongside D3D11 and build toward Linux support. |
 | D3D12 rendering backend | Exploring | Investigate an additional native GPU rendering option on Windows. |
 | Linux client, distributed as Flatpak | Planned | Make the native client available on Linux with straightforward installation. |
