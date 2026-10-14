@@ -5,8 +5,10 @@ Reference: lowlat `feat/win-seams`, pinned research revision
 `5f8db5689e55de0d396b0520824caa9fc053dd86`.
 
 Current direction: retain Media Foundation/D3D11 and the existing Opus decoder.
-BUD changes transport only. AMD/NVIDIA decoder comparisons are deferred at the
-user's request. The optional native `experimental-bud` module now hands compressed
+BUD changes transport only. AMD/NVIDIA comparisons resumed on 2026-10-14 in
+isolated probes; the live client still uses MF. See
+[GPU comparison and BUD Main 10 test](gpu-vendor-comparison.md).
+The optional native `experimental-bud` module now hands compressed
 BUD payloads into those existing pipelines. Its optional test client now exposes
 account/UI selection; stock-host direct and UDP TURN playback were confirmed by
 the user. Automatic relay retry and native transport statistics are under test.

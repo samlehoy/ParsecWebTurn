@@ -1,0 +1,1758 @@
+{
+  "adapters": [
+    {
+      "adapter": "NVIDIA GeForce RTX 3060",
+      "driver": [
+        32,
+        0,
+        16,
+        1742
+      ],
+      "luid": "luid:00000000:00010f57",
+      "trials": [
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "H.264",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 0,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 5626,
+              "p50": 2484,
+              "p95": 3867
+            },
+            "submission_to_output_us": {
+              "max": 806,
+              "p50": 424,
+              "p95": 775
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "H.264",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 0,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 4175,
+              "p50": 3426,
+              "p95": 3795
+            },
+            "submission_to_output_us": {
+              "max": 1248,
+              "p50": 746,
+              "p95": 933
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "H.264",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 0,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 6077,
+              "p50": 3452,
+              "p95": 3641
+            },
+            "submission_to_output_us": {
+              "max": 1064,
+              "p50": 762,
+              "p95": 885
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "H.264",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 0,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 5295,
+              "p50": 3351,
+              "p95": 3718
+            },
+            "submission_to_output_us": {
+              "max": 945,
+              "p50": 628,
+              "p95": 775
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "H.264",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 0,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 6668,
+              "p50": 3359,
+              "p95": 3728
+            },
+            "submission_to_output_us": {
+              "max": 1010,
+              "p50": 651,
+              "p95": 788
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "H.264",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 0,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 4569,
+              "p50": 3354,
+              "p95": 3567
+            },
+            "submission_to_output_us": {
+              "max": 892,
+              "p50": 605,
+              "p95": 781
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 37663,
+              "p50": 36255,
+              "p95": 36861
+            },
+            "submission_to_output_us": {
+              "max": 34252,
+              "p50": 33967,
+              "p95": 34126
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 37326,
+              "p50": 36489,
+              "p95": 36945
+            },
+            "submission_to_output_us": {
+              "max": 34235,
+              "p50": 34055,
+              "p95": 34152
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 37293,
+              "p50": 36490,
+              "p95": 37065
+            },
+            "submission_to_output_us": {
+              "max": 34289,
+              "p50": 34078,
+              "p95": 34185
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 24917,
+              "p50": 19907,
+              "p95": 21826
+            },
+            "submission_to_output_us": {
+              "max": 17603,
+              "p50": 17334,
+              "p95": 17506
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 22481,
+              "p50": 19497,
+              "p95": 20812
+            },
+            "submission_to_output_us": {
+              "max": 17564,
+              "p50": 17217,
+              "p95": 17413
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 23247,
+              "p50": 19596,
+              "p95": 20513
+            },
+            "submission_to_output_us": {
+              "max": 17560,
+              "p50": 17288,
+              "p95": 17441
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main 10",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 51745,
+              "p50": 50844,
+              "p95": 51309
+            },
+            "submission_to_output_us": {
+              "max": 34163,
+              "p50": 33950,
+              "p95": 34108
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main 10",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 51938,
+              "p50": 50812,
+              "p95": 51490
+            },
+            "submission_to_output_us": {
+              "max": 34186,
+              "p50": 33972,
+              "p95": 34095
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main 10",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 51448,
+              "p50": 50914,
+              "p95": 51268
+            },
+            "submission_to_output_us": {
+              "max": 34215,
+              "p50": 34017,
+              "p95": 34126
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main 10",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 45216,
+              "p50": 36365,
+              "p95": 41656
+            },
+            "submission_to_output_us": {
+              "max": 28697,
+              "p50": 19932,
+              "p95": 24663
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main 10",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 42805,
+              "p50": 36696,
+              "p95": 42264
+            },
+            "submission_to_output_us": {
+              "max": 25962,
+              "p50": 19987,
+              "p95": 25426
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main 10",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 43915,
+              "p50": 36570,
+              "p95": 41420
+            },
+            "submission_to_output_us": {
+              "max": 26394,
+              "p50": 19764,
+              "p95": 24730
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        }
+      ]
+    },
+    {
+      "adapter": "AMD Radeon 780M Graphics",
+      "driver": [
+        32,
+        0,
+        31041,
+        1004
+      ],
+      "luid": "luid:00000000:0001477a",
+      "trials": [
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "H.264",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 0,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 6778,
+              "p50": 5594,
+              "p95": 6312
+            },
+            "submission_to_output_us": {
+              "max": 421,
+              "p50": 271,
+              "p95": 327
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "AMF",
+          "codec": "H.264",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 4540,
+              "p50": 3772,
+              "p95": 4211
+            },
+            "submission_to_output_us": {
+              "max": 399,
+              "p50": 226,
+              "p95": 260
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "AMF",
+          "codec": "H.264",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 4253,
+              "p50": 3804,
+              "p95": 4110
+            },
+            "submission_to_output_us": {
+              "max": 376,
+              "p50": 225,
+              "p95": 259
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "H.264",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 0,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 6692,
+              "p50": 5200,
+              "p95": 5995
+            },
+            "submission_to_output_us": {
+              "max": 372,
+              "p50": 285,
+              "p95": 343
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "H.264",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 0,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 6916,
+              "p50": 5205,
+              "p95": 5821
+            },
+            "submission_to_output_us": {
+              "max": 581,
+              "p50": 270,
+              "p95": 341
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        },
+        {
+          "backend": "AMF",
+          "codec": "H.264",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 4830,
+              "p50": 3867,
+              "p95": 4308
+            },
+            "submission_to_output_us": {
+              "max": 373,
+              "p50": 243,
+              "p95": 284
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "H.264",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 0,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 6258,
+              "p50": 4962,
+              "p95": 5743
+            },
+            "submission_to_output_us": {
+              "max": 398,
+              "p50": 238,
+              "p95": 338
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "AMF",
+          "codec": "H.264",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 4418,
+              "p50": 3776,
+              "p95": 4261
+            },
+            "submission_to_output_us": {
+              "max": 327,
+              "p50": 203,
+              "p95": 285
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "AMF",
+          "codec": "H.264",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 4734,
+              "p50": 3761,
+              "p95": 4341
+            },
+            "submission_to_output_us": {
+              "max": 309,
+              "p50": 206,
+              "p95": 269
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "H.264",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 0,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 6271,
+              "p50": 4895,
+              "p95": 5642
+            },
+            "submission_to_output_us": {
+              "max": 383,
+              "p50": 223,
+              "p95": 343
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "H.264",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 0,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 6874,
+              "p50": 5066,
+              "p95": 5990
+            },
+            "submission_to_output_us": {
+              "max": 370,
+              "p50": 243,
+              "p95": 318
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        },
+        {
+          "backend": "AMF",
+          "codec": "H.264",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 4359,
+              "p50": 3683,
+              "p95": 4189
+            },
+            "submission_to_output_us": {
+              "max": 287,
+              "p50": 198,
+              "p95": 253
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 39576,
+              "p50": 37857,
+              "p95": 39223
+            },
+            "submission_to_output_us": {
+              "max": 33691,
+              "p50": 33526,
+              "p95": 33602
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "AMF",
+          "codec": "HEVC Main",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 5171,
+              "p50": 4096,
+              "p95": 4882
+            },
+            "submission_to_output_us": {
+              "max": 1362,
+              "p50": 547,
+              "p95": 1285
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "AMF",
+          "codec": "HEVC Main",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 5711,
+              "p50": 4118,
+              "p95": 5118
+            },
+            "submission_to_output_us": {
+              "max": 1424,
+              "p50": 544,
+              "p95": 1345
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 39782,
+              "p50": 38636,
+              "p95": 39311
+            },
+            "submission_to_output_us": {
+              "max": 33906,
+              "p50": 33563,
+              "p95": 33623
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 41723,
+              "p50": 38567,
+              "p95": 39187
+            },
+            "submission_to_output_us": {
+              "max": 33688,
+              "p50": 33563,
+              "p95": 33622
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        },
+        {
+          "backend": "AMF",
+          "codec": "HEVC Main",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 5286,
+              "p50": 4193,
+              "p95": 4986
+            },
+            "submission_to_output_us": {
+              "max": 1604,
+              "p50": 546,
+              "p95": 1300
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 23350,
+              "p50": 21133,
+              "p95": 22662
+            },
+            "submission_to_output_us": {
+              "max": 17311,
+              "p50": 16851,
+              "p95": 17001
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "AMF",
+          "codec": "HEVC Main",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 5050,
+              "p50": 4042,
+              "p95": 4747
+            },
+            "submission_to_output_us": {
+              "max": 1404,
+              "p50": 517,
+              "p95": 1285
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "AMF",
+          "codec": "HEVC Main",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 5414,
+              "p50": 4254,
+              "p95": 4837
+            },
+            "submission_to_output_us": {
+              "max": 1600,
+              "p50": 561,
+              "p95": 1354
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 23030,
+              "p50": 21714,
+              "p95": 22275
+            },
+            "submission_to_output_us": {
+              "max": 17007,
+              "p50": 16856,
+              "p95": 16922
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 22942,
+              "p50": 21901,
+              "p95": 22725
+            },
+            "submission_to_output_us": {
+              "max": 17091,
+              "p50": 16867,
+              "p95": 16943
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        },
+        {
+          "backend": "AMF",
+          "codec": "HEVC Main",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 5914,
+              "p50": 4067,
+              "p95": 5137
+            },
+            "submission_to_output_us": {
+              "max": 1431,
+              "p50": 516,
+              "p95": 1315
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main 10",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 40077,
+              "p50": 38765,
+              "p95": 39729
+            },
+            "submission_to_output_us": {
+              "max": 33742,
+              "p50": 33563,
+              "p95": 33616
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "AMF",
+          "codec": "HEVC Main 10",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 5283,
+              "p50": 4080,
+              "p95": 4688
+            },
+            "submission_to_output_us": {
+              "max": 1410,
+              "p50": 544,
+              "p95": 1306
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "AMF",
+          "codec": "HEVC Main 10",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 5460,
+              "p50": 4127,
+              "p95": 4896
+            },
+            "submission_to_output_us": {
+              "max": 1463,
+              "p50": 540,
+              "p95": 1316
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main 10",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 40414,
+              "p50": 38629,
+              "p95": 39410
+            },
+            "submission_to_output_us": {
+              "max": 33867,
+              "p50": 33572,
+              "p95": 33673
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main 10",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 40007,
+              "p50": 38865,
+              "p95": 39533
+            },
+            "submission_to_output_us": {
+              "max": 33811,
+              "p50": 33567,
+              "p95": 33620
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        },
+        {
+          "backend": "AMF",
+          "codec": "HEVC Main 10",
+          "fps": 30,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 5421,
+              "p50": 4105,
+              "p95": 4791
+            },
+            "submission_to_output_us": {
+              "max": 1487,
+              "p50": 543,
+              "p95": 1270
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main 10",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 23307,
+              "p50": 21796,
+              "p95": 22479
+            },
+            "submission_to_output_us": {
+              "max": 16973,
+              "p50": 16856,
+              "p95": 16910
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "AMF",
+          "codec": "HEVC Main 10",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 5599,
+              "p50": 4141,
+              "p95": 4590
+            },
+            "submission_to_output_us": {
+              "max": 1287,
+              "p50": 509,
+              "p95": 1227
+            },
+            "warmup_frames": 16
+          },
+          "round": 0
+        },
+        {
+          "backend": "AMF",
+          "codec": "HEVC Main 10",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 5085,
+              "p50": 3981,
+              "p95": 4533
+            },
+            "submission_to_output_us": {
+              "max": 1325,
+              "p50": 511,
+              "p95": 1231
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main 10",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 22878,
+              "p50": 21818,
+              "p95": 22393
+            },
+            "submission_to_output_us": {
+              "max": 17087,
+              "p50": 16864,
+              "p95": 16946
+            },
+            "warmup_frames": 16
+          },
+          "round": 1
+        },
+        {
+          "backend": "Media Foundation (current low latency requests)",
+          "codec": "HEVC Main 10",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "held_before_drain": 1,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 1,
+            "presentation_verified": false,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 22965,
+              "p50": 21808,
+              "p95": 22287
+            },
+            "submission_to_output_us": {
+              "max": 16979,
+              "p50": 16857,
+              "p95": 16906
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        },
+        {
+          "backend": "AMF",
+          "codec": "HEVC Main 10",
+          "fps": 60,
+          "result": {
+            "application_decoded_frame_copies": 0,
+            "conversion_output_writes_per_frame": 1,
+            "cpu_pixel_readback": false,
+            "direct_conversion_verified": true,
+            "direct_processor_input_views": 120,
+            "frames": 120,
+            "low_latency_property_present": true,
+            "low_latency_request_accepted": true,
+            "max_later_inputs_before_output": 0,
+            "presentation_verified": false,
+            "reorder_property_present": true,
+            "reorder_request_accepted": true,
+            "runtime_internal_copies": "unknown",
+            "same_d3d11_device": true,
+            "submission_to_completion_after_view_validation_us": {
+              "max": 5020,
+              "p50": 3993,
+              "p95": 4705
+            },
+            "submission_to_output_us": {
+              "max": 1331,
+              "p50": 520,
+              "p95": 1240
+            },
+            "warmup_frames": 16
+          },
+          "round": 2
+        }
+      ]
+    }
+  ],
+  "includes_network_or_present": false,
+  "nvdec": [
+    {
+      "async_surface_api": true,
+      "decode_measured": false,
+      "device": "NVIDIA GeForce RTX 3060",
+      "h264_decoder_created": true,
+      "hevc_decoder_created": true,
+      "hevc_main10_decoder_created": true,
+      "integration_refused": "Pinned NVDEC D3D11 export copies decoded planes; no equivalent direct texture handoff verified",
+      "pci": "0000:01:00.0"
+    }
+  ],
+  "p50_definition": "upper middle",
+  "p95_definition": "nearest rank",
+  "scope": "isolated GPU-only decode, same synthetic 720p clips; no live changes",
+  "warning": "Output availability is not GPU completion. Completion includes offline input-view validation. No live performance or zero-copy claim.",
+  "measurement_source_commit": "9fc18fac7904cb4c638b4d46ff0b05d4b23af56b",
+  "measurement_date": "2026-10-14",
+  "measured_frames_total": 6480
+}
