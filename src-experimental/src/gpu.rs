@@ -209,6 +209,18 @@ impl Samples {
             let context =
                 ID3D11VideoContext::from_raw_borrowed(&raw_context).context("video context")?;
             context.VideoProcessorSetStreamAutoProcessingMode(&processor, 0, false);
+            // All fixtures are 1280x720. Decoder arrays can have padded coded
+            // height (e.g. HEVC aligned to 128); consume the same visible area
+            // for all backends instead of scaling their padding into the image.
+            let visible = windows::Win32::Foundation::RECT {
+                left: 0,
+                top: 0,
+                right: 1280,
+                bottom: 720,
+            };
+            context.VideoProcessorSetOutputTargetRect(&processor, true, Some(&visible));
+            context.VideoProcessorSetStreamSourceRect(&processor, 0, true, Some(&visible));
+            context.VideoProcessorSetStreamDestRect(&processor, 0, true, Some(&visible));
             let mut stream = D3D11_VIDEO_PROCESSOR_STREAM {
                 Enable: true.into(),
                 pInputSurface: std::mem::ManuallyDrop::new(view),
