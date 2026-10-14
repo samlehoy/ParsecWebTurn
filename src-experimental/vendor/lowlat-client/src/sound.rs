@@ -360,6 +360,19 @@ impl Decoding {
     }
 }
 
+/// Exclusive application audio consumer, detached from the session command lock.
+#[cfg(feature = "external-video")]
+pub struct EncodedAudioSource(Packets);
+#[cfg(feature = "external-video")]
+impl EncodedAudioSource {
+    pub(crate) fn new(packets: Packets) -> Self {
+        Self(packets)
+    }
+    pub fn take(&mut self) -> Option<EncodedAudio<'_>> {
+        self.0.take_encoded()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,18 +562,5 @@ mod tests {
         assert!(mean_square > expected * 0.5 && mean_square < expected * 2.0);
         assert_eq!(sound.decoding.refused, 0);
         assert_eq!(sound.decoding.decoded, 10);
-    }
-}
-
-/// Exclusive application audio consumer, detached from the session command lock.
-#[cfg(feature = "external-video")]
-pub struct EncodedAudioSource(Packets);
-#[cfg(feature = "external-video")]
-impl EncodedAudioSource {
-    pub(crate) fn new(packets: Packets) -> Self {
-        Self(packets)
-    }
-    pub fn take(&mut self) -> Option<EncodedAudio<'_>> {
-        self.0.take_encoded()
     }
 }

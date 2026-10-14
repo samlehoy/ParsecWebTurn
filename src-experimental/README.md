@@ -70,11 +70,11 @@ The narrow vendored client seam is documented in `vendor/lowlat-client/PARSECWEB
 The optional `src-native` feature `experimental-bud` connects these payloads to
 the existing MF/D3D11 video and libopus pipelines. It adds no alternate decoder,
 plane-splitting renderer or GPU copy path. Normal builds do not include it.
-A playable integration still needs account/UI lifecycle wiring and stock-host
-acceptance for both routes. It is not yet a selectable remote desktop client.
+The optional test client now has explicit account/UI lifecycle wiring and a
+Settings checkbox. Stock-host playback acceptance is still required for both routes.
 
 Tests run real UDP connectivity between two native SDK peers, directly and
-through an isolated coturn instance. This does not prove encrypted media,
+through an isolated coturn instance, including encrypted control delivery. This does not prove stock-host media,
 stock-host compatibility or Cloudflare interoperability. Those remain explicit
 acceptance gates. The production WebRTC regression workflow is unchanged.
 

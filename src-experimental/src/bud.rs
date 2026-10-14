@@ -224,6 +224,27 @@ impl Drop for Session {
     }
 }
 
+/// Sole media consumer; cannot clone or outlive borrowed pool leases.
+/// Decode/inspection runs without locking the input/session command path.
+pub struct MediaSource {
+    units: Units,
+    audio: lowlat_client::sound::EncodedAudioSource,
+}
+impl MediaSource {
+    pub fn with_video<T>(&mut self, sink: impl FnOnce(&[u8]) -> Result<T>) -> Result<Option<T>> {
+        let Some(unit) = self.units.take() else {
+            return Ok(None);
+        };
+        sink(unit.bytes()).map(Some)
+    }
+    pub fn with_audio<T>(&mut self, sink: impl FnOnce(&[u8]) -> Result<T>) -> Result<Option<T>> {
+        let Some(packet) = self.audio.take() else {
+            return Ok(None);
+        };
+        sink(packet.bytes()).map(Some)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,26 +302,5 @@ mod tests {
                 .offer("second", Route::Direct { stun: vec![] })
                 .is_ok()
         );
-    }
-}
-
-/// Sole media consumer; cannot clone or outlive borrowed pool leases.
-/// Decode/inspection runs without locking the input/session command path.
-pub struct MediaSource {
-    units: Units,
-    audio: lowlat_client::sound::EncodedAudioSource,
-}
-impl MediaSource {
-    pub fn with_video<T>(&mut self, sink: impl FnOnce(&[u8]) -> Result<T>) -> Result<Option<T>> {
-        let Some(unit) = self.units.take() else {
-            return Ok(None);
-        };
-        sink(unit.bytes()).map(Some)
-    }
-    pub fn with_audio<T>(&mut self, sink: impl FnOnce(&[u8]) -> Result<T>) -> Result<Option<T>> {
-        let Some(packet) = self.audio.take() else {
-            return Ok(None);
-        };
-        sink(packet.bytes()).map(Some)
     }
 }
