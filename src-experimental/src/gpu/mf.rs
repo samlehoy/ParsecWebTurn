@@ -37,18 +37,15 @@ unsafe fn decoder(clip: Clip) -> Result<IMFTransform> {
         let mut found = None;
         for index in 0..count {
             let activation = std::ptr::read(list.add(index as usize));
-            if found.is_none() {
-                if let Some(activation) = &activation {
-                    if let Ok(transform) = activation.ActivateObject::<IMFTransform>() {
-                        if transform
-                            .GetAttributes()
-                            .and_then(|a| a.GetUINT32(&MF_SA_D3D11_AWARE))
-                            .is_ok_and(|v| v != 0)
-                        {
-                            found = Some(transform);
-                        }
-                    }
-                }
+            if found.is_none()
+                && let Some(activation) = &activation
+                && let Ok(transform) = activation.ActivateObject::<IMFTransform>()
+                && transform
+                    .GetAttributes()
+                    .and_then(|a| a.GetUINT32(&MF_SA_D3D11_AWARE))
+                    .is_ok_and(|v| v != 0)
+            {
+                found = Some(transform);
             }
             drop(activation);
         }
@@ -179,9 +176,16 @@ pub(super) fn trial(device: &Device, clip: Clip, units: &[&[u8]], fps: u64) -> R
             &if clip == Clip::H264 {
                 MFVideoFormat_H264
             } else {
-                MFVideoFormat_HEVC
+                MFVideoFormat_HEVC_ES
             },
         )?;
+        if clip != Clip::H264 {
+            input.SetUINT32(
+                &MF_MT_MPEG2_PROFILE,
+                if clip == Clip::Main10 { 2 } else { 1 },
+            )?;
+            input.SetUINT64(&MF_MT_FRAME_SIZE, (1280u64 << 32) | 720)?;
+        }
         decoder.SetInputType(0, &input, 0)?;
         // HEVC can reject a placeholder output until parameter sets arrive.
         let initial_type = output_type(&decoder, clip);
