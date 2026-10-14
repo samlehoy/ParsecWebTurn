@@ -29,9 +29,10 @@ pub struct Pumped {
 impl Media {
     /// Call only after an explicit BUD selection. Account/UI wiring is separate;
     /// this does not start any connection or change a WebRTC session.
-    pub fn start(window: Arc<crate::window::Window>, prefer_hevc: bool) -> Result<(Self, Session)> {
-        let hevc_available =
-            prefer_hevc && crate::video_windows::hevc_available(window.video_gpu().as_ref());
+    pub fn start_verified(
+        window: Arc<crate::window::Window>,
+        hevc_available: bool,
+    ) -> Result<(Self, Session)> {
         let session = Session::external_video(hevc_available)?;
         let audio = Arc::new(crate::audio_stream::Pipeline::start());
         let audio_sender = audio

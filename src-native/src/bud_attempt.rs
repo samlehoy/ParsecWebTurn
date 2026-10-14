@@ -303,7 +303,21 @@ fn run(
         return Ok(());
     }
     let relay = matches!(route, Route::TurnUdp(_));
-    let (mut media, mut session) = crate::bud_media::Media::start(window.clone(), prefer_hevc)?;
+    // Probe before the lifecycle lock: a slow driver must not stall Cancel.
+    let hevc_available =
+        prefer_hevc && crate::video_windows::hevc_available(window.video_gpu().as_ref());
+    let (mut media, mut session, generation) = {
+        let _state = state.lock().unwrap_or_else(|e| e.into_inner());
+        if cancel.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        // Creation only starts the existing workers. Surface/stats generation
+        // is serialized against retirement, so a cancelled old attempt cannot
+        // hide the next attempt's video or reset its statistics.
+        let (media, session) =
+            crate::bud_media::Media::start_verified(window.clone(), hevc_available)?;
+        (media, session, window.stats.begin())
+    };
     session.wake_consumer(std::thread::current());
     let creds = session.offer(id, route)?;
     let mut source = session.take_media()?;
@@ -321,7 +335,6 @@ fn run(
     }
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut established = false;
-    let generation = window.stats.begin();
     let mut last_stats = Instant::now();
     while !cancel.load(Ordering::Acquire) {
         ensure!(
