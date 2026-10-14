@@ -187,6 +187,13 @@ impl Attempt {
             .ingress
             .clone()
     }
+    pub fn fail(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).failure =
+            Some("BUD application signaling failed");
+        self.cancel.store(true, Ordering::Release);
+        self.thread.unpark();
+    }
+
     pub fn failure(&self) -> Option<&'static str> {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).failure
     }
@@ -201,13 +208,7 @@ impl Drop for Attempt {
 // BUD uses an explicit direct route, or one UDP relay when Force TURN is selected.
 // TCP/TLS URLs are never interpreted as UDP and there is no silent fallback.
 async fn route(manager: &crate::connection_settings::Manager) -> Result<Route> {
-    let (settings, error) = manager.view();
-    ensure!(error.is_none(), "invalid connection settings");
-    let servers = if settings.force_relay {
-        manager.resolve().await?
-    } else {
-        settings.stun_servers()
-    };
+    let (settings, servers) = manager.resolve_bud().await?;
     if settings.force_relay {
         for server in servers {
             for raw in server.urls {
@@ -322,6 +323,10 @@ fn run(
             shared.ingress.video_packets_received + pumped.video_messages as u64;
         ingress.audio_packets_received =
             shared.ingress.audio_packets_received + pumped.audio_messages as u64;
+        ingress.video_bytes_received =
+            shared.ingress.video_bytes_received + pumped.video_bytes as u64;
+        ingress.audio_bytes_received =
+            shared.ingress.audio_bytes_received + pumped.audio_bytes as u64;
         shared.ingress = ingress;
         if window.stats.requested() && last_stats.elapsed() >= Duration::from_millis(250) {
             window.stats.publish(
@@ -345,6 +350,7 @@ fn run(
                         "Unknown"
                     },
                     turn_protocol: relay.then(|| "udp".into()),
+                    audio_bytes: shared.ingress.audio_bytes_received,
                     video: shared.ingress.video_output.clone(),
                     codec: shared.ingress.video_stream.codec,
                     profile: shared.ingress.video_stream.sps_profile_idc,

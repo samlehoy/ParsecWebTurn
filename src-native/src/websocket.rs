@@ -563,8 +563,14 @@ pub fn dispatch(
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
                 if let Some(attempt) = &backend.bud_attempt {
-                    if let Some(rewritten) = attempt.incoming(&text)? {
-                        memory.c_string(output, size, &rewritten)?;
+                    match attempt.incoming(&text) {
+                        Ok(Some(rewritten)) => memory.c_string(output, size, &rewritten)?,
+                        Ok(None) => {}
+                        Err(_) => {
+                            attempt.fail();
+                            out[0] = Val::I32(3);
+                            return Ok(());
+                        }
                     }
                 }
             }
@@ -582,7 +588,13 @@ pub fn dispatch(
                             .lock()
                             .unwrap_or_else(|e| e.into_inner());
                         match &backend.bud_attempt {
-                            Some(attempt) => attempt.outgoing(&text)?.unwrap_or(text),
+                            Some(attempt) => match attempt.outgoing(&text) {
+                                Ok(rewritten) => rewritten.unwrap_or(text),
+                                Err(_) => {
+                                    attempt.fail();
+                                    return Ok(());
+                                }
+                            },
                             None => text,
                         }
                     };

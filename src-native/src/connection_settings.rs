@@ -333,6 +333,21 @@ impl Manager {
         }
         self.resolve_settings(&settings).await
     }
+    /// Explicit BUD adapter: freeze preferences and credentials together.
+    #[cfg(all(windows, feature = "experimental-bud"))]
+    pub async fn resolve_bud(&self) -> Result<(Settings, Vec<RTCIceServer>)> {
+        let (settings, error) = self.view();
+        if error.is_some() {
+            bail!("Fix connection settings before connecting");
+        }
+        let servers = if settings.force_relay {
+            self.resolve_settings(&settings).await?
+        } else {
+            settings.stun_servers()
+        };
+        Ok((settings, servers))
+    }
+
     /// Resolve credentials and routing from the same settings snapshot.
     pub async fn resolve_configuration(
         &self,

@@ -876,7 +876,12 @@ fn backend_call(
                         if let Some(frame) = b.prepare_input_with_viewport(&message, viewport)? {
                             #[cfg(all(windows, feature = "experimental-bud"))]
                             if let Some(attempt) = &b.bud_attempt {
-                                attempt.send(&frame)?;
+                                if attempt.send(&frame).is_err() {
+                                    attempt.fail();
+                                    b.fail_native_attempt(
+                                        crate::attempt::FailureStage::ChannelSend,
+                                    )?;
+                                }
                                 return Ok(());
                             }
                             b.native_attempt
@@ -894,7 +899,13 @@ fn backend_call(
                     if b.status == Some(0) {
                         #[cfg(all(windows, feature = "experimental-bud"))]
                         if let Some(attempt) = &b.bud_attempt {
-                            attempt.send(&crate::control::text(17, int(args, 0)?, &text)?)?;
+                            if attempt
+                                .send(&crate::control::text(17, int(args, 0)?, &text)?)
+                                .is_err()
+                            {
+                                attempt.fail();
+                                b.fail_native_attempt(crate::attempt::FailureStage::ChannelSend)?;
+                            }
                             return Ok(());
                         }
                         b.native_attempt

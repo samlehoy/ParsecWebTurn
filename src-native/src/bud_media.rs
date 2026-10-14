@@ -20,6 +20,8 @@ pub struct Media {
 pub struct Pumped {
     pub video_messages: usize,
     pub audio_messages: usize,
+    pub video_bytes: usize,
+    pub audio_bytes: usize,
     pub accepted_video: usize,
     pub accepted_audio: usize,
 }
@@ -95,21 +97,28 @@ impl Media {
     pub fn pump(&mut self, session: &mut Session) -> Result<Pumped> {
         let mut counts = Pumped::default();
         for _ in 0..8 {
-            let Some(accepted) =
-                session.with_video(|message, _arrived_us| self.video_message(message))?
+            let Some((accepted, size)) = session.with_video(|message, _arrived_us| {
+                Ok((self.video_message(message)?, message.len()))
+            })?
             else {
                 break;
             };
             counts.video_messages += 1;
+            counts.video_bytes += size;
             counts.accepted_video += usize::from(accepted);
         }
         for _ in 0..8 {
-            let Some(accepted) = session
-                .with_audio(|message| Ok(self.audio_sender.submit(media::opus(message)?)))?
+            let Some((accepted, size)) = session.with_audio(|message| {
+                Ok((
+                    self.audio_sender.submit(media::opus(message)?),
+                    message.len(),
+                ))
+            })?
             else {
                 break;
             };
             counts.audio_messages += 1;
+            counts.audio_bytes += size;
             counts.accepted_audio += usize::from(accepted);
         }
         if let Some(generation) = self.video.take_keyframe_request() {
