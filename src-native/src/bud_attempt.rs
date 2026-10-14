@@ -34,6 +34,39 @@ struct State {
     failure: Option<&'static str>,
 }
 
+// Keep BUD identity through connecting/disconnected states too. An old worker
+// finishing after reconnect may only publish into its own stats generation.
+struct Statistics {
+    shared: Arc<crate::stats::Shared>,
+    generation: u64,
+}
+impl Statistics {
+    fn start(shared: Arc<crate::stats::Shared>) -> Self {
+        let generation = shared.begin();
+        shared.publish(
+            generation,
+            crate::stats::Sample {
+                bud: Some(Default::default()),
+                state: "Connecting (experimental BUD)".into(),
+                ..Default::default()
+            },
+        );
+        Self { shared, generation }
+    }
+}
+impl Drop for Statistics {
+    fn drop(&mut self) {
+        self.shared.publish(
+            self.generation,
+            crate::stats::Sample {
+                bud: Some(Default::default()),
+                state: "Disconnected (experimental BUD)".into(),
+                ..Default::default()
+            },
+        );
+    }
+}
+
 pub struct Attempt {
     id: String,
     state: Arc<Mutex<State>>,
@@ -430,7 +463,7 @@ fn run(
     // Probe before the lifecycle lock: a slow driver must not stall Cancel.
     let hevc_available =
         settings.prefer_hevc && crate::video_windows::hevc_available(window.video_gpu().as_ref());
-    let (mut media, mut session, generation) = {
+    let (mut media, mut session, statistics) = {
         let _state = state.lock().unwrap_or_else(|e| e.into_inner());
         if cancel.load(Ordering::Acquire) {
             return Ok(());
@@ -440,7 +473,7 @@ fn run(
         // hide the next attempt's video or reset its statistics.
         let (media, session) =
             crate::bud_media::Media::start_verified(window.clone(), hevc_available)?;
-        (media, session, window.stats.begin())
+        (media, session, Statistics::start(window.stats.clone()))
     };
     state.lock().unwrap_or_else(|e| e.into_inner()).wire_id = id.into();
     session.wake_consumer(std::thread::current());
@@ -534,7 +567,7 @@ fn run(
         shared.ingress = ingress;
         if window.stats.requested() && last_stats.elapsed() >= Duration::from_millis(250) {
             window.stats.publish(
-                generation,
+                statistics.generation,
                 crate::stats::Sample {
                     state: if established {
                         "Connected (experimental BUD)"
@@ -641,6 +674,24 @@ mod tests {
             receiver,
         )
     }
+    #[test]
+    fn old_bud_shutdown_cannot_replace_new_stats_or_show_webrtc_fields() {
+        let shared = Arc::new(crate::stats::Shared::default());
+        let old = Statistics::start(shared.clone());
+        let current = Statistics::start(shared.clone());
+        let generation = current.generation;
+        drop(old);
+        let sample = shared.read().unwrap();
+        assert_eq!(sample.generation, generation);
+        assert!(sample.state.starts_with("Connecting"));
+        assert!(sample.bud.is_some());
+        drop(current);
+        let sample = shared.read().unwrap();
+        assert!(sample.state.starts_with("Disconnected"));
+        assert!(!sample.bud.unwrap().connected);
+        assert!(sample.video.is_none());
+    }
+
     #[test]
     fn native_offer_preserves_authorization_and_unrelated_messages() {
         let (attempt, _) = isolated();
