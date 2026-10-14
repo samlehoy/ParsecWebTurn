@@ -1447,6 +1447,7 @@ unsafe extern "system" fn video_surface_proc(
 mod tests {
     use super::*;
     #[test]
+    #[ignore = "requires an accelerated OpenGL desktop; run the isolated GUI harness explicitly"]
     fn idle_core_gui_presents_after_back_without_extra_input() {
         let mut nonce = [0; 16];
         getrandom::fill(&mut nonce).unwrap();

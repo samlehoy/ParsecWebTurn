@@ -4,8 +4,9 @@ Settings is a GDI child of the main window; the account/computer picker uses the
 original core's OpenGL GUI on its own worker. `settings_active` covers the entire
 native page lifetime, including creation and destruction. The existing GL swap
 gate, video-child visibility and software overlay use this state. The GL worker
-also posts one native repaint after its first suppressed swap, covering overlap
-with an earlier in-flight swap. This is not a GPU completion fence.
+also posts one native repaint when it observes coverage, after its previous
+GL callback has returned. This covers overlap with an earlier in-flight swap
+even when the idle core skips further presentation. This is not a GPU completion fence.
 
 ## Idle core GUI exposure
 
@@ -57,6 +58,10 @@ Resizing and provider changes still perform their required complete reflow.
   window-size change. The fixture never reads a production profile or credentials.
 
 These fixtures do not replace a visual retest on the reported Intel notebook.
+The original-core GUI test is explicitly ignored on a headless runner without
+accelerated OpenGL. Manually dispatch native validation with `gui_harness=true`
+to download its separate test EXE, then run the exact command in its README on
+a suitable desktop. This harness is never included in the normal client package.
 
 References: [child-window update regions](https://learn.microsoft.com/en-us/windows/win32/gdi/child-window-update-region),
 [RedrawWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-redrawwindow),

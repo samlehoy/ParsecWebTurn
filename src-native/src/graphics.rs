@@ -46,7 +46,6 @@ pub struct Graphics {
     report: GraphicsReport,
     unpack_alignment: usize,
     unpack_row_length: usize,
-    settings_paused: bool,
     // A current GL context must never be moved to another OS thread.
     _thread: std::marker::PhantomData<std::rc::Rc<()>>,
     _activity: ContextActivity,
@@ -199,7 +198,6 @@ impl Graphics {
                 report,
                 unpack_alignment: 4,
                 unpack_row_length: 0,
-                settings_paused: false,
                 _thread: std::marker::PhantomData,
                 _activity: activity,
             })
@@ -302,18 +300,12 @@ impl Graphics {
             self.gl.flush();
             // The native settings child owns the visible client area. Keep the
             // core/overlay running, but don't swap its background over GDI UI.
-            let settings_paused = self.window.settings_open();
-            if settings_paused {
-                if !self.settings_paused {
-                    self.window.repaint_settings_after_gl_pause();
-                }
-            } else {
+            if !self.window.settings_open() {
                 if SwapBuffers(self.dc) == 0 {
                     bail!("native SwapBuffers failed");
                 }
                 self.report.frames_presented += 1;
             }
-            self.settings_paused = settings_paused;
         }
         *self
             .window

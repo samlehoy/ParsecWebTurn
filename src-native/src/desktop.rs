@@ -220,12 +220,18 @@ fn run_worker_callback(caller: &mut Caller<'_, HostState>, index: u32, opaque: i
         // most one phase per callback so the core observes hidden -> visible
         // even if Settings was opened and closed between render iterations.
         if caller.data().graphics.is_some() {
-            if let Some((app, visible)) = window.gui_visibility.next() {
+            if let Some((app, visible)) = window.gui_visibility.take_transition() {
                 invoke(
                     caller,
                     "mty_window_update_visibility",
                     &[Val::I32(app as i32), Val::I32(visible as i32)],
                 )?;
+                if !visible {
+                    // An idle core may skip present() entirely while covered.
+                    // Acknowledge the last completed GL callback here instead
+                    // of waiting for another suppressed SwapBuffers request.
+                    window.repaint_settings_after_gl_pause();
+                }
             }
         }
         if callback.call(&mut *caller, opaque)? == 0 {

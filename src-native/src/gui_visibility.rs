@@ -35,7 +35,7 @@ impl State {
         pending.covered = covered;
         pending.hide_pending |= covered;
     }
-    pub fn next(&self) -> Option<(u32, bool)> {
+    pub fn take_transition(&self) -> Option<(u32, bool)> {
         let app = self.app.load(Ordering::Acquire);
         if app == 0 {
             return None;
@@ -65,15 +65,15 @@ mod tests {
             state.cover(true);
             state.cover(false);
         }
-        assert_eq!(state.next(), None); // Do not consume before core initialization.
+        assert_eq!(state.take_transition(), None); // Do not consume before core initialization.
         state.publish_app(42);
-        assert_eq!(state.next(), Some((42, false)));
-        assert_eq!(state.next(), Some((42, true)));
-        assert_eq!(state.next(), None);
+        assert_eq!(state.take_transition(), Some((42, false)));
+        assert_eq!(state.take_transition(), Some((42, true)));
+        assert_eq!(state.take_transition(), None);
         state.cover(true);
-        assert_eq!(state.next(), Some((42, false)));
-        assert_eq!(state.next(), None);
+        assert_eq!(state.take_transition(), Some((42, false)));
+        assert_eq!(state.take_transition(), None);
         state.cover(false);
-        assert_eq!(state.next(), Some((42, true)));
+        assert_eq!(state.take_transition(), Some((42, true)));
     }
 }

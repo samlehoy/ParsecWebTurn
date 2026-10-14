@@ -2,6 +2,11 @@ name: Native client validation
 
 on:
   workflow_dispatch:
+    inputs:
+      gui_harness:
+        description: Upload an isolated GUI regression harness for a PC with accelerated OpenGL
+        type: boolean
+        default: false
   push:
     branches: [dev, main]
     paths:
@@ -78,6 +83,25 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
           cargo clippy --locked --manifest-path src-native/Cargo.toml --features diagnostics --all-targets -- -D warnings
           if ($LASTEXITCODE -ne 0) { throw 'Diagnostic Clippy failed' }
+      - name: Package optional hardware GUI regression harness
+        if: github.event_name == 'workflow_dispatch' && inputs.gui_harness
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $messages = cargo test --locked --manifest-path src-native/Cargo.toml --no-run --message-format=json-render-diagnostics
+          if ($LASTEXITCODE -ne 0) { throw 'GUI regression harness build failed' }
+          $harness = @($messages | Where-Object { $_.StartsWith('{') } | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.profile.test -and $_.target.name -eq 'parsec-web-turn' -and $_.executable })
+          if ($harness.Count -ne 1) { throw 'Expected one normal-build GUI test harness' }
+          New-Item -ItemType Directory -Path src-native/artifacts/gui-regression -Force | Out-Null
+          Copy-Item -LiteralPath $harness[0].executable -Destination src-native/artifacts/gui-regression/parsec-native-gui-regression.exe
+          @('Isolated offline GUI regression; requires accelerated OpenGL 4.1.', 'Run: parsec-native-gui-regression.exe window::tests::idle_core_gui_presents_after_back_without_extra_input --exact --ignored --test-threads=1 --nocapture', 'Uses the embedded core, anonymous in-memory data, a missing synthetic settings path and disabled networking. No profile or settings.json is needed.', 'Run only this named test; unrelated test fixtures may require repository files.') | Set-Content src-native/artifacts/gui-regression/README.txt -Encoding utf8
+          git rev-parse HEAD | Set-Content src-native/artifacts/gui-regression/SOURCE.txt -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch' && inputs.gui_harness
+        with:
+          name: Native-gui-regression-harness-win64
+          path: src-native/artifacts/gui-regression/*
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
         with:
