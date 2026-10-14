@@ -7,6 +7,10 @@ on:
         description: Upload an isolated GUI regression harness for a PC with accelerated OpenGL
         type: boolean
         default: false
+      latency_probes:
+        description: Run only isolated latency screening and build the offline GPU probe
+        type: boolean
+        default: false
   push:
     branches: [dev, main]
     paths:
@@ -29,7 +33,53 @@ permissions:
   contents: read
 
 jobs:
+  latency-screening:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.latency_probes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            suffix: .exe
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            suffix: ''
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/latency-probes
+          cache-on-failure: true
+      - name: Build isolated probes and measure UDP bursts
+        shell: pwsh
+        run: |
+          cargo fmt --manifest-path tests/latency-probes/Cargo.toml -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Probe formatting failed' }
+          cargo clippy --locked --manifest-path tests/latency-probes/Cargo.toml --target ${{ matrix.target }} --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Probe Clippy failed' }
+          cargo build --locked --release --manifest-path tests/latency-probes/Cargo.toml --target ${{ matrix.target }}
+          if ($LASTEXITCODE -ne 0) { throw 'Probe build failed' }
+          New-Item -ItemType Directory -Path tests/latency-probes/artifacts -Force | Out-Null
+          & './tests/latency-probes/target/${{ matrix.target }}/release/udp-burst${{ matrix.suffix }}' | Set-Content tests/latency-probes/artifacts/udp-burst.json -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw 'UDP screening failed' }
+          if ('${{ matrix.suffix }}' -eq '.exe') {
+            Copy-Item tests/latency-probes/target/${{ matrix.target }}/release/decoder-wait.exe tests/latency-probes/artifacts/
+          }
+          git rev-parse HEAD | Set-Content tests/latency-probes/artifacts/SOURCE.txt -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Isolated-latency-screening-${{ matrix.target }}
+          path: tests/latency-probes/artifacts/*
+          if-no-files-found: ignore
   turn-transports:
+    if: ${{ !inputs.latency_probes }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +92,7 @@ jobs:
       - name: Verify UDP, TCP, TLS, certificate rejection and SCTP relay
         run: bash tests/turn-integration/run.sh
   windows:
+    if: ${{ !inputs.latency_probes }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
