@@ -100,6 +100,30 @@ mod external_media_tests {
     }
 
     #[test]
+    fn external_input_rejects_session_owned_and_oversized_messages() {
+        let mut client = Client::new_external_video(
+            Caps {
+                h264: true,
+                ..Caps::default()
+            },
+            Port::Any,
+        )
+        .unwrap();
+        begin(&mut client);
+        let mut frame = [0u8; 13];
+        for opcode in [10, 11, 21, 25] {
+            frame[12] = opcode;
+            assert!(!client.send_external_control(&frame));
+        }
+        assert!(!client.send_external_control(&[0; 257]));
+        assert!(!client.send_external_control(&[0; 12]));
+        frame[12] = 28;
+        assert!(client.send_external_control(&frame));
+        client.end_connection("external-test");
+        assert!(!client.send_external_control(&frame));
+    }
+
+    #[test]
     fn normal_constructor_still_starts_the_sdk_consumer() {
         let mut client = Client::new(
             &Decoding {
@@ -159,6 +183,8 @@ pub struct Client {
     external_video: bool,
     #[cfg(feature = "external-video")]
     external_consumer: Option<std::thread::Thread>,
+    #[cfg(feature = "external-video")]
+    external_audio_taken: bool,
     attempt: Option<Attempt>,
     emit: events::Sender<Event>,
     events: Option<events::Receiver<Event>>,
@@ -382,6 +408,8 @@ impl Client {
             external_video: false,
             #[cfg(feature = "external-video")]
             external_consumer: None,
+            #[cfg(feature = "external-video")]
+            external_audio_taken: false,
             attempt: None,
             emit,
             events: Some(events),
@@ -659,13 +687,22 @@ impl Client {
     /// Sole compressed-audio consumer in application-decoded media mode.
     #[cfg(feature = "external-video")]
     pub fn take_external_audio(&mut self) -> Result<Option<sound::EncodedAudio<'_>>, Error> {
-        if !self.external_video {
+        if !self.external_video || self.external_audio_taken {
             return Err(Error::Decoder(DecoderStage::Unsupported));
         }
         if self.attempt.is_none() {
             return Err(Error::NoSession);
         }
         Ok(self.packets.take_encoded())
+    }
+
+    #[cfg(feature = "external-video")]
+    pub fn take_external_audio_source(&mut self) -> Result<sound::EncodedAudioSource, Error> {
+        if !self.external_video || self.external_audio_taken {
+            return Err(Error::Decoder(DecoderStage::Unsupported));
+        }
+        self.external_audio_taken = true;
+        Ok(sound::EncodedAudioSource::new(self.packets.clone()))
     }
 
     /// Sound packets handed over by the session thread and not yet taken.

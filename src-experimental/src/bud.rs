@@ -33,9 +33,7 @@ impl Route {
     }
 }
 
-/// A transport-only gate. It deliberately discards video; it is NOT a playable
-/// client. This lets direct/relay/authentication be tested without accepting the
-/// SDK's split-plane export as equivalent to our current NV12 renderer.
+/// Application-owned native session, with a separate compressed-media consumer.
 pub struct Session {
     client: Client,
     attempt: Option<String>,
@@ -105,6 +103,18 @@ impl Session {
 
     pub fn request_keyframe(&self) -> bool {
         self.client.request_external_keyframe()
+    }
+
+    pub fn take_media(&mut self) -> Result<MediaSource> {
+        let units = self
+            .external_units
+            .take()
+            .ok_or_else(|| anyhow!("BUD video consumer already taken"))?;
+        let audio = self
+            .client
+            .take_external_audio_source()
+            .map_err(|_| anyhow!("BUD audio consumer already taken"))?;
+        Ok(MediaSource { units, audio })
     }
 
     pub fn wake_consumer(&mut self, thread: std::thread::Thread) {
@@ -233,6 +243,22 @@ mod tests {
     }
 
     #[test]
+    fn media_consumer_is_exclusive_and_separate_from_session_commands() {
+        let mut session = Session::external_video(false).unwrap();
+        session
+            .offer("media-source", Route::Direct { stun: vec![] })
+            .unwrap();
+        let mut source = session.take_media().unwrap();
+        assert!(session.take_media().is_err());
+        assert!(session.with_video(|_, _| Ok(())).is_err());
+        assert!(session.with_audio(|_| Ok(())).is_err());
+        assert!(source.with_video(|_| Ok(())).unwrap().is_none());
+        assert!(source.with_audio(|_| Ok(())).unwrap().is_none());
+        drop(source);
+        session.close();
+    }
+
+    #[test]
     fn native_credentials_lifecycle_and_stale_attempts() {
         let mut session = Session::transport_probe().unwrap();
         let ours = session
@@ -255,5 +281,26 @@ mod tests {
                 .offer("second", Route::Direct { stun: vec![] })
                 .is_ok()
         );
+    }
+}
+
+/// Sole media consumer; cannot clone or outlive borrowed pool leases.
+/// Decode/inspection runs without locking the input/session command path.
+pub struct MediaSource {
+    units: Units,
+    audio: lowlat_client::sound::EncodedAudioSource,
+}
+impl MediaSource {
+    pub fn with_video<T>(&mut self, sink: impl FnOnce(&[u8]) -> Result<T>) -> Result<Option<T>> {
+        let Some(unit) = self.units.take() else {
+            return Ok(None);
+        };
+        sink(unit.bytes()).map(Some)
+    }
+    pub fn with_audio<T>(&mut self, sink: impl FnOnce(&[u8]) -> Result<T>) -> Result<Option<T>> {
+        let Some(packet) = self.audio.take() else {
+            return Ok(None);
+        };
+        sink(packet.bytes()).map(Some)
     }
 }

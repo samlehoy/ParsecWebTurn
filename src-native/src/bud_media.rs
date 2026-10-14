@@ -2,7 +2,7 @@
 //! No alternate decoder, renderer, decoded-frame export or GPU interop path.
 use anyhow::{ensure, Result};
 use parsec_native_experimental::{
-    bud::Session,
+    bud::{MediaSource, Session},
     media::{self, Rotation, Video},
 };
 use std::sync::Arc;
@@ -94,12 +94,11 @@ impl Media {
 
     /// Bounded work on the application consumer; network receipt runs in the
     /// SDK thread. No session/global GUI lock is held for decoder processing.
-    pub fn pump(&mut self, session: &mut Session) -> Result<Pumped> {
+    pub fn pump(&mut self, source: &mut MediaSource) -> Result<Pumped> {
         let mut counts = Pumped::default();
         for _ in 0..8 {
-            let Some((accepted, size)) = session.with_video(|message, _arrived_us| {
-                Ok((self.video_message(message)?, message.len()))
-            })?
+            let Some((accepted, size)) =
+                source.with_video(|message| Ok((self.video_message(message)?, message.len())))?
             else {
                 break;
             };
@@ -108,7 +107,7 @@ impl Media {
             counts.accepted_video += usize::from(accepted);
         }
         for _ in 0..8 {
-            let Some((accepted, size)) = session.with_audio(|message| {
+            let Some((accepted, size)) = source.with_audio(|message| {
                 Ok((
                     self.audio_sender.submit(media::opus(message)?),
                     message.len(),
@@ -121,13 +120,16 @@ impl Media {
             counts.audio_bytes += size;
             counts.accepted_audio += usize::from(accepted);
         }
+        Ok(counts)
+    }
+
+    pub fn recover(&mut self, session: &mut Session) {
         if let Some(generation) = self.video.take_keyframe_request() {
             self.waiting_for_keyframe = true;
             if !session.request_keyframe() {
                 self.video.recovery_request_failed(generation);
             }
         }
-        Ok(counts)
     }
 
     /// Preserve the current audio/WASM playback boundary and libopus decoder.

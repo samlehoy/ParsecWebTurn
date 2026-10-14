@@ -45,3 +45,10 @@ congestion control and keyframe recovery. Already-framed application input uses
 a bounded fixed-size request ring; SDK-managed initialization and reports are
 refused. Network activity unparks the media consumer; media does not wait for a
 GUI/frame polling timer. Normal constructors leave this forwarding disabled.
+
+The media consumer can be detached exactly once from a session's command path.
+Its non-cloneable wrapper owns the sole video/audio consumers, lends only
+synchronous pool leases, and must be dropped before session teardown. This lets
+MF input inspection/queueing proceed without holding the SDK input-command lock.
+External initialization requests uncached cursor updates because the retained
+WASM UI does not implement native checksum cache references.

@@ -270,6 +270,7 @@ fn run(
         crate::bud_media::Media::start(window.clone(), manager.view().0.prefer_hevc)?;
     session.wake_consumer(std::thread::current());
     let creds = session.offer(id, route)?;
+    let mut source = session.take_media()?;
     let signaling = Signaling::new("host", id)?;
     state.lock().unwrap_or_else(|e| e.into_inner()).offer =
         Some(signaling.offer(&creds)["payload"]["data"].take());
@@ -300,8 +301,9 @@ fn run(
             };
             events.push(event);
         }
-        let pumped = media.pump(session)?;
+        media.recover(session);
         drop(guard);
+        let pumped = media.pump(&mut source)?;
         let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
         for event in events {
             ensure!(
