@@ -904,13 +904,13 @@ mod tests {
     }
 
     const DS5_IDLE: &[u8; pad::INPUT_LEN] =
-        include_bytes!("../../core/tests/data/pad/ds5/input-idle.bin");
+        include_bytes!("../tests/data/pad/ds5/input-idle.bin");
     const DS5_HELD: &[u8; pad::INPUT_LEN] =
-        include_bytes!("../../core/tests/data/pad/ds5/input-held.bin");
+        include_bytes!("../tests/data/pad/ds5/input-held.bin");
     const DS4_IDLE: &[u8; pad::INPUT_LEN] =
-        include_bytes!("../../core/tests/data/pad/ds4/input-idle.bin");
+        include_bytes!("../tests/data/pad/ds4/input-idle.bin");
     const DS5_CALIBRATION: &[u8] =
-        include_bytes!("../../core/tests/data/pad/ds5/feature-calibration.bin");
+        include_bytes!("../tests/data/pad/ds5/feature-calibration.bin");
 
     fn wires(reports: [Option<Wire>; 3]) -> Vec<(u8, u32, u32, u32, usize)> {
         reports

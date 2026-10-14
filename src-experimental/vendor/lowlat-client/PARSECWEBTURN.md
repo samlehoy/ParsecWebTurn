@@ -8,6 +8,8 @@ Only `src/seam.rs` and `src/sound.rs` have behavioral changes. The standalone Ca
 all sibling lowlat crates to the same revision; upstream integration-test-only
 dependencies and workspace lint inheritance are not copied. Upstream unit tests
 inside source files are preserved. There is no GPL codec feature enabled.
+`src/input.rs` only adjusts four test-fixture include paths; the corresponding
+upstream controller reports are copied under `tests/data/pad` for unit tests.
 
 The opt-in `external-video` feature adds `Client::new_external_video(caps, port)`.
 It retains the upstream session, crypto, candidate/readiness handling, BUD rings,
