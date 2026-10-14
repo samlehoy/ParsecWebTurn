@@ -183,9 +183,12 @@ fn rows(
         if bud.relay {
             row("TURN transport", "UDP".into());
         }
-        if let Some(encode) = bud.encode_ms {
-            row("Host encode time", number(Some(encode), "ms"));
-        }
+        row(
+            "Host encode time",
+            bud.encode_ms
+                .map(|encode| number(Some(encode), "ms"))
+                .unwrap_or_else(|| "Waiting for host".into()),
+        );
         row("BUD DELIVERY", String::new());
         for (name, channel) in ["Control", "Video", "Audio"].iter().zip(&bud.channels) {
             row(&format!("{name} late fragments"), channel.late.to_string());
@@ -514,7 +517,7 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
     y += 14;
     #[cfg(feature = "experimental-bud")]
     let footer = if page.sample.bud.is_some() {
-        "Traffic counts UDP payload bytes accepted for send or received, including BUD/crypto/TURN control and retransmissions; IP/UDP headers and account HTTPS/WSS traffic are excluded. RTT is the native transport estimate. Late fragments indicate reordering or retransmission, not proven packet loss. NACKs request missing fragments. Compressed backlog is before Media Foundation; no GPU timings are inferred."
+        "Traffic counts UDP payload bytes accepted for send or received, including BUD/crypto/TURN control and retransmissions; IP/UDP headers and account HTTPS/WSS traffic are excluded. RTT is the native transport estimate. Host encode time keeps the last available report for this connection. Late fragments indicate reordering or retransmission, not proven packet loss. NACKs request missing fragments. Compressed backlog is before Media Foundation; no GPU timings are inferred."
     } else {
         "Traffic is measured usage, not available bandwidth. RTT is the active ICE path's round-trip time, not ICMP ping. Local dropped frames are not network packet loss. Missing values remain unknown."
     };
@@ -687,6 +690,19 @@ mod tests {
         assert!(!rows
             .iter()
             .any(|(k, v)| k.contains("candidate") || k.contains("DTLS") || v == "Not reported"));
+        let position = rows
+            .iter()
+            .position(|(k, _)| k == "Host encode time")
+            .unwrap();
+        assert_eq!(rows[position].1, "Waiting for host");
+        let mut updated = sample.clone();
+        updated.bud.as_mut().unwrap().encode_ms = Some(3.4);
+        let refreshed = super::rows(&updated, &Values::default(), (None, None, None));
+        assert_eq!(refreshed.len(), rows.len());
+        assert_eq!(
+            refreshed[position],
+            ("Host encode time".into(), "3.4 ms".into())
+        );
     }
 
     use super::*;

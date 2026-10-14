@@ -776,7 +776,11 @@ impl Driver {
                 }
             }
             op::ENCODE_LATENCY => {
-                if let Some(slot) = self.encode_latency_us.get_mut(message.a2 as usize) {
+                // Zero carries no usable timing. Keep this connection's last
+                // real report instead of making the statistics flicker.
+                if message.a1 != 0
+                    && let Some(slot) = self.encode_latency_us.get_mut(message.a2 as usize)
+                {
                     *slot = message.a1;
                 }
             }
@@ -1060,6 +1064,37 @@ impl Driver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_encode_report_retains_last_value_only_for_current_connection() {
+        let make = || {
+            let (emit, _) = events::queue();
+            Driver::new(
+                crate::config::Config::default().init(&crate::config::Caps::default()),
+                Units::new(),
+                Packets::new(),
+                emit,
+                Arc::new(Telemetry::default()),
+            )
+        };
+        let mut driver = make();
+        assert_eq!(driver.encode_latency_us(0), 0);
+        for (reported, expected) in [(3400, 3400), (0, 3400), (4200, 4200), (0, 4200)] {
+            driver.on_control(&Control {
+                a0: 1,
+                a1: reported,
+                a2: 0,
+                opcode: op::ENCODE_LATENCY,
+                body: &[],
+            });
+            assert_eq!(driver.encode_latency_us(0), expected);
+        }
+        assert_eq!(
+            make().encode_latency_us(0),
+            0,
+            "new connection must not inherit old timing"
+        );
+    }
 
     /// An age reads across the stamp's wrap: a stamp taken a millisecond
     /// before its 31 bits run out, read two after, is three milliseconds old.
