@@ -47,15 +47,14 @@ write, no CPU video path, no added decoded-frame GPU copy, correctly retained
 surfaces/fences, and repeatable latency no worse than enabled low-latency Media
 Foundation. A capability probe alone cannot satisfy that acceptance.
 
-## AMD/NVIDIA and Main 10 screening
+## AMD/NVIDIA 8-bit screening
 
-`vendor-gpu-probe.exe` runs the same 120-frame synthetic 720p H.264, HEVC Main
-and HEVC Main 10 clips on each physical AMD/NVIDIA adapter. It compares AMF
+`vendor-gpu-probe.exe` runs the same 120-frame synthetic 720p H.264 and HEVC Main clips on each physical AMD/NVIDIA adapter. It compares AMF
 against the current low-latency MF requests on AMD; NVIDIA uses MF plus separate
 NVDEC decoder-creation checks. NVDEC's pinned D3D11 plane exporter adds copies
 and is deliberately not used. This is not a measured NVDEC decoding comparison.
 
-Every decoded output must be GPU-only NV12/P010 on the caller's D3D11 device.
+Every decoded output must be GPU-only NV12 on the caller's D3D11 device.
 Its original texture is the video processor input; the final probe also executes
 the existing single BGRA output conversion. No decoded pixels are mapped to CPU,
 no intermediate decoded-frame textures or plane split/export are used. Offline

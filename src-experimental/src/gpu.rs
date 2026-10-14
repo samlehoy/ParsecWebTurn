@@ -15,34 +15,28 @@ use windows::{
     core::Interface,
 };
 mod amf;
+mod direct;
 mod mf;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Clip {
     H264,
     Hevc,
-    Main10,
 }
 impl Clip {
     fn name(self) -> &'static str {
         match self {
             Self::H264 => "H.264",
             Self::Hevc => "HEVC Main",
-            Self::Main10 => "HEVC Main 10",
         }
     }
     fn format(self) -> DXGI_FORMAT {
-        if self == Self::Main10 {
-            DXGI_FORMAT_P010
-        } else {
-            DXGI_FORMAT_NV12
-        }
+        DXGI_FORMAT_NV12
     }
     fn units(self) -> Result<Vec<&'static [u8]>> {
         let mut bytes: &[u8] = match self {
             Self::H264 => include_bytes!("../fixtures/synthetic-720p-h264.bin"),
             Self::Hevc => include_bytes!("../fixtures/synthetic-720p-hevc.bin"),
-            Self::Main10 => include_bytes!("../fixtures/synthetic-720p-hevc10.bin"),
         };
         let mut units = Vec::new();
         while !bytes.is_empty() {
@@ -123,7 +117,7 @@ impl Samples {
                 desc.Format == clip.format()
                     && desc.CPUAccessFlags == 0
                     && desc.Usage == D3D11_USAGE_DEFAULT,
-                "output is not the requested GPU-only NV12/P010 layout"
+                "output is not the requested GPU-only NV12 layout"
             );
             ensure!(
                 desc.MipLevels == 1 && slice < desc.ArraySize,
@@ -296,7 +290,7 @@ fn nvidia_capabilities() -> Result<Value> {
         let mut name = [0; 96];
         let len = cuda.device_name(&device, &mut name)?;
         devices.push(json!({"device":String::from_utf8_lossy(&name[..len]),"pci":device.address().as_str(),
-            "h264_decoder_created":caps.h264,"hevc_decoder_created":caps.hevc,"hevc_main10_decoder_created":caps.hevc_10,
+            "h264_decoder_created":caps.h264,"hevc_decoder_created":caps.hevc,
             "async_surface_api":cuvid.asynchronous(),"decode_measured":false,
             "integration_refused":"Pinned NVDEC D3D11 export copies decoded planes; no equivalent direct texture handoff verified"}));
         context.release_current()?;
@@ -317,29 +311,25 @@ pub fn probe() -> Result<Value> {
         let device = d3d.open(adapter.luid)?;
         ensure!(device.protect(), "D3D11 multithread protection required");
         let mut trials = Vec::new();
-        for clip in [Clip::H264, Clip::Hevc, Clip::Main10] {
+        for clip in [Clip::H264, Clip::Hevc] {
             let units = clip.units()?;
             for fps in [30, 60] {
                 for round in 0..3 {
                     // Alternate order so startup/thermal drift affects both.
-                    for vendor in if round % 2 == 0 {
-                        [false, true]
-                    } else {
-                        [true, false]
-                    } {
-                        if vendor && adapter.vendor != 0x1002 {
+                    for selected in if round % 2 == 0 { [0, 1, 2] } else { [2, 1, 0] } {
+                        if selected == 1 && adapter.vendor != 0x1002 {
                             continue;
                         }
-                        let backend = if vendor {
-                            "AMF"
-                        } else {
-                            "Media Foundation (current low latency requests)"
+                        let backend = match selected {
+                            1 => "AMF",
+                            2 => "Direct D3D11",
+                            _ => "Media Foundation (current low latency requests)",
                         };
                         eprintln!("  {} {backend} {fps} fps round {round}", clip.name());
-                        let result = if vendor {
-                            amf::trial(&device, clip, &units, fps)
-                        } else {
-                            mf::trial(&device, clip, &units, fps)
+                        let result = match selected {
+                            1 => amf::trial(&device, clip, &units, fps),
+                            2 => direct::trial(&device, clip, &units, fps),
+                            _ => mf::trial(&device, clip, &units, fps),
                         };
                         trials.push(json!({"codec":clip.name(),"backend":backend,"fps":fps,"round":round,
                             "result":match result { Ok(v)=>v, Err(e)=>json!({"refused":format!("{e:#}")}) }}));

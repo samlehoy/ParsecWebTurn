@@ -274,16 +274,6 @@ fn rows(
             .unwrap_or("Not reported")
             .into(),
     );
-    #[cfg(feature = "experimental-bud")]
-    if s.bud.is_some() {
-        row(
-            "Decoded color depth",
-            video
-                .and_then(|v| v.decoded_color_depth)
-                .map(|b| format!("{b}-bit"))
-                .unwrap_or_else(|| "Not reported".into()),
-        );
-    }
     row(
         "Renderer",
         video

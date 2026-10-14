@@ -44,10 +44,8 @@ const HEVC: usize = 4117;
 const FORCE_RELAY: usize = 4118;
 #[cfg(feature = "experimental-bud")]
 const BUD: usize = 4119;
-#[cfg(feature = "experimental-bud")]
-const BUD_MAIN10: usize = 4120;
 const BUD_EXTRA: i32 = if cfg!(feature = "experimental-bud") {
-    188
+    94
 } else {
     0
 };
@@ -535,19 +533,6 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
             page.font,
         );
         check(hwnd, BUD, s.experimental_bud);
-        row_label(hwnd, page, "HEVC Main 10", "Experimental, BUD only. Requires Prefer HEVC.\nUses the existing GPU decode and presentation path.", 1198, 0, 40);
-        add(
-            hwnd,
-            page,
-            "BUTTON",
-            "Request 10-bit HEVC (BUD only)",
-            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-            [420, 1198, 400, 36],
-            BUD_MAIN10,
-            0,
-            page.font,
-        );
-        check(hwnd, BUD_MAIN10, s.bud_hevc_main10);
     }
     add(hwnd, page, "STATIC",
         "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection.",
@@ -869,11 +854,6 @@ unsafe fn update_enabled(hwnd: HWND) {
             };
         EnableWindow(GetDlgItem(hwnd, id as i32), enabled as i32);
     }
-    #[cfg(feature = "experimental-bud")]
-    EnableWindow(
-        GetDlgItem(hwnd, BUD_MAIN10 as i32),
-        (checked(hwnd, BUD) && checked(hwnd, HEVC)) as i32,
-    );
     layout(hwnd);
 }
 unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
@@ -882,7 +862,6 @@ unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
     #[cfg(feature = "experimental-bud")]
     {
         s.experimental_bud = checked(hwnd, BUD);
-        s.bud_hevc_main10 = checked(hwnd, BUD_MAIN10);
     }
     let selected = SendMessageW(GetDlgItem(hwnd, GPU as i32), CB_GETCURSEL, 0, 0);
     s.video_gpu = usize::try_from(selected)
@@ -1070,11 +1049,6 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                 }
                 BACK => {
                     PostMessageW(GetParent(hwnd), WM_APP + 9, 0, 0);
-                    return 0;
-                }
-                #[cfg(feature = "experimental-bud")]
-                BUD | HEVC if (wp >> 16) as u32 == BN_CLICKED => {
-                    update_enabled(hwnd);
                     return 0;
                 }
                 PROVIDER if (wp >> 16) as u32 == CBN_SELCHANGE => {

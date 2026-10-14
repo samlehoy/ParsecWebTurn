@@ -22,15 +22,7 @@ pub(super) fn trial(device: &Device, clip: Clip, units: &[&[u8]], fps: u64) -> R
     // surface copy or distribute decode to another GPU.
     decoder.set_bool("SurfaceCopy", false)?;
     decoder.set_bool("EnableDecoderSmartAccessVideo", false)?;
-    decoder.init(
-        if clip == Clip::Main10 {
-            Layout::P010
-        } else {
-            Layout::Nv12
-        },
-        1280,
-        720,
-    )?;
+    decoder.init(Layout::Nv12, 1280, 720)?;
     let mut buffer = context.buffer(units.iter().map(|u| u.len()).max().context("empty clip")?)?;
     let mut samples = Samples::new();
     let origin = Instant::now();

@@ -53,12 +53,8 @@ unsafe fn decoder(clip: Clip) -> Result<IMFTransform> {
         found.context("no synchronous D3D11-aware HEVC transform")
     }
 }
-fn subtype(clip: Clip) -> GUID {
-    if clip == Clip::Main10 {
-        MFVideoFormat_P010
-    } else {
-        MFVideoFormat_NV12
-    }
+fn subtype(_clip: Clip) -> GUID {
+    MFVideoFormat_NV12
 }
 unsafe fn output_type(transform: &IMFTransform, clip: Clip) -> Result<()> {
     unsafe {
@@ -79,7 +75,7 @@ unsafe fn output_type(transform: &IMFTransform, clip: Clip) -> Result<()> {
             }
         }
     }
-    anyhow::bail!("required NV12/P010 output unavailable")
+    anyhow::bail!("required NV12 output unavailable")
 }
 
 unsafe fn collect(
@@ -180,10 +176,7 @@ pub(super) fn trial(device: &Device, clip: Clip, units: &[&[u8]], fps: u64) -> R
             },
         )?;
         if clip != Clip::H264 {
-            input.SetUINT32(
-                &MF_MT_MPEG2_PROFILE,
-                if clip == Clip::Main10 { 2 } else { 1 },
-            )?;
+            input.SetUINT32(&MF_MT_MPEG2_PROFILE, 1)?;
             input.SetUINT64(&MF_MT_FRAME_SIZE, (1280u64 << 32) | 720)?;
         }
         decoder.SetInputType(0, &input, 0)?;

@@ -1,4 +1,4 @@
-# GPU comparison and opt-in BUD HEVC Main 10
+# 8-bit GPU decoder comparison
 
 The live test client retains Media Foundation and its existing D3D11 video
 processor/DXGI renderer. The proprietary WASM is unchanged. AMF and NVDEC are
@@ -6,13 +6,11 @@ offline research dependencies, never linked by the BUD or default WebRTC client.
 
 ## Copy contract
 
-H.264/8-bit HEVC use the decoder's NV12 texture; opt-in BUD Main 10 uses its
-P010 texture. The texture is fed directly to the existing video processor on
+H.264 and 8-bit HEVC use the decoder's NV12 texture. The texture is fed directly to the existing video processor on
 the same selected D3D11 device. There is no application decoded-frame copy,
 CPU pixel readback or additional plane export/split. The existing single color
 conversion/scaling write into the BGRA8 presentation buffer remains necessary.
-P010 decode does not make the display output HDR or 10-bit: BGRA8 remains the
-output format. Driver-internal work/copies cannot be counted by these probes.
+BGRA8 remains the output format. Driver-internal work/copies cannot be counted by these probes.
 
 ## Offline procedure
 
@@ -48,8 +46,8 @@ the HEVC `MF_LOW_LATENCY` alternative, rather than an intentionally slow baselin
 [Raw fixture-only results](measurements/gpu-vendor-2026-10-14.json), source
 `9fc18fac7904cb4c638b4d46ff0b05d4b23af56b`. AMD Radeon 780M driver
 32.0.31041.1004; NVIDIA GeForce RTX 3060 driver 32.0.16.1742.
-All **54 trials / 6480 frames** passed, including direct GPU conversion from
-NV12/P010, with no application decoded-frame copies or CPU readback.
+The retained **36 8-bit trials / 4320 frames** passed, including direct GPU conversion from
+NV12, with no application decoded-frame copies or CPU readback.
 
 60 FPS submission-to-output p50 ranges across three rounds, in milliseconds:
 
@@ -57,10 +55,8 @@ NV12/P010, with no application decoded-frame copies or CPU readback.
 | --- | --- | ---: | ---: |
 | Radeon 780M | H.264 | 0.223–0.243 | 0.198–0.206 |
 | Radeon 780M | HEVC Main | 16.851–16.867 | 0.516–0.561 |
-| Radeon 780M | HEVC Main 10 | 16.856–16.864 | 0.509–0.520 |
 | RTX 3060 | H.264 | 0.605–0.651 | Not applicable |
 | RTX 3060 | HEVC Main | 17.217–17.334 | Not applicable |
-| RTX 3060 | HEVC Main 10 | 19.764–19.987 | Not applicable |
 
 All HEVC MF trials, at both 30 and 60 FPS, required one later input before
 output; the AMF trials required none. This persisted when MF output was polled
@@ -78,7 +74,7 @@ No live AMF/NVDEC backend was enabled by these measurements.
 
 ## NVIDIA boundary
 
-On RTX 3060 the driver creates H.264, HEVC Main and Main 10 NVDEC decoders.
+On RTX 3060 the driver creates H.264 and HEVC Main NVDEC decoders.
 This is a capability/creation check, not an NVDEC decode latency measurement.
 Lowlat's pinned Windows NVDEC exporter copies decoded planes into D3D textures;
 that implementation does not meet our current no-additional-copy acceptance.
@@ -89,19 +85,3 @@ Sources: [lowlat's pinned Windows exporter](https://github.com/nomi-san/lowlat/b
 [NVIDIA D3D11 interop format restrictions](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__D3D11.html),
 [AMD decoder API](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/master/amf/doc/AMF_Video_Decode_API.md),
 [AMD decoder properties](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/master/amf/public/include/components/VideoDecoderUVD.h).
-
-## BUD Main 10 test
-
-The optional BUD test build adds **Request 10-bit HEVC (BUD only)**, disabled by
-default and enabled in Settings only with BUD and Prefer HEVC selected. The
-selected GPU must advertise Main 10/P010 decode and video-processor input, and
-a synchronous D3D11-aware MF HEVC transform must be installed. The native BUD
-initialization advertises only supported 4:2:0 formats; 4:4:4 stays disabled.
-The existing 8-bit host fallback remains supported.
-
-Actual SPS/profile/depth selects NV12 or P010; 10-bit input is refused on the
-default WebRTC policy. Decoded texture metadata supplies **Decoded color depth**
-in BUD stats. A preference or capability check alone is not proof of a 10-bit
-stream. Confirm **Main 10 + 10-bit** from a stock host after saving/reconnecting,
-compare both GPUs and toggle the preference off to recheck 8-bit HEVC. No stock
-host Main 10 playback claim is made before this manual test.

@@ -463,9 +463,6 @@ fn run(
     // Probe before the lifecycle lock: a slow driver must not stall Cancel.
     let hevc_available =
         settings.prefer_hevc && crate::video_windows::hevc_available(window.video_gpu().as_ref());
-    let main10_available = hevc_available
-        && settings.bud_hevc_main10
-        && crate::video_windows::hevc_main10_available(window.video_gpu().as_ref());
     let (mut media, mut session, statistics) = {
         let _state = state.lock().unwrap_or_else(|e| e.into_inner());
         if cancel.load(Ordering::Acquire) {
@@ -474,11 +471,8 @@ fn run(
         // Creation only starts the existing workers. Surface/stats generation
         // is serialized against retirement, so a cancelled old attempt cannot
         // hide the next attempt's video or reset its statistics.
-        let (media, session) = crate::bud_media::Media::start_verified(
-            window.clone(),
-            hevc_available,
-            main10_available,
-        )?;
+        let (media, session) =
+            crate::bud_media::Media::start_verified(window.clone(), hevc_available)?;
         (media, session, Statistics::start(window.stats.clone()))
     };
     state.lock().unwrap_or_else(|e| e.into_inner()).wire_id = id.into();
@@ -633,7 +627,7 @@ fn run(
                 return Ok(());
             }
             wire_id = format!("{}-turn-1", id.chars().take(200).collect::<String>());
-            let mut next = Session::external_video_formats(hevc_available, main10_available)?;
+            let mut next = Session::external_video(hevc_available)?;
             next.wake_consumer(std::thread::current());
             let creds = next.offer(&wire_id, relay)?;
             source = next.take_media()?;
