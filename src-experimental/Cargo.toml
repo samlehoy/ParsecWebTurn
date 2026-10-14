@@ -14,6 +14,11 @@ path = "src/bin/intel-gpu-probe.rs"
 required-features = ["gpu-probes"]
 
 [[bin]]
+name = "vendor-gpu-probe"
+path = "src/bin/vendor-gpu-probe.rs"
+required-features = ["gpu-probes"]
+
+[[bin]]
 name = "mf-baseline-probe"
 path = "src/bin/mf-baseline-probe.rs"
 required-features = ["gpu-probes"]
