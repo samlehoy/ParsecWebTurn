@@ -35,6 +35,9 @@ pub struct Window {
     about_page: AtomicUsize,
     connection_settings: Mutex<Option<Arc<crate::connection_settings::Manager>>>,
     settings_page: AtomicUsize,
+    // Covers construction and destruction as well as the visible page. Its HWND
+    // is not available until open() has already painted the native controls.
+    settings_active: AtomicBool,
     pub hwnd: AtomicUsize,
     pub closing: AtomicBool,
     pub active_contexts: AtomicUsize,
@@ -159,6 +162,7 @@ impl Window {
             about_page: AtomicUsize::new(0),
             connection_settings: Default::default(),
             settings_page: AtomicUsize::new(0),
+            settings_active: AtomicBool::new(false),
             hwnd: AtomicUsize::new(0),
             closing: AtomicBool::new(false),
             active_contexts: AtomicUsize::new(0),
@@ -300,7 +304,14 @@ impl Window {
             .is_some_and(|binding| binding.owns(code, mods).unwrap_or(true))
     }
     pub fn settings_open(&self) -> bool {
-        self.settings_page.load(Ordering::Acquire) != 0
+        self.settings_active.load(Ordering::Acquire)
+    }
+    pub fn repaint_settings_after_gl_pause(&self) {
+        // The GL worker has passed its last swap. Queue one final native paint
+        // on the UI thread in case that in-flight swap covered initial paint.
+        unsafe {
+            PostMessageW(self.handle(), WM_APP + 15, 0, 0);
+        }
     }
     pub fn video_gpu(&self) -> Option<crate::connection_settings::GpuPreference> {
         self.connection_settings
@@ -330,14 +341,35 @@ impl Window {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         if let Some(manager) = manager {
+            // Suspend GL swaps before open() creates/shows/paints the GDI child,
+            // not after it returns. The video surface must also be hidden first.
+            self.settings_active.store(true, Ordering::Release);
             self.input_suspended.store(true, Ordering::Release);
             self.apply_input_capture();
             self.apply_relative_mouse(false);
+            self.show_video_surface();
             let page = crate::connection_settings_ui::open(self.handle(), manager);
             self.settings_page.store(page as usize, Ordering::Release);
+            if page.is_null() {
+                self.settings_active.store(false, Ordering::Release);
+                self.redraw_client();
+            }
             self.input_suspended.store(false, Ordering::Release);
             self.show_video_surface();
         }
+    }
+    unsafe fn redraw_client(&self) {
+        // Reuse the existing core window-size/expose notification with the
+        // unchanged client size. Native child invalidation alone cannot request
+        // a new frame from the original GUI on its separate worker.
+        let (w, h) = *self.dimensions.lock().unwrap_or_else(|e| e.into_inner());
+        self.push(Event::Size(w, h));
+        RedrawWindow(
+            self.handle(),
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+        );
     }
     // HWND creation and visibility remain on the existing UI thread.
     pub fn ensure_video_surface(&self) -> Result<usize> {
@@ -422,7 +454,7 @@ impl Window {
         let hwnd = self.video_hwnd.load(Ordering::Acquire) as HWND;
         if !hwnd.is_null() {
             let show = self.video_ready.load(Ordering::Acquire)
-                && self.settings_page.load(Ordering::Acquire) == 0
+                && !self.settings_open()
                 && self.video_visible.load(Ordering::Acquire)
                 && !self.closing.load(Ordering::Acquire);
             ShowWindow(hwnd, if show { SW_SHOWNA } else { SW_HIDE });
@@ -930,10 +962,26 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             m if m == WM_APP + 9 => {
                 let page = s.settings_page.swap(0, Ordering::AcqRel) as HWND;
                 if !page.is_null() {
+                    // Keep GL presentation suspended until the GDI child and
+                    // all its controls have actually finished destruction.
                     DestroyWindow(page);
+                    s.settings_active.store(false, Ordering::Release);
                     SetFocus(hwnd);
+                    s.show_video_surface();
+                    s.redraw_client();
                 }
-                s.show_video_surface();
+                return 0;
+            }
+            m if m == WM_APP + 15 => {
+                let page = s.settings_page.load(Ordering::Acquire) as HWND;
+                if !page.is_null() && s.settings_open() {
+                    RedrawWindow(
+                        page,
+                        std::ptr::null(),
+                        std::ptr::null_mut(),
+                        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+                    );
+                }
                 return 0;
             }
             WM_COMMAND if wp & 0xffff == crate::connection_settings_ui::OPEN => {
@@ -1396,6 +1444,72 @@ unsafe extern "system" fn video_surface_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settings_back_requests_gui_redraw_without_mouse_or_window_resize() {
+        struct Close(Arc<Window>);
+        impl Drop for Close {
+            fn drop(&mut self) {
+                self.0.close();
+            }
+        }
+        let mut nonce = [0; 16];
+        getrandom::fill(&mut nonce).unwrap();
+        let suffix: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+        let path = std::env::temp_dir().join(format!("parsec-settings-redraw-{suffix}.json"));
+        assert!(!path.exists());
+        let window = Window::create_mode(false, false, false, false, false).unwrap();
+        let _close = Close(window.clone());
+        window.install_connection_settings(crate::connection_settings::Manager::open(path.clone()));
+        for _ in 0..3 {
+            unsafe {
+                SendMessageW(
+                    window.handle(),
+                    WM_COMMAND,
+                    crate::connection_settings_ui::OPEN,
+                    0,
+                );
+            }
+            let page = window.settings_page.load(Ordering::Acquire) as HWND;
+            assert!(!page.is_null());
+            assert!(window.settings_open());
+            let size = *window.dimensions.lock().unwrap();
+            // Discard notifications from construction. Only Back is delivered
+            // below: no mouse, keyboard, activation or resize is synthesized.
+            window.events.drain();
+            unsafe {
+                let class: Vec<u16> = "BUTTON\0".encode_utf16().collect();
+                let label: Vec<u16> = "Back\0".encode_utf16().collect();
+                let back =
+                    FindWindowExW(page, std::ptr::null_mut(), class.as_ptr(), label.as_ptr());
+                assert!(!back.is_null());
+                SendMessageW(page, WM_COMMAND, GetDlgCtrlID(back) as usize, back as isize);
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            let mut redrawn = false;
+            loop {
+                for event in window.events.drain() {
+                    if let Event::Size(w, h) = event {
+                        assert_eq!((w, h), size);
+                        redrawn = true;
+                    }
+                }
+                if redrawn && !window.settings_open() {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "Back did not wake GUI redraw"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert_eq!(unsafe { IsWindow(page) }, 0);
+            assert_eq!(window.settings_page.load(Ordering::Acquire), 0);
+            assert_eq!(*window.dimensions.lock().unwrap(), size);
+        }
+        // This fixture never saves settings or accesses a real account/profile.
+        assert!(!path.exists());
+    }
+
     #[test]
     #[ignore = "foreground desktop test; run separately so other window tests cannot steal focus"]
     fn immersive_native_capture_lifecycle() {
