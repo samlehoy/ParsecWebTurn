@@ -102,12 +102,14 @@ pub enum Error {
     /// A picture larger than the surfaces or the buffers.
     TooLarge,
     SurfaceBusy,
+    Parse(&'static str, lowlat_decode::ParseError),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Runtime(e) => write!(f, "{e}"),
+            Self::Parse(stage, error) => write!(f, "{stage}: {error:?}"),
             Self::NoProfile => f.write_str("device decodes no profile this stream needs"),
             Self::Status(s) => write!(f, "system video call returned 0x{s:08x}"),
             Self::SurfaceBusy => f.write_str("presentation still owns decoder surface"),
@@ -499,7 +501,11 @@ impl<'a> Backend<'a> {
     }
 
     fn decode_h264(&mut self, unit: &[u8]) -> Result<Fed> {
-        match self.h264.read(unit).map_err(|_| Error::Status(-1))? {
+        match self
+            .h264
+            .read(unit)
+            .map_err(|error| Error::Parse("h264 read", error))?
+        {
             h264::Read::Nothing => return Ok(self.pending_fed_h264()),
             h264::Read::FormatChanged => return Ok(Fed::FormatChanged),
             h264::Read::Picture => {}
@@ -523,7 +529,9 @@ impl<'a> Backend<'a> {
             self.h264.abandon();
             return Err(e);
         }
-        self.h264.finish().map_err(|_| Error::Status(-1))?;
+        self.h264
+            .finish()
+            .map_err(|error| Error::Parse("h264 finish", error))?;
         Ok(self.pending_fed_h264())
     }
 
@@ -679,7 +687,11 @@ impl<'a> Backend<'a> {
     }
 
     fn decode_hevc(&mut self, unit: &[u8]) -> Result<Fed> {
-        match self.hevc.read(unit).map_err(|_| Error::Status(-1))? {
+        match self
+            .hevc
+            .read(unit)
+            .map_err(|error| Error::Parse("hevc read", error))?
+        {
             hevc::Read::Nothing => return Ok(self.pending_fed_hevc()),
             hevc::Read::FormatChanged => return Ok(Fed::FormatChanged),
             hevc::Read::Picture => {}
@@ -705,7 +717,9 @@ impl<'a> Backend<'a> {
             self.hevc.abandon();
             return Err(e);
         }
-        self.hevc.finish().map_err(|_| Error::Status(-1))?;
+        self.hevc
+            .finish()
+            .map_err(|error| Error::Parse("hevc finish", error))?;
         Ok(self.pending_fed_hevc())
     }
 

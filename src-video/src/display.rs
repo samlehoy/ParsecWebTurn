@@ -247,8 +247,10 @@ impl Drop for Presenter {
         unsafe {
             let _ = self.target.SetRoot(None);
             let _ = self.composition.Commit();
-            let _ = self.surface.SetBuffer(None);
-            let _ = self.manager.Present();
+            // Detaching the visual is sufficient. Never submit a new GPU
+            // present from Drop, especially before any buffer was registered
+            // or after a decoder/device failure. Presentation keeps outstanding
+            // buffer references alive until they can safely be retired.
         }
     }
 }

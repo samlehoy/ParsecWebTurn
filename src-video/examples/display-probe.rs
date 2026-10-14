@@ -60,6 +60,26 @@ fn main() -> anyhow::Result<()> {
             let test = (|| -> anyhow::Result<()> {
                 let mut decoder = Session::open(adapter.luid.value(), hwnd)?;
                 println!("Adapter: {}", decoder.adapter());
+                let mode = std::env::args().nth(1).unwrap_or_default();
+                if mode == "--empty-close" {
+                    drop(decoder);
+                    println!("PASS: presentation session closed before its first buffer");
+                    return Ok(());
+                }
+                if mode == "--failed-start" {
+                    // A truncated SPS exercises failed decoding before any
+                    // presentation buffer has been registered (no real pixels).
+                    let error = decoder
+                        .feed(&[0, 0, 0, 1, 0x42, 1, 0x80], true, (960, 600), |_| {
+                            Ok([0, 0, 960, 600])
+                        })
+                        .err()
+                        .context("truncated SPS unexpectedly accepted")?;
+                    println!("Expected startup error: {error}");
+                    drop(decoder);
+                    println!("PASS: failed startup closed without a GPU present");
+                    return Ok(());
+                }
                 let mut bytes: &[u8] =
                     include_bytes!("../../src-experimental/fixtures/synthetic-720p-hevc.bin");
                 let mut frames = 0;

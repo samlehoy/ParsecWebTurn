@@ -44,3 +44,23 @@ Supported API references:
 - https://learn.microsoft.com/en-us/windows/win32/direct3d11/displayable-surfaces
 - https://learn.microsoft.com/en-us/windows/win32/comp_swapchain/comp-swapchain
 - https://learn.microsoft.com/en-us/windows/win32/comp_swapchain/comp-swapchain-examples
+
+## Failed-startup teardown correction
+
+A stock-host WebRTC attempt with this option enabled closed the entire
+process on the test RTX 3060. WER recorded nvwgf2umx.dll 32.0.16.1742,
+exception 0xc0000005 at offset 0x2417ff. Offline PE unwind and the exact
+matching client executable locate the call in Presenter::drop:
+SetRoot(None), Commit(), SetBuffer(None), then IPresentationManager::Present.
+Two dumps also preserve the earlier decoder fallback error; the fatal GPU
+call is a secondary failure while recovering, not proof of an SCTP fault.
+
+Teardown now only detaches the composition visual and commits that change;
+it never submits an empty/new GPU present. Windows owns retirement of
+outstanding buffer references. Normal presentation, copy counts, transports
+and the WASM core are unchanged. Parser errors retain their original stage
+and category instead of masquerading as HRESULT 0xffffffff. The standalone
+probe has explicit --empty-close and --failed-start regression cases.
+The initial live WebRTC decoder rejection still needs identification; a
+successful safe fallback must not be reported as working original-surface
+presentation for that stream.
