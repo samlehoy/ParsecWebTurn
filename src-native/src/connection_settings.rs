@@ -50,6 +50,8 @@ impl GpuPreference {
 pub struct Settings {
     #[cfg(feature = "experimental-bud")]
     pub experimental_bud: bool,
+    #[cfg(feature = "experimental-bud")]
+    pub bud_hevc_main10: bool,
     pub prefer_hevc: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video_gpu: Option<GpuPreference>,
@@ -76,6 +78,8 @@ impl Default for Settings {
         Self {
             #[cfg(feature = "experimental-bud")]
             experimental_bud: false,
+            #[cfg(feature = "experimental-bud")]
+            bud_hevc_main10: false,
             prefer_hevc: false,
             video_gpu: None,
             provider: "cloudflare".into(),

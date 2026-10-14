@@ -173,6 +173,61 @@ impl Samples {
                 Some(&mut view),
             )?;
             ensure!(view.is_some(), "missing processor input view");
+            // Exercise the same single conversion/output write as playback,
+            // directly from the decoded texture. No pixel readback, split,
+            // intermediate decoded texture or CopyResource/CopySubresource.
+            let native_raw = device.device().cast();
+            let native = ID3D11Device::from_raw_borrowed(&native_raw).context("D3D11 device")?;
+            let mut target = None;
+            native.CreateTexture2D(
+                &D3D11_TEXTURE2D_DESC {
+                    Width: 1280,
+                    Height: 720,
+                    MipLevels: 1,
+                    ArraySize: 1,
+                    Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+                    ..Default::default()
+                },
+                None,
+                Some(&mut target),
+            )?;
+            let target = target.context("processor output texture")?;
+            let mut output = None;
+            video.CreateVideoProcessorOutputView(
+                &target,
+                &enumeration,
+                &D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
+                    ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
+                    Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 {
+                        Texture2D: D3D11_TEX2D_VPOV { MipSlice: 0 },
+                    },
+                },
+                Some(&mut output),
+            )?;
+            let processor = video.CreateVideoProcessor(&enumeration, 0)?;
+            let raw_context = device.video_context().cast();
+            let context =
+                ID3D11VideoContext::from_raw_borrowed(&raw_context).context("video context")?;
+            context.VideoProcessorSetStreamAutoProcessingMode(&processor, 0, false);
+            let mut stream = D3D11_VIDEO_PROCESSOR_STREAM {
+                Enable: true.into(),
+                pInputSurface: std::mem::ManuallyDrop::new(view),
+                ..Default::default()
+            };
+            let conversion = context.VideoProcessorBlt(
+                &processor,
+                output.as_ref().context("processor output view")?,
+                0,
+                std::slice::from_ref(&stream),
+            );
+            drop(std::mem::ManuallyDrop::take(&mut stream.pInputSurface));
+            conversion?;
         }
         self.views += 1;
         self.outputs += 1;
@@ -217,6 +272,7 @@ impl Samples {
             "submission_to_output_us":percentiles(&mut self.available),"submission_to_completion_after_view_validation_us":percentiles(&mut self.completed),
             "max_later_inputs_before_output":self.max_lag,"warmup_frames":16,
             "application_decoded_frame_copies":0,"cpu_pixel_readback":false,"same_d3d11_device":true,
+            "direct_conversion_verified":true,"conversion_output_writes_per_frame":1,
             "runtime_internal_copies":"unknown","presentation_verified":false}),
         )
     }

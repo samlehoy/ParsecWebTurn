@@ -18,6 +18,8 @@ pub struct Snapshot {
     pub renderer: Option<&'static str>,
     pub adapter: Option<String>,
     pub gpu_surface_output: bool,
+    /// Observed NV12/P010 decoded texture depth, never inferred from preference.
+    pub decoded_color_depth: Option<u8>,
     pub synthetic_pixel_variation_verified: bool,
     pub hardware_decode: Option<bool>,
     /// Observed on the latest decoded output, not a capability/configuration flag.

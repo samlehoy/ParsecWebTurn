@@ -42,6 +42,12 @@ fn unavailable(stage: &'static str) -> Failure {
 
 // Public MFT discovery, not a hard-coded codec-extension DLL/CLSID.
 unsafe fn create_decoder(codec: crate::video_stream::Codec) -> Result<IMFTransform> {
+    create_decoder_output(codec, MFVideoFormat_NV12)
+}
+unsafe fn create_decoder_output(
+    codec: crate::video_stream::Codec,
+    subtype: windows::core::GUID,
+) -> Result<IMFTransform> {
     if codec == crate::video_stream::Codec::H264 {
         return api(
             "video-decoder-create",
@@ -54,7 +60,7 @@ unsafe fn create_decoder(codec: crate::video_stream::Codec) -> Result<IMFTransfo
     };
     let output = MFT_REGISTER_TYPE_INFO {
         guidMajorType: MFMediaType_Video,
-        guidSubtype: MFVideoFormat_NV12,
+        guidSubtype: subtype,
     };
     let mut list = std::ptr::null_mut();
     let mut count = 0;
@@ -120,6 +126,62 @@ pub fn hevc_available(preferred_gpu: Option<&crate::connection_settings::GpuPref
     }
 }
 
+/// Capability gate only: the selected GPU must decode Main 10 to P010 and
+/// accept that exact format as input to the existing video processor.
+#[cfg(feature = "experimental-bud")]
+pub fn hevc_main10_available(
+    preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
+) -> bool {
+    unsafe {
+        let probe = || -> Result<()> {
+            let _runtime = Runtime::start()?;
+            let (device, _) = create_device(preferred_gpu)?;
+            let video: ID3D11VideoDevice = api("video-main10-device", device.cast())?;
+            if !api(
+                "video-main10-profile",
+                video.CheckVideoDecoderFormat(
+                    &D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10,
+                    DXGI_FORMAT_P010,
+                ),
+            )?
+            .as_bool()
+            {
+                return Err(unavailable("video-main10-profile-unavailable"));
+            }
+            let enumeration = api(
+                "video-main10-processor",
+                video.CreateVideoProcessorEnumerator(&D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
+                    InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
+                    InputFrameRate: DXGI_RATIONAL {
+                        Numerator: 60,
+                        Denominator: 1,
+                    },
+                    InputWidth: 1920,
+                    InputHeight: 1080,
+                    OutputFrameRate: DXGI_RATIONAL {
+                        Numerator: 60,
+                        Denominator: 1,
+                    },
+                    OutputWidth: 1920,
+                    OutputHeight: 1080,
+                    Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
+                }),
+            )?;
+            let flags = api(
+                "video-main10-processor-format",
+                enumeration.CheckVideoProcessorFormat(DXGI_FORMAT_P010),
+            )?;
+            if flags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT.0 as u32 == 0 {
+                return Err(unavailable("video-main10-processor-input-unavailable"));
+            }
+            let _decoder =
+                create_decoder_output(crate::video_stream::Codec::Hevc, MFVideoFormat_P010)?;
+            Ok(())
+        };
+        probe().is_ok()
+    }
+}
+
 type Shared = Arc<(Mutex<Queue>, Condvar)>;
 pub struct Pipeline {
     shared: Shared,
@@ -131,7 +193,18 @@ impl Pipeline {
     pub fn start(window: Arc<crate::window::Window>) -> Self {
         Self::start_mode(window, false)
     }
+    #[cfg(feature = "experimental-bud")]
+    pub fn start_bud(window: Arc<crate::window::Window>, allow_main10: bool) -> Self {
+        Self::start_policy(window, false, allow_main10)
+    }
     fn start_mode(window: Arc<crate::window::Window>, verify_synthetic_pixels: bool) -> Self {
+        Self::start_policy(window, verify_synthetic_pixels, false)
+    }
+    fn start_policy(
+        window: Arc<crate::window::Window>,
+        verify_synthetic_pixels: bool,
+        allow_main10: bool,
+    ) -> Self {
         let surface_generation = window.begin_video();
         let surface_window = window.clone();
         let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
@@ -159,6 +232,7 @@ impl Pipeline {
                         verify_synthetic_pixels,
                         preferred_gpu.as_ref(),
                         surface_generation,
+                        allow_main10,
                     )
                 }));
                 let mut q = state.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -270,6 +344,7 @@ fn run(
     verify_synthetic_pixels: bool,
     preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
     surface_generation: u64,
+    allow_main10: bool,
 ) -> Result<()> {
     let scheduling = crate::media_scheduling::Registration::video();
     update(shared, |s| s.mmcss_registered = scheduling.is_some());
@@ -389,6 +464,7 @@ fn run(
                     frame.codec,
                     hevc,
                     surface_generation,
+                    allow_main10,
                 )?
             };
             update(shared, |s| {
@@ -609,9 +685,27 @@ impl OutputFormat {
     }
 }
 
+fn hevc_output_subtype(
+    config: crate::video_stream::HevcConfiguration,
+    allow_main10: bool,
+) -> Result<windows::core::GUID> {
+    if config.chroma == 1 && config.profile == 1 && config.bit_depth == 8 {
+        return Ok(MFVideoFormat_NV12);
+    }
+    if allow_main10 && config.chroma == 1 && config.profile == 2 {
+        return match config.bit_depth {
+            8 => Ok(MFVideoFormat_NV12),
+            10 => Ok(MFVideoFormat_P010),
+            _ => Err(unavailable("video-hevc-unsupported-depth")),
+        };
+    }
+    Err(unavailable("video-hevc-unsupported-profile-or-color"))
+}
+
 struct Session {
     surface_generation: u64,
     low_latency_request_accepted: bool,
+    output_subtype: windows::core::GUID,
     decoder: IMFTransform,
     _manager: IMFDXGIDeviceManager,
     renderer: Renderer,
@@ -626,6 +720,7 @@ impl Session {
         codec: crate::video_stream::Codec,
         hevc: Option<crate::video_stream::HevcConfiguration>,
         surface_generation: u64,
+        allow_main10: bool,
     ) -> Result<Self> {
         let runtime = Runtime::start()?;
         let mut renderer = Renderer::create(hwnd, preferred_gpu)?;
@@ -641,7 +736,20 @@ impl Session {
             "video-dxgi-reset",
             manager.ResetDevice(&renderer.device, token),
         )?;
-        let decoder = create_decoder(codec)?;
+        let output_subtype = if codec == crate::video_stream::Codec::Hevc {
+            hevc_output_subtype(
+                hevc.ok_or_else(|| unavailable("video-hevc-sps-missing"))?,
+                allow_main10,
+            )?
+        } else {
+            MFVideoFormat_NV12
+        };
+        let main10 = output_subtype == MFVideoFormat_P010;
+        let decoder = if main10 {
+            create_decoder_output(codec, output_subtype)?
+        } else {
+            create_decoder(codec)?
+        };
         let attrs = api("video-decoder-attributes", decoder.GetAttributes())?;
         if api(
             "video-decoder-d3d11-aware",
@@ -703,9 +811,6 @@ impl Session {
         )?;
         if codec == crate::video_stream::Codec::Hevc {
             let config = hevc.ok_or_else(|| unavailable("video-hevc-sps-missing"))?;
-            if config.profile != 1 || config.bit_depth != 8 || config.chroma != 1 {
-                return Err(unavailable("video-hevc-requires-main-8bit-420"));
-            }
             api(
                 "video-input-hevc-main",
                 input.SetUINT32(&MF_MT_MPEG2_PROFILE, config.profile),
@@ -724,6 +829,7 @@ impl Session {
         let mut result = Self {
             surface_generation,
             low_latency_request_accepted,
+            output_subtype,
             decoder,
             _manager: manager,
             renderer,
@@ -751,7 +857,7 @@ impl Session {
                 "video-output-enumerate",
                 self.decoder.GetOutputAvailableType(0, index),
             )?;
-            if api("video-output-subtype", media.GetGUID(&MF_MT_SUBTYPE))? == MFVideoFormat_NV12 {
+            if api("video-output-subtype", media.GetGUID(&MF_MT_SUBTYPE))? == self.output_subtype {
                 api(
                     "video-output-set-nv12",
                     self.decoder.SetOutputType(0, &media, 0),
@@ -865,6 +971,14 @@ impl Session {
             // It is evidence of the DXVA path, not an execution counter.
             let mut texture_desc = D3D11_TEXTURE2D_DESC::default();
             texture.GetDesc(&mut texture_desc);
+            let expected_format = if self.output_subtype == MFVideoFormat_P010 {
+                DXGI_FORMAT_P010
+            } else {
+                DXGI_FORMAT_NV12
+            };
+            if texture_desc.Format != expected_format || texture_desc.CPUAccessFlags != 0 {
+                return Err(unavailable("video-output-texture-format-mismatch"));
+            }
             let decoder_surface = texture_desc.BindFlags & D3D11_BIND_DECODER.0 as u32 != 0;
             let subresource = api("video-output-subresource", dxgi.GetSubresourceIndex())?;
             if self.output_format.is_none() {
@@ -885,6 +999,11 @@ impl Session {
             update(shared, |s| {
                 s.frames_decoded = s.frames_decoded.saturating_add(1);
                 s.gpu_surface_output = true;
+                s.decoded_color_depth = Some(if texture_desc.Format == DXGI_FORMAT_P010 {
+                    10
+                } else {
+                    8
+                });
                 s.d3d11_decoder_surface = Some(decoder_surface);
                 s.width = Some((source.right - source.left) as u32);
                 s.height = Some((source.bottom - source.top) as u32);
@@ -1096,7 +1215,7 @@ impl Renderer {
         let height = (source.bottom - source.top) as u32;
         let mut td = D3D11_TEXTURE2D_DESC::default();
         texture.GetDesc(&mut td);
-        if td.Format != DXGI_FORMAT_NV12
+        if !matches!(td.Format, DXGI_FORMAT_NV12 | DXGI_FORMAT_P010)
             || td.MipLevels != 1
             || td.ArraySize == 0
             || subresource >= td.ArraySize
@@ -1560,6 +1679,50 @@ pub fn probe_recovery() -> anyhow::Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn main10_requires_explicit_policy_and_preserves_eight_bit_fallback() {
+        let main = crate::video_stream::HevcConfiguration {
+            width: 1920,
+            height: 1080,
+            profile: 1,
+            chroma: 1,
+            bit_depth: 8,
+        };
+        assert_eq!(
+            hevc_output_subtype(main, false).unwrap(),
+            MFVideoFormat_NV12
+        );
+        assert_eq!(hevc_output_subtype(main, true).unwrap(), MFVideoFormat_NV12);
+        let ten = crate::video_stream::HevcConfiguration {
+            profile: 2,
+            bit_depth: 10,
+            ..main
+        };
+        assert!(hevc_output_subtype(ten, false).is_err());
+        assert_eq!(hevc_output_subtype(ten, true).unwrap(), MFVideoFormat_P010);
+        assert_eq!(
+            hevc_output_subtype(
+                crate::video_stream::HevcConfiguration {
+                    bit_depth: 8,
+                    ..ten
+                },
+                true
+            )
+            .unwrap(),
+            MFVideoFormat_NV12
+        );
+        for rejected in [
+            crate::video_stream::HevcConfiguration { chroma: 3, ..ten },
+            crate::video_stream::HevcConfiguration {
+                bit_depth: 12,
+                ..ten
+            },
+            crate::video_stream::HevcConfiguration { profile: 3, ..ten },
+        ] {
+            assert!(hevc_output_subtype(rejected, true).is_err());
+        }
+    }
+
     #[cfg(feature = "diagnostics")]
     #[test]
     fn decoder_recovers_with_cached_parameters_and_a_headerless_keyframe() {

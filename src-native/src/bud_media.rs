@@ -14,6 +14,7 @@ pub struct Media {
     inspector: crate::video_stream::Inspector,
     waiting_for_keyframe: bool,
     hevc_available: bool,
+    main10_available: bool,
 }
 
 #[derive(Default)]
@@ -32,13 +33,14 @@ impl Media {
     pub fn start_verified(
         window: Arc<crate::window::Window>,
         hevc_available: bool,
+        main10_available: bool,
     ) -> Result<(Self, Session)> {
-        let session = Session::external_video(hevc_available)?;
+        let session = Session::external_video_formats(hevc_available, main10_available)?;
         let audio = Arc::new(crate::audio_stream::Pipeline::start());
         let audio_sender = audio
             .sender()
             .ok_or_else(|| anyhow::anyhow!("native audio sender unavailable"))?;
-        let video = crate::video_windows::Pipeline::start(window);
+        let video = crate::video_windows::Pipeline::start_bud(window, main10_available);
         let mut inspector = crate::video_stream::Inspector::default();
         inspector.enable_hevc(hevc_available);
         Ok((
@@ -49,13 +51,14 @@ impl Media {
                 inspector,
                 waiting_for_keyframe: true,
                 hevc_available,
+                main10_available,
             },
             session,
         ))
     }
 
     fn video_message(&mut self, message: &[u8]) -> Result<bool> {
-        match media::video(message)? {
+        match media::video_formats(message, self.main10_available)? {
             Video::Metadata(metadata) => {
                 if metadata.rebuilt {
                     self.waiting_for_keyframe = true;

@@ -1,7 +1,8 @@
 Experimental BUD test client (Windows x64)
 
 The default is still WebRTC. The embedded WASM core and the MF/D3D11 video
-and Opus audio decoders are unchanged.
+and Opus audio paths remain in use. The opt-in Main 10 test uses P010 output
+from the same MF decoder and the existing single D3D11 conversion pass.
 
 Extract to a separate directory. Copy your existing settings.json into that
 directory if you need your TURN settings; do not send that file to anyone.
@@ -36,5 +37,14 @@ covered by automated tests. Stock-host direct and relay playback were confirmed
 with the earlier test client. Please verify automatic TURN retry with Force TURN
 OFF on the network where direct access fails, then Force TURN ON, and direct
 access where available. Check disconnect/reconnect after each route.
-This is an experimental test artifact. 10-bit, 4:4:4 and additional decoders
-are not enabled.
+Optional Main 10 test: select Experimental BUD, Prefer HEVC and Request
+10-bit HEVC (BUD only), save and reconnect. Verify Profile = Main 10 and
+Decoded color depth = 10-bit; a checkbox alone does not prove the host sent it.
+The selected GPU/driver and installed MF HEVC decoder must support P010.
+The host can fall back to 8-bit. Uncheck Request 10-bit to compare the same
+connection with 8-bit HEVC. Test both AMD and NVIDIA in Video GPU settings.
+Decoded P010 stays on the selected GPU, with no CPU pixel readback or extra
+decoded-frame copy. The existing BGRA8 presentation output remains unchanged:
+this is 10-bit decode, not an HDR/10-bit display-output claim.
+4:4:4 and alternative vendor decoders are not enabled in the live client.
+This is an experimental test artifact; stock-host Main 10 still needs testing.

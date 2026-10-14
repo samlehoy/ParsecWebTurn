@@ -13,17 +13,22 @@ pub enum Video<'a> {
 }
 
 pub fn video(message: &[u8]) -> Result<Video<'_>> {
+    video_formats(message, false)
+}
+
+/// Caller explicitly opts into GPU-only Main 10. 4:4:4 remains unsupported.
+pub fn video_formats(message: &[u8], allow_main10: bool) -> Result<Video<'_>> {
     let header =
         video::parse(message).map_err(|e| anyhow::anyhow!("native video header: {e:?}"))?;
     ensure!(
-        !header.ten_bit,
+        !header.ten_bit || allow_main10,
         "10-bit BUD video is not supported by this client"
     );
     if header.metadata {
         let metadata = video::parse_metadata(message)
             .map_err(|e| anyhow::anyhow!("native video metadata: {e:?}"))?;
         ensure!(
-            !metadata.ten_bit && !metadata.chroma_444,
+            (!metadata.ten_bit || allow_main10) && !metadata.chroma_444,
             "unsupported BUD color format"
         );
         return Ok(Video::Metadata(metadata));
@@ -83,6 +88,13 @@ mod tests {
         assert_eq!(annex_b, &[0, 0, 0, 1, 0x65, 0x88]);
         packet[9] |= 8;
         assert!(video(&packet).is_err());
+        let Video::AccessUnit {
+            annex_b: main10, ..
+        } = video_formats(&packet, true).unwrap()
+        else {
+            panic!("expected Main 10 access unit")
+        };
+        assert_eq!(main10.as_ptr(), packet[video::VIDEO_HEADER_LEN..].as_ptr());
         assert!(video(&packet[..9]).is_err());
     }
 

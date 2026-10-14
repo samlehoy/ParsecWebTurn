@@ -39,6 +39,7 @@ pub struct Session {
     attempt: Option<String>,
     external_units: Option<Units>,
     prefer_hevc: bool,
+    prefer_main10: bool,
     cipher: Option<&'static str>,
 }
 
@@ -47,10 +48,18 @@ impl Session {
     /// have verified its existing MF decoder's HEVC support before setting it.
     /// Only 8-bit 4:2:0 is advertised. No SDK video decoder is created.
     pub fn external_video(hevc_available: bool) -> Result<Self> {
+        Self::external_video_formats(hevc_available, false)
+    }
+
+    /// Main 10 is allowed only after the application verifies GPU P010 decode
+    /// and its existing processor input. No SDK decoder/exporter is created.
+    pub fn external_video_formats(hevc_available: bool, main10_available: bool) -> Result<Self> {
+        ensure!(!main10_available || hevc_available, "Main 10 requires HEVC");
         let client = Client::new_external_video(
             lowlat_client::config::Caps {
                 h264: true,
                 hevc: hevc_available,
+                hevc_10: main10_available,
                 ..Default::default()
             },
             Port::Any,
@@ -62,6 +71,7 @@ impl Session {
             attempt: None,
             external_units: Some(units),
             prefer_hevc: hevc_available,
+            prefer_main10: main10_available,
             cipher: None,
         })
     }
@@ -103,6 +113,7 @@ impl Session {
         ensure!(self.attempt.is_none(), "BUD attempt already active");
         let mut config = route.configure();
         config.video.hevc = self.prefer_hevc;
+        config.video.ten_bit = self.prefer_main10;
         let ours = self
             .client
             .new_attempt(id, config, Transport::Bud)
@@ -257,6 +268,15 @@ pub struct Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn main10_is_explicit_and_requires_hevc_capability() {
+        assert!(Session::external_video_formats(false, true).is_err());
+        let ordinary = Session::external_video(true).unwrap();
+        assert!(!ordinary.prefer_main10);
+        let ten = Session::external_video_formats(true, true).unwrap();
+        assert!(ten.prefer_hevc && ten.prefer_main10);
+    }
+
     #[test]
     fn routes_do_not_mix_direct_candidates_and_relay() {
         let endpoint = "127.0.0.1:3478".parse().unwrap();
