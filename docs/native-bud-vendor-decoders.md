@@ -13,6 +13,12 @@ NV12 surfaces with an offline fixture. It refuses legacy host-memory output.
 It is not a live playback integration or evidence of a latency improvement.
 See [implementation gates](../src-experimental/README.md).
 
+The first Intel H.264 screening is complete: see
+[measurements and decision](intel-h264-screening.md). Both GPU paths work, but
+the small, overlapping output-availability difference does not justify replacing
+the current low-latency Media Foundation decoder. No vendor backend is enabled
+in the live client.
+
 Intel's current runtime supports caller-owned GPU surfaces. The legacy path in
 the reviewed lowlat revision uses CPU planes and is excluded. Lowlat itself
 does not automatically prefer VPL over its direct D3D11 decoder on Intel;
