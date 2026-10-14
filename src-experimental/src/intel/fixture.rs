@@ -19,8 +19,39 @@ pub fn decode(session: &Session<'_>, device: &Device) -> Result<Value> {
         .collect();
     ensure!(starts.len() == 8, "H.264 fixture access unit count changed");
     starts.push(FIXTURE.len());
+    let units: Vec<&[u8]> = (0..80)
+        .map(|sequence| {
+            let index = sequence % 8;
+            &FIXTURE[starts[index]..starts[index + 1]]
+        })
+        .collect();
+    decode_units(session, device, MFX_CODEC_AVC as u32, &units)
+}
+
+pub fn hevc(session: &Session<'_>, device: &Device) -> Result<Value> {
+    let fixture = include_bytes!("../../fixtures/synthetic-720p-hevc.bin");
+    let mut remaining: &[u8] = fixture;
+    let mut units = Vec::new();
+    while !remaining.is_empty() {
+        ensure!(remaining.len() >= 4, "truncated HEVC fixture prefix");
+        let len = u32::from_le_bytes(remaining[..4].try_into()?) as usize;
+        remaining = &remaining[4..];
+        ensure!(len <= remaining.len(), "truncated HEVC fixture unit");
+        units.push(&remaining[..len]);
+        remaining = &remaining[len..];
+    }
+    ensure!(units.len() == 120, "HEVC fixture count changed");
+    decode_units(session, device, MFX_CODEC_HEVC as u32, &units)
+}
+
+fn decode_units(
+    session: &Session<'_>,
+    device: &Device,
+    codec: u32,
+    units: &[&[u8]],
+) -> Result<Value> {
     let mut param = session
-        .header(&FIXTURE[starts[0]..starts[1]], MFX_CODEC_AVC as u32)?
+        .header(units[0], codec)?
         .ok_or_else(|| anyhow!("fixture has no header"))?;
     param.IOPattern = MFX_IOPATTERN_OUT_VIDEO_MEMORY as u16;
     param.AsyncDepth = 0;
@@ -38,9 +69,7 @@ pub fn decode(session: &Session<'_>, device: &Device) -> Result<Value> {
         let mut outputs = 0;
         let mut output_us = Vec::new();
         let mut completed_us = Vec::new();
-        for sequence in 0..80 {
-            let index = sequence % 8;
-            let unit = &FIXTURE[starts[index]..starts[index + 1]];
+        for (sequence, unit) in units.iter().enumerate() {
             // SAFETY: zeroed public bitstream is valid. The compressed bytes
             // remain live until decode returns; the runtime does not write them.
             let mut bits: mfxBitstream = unsafe { std::mem::zeroed() };
@@ -101,8 +130,9 @@ pub fn decode(session: &Session<'_>, device: &Device) -> Result<Value> {
             }
         }
         ensure!(
-            outputs == 80,
-            "Intel held or lost fixture frames: {outputs}/80"
+            outputs == units.len(),
+            "Intel held or lost fixture frames: {outputs}/{}",
+            units.len()
         );
         Ok(
             json!({"frames":outputs,"native_nv12_texture":true,"same_d3d11_device":true,

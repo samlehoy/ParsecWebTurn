@@ -34,11 +34,16 @@ pub fn probe() -> Result<Value> {
                 Ok(value) => value,
                 Err(error) => json!({"refused":error.to_string()}),
             };
+            let hevc_fixture = match fixture::hevc(&session, &device) {
+                Ok(value) => value,
+                Err(error) => json!({"refused":error.to_string()}),
+            };
             Ok(
                 json!({"vpl_version":[version.0,version.1], "h264":caps.h264,
                 "hevc_8bit":caps.hevc, "device_fences":device.has_fences(),
                 "output_contract":"caller D3D11 device, video memory",
                 "h264_fixture":fixture,
+                "hevc_fixture":hevc_fixture,
                 "decode_performance_verified":false, "renderer_integration_verified":false}),
             )
         })();

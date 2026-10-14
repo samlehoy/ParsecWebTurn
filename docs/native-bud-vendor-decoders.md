@@ -4,9 +4,26 @@ Scope agreed 2026-10-14. These are planned work, not shipped capabilities.
 Reference: lowlat `feat/win-seams`, pinned research revision
 `5f8db5689e55de0d396b0520824caa9fc053dd86`.
 
-## 1. Vendor decoder backends, starting with AMD AMF
+## 1. Vendor decoder backends, starting with Intel VPL
 
-AMF is the first candidate because lowlat documents a measured HEVC benefit and
+Priority updated at the user's request: Intel first, targeting the integrated
+GPU in the Core Ultra 5 235U test laptop. The independent `src-experimental`
+crate now binds current VPL to a caller-owned D3D11 device and checks original
+NV12 surfaces with an offline fixture. It refuses legacy host-memory output.
+It is not a live playback integration or evidence of a latency improvement.
+See [implementation gates](../src-experimental/README.md).
+
+Intel's current runtime supports caller-owned GPU surfaces. The legacy path in
+the reviewed lowlat revision uses CPU planes and is excluded. Lowlat itself
+does not automatically prefer VPL over its direct D3D11 decoder on Intel;
+vendor APIs alone are not a reason to replace our working path. The new path
+must use no more decoded-frame GPU copies than our existing renderer, with no
+CPU video processing or fallback. Device/surface lease ownership and GPU ordering
+must be proven before any live switch is exposed.
+
+### Subsequent AMD evaluation
+
+AMF is a subsequent candidate because lowlat documents a measured HEVC benefit and
 we can test an AMD Radeon 780M locally. The public AMD decoder API exposes
 `AMF_VIDEO_DECODER_LOW_LATENCY` (`LowLatencyDecode`) separately from low-delay
 output ordering (`ReorderMode`). Lowlat queries support and requests both;
@@ -21,7 +38,7 @@ Primary references:
 - [NVIDIA NVDEC API](https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/nvdec-video-decoder-api-prog-guide/index.html)
 - [Intel VPL](https://www.intel.com/content/www/us/en/docs/oneapi/programming-guide/2023-2/intel-oneapi-video-processing-library-onevpl.html)
 
-First build an isolated AMF vs existing Media Foundation comparison with identical
+For AMD, build an isolated AMF vs existing Media Foundation comparison with identical
 synthetic 8-bit H.264 and HEVC access units, the same selected GPU, and paced
 input at both 30 and 60 FPS. Measure CPU submission/output availability separately
 from GPU completion and any conversion/export work. The previous H.264 MFT test

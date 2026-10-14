@@ -1,6 +1,8 @@
 # Native development research references
 
-These are research inputs, not dependencies or compatibility guarantees. Check
+These are research inputs, not compatibility guarantees. The independent
+`src-experimental` crate now pins lowlat libraries for Intel/BUD gates; they are
+not dependencies of the normal WebRTC client. Check
 the relevant source revision and validate against our pinned core and actual
 Parsec hosts before adopting behavior. Platform integrations remain based on
 documented APIs; reverse-engineered Parsec contracts stay isolated and explicit.
