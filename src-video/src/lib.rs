@@ -225,7 +225,7 @@ impl Decoder {
                     let kind=(first>>1)&63;
                     picture |= kind<=31;
                     if kind==33 {
-                        let sps=hevc::sps::parse(unit.bytes.get(2..).context("truncated HEVC SPS")?)?;
+                        let sps=hevc::sps::parse(unit.bytes.get(2..).context("truncated HEVC SPS")?).map_err(|error|anyhow::anyhow!("HEVC SPS: {error:?}"))?;
                         ensure!(sps.max_num_reorder_pics==0,"AMF low latency requires a non-reordered stream");
                         let layout=Layout::hevc(&sps)?;
                         ensure!((sps.width,sps.height)==state.size,"AMF geometry changed");
