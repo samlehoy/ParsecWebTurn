@@ -32,11 +32,11 @@ pub fn probe() -> Result<Value> {
             let caps = lowlat_decode::vpl::caps(&session, Runtime::Current);
             let fixture = match fixture::decode(&session, &device) {
                 Ok(value) => value,
-                Err(error) => json!({"refused":error.to_string()}),
+                Err(error) => json!({"refused":format!("{error:#}")}),
             };
             let hevc_fixture = match fixture::hevc(&session, &device) {
                 Ok(value) => value,
-                Err(error) => json!({"refused":error.to_string()}),
+                Err(error) => json!({"refused":format!("{error:#}")}),
             };
             Ok(
                 json!({"vpl_version":[version.0,version.1], "h264":caps.h264,

@@ -1,5 +1,5 @@
 //! Offline decode on the original NV12 surface: no export, split or readback.
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use lowlat_drivers::{
     d3d11::Device,
     ffi::vpl::*,
@@ -51,7 +51,8 @@ fn decode_units(
     units: &[&[u8]],
 ) -> Result<Value> {
     let mut param = session
-        .header(units[0], codec)?
+        .header(units[0], codec)
+        .context("VPL DecodeHeader")?
         .ok_or_else(|| anyhow!("fixture has no header"))?;
     param.IOPattern = MFX_IOPATTERN_OUT_VIDEO_MEMORY as u16;
     param.AsyncDepth = 0;
@@ -63,12 +64,13 @@ fn decode_units(
             .__bindgen_anon_1
             .__bindgen_anon_2
             .DecodedOrder = 1;
-        session.init(&mut param)?;
+        session.init(&mut param).context("VPL DecodeInit")?;
     }
     let result = (|| -> Result<Value> {
         let mut outputs = 0;
         let mut output_us = Vec::new();
         let mut completed_us = Vec::new();
+        let mut warnings = 0;
         for (sequence, unit) in units.iter().enumerate() {
             // SAFETY: zeroed public bitstream is valid. The compressed bytes
             // remain live until decode returns; the runtime does not write them.
@@ -86,7 +88,9 @@ fn decode_units(
                 );
                 // SAFETY: input outlives the call; current VPL allocates GPU
                 // output, so the caller-owned work surface must be null.
-                match unsafe { session.decode(&mut bits, std::ptr::null_mut()) }? {
+                match unsafe { session.decode(&mut bits, std::ptr::null_mut()) }
+                    .context("VPL DecodeFrameAsync")?
+                {
                     Decoded::Picture(picture) => {
                         output_us.push(submitted.elapsed().as_micros() as u64);
                         let raw = picture.texture();
@@ -108,7 +112,7 @@ fn decode_units(
                         );
                         // Offline only. Retain the surface until completion;
                         // do not use a synchronous per-picture wait in playback.
-                        while !session.sync(&picture, 0)? {
+                        while !session.sync(&picture, 0).context("VPL SyncOperation")? {
                             ensure!(
                                 submitted.elapsed() < Duration::from_secs(2),
                                 "Intel GPU completion timed out"
@@ -117,11 +121,25 @@ fn decode_units(
                         }
                         completed_us.push(submitted.elapsed().as_micros() as u64);
                         outputs += 1;
-                        break;
+                        // A picture need not consume the entire access unit.
+                        // Keep feeding its remainder as the SDK backend does.
+                        if bits.DataLength == 0 {
+                            break;
+                        }
                     }
                     Decoded::Busy => std::thread::yield_now(),
                     Decoded::MoreData => break,
-                    Decoded::Warning => anyhow::bail!("Intel returned an unhandled warning"),
+                    Decoded::Warning => {
+                        // The SDK reports positive statuses without an output
+                        // surface here. They are not fatal errors. Respect its
+                        // consumption of input and retry only the remaining bytes.
+                        // A driver that makes no progress still hits the deadline.
+                        warnings += 1;
+                        if bits.DataLength == 0 {
+                            break;
+                        }
+                        std::thread::yield_now();
+                    }
                     Decoded::MoreSurface => {
                         anyhow::bail!("Intel unexpectedly requires a caller surface")
                     }
@@ -137,6 +155,7 @@ fn decode_units(
         Ok(
             json!({"frames":outputs,"native_nv12_texture":true,"same_d3d11_device":true,
             "submission_to_output_us":output_us,"submission_to_gpu_completion_us":completed_us,
+            "nonfatal_warnings":warnings,
             "application_decoded_frame_copies":0,"cpu_readback":false,
             "includes_presentation":false,"runtime_internal_copies":"unknown"}),
         )
