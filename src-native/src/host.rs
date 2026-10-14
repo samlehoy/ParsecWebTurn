@@ -133,6 +133,7 @@ pub fn implemented(module: &str, name: &str) -> bool {
                 | "MTY_GetRandomBytes"
                 | "MTY_WaitPtr"
                 | "MTY_HandleProtocol"
+                | "web_parsec_protocol"
                 | "web_get_clipboard"
                 | "web_set_clipboard"
                 | "web_alert"
@@ -367,6 +368,15 @@ pub fn dispatch(
                     stop,
                     (!live).then_some(std::time::Duration::from_secs(5)),
                 )?;
+            }
+            "web_parsec_protocol" => {
+                // This picker action normally launches the installed Parsec
+                // client. Keep the guest running and guide the user instead.
+                // Its host identifier is deliberately neither read nor logged.
+                caller.data().platform.alert(
+                    "Choose web mode",
+                    "ParsecWebTurn uses the Parsec web core. Choose the web/browser connection option in the computer picker. This also applies when Experimental BUD is enabled.",
+                );
             }
             "MTY_HandleProtocol" => {
                 let url = m.string(ptr(args, 0)?, 16 * 1024 + 1)?;

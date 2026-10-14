@@ -525,6 +525,55 @@ mod tests {
     }
 
     #[test]
+    fn native_picker_launch_shows_guidance_and_returns_to_guest() {
+        struct Desktop(std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>);
+        impl crate::platform::Desktop for Desktop {
+            fn read_text(&self) -> Option<String> {
+                None
+            }
+            fn write_text(&self, _: &str) -> bool {
+                false
+            }
+            fn open_url(&self, _: &str) -> bool {
+                panic!("must not launch an external app")
+            }
+            fn alert(&self, title: &str, message: &str) -> bool {
+                self.0.lock().unwrap().push((title.into(), message.into()));
+                true
+            }
+        }
+        let engine = Engine::new(&crate::core_config::config()).unwrap();
+        let module = Module::new(
+            &engine,
+            r#"(module
+            (import "env" "memory" (memory 1 1 shared))
+            (import "env" "web_parsec_protocol" (func $launch (param i32)))
+            (func (export "probe") (result i32)
+                i32.const 256 call $launch i32.const 42))"#,
+        )
+        .unwrap();
+        let (mut store, instance) = instantiate(&engine, &module).unwrap();
+        let shown = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        store.data_mut().platform = std::sync::Arc::new(crate::platform::Services::new(Box::new(
+            Desktop(shown.clone()),
+        )));
+        assert_eq!(
+            instance
+                .get_typed_func::<(), i32>(&mut store, "probe")
+                .unwrap()
+                .call(&mut store, ())
+                .unwrap(),
+            42
+        );
+        assert!(store.data().boundary.is_none());
+        let messages = shown.lock().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].0, "Choose web mode");
+        assert!(messages[0].1.contains("web/browser connection option"));
+        assert!(messages[0].1.contains("Experimental BUD"));
+    }
+
+    #[test]
     fn optional_web_maintenance_returns_an_unavailable_handle() {
         let mut config = Config::new();
         config

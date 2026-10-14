@@ -172,6 +172,15 @@ pub async fn network(peer: &RTCPeerConnection) -> Sample {
     }
     sample
 }
+impl Sample {
+    fn connected(&self) -> bool {
+        #[cfg(feature = "experimental-bud")]
+        if let Some(bud) = &self.bud {
+            return bud.connected;
+        }
+        self.state == "connected"
+    }
+}
 #[derive(Default)]
 pub struct Rates {
     previous: Option<Sample>,
@@ -189,8 +198,8 @@ impl Rates {
         if let Some(old) = &self.previous {
             let seconds = sample.at.saturating_duration_since(old.at).as_secs_f64();
             if sample.generation == old.generation
-                && sample.state == "connected"
-                && old.state == "connected"
+                && sample.connected()
+                && old.connected()
                 && seconds > 0.0
             {
                 let rate = |now: Option<u64>, before: Option<u64>, scale: f64| {
@@ -259,6 +268,45 @@ mod tests {
         s.received = Some(1000);
         assert!(rates.update(&s).incoming.is_none());
     }
+    #[cfg(feature = "experimental-bud")]
+    #[test]
+    fn bud_rates_use_native_connection_state_and_existing_decoder_counters() {
+        let mut rates = Rates::default();
+        let mut sample = Sample {
+            generation: 1,
+            state: "Connected (experimental BUD)".into(),
+            bud: Some(parsec_native_experimental::bud::Snapshot {
+                connected: true,
+                ..Default::default()
+            }),
+            received: Some(100),
+            audio_bytes: 10,
+            video: Some(crate::video_output::Snapshot {
+                decoder_initialized: true,
+                frames_decoded: 10,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(rates.update(&sample).fps.is_none());
+        sample.at += std::time::Duration::from_secs(2);
+        sample.received = Some(250_100);
+        sample.audio_bytes = 32_010;
+        sample.video.as_mut().unwrap().frames_decoded = 130;
+        let values = rates.update(&sample);
+        assert_eq!(values.fps, Some(60.0));
+        assert_eq!(values.incoming, Some(1.0));
+        assert_eq!(values.audio, Some(128.0));
+        assert!(
+            values.outgoing.is_none(),
+            "no outgoing byte counter is available"
+        );
+        sample.at += std::time::Duration::from_secs(1);
+        sample.bud.as_mut().unwrap().connected = false;
+        let stopped = rates.update(&sample);
+        assert!(stopped.fps.is_none() && stopped.incoming.is_none());
+    }
+
     #[test]
     fn late_old_session_never_overwrites_new_session() {
         let bus = Shared::default();
