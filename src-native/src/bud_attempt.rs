@@ -19,6 +19,7 @@ use std::{
 #[derive(Default)]
 struct State {
     offer: Option<Value>,
+    output_finished: bool,
     web_mode: Option<Value>,
     events: VecDeque<Value>,
     controls: VecDeque<bytes::Bytes>,
@@ -57,14 +58,16 @@ impl Attempt {
         let attempt_id = id.to_owned();
         let worker = std::thread::Builder::new().name("parsec-bud-media".into()).spawn(move || {
             let result = run(&attempt_id, &output, &window, &manager, &worker_state, &worker_session, &worker_audio, &worker_cancel, incoming);
-            if result.is_err() && !worker_cancel.load(Ordering::Acquire) {
+            if result.is_err() {
                 let mut state = worker_state.lock().unwrap_or_else(|e| e.into_inner());
+                if !worker_cancel.load(Ordering::Acquire) {
                 state.failure.get_or_insert("BUD connection or media failed");
                 // No tokens, AES keys, addresses or server responses in diagnostics.
                 state.events.clear();
                 state.controls.clear();
                 state.events.push_back(json!({"type":7,"status":-6200,"state":4,"attemptID":attempt_id,"duration":0}));
-                if state.offer.is_none() { let _ = output.finish_values(None); }
+                if !state.output_finished { state.output_finished = true; let _ = output.finish_values(None); }
+                }
             }
             let mut retired = worker_session.lock().unwrap_or_else(|e| e.into_inner()).take();
             if let Some(session) = &mut retired { session.close(); }
@@ -195,8 +198,8 @@ impl Attempt {
             .clone()
     }
     pub fn fail(&self) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).failure =
-            Some("BUD application signaling failed");
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.failure = Some("BUD application signaling failed");
         self.cancel.store(true, Ordering::Release);
         self.thread.unpark();
     }
@@ -207,14 +210,38 @@ impl Attempt {
 }
 impl Drop for Attempt {
     fn drop(&mut self) {
+        let _state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         self.cancel.store(true, Ordering::Release);
         self.thread.unpark();
     }
 }
 
+// Serialize guest completion against retirement. A delayed offer must never
+// write credentials or wake a guest buffer reused by the next attempt.
+fn complete_offer(
+    state: &Mutex<State>,
+    cancel: &AtomicBool,
+    output: &crate::attempt::Output,
+    offer: Value,
+    values: [&str; 3],
+) -> Result<bool> {
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+    if cancel.load(Ordering::Acquire) {
+        return Ok(false);
+    }
+    ensure!(!state.output_finished, "BUD offer already completed");
+    state.output_finished = true;
+    ensure!(
+        output.finish_values(Some(values))?,
+        "BUD credential output too small"
+    );
+    state.offer = Some(offer);
+    Ok(true)
+}
+
 // BUD uses an explicit direct route, or one UDP relay when Force TURN is selected.
 // TCP/TLS URLs are never interpreted as UDP and there is no silent fallback.
-async fn route(manager: &crate::connection_settings::Manager) -> Result<Route> {
+async fn route(manager: &crate::connection_settings::Manager) -> Result<(Route, bool)> {
     let (settings, servers) = manager.resolve_bud().await?;
     if settings.force_relay {
         for server in servers {
@@ -227,7 +254,10 @@ async fn route(manager: &crate::connection_settings::Manager) -> Result<Route> {
                         .await?
                         .find(|a| a.is_ipv4())
                         .context("BUD UDP TURN has no IPv4 address")?;
-                    return Ok(Route::turn_udp(addr, &server.username, &server.credential));
+                    return Ok((
+                        Route::turn_udp(addr, &server.username, &server.credential),
+                        settings.prefer_hevc,
+                    ));
                 }
             }
         }
@@ -248,7 +278,7 @@ async fn route(manager: &crate::connection_settings::Manager) -> Result<Route> {
             }
         }
     }
-    Ok(Route::Direct { stun })
+    Ok((Route::Direct { stun }, settings.prefer_hevc))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -266,24 +296,29 @@ fn run(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let route = runtime.block_on(async {
+    let (route, prefer_hevc) = runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(15), route(manager)).await
     })??;
     if cancel.load(Ordering::Acquire) {
         return Ok(());
     }
     let relay = matches!(route, Route::TurnUdp(_));
-    let (mut media, mut session) =
-        crate::bud_media::Media::start(window.clone(), manager.view().0.prefer_hevc)?;
+    let (mut media, mut session) = crate::bud_media::Media::start(window.clone(), prefer_hevc)?;
     session.wake_consumer(std::thread::current());
     let creds = session.offer(id, route)?;
     let mut source = session.take_media()?;
     let signaling = Signaling::new("host", id)?;
-    state.lock().unwrap_or_else(|e| e.into_inner()).offer =
-        Some(signaling.offer(&creds)["payload"]["data"].take());
     *audio.lock().unwrap_or_else(|e| e.into_inner()) = Some(media.audio_pipeline());
     *shared_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
-    output.finish_values(Some([&creds.ufrag, &creds.pwd, &creds.fingerprint]))?;
+    if !complete_offer(
+        state,
+        cancel,
+        output,
+        signaling.offer(&creds)["payload"]["data"].take(),
+        [&creds.ufrag, &creds.pwd, &creds.fingerprint],
+    )? {
+        return Ok(());
+    }
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut established = false;
     let generation = window.stats.begin();
@@ -446,6 +481,53 @@ mod tests {
         attempt.state.lock().unwrap().web_mode = Some(json!(2));
         assert!(attempt.incoming(r#"{"action":"answer_relay","payload":{"attempt_id":"isolated","approved":true,"data":42}}"#).is_err());
         assert!(incoming.try_recv().is_err());
+    }
+
+    #[test]
+    fn retired_offer_cannot_overwrite_reused_guest_buffers() {
+        let mut config = wasmtime::Config::new();
+        config.wasm_threads(true);
+        let memory = crate::memory::GuestMemory(
+            wasmtime::SharedMemory::new(
+                &wasmtime::Engine::new(&config).unwrap(),
+                wasmtime::MemoryType::shared(1, 1),
+            )
+            .unwrap(),
+        );
+        let output =
+            crate::attempt::Output::new(memory.clone(), [100, 400, 700], 128, 64, 80).unwrap();
+        memory.c_string(100, 128, "next-attempt-sentinel").unwrap();
+        let state = Mutex::new(State::default());
+        let cancelled = AtomicBool::new(true);
+        assert!(!complete_offer(
+            &state,
+            &cancelled,
+            &output,
+            json!({"mode":1}),
+            ["old", "old", "old"]
+        )
+        .unwrap());
+        assert_eq!(memory.string(100, 128).unwrap(), "next-attempt-sentinel");
+        assert_eq!(memory.u32(64).unwrap(), 0);
+        cancelled.store(false, Ordering::Release);
+        assert!(complete_offer(
+            &state,
+            &cancelled,
+            &output,
+            json!({"mode":1}),
+            ["new", "pwd", "fp"]
+        )
+        .unwrap());
+        assert_eq!(memory.string(100, 128).unwrap(), "new");
+        assert!(complete_offer(
+            &state,
+            &cancelled,
+            &output,
+            json!({"mode":1}),
+            ["duplicate", "pwd", "fp"]
+        )
+        .is_err());
+        assert_eq!(memory.string(100, 128).unwrap(), "new");
     }
 
     #[test]
