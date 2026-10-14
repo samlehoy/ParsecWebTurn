@@ -18,6 +18,10 @@ pub(super) fn trial(device: &Device, clip: Clip, units: &[&[u8]], fps: u64) -> R
     let low_latency_accepted = decoder.set_bool(LOW_LATENCY_DECODE, true).is_ok();
     let reorder_present = decoder.has(REORDER_MODE);
     let reorder_accepted = decoder.set_int(REORDER_MODE, REORDER_LOW_LATENCY).is_ok();
+    // Documented defaults made explicit; refuse a path that would add a
+    // surface copy or distribute decode to another GPU.
+    decoder.set_bool("SurfaceCopy", false)?;
+    decoder.set_bool("EnableDecoderSmartAccessVideo", false)?;
     decoder.init(
         if clip == Clip::Main10 {
             Layout::P010

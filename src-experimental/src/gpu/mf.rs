@@ -225,6 +225,14 @@ pub(super) fn trial(device: &Device, clip: Clip, units: &[&[u8]], fps: u64) -> R
                 result?;
             }
             collect(&decoder, &mut samples, index, device, clip)?;
+            // Match AMF's immediate output polling. NEED_MORE_INPUT may be
+            // transient even without a new input: do not accidentally measure
+            // our next 30/60 Hz submission tick as the decoder's delay.
+            let next = origin + Duration::from_nanos((index as u64 + 1) * 1_000_000_000 / fps);
+            while samples.outputs <= index && Instant::now() < next {
+                collect(&decoder, &mut samples, index, device, clip)?;
+                std::thread::yield_now();
+            }
         }
         let held = samples.pending.len();
         decoder.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0)?;
