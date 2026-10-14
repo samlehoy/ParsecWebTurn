@@ -497,6 +497,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "parsec-gpu-video"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "lowlat-core",
+ "lowlat-decode",
+ "lowlat-drivers",
+ "self_cell",
+ "windows",
+]
+
+[[package]]
 name = "parsec-native-experimental"
 version = "0.1.0"
 dependencies = [
@@ -506,6 +518,7 @@ dependencies = [
  "lowlat-crypto",
  "lowlat-decode",
  "lowlat-drivers",
+ "parsec-gpu-video",
  "serde_json",
  "tokio",
  "windows",
@@ -650,6 +663,12 @@ dependencies = [
  "subtle",
  "zeroize",
 ]
+
+[[package]]
+name = "self_cell"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ab42ca02749e120097e328d91d415325bdf43b1c72c4c8badf37375fe40a813"
 
 [[package]]
 name = "serde"

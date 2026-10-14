@@ -279,6 +279,7 @@ fn run(
     let mut generation = 0;
     let mut parameters = crate::video_stream::ParameterCache::default();
     let mut awaiting_random_access = true;
+    let mut vendor_failed = false;
     loop {
         let (next_generation, frame) = {
             let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -389,15 +390,14 @@ fn run(
                     frame.codec,
                     hevc,
                     surface_generation,
+                    !vendor_failed && !verify_synthetic_pixels,
                 )?
             };
             update(shared, |s| {
                 s.decoder_initialized = true;
                 s.low_latency_request_accepted = native.low_latency_request_accepted;
-                s.decoder = Some(match frame.codec {
-                    crate::video_stream::Codec::H264 => "Media Foundation H.264",
-                    crate::video_stream::Codec::Hevc => "Media Foundation HEVC",
-                });
+                s.decoder = Some(native.name(frame.codec));
+                s.decoder_fallback = native.fallback.clone();
                 s.renderer = Some("D3D11 VideoProcessor / DXGI");
                 s.adapter = Some(native.renderer.adapter.clone());
             });
@@ -439,9 +439,15 @@ fn run(
         if let Some(error) = failure {
             if !matches!(
                 error.stage,
-                "video-process-input" | "video-process-output" | "video-output-iteration-limit"
+                "video-process-input"
+                    | "video-process-output"
+                    | "video-output-iteration-limit"
+                    | "video-vendor-process"
             ) {
                 return Err(error);
+            }
+            if error.stage == "video-vendor-process" {
+                vendor_failed = true;
             }
             let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
             if q.reset_generation == generation && !q.recover(Instant::now()) {
@@ -612,11 +618,14 @@ impl OutputFormat {
 struct Session {
     surface_generation: u64,
     low_latency_request_accepted: bool,
-    decoder: IMFTransform,
-    _manager: IMFDXGIDeviceManager,
+    decoder: Option<IMFTransform>,
+    #[cfg(feature = "vendor-video")]
+    vendor: Option<parsec_gpu_video::Decoder>,
+    fallback: Option<String>,
+    _manager: Option<IMFDXGIDeviceManager>,
     renderer: Renderer,
     output_format: Option<OutputFormat>,
-    _runtime: Runtime,
+    _runtime: Option<Runtime>,
 }
 impl Session {
     unsafe fn create(
@@ -626,7 +635,54 @@ impl Session {
         codec: crate::video_stream::Codec,
         hevc: Option<crate::video_stream::HevcConfiguration>,
         surface_generation: u64,
+        _allow_vendor: bool,
     ) -> Result<Self> {
+        let mut fallback = None;
+        #[cfg(feature = "vendor-video")]
+        if _allow_vendor && codec == crate::video_stream::Codec::Hevc {
+            let candidate = (|| -> anyhow::Result<Option<Self>> {
+                let config = hevc.ok_or_else(|| anyhow::anyhow!("missing HEVC parameters"))?;
+                anyhow::ensure!(
+                    config.profile == 1 && config.bit_depth == 8 && config.chroma == 1,
+                    "unsupported vendor color format"
+                );
+                let (probe, probe_context) =
+                    create_device(preferred_gpu).map_err(|e| anyhow::anyhow!("{}", e.stage))?;
+                let dxgi: IDXGIDevice = probe.cast()?;
+                let adapter = dxgi.GetAdapter()?.GetDesc()?;
+                let Some(mode) = parsec_gpu_video::preferred(adapter.VendorId, true) else {
+                    return Ok(None);
+                };
+                let luid = (u64::from(adapter.AdapterLuid.HighPart as u32) << 32)
+                    | u64::from(adapter.AdapterLuid.LowPart);
+                drop((probe_context, probe));
+                let vendor =
+                    parsec_gpu_video::Decoder::open(mode, luid, (config.width, config.height))?;
+                let device = vendor.native_device()?;
+                let context = device.GetImmediateContext()?;
+                let renderer = Renderer::create_on_device(hwnd, device, context)
+                    .map_err(|e| anyhow::anyhow!("{}", e.stage))?;
+                Ok(Some(Self {
+                    surface_generation,
+                    low_latency_request_accepted: vendor.low_latency_request_accepted(),
+                    decoder: None,
+                    vendor: Some(vendor),
+                    fallback: None,
+                    _manager: None,
+                    renderer,
+                    output_format: None,
+                    _runtime: None,
+                }))
+            })();
+            match candidate {
+                Ok(Some(session)) => return Ok(session),
+                Ok(None) => {}
+                Err(error) => fallback = Some(format!("Using Media Foundation: {error}")),
+            }
+        }
+        if !_allow_vendor && !verify_synthetic_pixels {
+            fallback = Some("Using Media Foundation after vendor decoder recovery".into());
+        }
         let runtime = Runtime::start()?;
         let mut renderer = Renderer::create(hwnd, preferred_gpu)?;
         renderer.verify_synthetic_pixels = verify_synthetic_pixels;
@@ -724,37 +780,55 @@ impl Session {
         let mut result = Self {
             surface_generation,
             low_latency_request_accepted,
-            decoder,
-            _manager: manager,
+            decoder: Some(decoder),
+            #[cfg(feature = "vendor-video")]
+            vendor: None,
+            fallback,
+            _manager: Some(manager),
             renderer,
             output_format: None,
-            _runtime: runtime,
+            _runtime: Some(runtime),
         };
         result.output_type()?;
         api(
             "video-begin-streaming",
             result
-                .decoder
+                .mf()?
                 .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0),
         )?;
         api(
             "video-start-stream",
             result
-                .decoder
+                .mf()?
                 .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0),
         )?;
         Ok(result)
+    }
+    fn mf(&self) -> Result<&IMFTransform> {
+        self.decoder
+            .as_ref()
+            .ok_or_else(|| unavailable("video-mf-unavailable"))
+    }
+    fn name(&self, codec: crate::video_stream::Codec) -> &'static str {
+        #[cfg(feature = "vendor-video")]
+        if let Some(vendor) = &self.vendor {
+            return vendor.name();
+        }
+        match codec {
+            crate::video_stream::Codec::H264 => "Media Foundation H.264",
+            crate::video_stream::Codec::Hevc => "Media Foundation HEVC",
+        }
     }
     unsafe fn output_type(&mut self) -> Result<()> {
         for index in 0..32 {
             let media = api(
                 "video-output-enumerate",
-                self.decoder.GetOutputAvailableType(0, index),
+                self.mf()?.GetOutputAvailableType(0, index),
             )?;
             if api("video-output-subtype", media.GetGUID(&MF_MT_SUBTYPE))? == MFVideoFormat_NV12 {
                 api(
                     "video-output-set-nv12",
-                    self.decoder.SetOutputType(0, &media, 0),
+                    self.mf()?.SetOutputType(0, &media, 0),
                 )?;
                 // Geometry can remain unspecified until the first decoded sample.
                 self.output_format = None;
@@ -762,7 +836,7 @@ impl Session {
                 self.renderer.processor = None;
                 let stream = api(
                     "video-output-stream-info",
-                    self.decoder.GetOutputStreamInfo(0),
+                    self.mf()?.GetOutputStreamInfo(0),
                 )?;
                 if stream.dwFlags
                     & ((MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0
@@ -782,6 +856,77 @@ impl Session {
         shared: &Shared,
         window: &crate::window::Window,
     ) -> Result<()> {
+        #[cfg(feature = "vendor-video")]
+        if self.vendor.is_some() {
+            let renderer = &mut self.renderer;
+            let generation = self.surface_generation;
+            return self
+                .vendor
+                .as_mut()
+                .unwrap()
+                .feed(&frame.bytes, |picture| {
+                    let layout = picture.layout;
+                    let source = RECT {
+                        left: layout.left as i32,
+                        top: layout.top as i32,
+                        right: (layout.left + layout.width) as i32,
+                        bottom: (layout.top + layout.height) as i32,
+                    };
+                    let color = 4 | (if layout.full_range { 1 } else { 2 } << 4);
+                    let mut desc = D3D11_TEXTURE2D_DESC::default();
+                    picture.texture.GetDesc(&mut desc);
+                    anyhow::ensure!(
+                        desc.Format == DXGI_FORMAT_NV12 && desc.CPUAccessFlags == 0,
+                        "vendor returned a non-GPU NV12 texture"
+                    );
+                    let owner = picture.texture.GetDevice()?;
+                    anyhow::ensure!(
+                        owner.as_raw() == renderer.device.as_raw(),
+                        "cross-device vendor output refused"
+                    );
+                    let presented = renderer
+                        .present(
+                            picture.texture,
+                            picture.slice,
+                            source,
+                            color,
+                            shared,
+                            window,
+                        )
+                        .map_err(|e| anyhow::anyhow!("{}", e.stage))?;
+                    update(shared, |s| {
+                        s.frames_decoded = s.frames_decoded.saturating_add(1);
+                        s.gpu_surface_output = true;
+                        s.d3d11_decoder_surface =
+                            Some(desc.BindFlags & D3D11_BIND_DECODER.0 as u32 != 0);
+                        s.width = Some(layout.width);
+                        s.height = Some(layout.height);
+                        s.nominal_range = Some(if layout.full_range { 1 } else { 2 });
+                        match presented {
+                            Presentation::Presented => {
+                                s.frames_presented = s.frames_presented.saturating_add(1)
+                            }
+                            Presentation::Busy => {
+                                s.presentations_busy = s.presentations_busy.saturating_add(1)
+                            }
+                            Presentation::NotVisible => {
+                                s.presentations_not_visible =
+                                    s.presentations_not_visible.saturating_add(1)
+                            }
+                        }
+                    });
+                    if presented == Presentation::Presented {
+                        window.set_video_ready_for(generation, true);
+                    }
+                    Ok(())
+                })
+                .map(|_| {
+                    update(shared, |s| {
+                        s.frames_submitted = s.frames_submitted.saturating_add(1)
+                    })
+                })
+                .map_err(|_| unavailable("video-vendor-process"));
+        }
         let buffer = api(
             "video-input-buffer",
             MFCreateMemoryBuffer(frame.bytes.len() as u32),
@@ -810,14 +955,14 @@ impl Session {
                 sample.SetUINT32(&MFSampleExtension_CleanPoint, 1),
             )?;
         }
-        let mut result = self.decoder.ProcessInput(0, &sample, 0);
+        let mut result = self.mf()?.ProcessInput(0, &sample, 0);
         if result
             .as_ref()
             .err()
             .is_some_and(|e| e.code() == MF_E_NOTACCEPTING)
         {
             self.output(shared, window)?;
-            result = self.decoder.ProcessInput(0, &sample, 0);
+            result = self.mf()?.ProcessInput(0, &sample, 0);
         }
         api("video-process-input", result)?;
         update(shared, |s| {
@@ -835,7 +980,7 @@ impl Session {
             };
             let mut status = 0;
             let result = self
-                .decoder
+                .mf()?
                 .ProcessOutput(0, std::slice::from_mut(&mut out), &mut status);
             // These COM fields are caller-owned on both success and failure.
             let sample = ManuallyDrop::take(&mut out.pSample);
@@ -870,7 +1015,7 @@ impl Session {
             if self.output_format.is_none() {
                 let media = api(
                     "video-output-current-type",
-                    self.decoder.GetOutputCurrentType(0),
+                    self.mf()?.GetOutputCurrentType(0),
                 )?;
                 self.output_format = Some(OutputFormat::read(&media)?);
             }
@@ -916,7 +1061,9 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         unsafe {
-            let _ = self.decoder.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
+            if let Some(decoder) = &self.decoder {
+                let _ = decoder.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
+            }
         }
     }
 }
@@ -986,6 +1133,13 @@ impl Renderer {
         preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
     ) -> Result<Self> {
         let (device, context) = create_device(preferred_gpu)?;
+        Self::create_on_device(hwnd, device, context)
+    }
+    unsafe fn create_on_device(
+        hwnd: HWND,
+        device: ID3D11Device,
+        context: ID3D11DeviceContext,
+    ) -> Result<Self> {
         let multithread: ID3D10Multithread = api("video-d3d11-multithread", device.cast())?;
         // Return value is the previous protection state, not success/failure.
         let _ = multithread.SetMultithreadProtected(true);

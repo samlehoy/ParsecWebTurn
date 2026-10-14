@@ -8,6 +8,7 @@ publish = false
 # Independent crate: neither Tauri nor WebView2 is linked.
 [features]
 default = []
+vendor-video = ["dep:parsec-gpu-video"]
 experimental-bud = ["dep:parsec-native-experimental"]
 diagnostics = ["dep:log", "dep:rcgen", "dep:ring", "dep:rustls", "dep:tokio-rustls", "wasmtime/wat", "wasmtime/cranelift"]
 
@@ -63,3 +64,7 @@ turn = { path = "vendor/turn-0.11.0" }
 [build-dependencies]
 wasmtime = { version = "38", default-features = false, features = ["std", "runtime", "cranelift", "threads"] }
 sha2 = "0.10"
+
+[target.'cfg(windows)'.dependencies.parsec-gpu-video]
+path = "../src-video"
+optional = true

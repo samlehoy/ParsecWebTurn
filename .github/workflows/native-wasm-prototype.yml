@@ -15,6 +15,7 @@ on:
     branches: [dev, main]
     paths:
       - 'src-native/**'
+      - 'src-video/**'
       - 'tests/turn-integration/**'
       - '.github/workflows/native-wasm-prototype.yml'
       - 'scripts/*native.ps1'
@@ -24,6 +25,7 @@ on:
     branches: [dev, main]
     paths:
       - 'src-native/**'
+      - 'src-video/**'
       - 'tests/turn-integration/**'
       - '.cargo/config.toml'
       - 'scripts/*native.ps1'

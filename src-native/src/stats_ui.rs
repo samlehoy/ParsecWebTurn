@@ -273,6 +273,9 @@ fn rows(
             .unwrap_or("Not reported")
             .into(),
     );
+    if let Some(reason) = video.and_then(|v| v.decoder_fallback.clone()) {
+        row("Decoder fallback", reason);
+    }
     row(
         "Renderer",
         video

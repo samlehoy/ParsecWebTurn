@@ -1562,6 +1562,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "lowlat-decode"
+version = "0.0.0"
+source = "git+https://github.com/nomi-san/lowlat?rev=5f8db5689e55de0d396b0520824caa9fc053dd86#5f8db5689e55de0d396b0520824caa9fc053dd86"
+dependencies = [
+ "lowlat-common",
+ "lowlat-core",
+ "lowlat-drivers",
+]
+
+[[package]]
+name = "lowlat-drivers"
+version = "0.0.0"
+source = "git+https://github.com/nomi-san/lowlat?rev=5f8db5689e55de0d396b0520824caa9fc053dd86#5f8db5689e55de0d396b0520824caa9fc053dd86"
+dependencies = [
+ "libc",
+ "lowlat-common",
+]
+
+[[package]]
 name = "lowlat-net"
 version = "0.0.0"
 dependencies = [
@@ -1830,6 +1849,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "parsec-gpu-video"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "lowlat-core",
+ "lowlat-decode",
+ "lowlat-drivers",
+ "self_cell",
+ "windows",
+]
+
+[[package]]
 name = "parsec-native-experimental"
 version = "0.1.0"
 dependencies = [
@@ -1854,6 +1885,7 @@ dependencies = [
  "image",
  "libopus_sys",
  "log",
+ "parsec-gpu-video",
  "parsec-native-experimental",
  "rcgen",
  "reqwest",
@@ -2511,6 +2543,12 @@ dependencies = [
  "core-foundation-sys",
  "libc",
 ]
+
+[[package]]
+name = "self_cell"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ab42ca02749e120097e328d91d415325bdf43b1c72c4c8badf37375fe40a813"
 
 [[package]]
 name = "semver"

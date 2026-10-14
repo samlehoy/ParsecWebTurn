@@ -15,6 +15,7 @@ pub struct Snapshot {
     pub low_latency_request_accepted: bool,
     pub mmcss_registered: bool,
     pub decoder: Option<&'static str>,
+    pub decoder_fallback: Option<String>,
     pub renderer: Option<&'static str>,
     pub adapter: Option<String>,
     pub gpu_surface_output: bool,

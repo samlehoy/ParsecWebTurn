@@ -6,7 +6,7 @@ publish = false
 
 [features]
 default = []
-gpu-probes = ["dep:windows", "dep:lowlat-drivers", "dep:lowlat-decode"]
+gpu-probes = ["dep:windows", "dep:lowlat-drivers", "dep:lowlat-decode", "dep:parsec-gpu-video"]
 
 [[bin]]
 name = "intel-gpu-probe"
@@ -45,3 +45,7 @@ lowlat-decode = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e5
 lto = "fat"
 codegen-units = 1
 
+
+[target.'cfg(windows)'.dependencies.parsec-gpu-video]
+path = "../src-video"
+optional = true
