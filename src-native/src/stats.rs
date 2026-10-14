@@ -299,7 +299,7 @@ mod tests {
         assert_eq!(values.fps, Some(60.0));
         assert_eq!(values.incoming, Some(1.0));
         assert_eq!(values.audio, Some(128.0));
-        assert_eq!(values.outgoing, Some(0.1));
+        assert!((values.outgoing.unwrap() - 0.1).abs() < 1e-12);
         sample.at += std::time::Duration::from_secs(1);
         sample.bud.as_mut().unwrap().connected = false;
         let stopped = rates.update(&sample);
