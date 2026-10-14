@@ -119,13 +119,17 @@ impl Output {
     pub fn finish(&self, credentials: Option<&Description>) -> Result<bool> {
         // Validate every size before writing any credential. Failure leaves the
         // buffers empty, so stale credentials cannot look like a valid offer.
-        let values = credentials.map(|d| {
+        self.finish_values(credentials.map(|d| {
             [
-                &d.credentials.ufrag,
-                &d.credentials.password,
-                &d.credentials.fingerprint,
+                d.credentials.ufrag.as_str(),
+                d.credentials.password.as_str(),
+                d.credentials.fingerprint.as_str(),
             ]
-        });
+        }))
+    }
+
+    /// Shared guest-memory completion only; does not construct an RTC description.
+    pub fn finish_values(&self, values: Option<[&str; 3]>) -> Result<bool> {
         let fits = values
             .as_ref()
             .is_some_and(|values| values.iter().all(|v| v.len() < self.capacity));

@@ -341,6 +341,8 @@ fn relay_outcome(relay: &Relay<'_>) -> Option<Outcome> {
 /// One session's driver.
 #[derive(Debug)]
 pub struct Driver {
+    #[cfg(feature = "external-video")]
+    external_controls: bool,
     init: Init,
     units: Units,
     emit: events::Sender<Event>,
@@ -410,6 +412,11 @@ pub struct Driver {
 }
 
 impl Driver {
+    #[cfg(feature = "external-video")]
+    pub fn external_controls(&mut self, enabled: bool) {
+        self.external_controls = enabled;
+    }
+
     pub fn new(
         init: Init,
         units: Units,
@@ -418,6 +425,8 @@ impl Driver {
         telemetry: Arc<Telemetry>,
     ) -> Self {
         Self {
+            #[cfg(feature = "external-video")]
+            external_controls: false,
             init,
             units,
             packets,
@@ -929,6 +938,16 @@ impl Driver {
         }
     }
 
+    #[cfg(feature = "external-video")]
+    pub(crate) fn send_external(&mut self, session: &mut Session<'_>, bytes: &[u8]) {
+        if let Ok(message) = control::parse(bytes) {
+            if message.opcode == op::ENCODER_CONFIG && message.a0 == 0 {
+                self.init.flags = message.a1;
+            }
+            self.send_control(session, &message);
+        }
+    }
+
     fn send_control(&mut self, session: &mut Session<'_>, control: &Control<'_>) {
         let mut header = [0u8; control::CONTROL_HEADER_LEN];
         if control::encode_header(&mut header, control).is_err() {
@@ -1018,6 +1037,12 @@ impl Driver {
                     );
                 }
                 *count = count.saturating_add(1);
+            }
+            #[cfg(feature = "external-video")]
+            if self.external_controls {
+                self.emit.send(Event::ExternalControl {
+                    bytes: inbound[..len].to_vec(),
+                });
             }
             if let Some(outcome) = self.on_control(&message) {
                 return Some(outcome);

@@ -40,6 +40,10 @@ const REPORT_EVERY: u32 = 16;
 
 /// Everything the thread is handed at spawn.
 pub(crate) struct Attached {
+    #[cfg(feature = "external-video")]
+    pub external_controls: bool,
+    #[cfg(feature = "external-video")]
+    pub external_consumer: Option<std::thread::Thread>,
     pub socket: Socket,
     pub servers: Vec<SocketAddr>,
     /// The host candidates the seam raises as the thread starts. A reflexive
@@ -102,6 +106,10 @@ fn attach_send<'a>(
 
 pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
     let Attached {
+        #[cfg(feature = "external-video")]
+        external_controls,
+        #[cfg(feature = "external-video")]
+        external_consumer,
         socket,
         servers,
         hosts,
@@ -212,6 +220,8 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
     let mut shell = Shell::new(socket, wake, endpoint);
     let _ = epoch.set(shell.base());
     let mut driver = Driver::new(init, units, packets, emit.clone(), Arc::clone(&telemetry));
+    #[cfg(feature = "external-video")]
+    driver.external_controls(external_controls);
     let mut reported: Vec<SocketAddr> = Vec::new();
     let mut offered = false;
     let mut mapped = false;
@@ -247,6 +257,10 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
             // taking effect for what follows it.
             while let Some(request) = requests.pop() {
                 match request {
+                    #[cfg(feature = "external-video")]
+                    Request::External { bytes, len } => {
+                        driving.send_external(endpoint.session(), &bytes[..usize::from(len)])
+                    }
                     Request::Input(input) => driving.send_input(endpoint.session(), &input),
                     Request::Viewport(viewport) => driving.set_viewport(viewport),
                     Request::Video(flags) => driving.set_flags(endpoint.session(), flags),
@@ -274,6 +288,10 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
         let now = turn.now;
         if let Some(outcome) = driver.turn(shell.endpoint(), now) {
             ended = Some(outcome);
+        }
+        #[cfg(feature = "external-video")]
+        if let Some(consumer) = &external_consumer {
+            consumer.unpark();
         }
         // An ending the loop decided is said, a departure of its own
         // included -- a decoder that failed for good ends the session that
@@ -370,6 +388,10 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
                     emit.send(mapped_candidate(addr));
                 }
             }
+        }
+        #[cfg(feature = "external-video")]
+        if let Some(consumer) = &external_consumer {
+            consumer.unpark();
         }
     }
     telemetry.state.store(2, Ordering::Relaxed);

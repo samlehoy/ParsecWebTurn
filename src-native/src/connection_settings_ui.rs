@@ -42,6 +42,13 @@ const STATUS: usize = 4115;
 const GPU: usize = 4116;
 const HEVC: usize = 4117;
 const FORCE_RELAY: usize = 4118;
+#[cfg(feature = "experimental-bud")]
+const BUD: usize = 4119;
+const BUD_EXTRA: i32 = if cfg!(feature = "experimental-bud") {
+    94
+} else {
+    0
+};
 const BG: u32 = 0x00282828;
 const FIELD: u32 = 0x00212121;
 const FG: u32 = 0x00eeeeee;
@@ -511,9 +518,25 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         page.font,
     );
     check(hwnd, FORCE_RELAY, s.force_relay);
+    #[cfg(feature = "experimental-bud")]
+    {
+        row_label(hwnd, page, "Transport", "Experimental native BUD: direct UDP or Force TURN over UDP.\nWebRTC supports TURN TCP/TLS. Reconnect after changing.", 1104, 0, 40);
+        add(
+            hwnd,
+            page,
+            "BUTTON",
+            "Experimental BUD (UDP only)",
+            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+            [420, 1104, 400, 36],
+            BUD,
+            0,
+            page.font,
+        );
+        check(hwnd, BUD, s.experimental_bud);
+    }
     add(hwnd, page, "STATIC",
         "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection.",
-        0, [0, 1110, 820, 48], NOTICE, 0, page.small);
+        0, [0, 1110 + BUD_EXTRA, 820, 48], NOTICE, 0, page.small);
     let status = error.unwrap_or_else(|| {
         "Saved in settings.json. Secrets are protected for your Windows user.".into()
     });
@@ -523,7 +546,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         "STATIC",
         &status,
         0,
-        [0, 1172, 820, 40],
+        [0, 1172 + BUD_EXTRA, 820, 40],
         STATUS,
         0,
         page.small,
@@ -534,7 +557,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         "BUTTON",
         "Back",
         BS_OWNERDRAW as u32 | WS_TABSTOP,
-        [550, 1228, 110, 40],
+        [550, 1228 + BUD_EXTRA, 110, 40],
         BACK,
         0,
         page.font,
@@ -545,7 +568,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         "BUTTON",
         "Save settings",
         BS_OWNERDRAW as u32 | WS_TABSTOP,
-        [676, 1228, 144, 40],
+        [676, 1228 + BUD_EXTRA, 144, 40],
         SAVE,
         0,
         page.font,
@@ -663,7 +686,7 @@ unsafe fn layout(hwnd: HWND) {
     GetClientRect(hwnd, &mut client);
     let cloudflare = SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1;
     let shift = if cloudflare { 0 } else { 44 };
-    let height = 1294 + HEADER_EXTRA - shift;
+    let height = 1294 + HEADER_EXTRA + BUD_EXTRA - shift;
     page.scroll = page.scroll.clamp(0, (height - client.bottom).max(0));
     let info = SCROLLINFO {
         cbSize: size_of::<SCROLLINFO>() as u32,
@@ -836,6 +859,10 @@ unsafe fn update_enabled(hwnd: HWND) {
 unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
     let mut s = page.saved.clone();
     s.prefer_hevc = checked(hwnd, HEVC);
+    #[cfg(feature = "experimental-bud")]
+    {
+        s.experimental_bud = checked(hwnd, BUD);
+    }
     let selected = SendMessageW(GetDlgItem(hwnd, GPU as i32), CB_GETCURSEL, 0, 0);
     s.video_gpu = usize::try_from(selected)
         .ok()

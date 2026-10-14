@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 pub struct Media {
     video: crate::video_windows::Pipeline,
-    audio: crate::audio_stream::Pipeline,
+    audio: Arc<crate::audio_stream::Pipeline>,
     audio_sender: crate::audio_stream::Sender,
     inspector: crate::video_stream::Inspector,
     waiting_for_keyframe: bool,
@@ -31,7 +31,7 @@ impl Media {
         let hevc_available =
             prefer_hevc && crate::video_windows::hevc_available(window.video_gpu().as_ref());
         let session = Session::external_video(hevc_available)?;
-        let audio = crate::audio_stream::Pipeline::start();
+        let audio = Arc::new(crate::audio_stream::Pipeline::start());
         let audio_sender = audio
             .sender()
             .ok_or_else(|| anyhow::anyhow!("native audio sender unavailable"))?;
@@ -125,6 +125,21 @@ impl Media {
         capacity: usize,
     ) -> Result<usize> {
         self.audio.poll(memory, pointer, capacity)
+    }
+
+    pub fn audio_pipeline(&self) -> Arc<crate::audio_stream::Pipeline> {
+        self.audio.clone()
+    }
+
+    pub fn ingress(&self) -> crate::media_ingress::Ingress {
+        crate::media_ingress::Ingress {
+            video_stream: self.inspector.snapshot(),
+            video_output: Some(self.video.snapshot()),
+            audio_output: Some(self.audio.snapshot()),
+            video_decoder_available: true,
+            audio_decoder_available: true,
+            ..Default::default()
+        }
     }
 
     pub fn video_snapshot(&self) -> crate::video_output::Snapshot {

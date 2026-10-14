@@ -131,6 +131,11 @@ pub(crate) const fn sendable(opcode: u8) -> bool {
 /// What travels from the application's thread to the session's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Request {
+    #[cfg(feature = "external-video")]
+    External {
+        bytes: [u8; 256],
+        len: u16,
+    },
     Input(Input),
     Viewport(Viewport),
     /// A new declaration: the flags, already masked by capability.

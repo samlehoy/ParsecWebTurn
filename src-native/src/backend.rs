@@ -40,6 +40,9 @@ pub struct Backend {
     pub attempt_started: Option<std::time::Instant>,
     #[serde(skip)]
     pub native_attempt: Option<crate::attempt::Attempt>,
+    #[cfg(all(windows, feature = "experimental-bud"))]
+    #[serde(skip)]
+    pub bud_attempt: Option<crate::bud_attempt::Attempt>,
     #[serde(skip)]
     pub buffers: crate::buffers::Buffers,
     #[serde(skip)]
@@ -255,6 +258,10 @@ impl Backend {
     }
 
     fn retain_attempt_diagnostic(&mut self) {
+        #[cfg(all(windows, feature = "experimental-bud"))]
+        {
+            self.bud_attempt.take();
+        }
         if let Some(mut attempt) = self.native_attempt.take() {
             if self.status == Some(0) {
                 attempt.disconnect();
@@ -295,6 +302,37 @@ impl Backend {
     }
 
     fn pump(&mut self) -> Result<()> {
+        #[cfg(all(windows, feature = "experimental-bud"))]
+        if self.bud_attempt.is_some() {
+            if self
+                .bud_attempt
+                .as_ref()
+                .and_then(|a| a.failure())
+                .is_some()
+            {
+                return Err(crate::attempt::FailureStage::PeerTransport.into());
+            }
+            self.media_ingress = self.bud_attempt.as_ref().unwrap().ingress();
+            while self.events.len() < 32 {
+                let Some(event) = self.bud_attempt.as_ref().and_then(|a| a.pop_event()) else {
+                    break;
+                };
+                if event["type"] == 7 {
+                    self.status = event["status"].as_i64().and_then(|s| i32::try_from(s).ok());
+                }
+                self.events.push_back(event);
+            }
+            for _ in 0..32 {
+                if self.events.len() >= 32 {
+                    break;
+                }
+                let Some(frame) = self.bud_attempt.as_ref().and_then(|a| a.pop_control()) else {
+                    break;
+                };
+                self.handle_message(0, false, frame)?;
+            }
+            return Ok(());
+        }
         if let Some(attempt) = &self.native_attempt {
             self.media_ingress = attempt.media_ingress();
             while self.events.len() < 32 {

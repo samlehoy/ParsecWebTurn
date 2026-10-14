@@ -157,6 +157,8 @@ pub struct Client {
     /// No SDK video decoder or decoded-frame exporter is started in this mode.
     #[cfg(feature = "external-video")]
     external_video: bool,
+    #[cfg(feature = "external-video")]
+    external_consumer: Option<std::thread::Thread>,
     attempt: Option<Attempt>,
     emit: events::Sender<Event>,
     events: Option<events::Receiver<Event>>,
@@ -378,6 +380,8 @@ impl Client {
         Ok(Self {
             #[cfg(feature = "external-video")]
             external_video: false,
+            #[cfg(feature = "external-video")]
+            external_consumer: None,
             attempt: None,
             emit,
             events: Some(events),
@@ -901,6 +905,10 @@ impl Client {
             Vec::new()
         };
         let args = crate::shell::Attached {
+            #[cfg(feature = "external-video")]
+            external_controls: self.external_video,
+            #[cfg(feature = "external-video")]
+            external_consumer: self.external_consumer.clone(),
             socket,
             servers: attempt
                 .config
@@ -1085,6 +1093,46 @@ impl Client {
     /// forgets the pad's family. The application's own message is refused for
     /// an opcode it may not carry (`Opcode`), session or not, and forgets
     /// nothing.
+    /// Already-framed input from the application UI; no pixel or input remapping.
+    #[cfg(feature = "external-video")]
+    pub fn wake_external_consumer(&mut self, thread: std::thread::Thread) {
+        self.external_consumer = Some(thread);
+    }
+
+    #[cfg(feature = "external-video")]
+    pub fn send_external_control(&mut self, bytes: &[u8]) -> bool {
+        if !self.external_video || bytes.len() < 13 || bytes.len() > 256 {
+            return false;
+        }
+        if lowlat_core::control::parse(bytes).is_err() {
+            return false;
+        }
+        // Session initialization, disconnect, and reports remain SDK-owned.
+        if matches!(bytes[12], 10 | 11 | 21 | 25) {
+            return false;
+        }
+        let mut packet = [0; 256];
+        packet[..bytes.len()].copy_from_slice(bytes);
+        let Some(attempt) = self.attempt.as_ref() else {
+            return false;
+        };
+        let (Some(requests), Some(thread)) = (attempt.requests.as_ref(), attempt.thread.as_ref())
+        else {
+            return false;
+        };
+        if requests
+            .push(Request::External {
+                bytes: packet,
+                len: bytes.len() as u16,
+            })
+            .is_err()
+        {
+            self.telemetry.input_dropped.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+        thread.wake_handle().notify().is_ok()
+    }
+
     pub fn send_input(&mut self, input: Input) -> Result<(), Error> {
         let pad = match input {
             Input::PadState { pad, .. }

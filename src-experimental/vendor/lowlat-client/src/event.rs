@@ -37,6 +37,9 @@ pub struct Peer {
 /// added here must fail to compile there rather than fall through.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
+    /// Original native control message for an application-owned UI.
+    #[cfg(feature = "external-video")]
+    ExternalControl { bytes: Vec<u8> },
     /// A local candidate, to be sent to the host as it is found.
     Candidate {
         addr: SocketAddr,
@@ -105,6 +108,8 @@ pub enum Event {
 impl Queued for Event {
     fn body(&self) -> &[u8] {
         match self {
+            #[cfg(feature = "external-video")]
+            Event::ExternalControl { bytes } => bytes,
             Event::UserData { text, .. } => text,
             Event::GuestList { body, .. } => body,
             _ => &[],

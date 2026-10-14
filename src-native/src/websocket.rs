@@ -554,12 +554,38 @@ pub fn dispatch(
                 Some(socket) => socket.read(&memory, output, size, timeout(arg(args, 1)?))?,
                 None => 3,
             };
+            #[cfg(all(windows, feature = "experimental-bud"))]
+            if code == 0 {
+                let text = memory.string(output, size)?;
+                let backend = caller
+                    .data()
+                    .backend
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if let Some(attempt) = &backend.bud_attempt {
+                    if let Some(rewritten) = attempt.incoming(&text)? {
+                        memory.c_string(output, size, &rewritten)?;
+                    }
+                }
+            }
             out[0] = Val::I32(code);
         }
         "MTY_WebSocketWrite" => {
             out[0] = Val::I32(0);
             if let Some(socket) = network.socket(arg(args, 0)?) {
                 if let Ok(text) = memory.string(arg(args, 1)?, MAX_MESSAGE + 1) {
+                    #[cfg(all(windows, feature = "experimental-bud"))]
+                    let text = {
+                        let backend = caller
+                            .data()
+                            .backend
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        match &backend.bud_attempt {
+                            Some(attempt) => attempt.outgoing(&text)?.unwrap_or(text),
+                            None => text,
+                        }
+                    };
                     out[0] = Val::I32(i32::from(socket.write(text)));
                 }
             }

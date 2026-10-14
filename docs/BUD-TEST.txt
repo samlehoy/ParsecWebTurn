@@ -1,0 +1,26 @@
+Experimental BUD test client (Windows x64)
+
+The default is still WebRTC. The embedded WASM core and the MF/D3D11 video
+and Opus audio decoders are unchanged.
+
+Extract to a separate directory. Copy your existing settings.json into that
+directory if you need your TURN settings; do not send that file to anyone.
+Start ParsecWebTurn.exe and sign in through the existing account screen.
+
+Settings -> Experimental BUD (UDP only) -> Save settings.
+Connect to a stock Parsec host using the normal computer picker.
+BUD without Force TURN selects direct UDP with STUN discovery.
+BUD with Force TURN selects the first configured UDP TURN endpoint. The
+Cloudflare provider can generate temporary credentials as before.
+BUD does not support TURN TCP/TLS and does not silently fall back to WebRTC.
+Uncheck Experimental BUD, save and reconnect to return to WebRTC.
+
+Check Connection stats: it must say experimental BUD, show actual codec,
+resolution, Media Foundation decoder and D3D11 decoder surface once playing.
+Test H.264 first; then test HEVC if it already works on this GPU/driver.
+Also check audio, cursor, immersive mode and disconnect/reconnect.
+
+Direct and isolated UDP TURN connectivity and encrypted control delivery are
+covered by automated tests. Stock-host media playback and real-provider TURN
+compatibility still need this test; this is not a release or a verified
+replacement for WebRTC. 10-bit, 4:4:4 and additional decoders are not enabled.

@@ -48,6 +48,8 @@ impl GpuPreference {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
+    #[cfg(feature = "experimental-bud")]
+    pub experimental_bud: bool,
     pub prefer_hevc: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video_gpu: Option<GpuPreference>,
@@ -72,6 +74,8 @@ impl Default for Settings {
     // Legacy defaults apply to existing JSON; a new native installation uses fresh().
     fn default() -> Self {
         Self {
+            #[cfg(feature = "experimental-bud")]
+            experimental_bud: false,
             prefer_hevc: false,
             video_gpu: None,
             provider: "cloudflare".into(),
@@ -164,7 +168,7 @@ impl Settings {
                 bail!("Enter a valid Cloudflare API token");
             }
             if !(60..=172800).contains(&self.ttl) {
-                bail!("Credential lifetime must be 60–172800 seconds");
+                bail!("Credential lifetime must be 60Ă˘â‚¬â€ś172800 seconds");
             }
         }
         Ok(())

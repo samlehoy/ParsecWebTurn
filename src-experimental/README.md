@@ -87,3 +87,17 @@ cargo build --release --locked --manifest-path src-experimental/Cargo.toml --tar
 
 The ignored `turn_udp_connectivity` test runs only against the isolated CI coturn
 fixture; its credentials are dummy data. Never point it at a production relay.
+
+### Optional BUD test client
+
+The `experimental-bud` native feature now provides a Settings checkbox and binds
+BUD to the existing computer picker, account socket, input UI, MF/D3D11 and Opus
+pipelines. The opaque authenticated account WebSocket is a deliberately shared
+interface: only active BUD attempt messages are adapted; normal WebRTC messages
+are unchanged. Native AES credentials never enter the WASM guest. Direct UDP and
+explicit Force TURN/UDP are separate routes; no TCP/TLS reinterpretation or
+silent fallback. See [test instructions](../docs/BUD-TEST.txt).
+
+Automated direct/isolated TURN tests include encrypted control delivery in both
+directions. Stock-host playback and Cloudflare compatibility remain pending real
+testing. This is an optional test artifact, not the distributed default client.

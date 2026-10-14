@@ -78,6 +78,38 @@ fn connect(route: Route, relay_expected: bool) {
         [true, true],
         "native UDP connectivity did not establish"
     );
+    // Verify actual encrypted native control delivery through this route.
+    // The existing app's framed input is not remapped a second time.
+    let mut frame = [0; 13];
+    frame[..4].copy_from_slice(&37u32.to_be_bytes());
+    frame[12] = 28;
+    left.send_control(&frame).unwrap();
+    right
+        .send_input(lowlat_client::input::Input::Control {
+            opcode: 28,
+            a0: 41,
+            a1: 0,
+            a2: 0,
+        })
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    let mut delivered = [false; 2];
+    while !delivered.iter().all(|v| *v) && Instant::now() < until {
+        while let Some(event) = left.poll().unwrap() {
+            if let Event::ExternalControl { bytes } = event {
+                if bytes.len() == 13 && bytes[12] == 28 && bytes[..4] == 41u32.to_be_bytes() {
+                    delivered[0] = true;
+                }
+            }
+        }
+        while let Some(event) = right.poll().unwrap() {
+            if matches!(event, Event::HostMode { mode: 37 }) {
+                delivered[1] = true;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(delivered, [true, true], "native control round trip failed");
     left.close();
     right.close();
 }

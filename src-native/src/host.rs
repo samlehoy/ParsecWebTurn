@@ -705,6 +705,46 @@ fn backend_call(
                         ptr(args, 5)?,
                         ptr(args, 6)?,
                     )?;
+                    #[cfg(all(windows, feature = "experimental-bud"))]
+                    if b.connection_settings
+                        .as_ref()
+                        .is_some_and(|m| m.view().0.experimental_bud)
+                    {
+                        if b.status != Some(-3)
+                            || b.bud_attempt.is_some()
+                            || b.native_attempt.is_some()
+                        {
+                            output.finish_values(None)?;
+                        } else {
+                            b.prepare_attempt();
+                            let window = caller
+                                .data()
+                                .window
+                                .clone()
+                                .context("BUD requires a native window")?;
+                            let manager = b
+                                .connection_settings
+                                .clone()
+                                .context("BUD settings unavailable")?;
+                            match crate::bud_attempt::Attempt::spawn(
+                                &id,
+                                output.clone(),
+                                window,
+                                manager,
+                            ) {
+                                Ok(attempt) => {
+                                    b.bud_attempt = Some(attempt);
+                                    b.status = Some(20);
+                                    b.attempt_id = id;
+                                    b.attempt_started = Some(Instant::now());
+                                }
+                                Err(_) => {
+                                    output.finish_values(None)?;
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     if b.status != Some(-3) || b.native_attempt.is_some() {
                         output.finish(None)?;
                     } else {
@@ -834,6 +874,11 @@ fn backend_call(
                         #[cfg(not(windows))]
                         let viewport = None;
                         if let Some(frame) = b.prepare_input_with_viewport(&message, viewport)? {
+                            #[cfg(all(windows, feature = "experimental-bud"))]
+                            if let Some(attempt) = &b.bud_attempt {
+                                attempt.send(&frame)?;
+                                return Ok(());
+                            }
                             b.native_attempt
                                 .as_ref()
                                 .context("native control attempt missing")?
@@ -847,6 +892,11 @@ fn backend_call(
                     let text = m.string(ptr(args, 1)?, 1024 * 1024)?;
                     b.pump_native_events()?;
                     if b.status == Some(0) {
+                        #[cfg(all(windows, feature = "experimental-bud"))]
+                        if let Some(attempt) = &b.bud_attempt {
+                            attempt.send(&crate::control::text(17, int(args, 0)?, &text)?)?;
+                            return Ok(());
+                        }
                         b.native_attempt
                             .as_ref()
                             .context("native control attempt missing")?
@@ -956,6 +1006,14 @@ fn backend_call(
                     let capacity = usize::try_from(int(args, 1)?)?;
                     if capacity > 1024 * 1024 {
                         bail!("audio poll capacity exceeds limit");
+                    }
+                    #[cfg(all(windows, feature = "experimental-bud"))]
+                    if let Some(attempt) = &b.bud_attempt {
+                        result(
+                            results,
+                            attempt.poll_audio(m, ptr(args, 0)?, capacity)? as i32,
+                        );
+                        return Ok(());
                     }
                     let frames = match &b.native_attempt {
                         Some(attempt) => attempt.poll_audio(m, ptr(args, 0)?, capacity)?,

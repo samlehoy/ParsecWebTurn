@@ -5,6 +5,8 @@
 #![warn(unused_crate_dependencies)]
 mod attempt;
 #[cfg(all(windows, feature = "experimental-bud"))]
+mod bud_attempt;
+#[cfg(all(windows, feature = "experimental-bud"))]
 pub mod bud_media;
 const APP_TITLE: &str = "ParsecWebTurn";
 const PARSEC_CORE_VERSION: &str = "150-104a";

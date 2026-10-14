@@ -2,9 +2,10 @@
 use std::net::SocketAddr;
 
 use anyhow::{Result, anyhow, ensure};
+pub use lowlat_client::Event;
 use lowlat_client::config::{Backend, Decoding, FrameKind, Port, Relay};
 use lowlat_client::driver::Units;
-use lowlat_client::{Client, Config, Event, Peer, Transport};
+use lowlat_client::{Client, Config, Peer, Transport};
 use lowlat_core::conn::Kind;
 use lowlat_crypto::Credentials;
 
@@ -15,6 +16,9 @@ pub enum Route {
 }
 
 impl Route {
+    pub fn turn_udp(server: SocketAddr, username: &str, password: &str) -> Self {
+        Self::TurnUdp(Relay::new(server, username, password))
+    }
     fn configure(self) -> Config {
         match self {
             Self::Direct { stun } => Config {
@@ -101,6 +105,22 @@ impl Session {
 
     pub fn request_keyframe(&self) -> bool {
         self.client.request_external_keyframe()
+    }
+
+    pub fn wake_consumer(&mut self, thread: std::thread::Thread) {
+        self.client.wake_external_consumer(thread);
+    }
+
+    pub fn send_control(&mut self, bytes: &[u8]) -> Result<()> {
+        ensure!(
+            self.client.send_external_control(bytes),
+            "BUD control refused"
+        );
+        Ok(())
+    }
+
+    pub fn send_user_data(&mut self, id: u32, text: &[u8]) -> bool {
+        self.client.send_user_data(id, text)
     }
 
     pub fn send_input(&mut self, input: lowlat_client::input::Input) -> Result<()> {
