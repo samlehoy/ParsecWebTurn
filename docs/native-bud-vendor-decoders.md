@@ -4,6 +4,13 @@ Scope agreed 2026-10-14. These are planned work, not shipped capabilities.
 Reference: lowlat `feat/win-seams`, pinned research revision
 `5f8db5689e55de0d396b0520824caa9fc053dd86`.
 
+Current direction: retain Media Foundation/D3D11 and the existing Opus decoder.
+BUD changes transport only. AMD/NVIDIA decoder comparisons are deferred at the
+user's request. The optional native `experimental-bud` module now hands compressed
+BUD payloads into those existing pipelines; it does not expose a usable GUI
+connection option yet. Account/UI lifecycle wiring and stock-host direct/relay
+acceptance remain outstanding. Offline GPU probes are a separate build feature.
+
 ## 1. Vendor decoder backends, starting with Intel VPL
 
 Priority updated at the user's request: Intel first, targeting the integrated

@@ -17,7 +17,9 @@ fn peer(ours: lowlat_crypto::Credentials) -> Peer {
 }
 
 fn connect(route: Route, relay_expected: bool) {
-    let mut left = Session::transport_probe().unwrap();
+    // Exercise the actual application-decoded media mode on the client side.
+    // The other endpoint is a connectivity peer, not a stock media host.
+    let mut left = Session::external_video(false).unwrap();
     let mut right = Session::transport_probe().unwrap();
     let left_ours = left.offer("left", route).unwrap();
     let right_ours = right

@@ -76,7 +76,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
           cargo fmt --manifest-path src-experimental/vendor/lowlat-client/Cargo.toml -- --check
           if ($LASTEXITCODE -ne 0) { throw 'External media seam formatting failed' }
-          cargo clippy --locked --manifest-path src-experimental/Cargo.toml --target ${{ matrix.target }} --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path src-experimental/Cargo.toml --target ${{ matrix.target }} --features gpu-probes --all-targets -- -D warnings
           if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
           cargo test --locked --manifest-path src-experimental/Cargo.toml --target ${{ matrix.target }}
           if ($LASTEXITCODE -ne 0) { throw 'Adapter tests failed' }
@@ -86,7 +86,7 @@ jobs:
             cargo test --locked --manifest-path src-experimental/Cargo.toml --target ${{ matrix.target }} --test bud_paths turn_udp_connectivity -- --ignored --exact
             if ($LASTEXITCODE -ne 0) { throw 'Native BUD UDP TURN connectivity failed' }
           }
-          cargo build --release --locked --manifest-path src-experimental/Cargo.toml --target ${{ matrix.target }}
+          cargo build --release --locked --manifest-path src-experimental/Cargo.toml --target ${{ matrix.target }} --features gpu-probes
           if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
       - uses: actions/upload-artifact@v4
         if: failure() && matrix.os == 'ubuntu-latest'

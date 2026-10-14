@@ -168,8 +168,8 @@ delivery commitment. There are no fixed release dates for these milestones.
 | Custom STUN and TURN relay support | Available | Cloudflare or custom TURN servers, including UDP, TCP and TLS server connections. Compatible with the earlier client's server settings file. |
 | More audio formats and menu integration | Planned | Support additional audio choices and review which Parsec settings need native integration. |
 | Native connection and playback statistics | Available | Separate native stats window: active direct/TURN route, relay server, RTT, traffic, decoded FPS, video/audio details, DTLS state and app CPU/GPU usage. Missing data stays unknown. |
-| Vendor-specific Windows decoders | Investigating | Intel VPL first: isolated native GPU-surface probe against the current low-latency path. No CPU video fallback or additional decoded-frame GPU copies; no live vendor backend is available yet. |
-| BUD transport with TURN/UDP | In development, experimental | Separate lowlat-based native attempt and signaling adapters, with direct/UDP TURN connectivity gates. Playable integration is pending. Preserve the default WebRTC path and its working TURN over UDP, TCP and TLS. |
+| Vendor-specific Windows decoders | Deferred | Intel H.264 screening did not justify replacing Media Foundation. Keep the existing GPU path; evaluate AMD and NVIDIA later. |
+| BUD transport with TURN/UDP | In development, experimental | Separate native signaling and direct/UDP TURN adapters. Compressed media feeds the existing MF/D3D11 and Opus paths; account/UI wiring and stock-host acceptance remain pending. Preserve default WebRTC and its TURN over UDP, TCP and TLS. |
 | Vulkan rendering backend | Planned | Add another GPU rendering option alongside D3D11 and build toward Linux support. |
 | D3D12 rendering backend | Exploring | Investigate an additional native GPU rendering option on Windows. |
 | Linux client, distributed as Flatpak | Planned | Make the native client available on Linux with straightforward installation. |

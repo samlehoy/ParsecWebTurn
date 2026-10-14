@@ -4,6 +4,20 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+default = []
+gpu-probes = ["dep:windows", "dep:lowlat-drivers", "dep:lowlat-decode"]
+
+[[bin]]
+name = "intel-gpu-probe"
+path = "src/bin/intel-gpu-probe.rs"
+required-features = ["gpu-probes"]
+
+[[bin]]
+name = "mf-baseline-probe"
+path = "src/bin/mf-baseline-probe.rs"
+required-features = ["gpu-probes"]
+
 [workspace]
 members = ["vendor/lowlat-client"]
 resolver = "2"
@@ -23,9 +37,9 @@ lowlat-core = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55d
 lowlat-crypto = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D10", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_Variant"] }
-lowlat-drivers = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
-lowlat-decode = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
+windows = { version = "=0.62.2", optional = true, features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D10", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_Variant"] }
+lowlat-drivers = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86", optional = true }
+lowlat-decode = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86", optional = true }
 
 [profile.release]
 lto = "fat"

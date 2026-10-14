@@ -4,6 +4,9 @@ This crate is **not linked or packaged by the WebRTC client**. It pins lowlat's
 MIT-licensed client/driver libraries to `5f8db5689e55de0d396b0520824caa9fc053dd86`.
 No lowlat GPL codec feature is enabled. These are implementation gates, not a
 claim that a playable BUD client or a faster Intel backend has shipped.
+The native client's optional `experimental-bud` feature links the transport/media
+adapter only. Offline decoder probes require the separate `gpu-probes` feature;
+they are not part of that BUD feature or the normal client.
 
 ## Intel first
 
@@ -79,7 +82,7 @@ Build/test (explicit target avoids the repository's Windows default on Linux):
 
 ```text
 cargo test --locked --manifest-path src-experimental/Cargo.toml --target x86_64-pc-windows-msvc
-cargo build --release --locked --manifest-path src-experimental/Cargo.toml --target x86_64-pc-windows-msvc
+cargo build --release --locked --manifest-path src-experimental/Cargo.toml --target x86_64-pc-windows-msvc --features gpu-probes
 ```
 
 The ignored `turn_udp_connectivity` test runs only against the isolated CI coturn
