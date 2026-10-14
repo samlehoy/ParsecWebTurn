@@ -70,4 +70,6 @@ jobs:
         if: matrix.os == 'windows-latest'
         with:
           name: Experimental-Intel-BUD-gates
-          path: src-experimental/target/x86_64-pc-windows-msvc/release/intel-gpu-probe.exe
+          path: |
+            src-experimental/target/x86_64-pc-windows-msvc/release/intel-gpu-probe.exe
+            src-experimental/target/x86_64-pc-windows-msvc/release/mf-baseline-probe.exe

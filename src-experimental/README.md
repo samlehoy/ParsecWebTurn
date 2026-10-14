@@ -25,6 +25,15 @@ The first target is the user's Core Ultra 5 235U integrated Intel GPU. Its actua
 adapter and driver report, rather than the generic Windows display name, decide
 compatibility. No Intel hardware is available on the development machine.
 
+`Run-Intel-GPU-Comparison.cmd` also runs `mf-baseline-probe.exe`, built from
+the existing offline Media Foundation latency probe without duplicating its
+source. Compare only H.264 **output availability**, the same 1920x1080 fixture,
+the same adapter, and MFT trials with `low_latency_requested: true` and
+`request_accepted: true`. Both exclude the first 16 outputs as warm-up. The MFT
+probe does not measure GPU completion; do not compare it to VPL's GPU completion
+array. Disabled-low-latency MFT trials are controls, not the production baseline.
+A single VPL trial remains screening evidence, not a repeatability guarantee.
+
 Acceptance for live integration: at most the existing GPU output/conversion
 write, no CPU video path, no added decoded-frame GPU copy, correctly retained
 surfaces/fences, and repeatable latency no worse than enabled low-latency Media
