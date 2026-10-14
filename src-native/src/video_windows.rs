@@ -281,6 +281,7 @@ fn run(
     let mut awaiting_random_access = true;
     let mut vendor_failed = false;
     let mut zero_failed = false;
+    let mut zero_fallback = None;
     #[cfg(feature = "vendor-video")]
     let zero_requested = window.experimental_zero_copy();
     #[cfg(not(feature = "vendor-video"))]
@@ -465,6 +466,13 @@ fn run(
             }
             if error.stage == "video-zero-copy-process" {
                 zero_failed = true;
+                zero_fallback = shared
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .report
+                    .zero_copy_status
+                    .clone();
             }
             if error.stage == "video-vendor-process" {
                 vendor_failed = true;
@@ -956,7 +964,13 @@ impl Session {
                     .ok_or_else(|| anyhow::anyhow!("invalid viewport"))
                 },
             );
-            let output = result.map_err(|_| unavailable("video-zero-copy-process"))?;
+            let output = result.map_err(|error| {
+                update(shared, |s| {
+                    s.zero_copy_status =
+                        Some(format!("Fallback: {error}; using the normal GPU renderer"))
+                });
+                unavailable("video-zero-copy-process")
+            })?;
             update(shared, |s| {
                 s.frames_submitted += 1;
                 s.frames_decoded += output.decoded as u64;

@@ -323,7 +323,7 @@ impl<'a> Backend<'a> {
     }
     pub fn feed(&mut self, bytes: &[u8], sequence: usize) -> Result<Fed> {
         self.sequence = sequence;
-        if let Some(built) = &mut self.built {
+        if let Some(built) = self.built.as_mut().filter(|_| self.displayable) {
             built.leases.retire(|slot| match self.codec {
                 Codec::H264 => self.h264.dpb.taken(slot),
                 Codec::H265 => self.hevc.dpb.taken(slot),

@@ -20,7 +20,10 @@ use windows::{
             DirectComposition::*,
             Dxgi::{Common::*, IDXGIDevice},
         },
-        System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
+        System::{
+            Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize},
+            LibraryLoader::{GetModuleHandleW, GetProcAddress},
+        },
     },
     core::{GUID, HRESULT, IUnknown, Interface, s, w},
 };
@@ -67,7 +70,7 @@ impl Device {
             let native = native.context("missing display device")?;
             let context = context.context("missing display context")?;
             let multithread: ID3D10Multithread = native.cast()?;
-            multithread.SetMultithreadProtected(true);
+            let _ = multithread.SetMultithreadProtected(true);
             let mut support = D3D11_FEATURE_DATA_DISPLAYABLE::default();
             native.CheckFeatureSupport(
                 D3D11_FEATURE_DISPLAYABLE,
@@ -147,85 +150,91 @@ struct Presenter {
     buffers: Vec<(ID3D11Texture2D, Rc<Lease>)>,
 }
 impl Presenter {
-    unsafe fn new(device: &Device, hwnd: HWND) -> Result<Self> {
-        // Resolve only the Windows 11 entry point dynamically. Older systems
-        // must still start and use the unchanged DXGI renderer.
-        let module = GetModuleHandleW(w!("dcomp.dll"))?;
-        let symbol = GetProcAddress(module, s!("CreatePresentationFactory"))
-            .context("Windows Presentation API unavailable")?;
-        type Create =
-            unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT;
-        let create: Create = std::mem::transmute(symbol);
-        let mut raw = std::ptr::null_mut();
-        create(device.native.as_raw(), &IPresentationFactory::IID, &mut raw).ok()?;
-        let factory = IPresentationFactory::from_raw(raw);
-        ensure!(
-            factory.IsPresentationSupportedWithIndependentFlip() != 0,
-            "direct presentation unsupported"
-        );
-        let manager = factory.CreatePresentationManager()?;
-        let handle = OwnedHandle(DCompositionCreateSurfaceHandle(0x001f0003, None)?);
-        let surface = manager.CreatePresentationSurface(handle.0)?;
-        surface.SetAlphaMode(DXGI_ALPHA_MODE_IGNORE)?;
-        let dxgi: IDXGIDevice = device.native.cast()?;
-        let composition: IDCompositionDesktopDevice = DCompositionCreateDevice2(&dxgi)?;
-        let target = composition.CreateTargetForHwnd(hwnd, true)?;
-        let visual = composition.CreateVisual()?;
-        let content = composition.CreateSurfaceFromHandle(handle.0)?;
-        visual.SetContent(&content)?;
-        target.SetRoot(&visual)?;
-        composition.Commit()?;
-        Ok(Self {
-            manager,
-            surface,
-            composition,
-            target,
-            _visual: visual,
-            _content: content,
-            _handle: handle,
-            buffers: Vec::new(),
-        })
+    fn new(device: &Device, hwnd: HWND) -> Result<Self> {
+        // SAFETY: live device, texture and HWND on the owning video thread.
+        unsafe {
+            // Resolve only the Windows 11 entry point dynamically. Older systems
+            // must still start and use the unchanged DXGI renderer.
+            let module = GetModuleHandleW(w!("dcomp.dll"))?;
+            let symbol = GetProcAddress(module, s!("CreatePresentationFactory"))
+                .context("Windows Presentation API unavailable")?;
+            type Create =
+                unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT;
+            let create: Create = std::mem::transmute(symbol);
+            let mut raw = std::ptr::null_mut();
+            create(device.native.as_raw(), &IPresentationFactory::IID, &mut raw).ok()?;
+            let factory = IPresentationFactory::from_raw(raw);
+            ensure!(
+                factory.IsPresentationSupportedWithIndependentFlip() != 0,
+                "direct presentation unsupported"
+            );
+            let manager = factory.CreatePresentationManager()?;
+            let handle = OwnedHandle(DCompositionCreateSurfaceHandle(0x001f0003, None)?);
+            let surface = manager.CreatePresentationSurface(handle.0)?;
+            surface.SetAlphaMode(DXGI_ALPHA_MODE_IGNORE)?;
+            let dxgi: IDXGIDevice = device.native.cast()?;
+            let composition: IDCompositionDesktopDevice = DCompositionCreateDevice2(&dxgi)?;
+            let target = composition.CreateTargetForHwnd(hwnd, true)?;
+            let visual = composition.CreateVisual()?;
+            let content = composition.CreateSurfaceFromHandle(handle.0)?;
+            visual.SetContent(&content)?;
+            target.SetRoot(&visual)?;
+            composition.Commit()?;
+            Ok(Self {
+                manager,
+                surface,
+                composition,
+                target,
+                _visual: visual,
+                _content: content,
+                _handle: handle,
+                buffers: Vec::new(),
+            })
+        }
     }
-    unsafe fn present(
+    fn present(
         &mut self,
         texture: &ID3D11Texture2D,
         layout: Layout,
         target: [i32; 4],
     ) -> Result<Rc<dyn direct::SurfaceLease>> {
-        let lease = if let Some((_, lease)) = self.buffers.iter().find(|(t, _)| t == texture) {
-            lease.clone()
-        } else {
-            ensure!(self.buffers.len() < 31, "presentation buffer limit");
-            let lease = Rc::new(Lease {
-                buffer: self.manager.AddBufferFromResource(texture)?,
-            });
-            self.buffers.push((texture.clone(), lease.clone()));
-            lease
-        };
-        self.surface.SetSourceRect(&RECT {
-            left: layout.left as i32,
-            top: layout.top as i32,
-            right: (layout.left + layout.width) as i32,
-            bottom: (layout.top + layout.height) as i32,
-        })?;
-        self.surface.SetColorSpace(if layout.full_range {
-            DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709
-        } else {
-            DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709
-        })?;
-        self.surface.SetTransform(&PresentationTransform {
-            M11: (target[2] - target[0]) as f32 / layout.width as f32,
-            M22: (target[3] - target[1]) as f32 / layout.height as f32,
-            M31: target[0] as f32,
-            M32: target[1] as f32,
-            ..Default::default()
-        })?;
-        self.surface.SetBuffer(&lease.buffer)?;
-        // Immediate readiness, no target-time pacing and no CPU completion wait.
-        self.manager
-            .SetTargetTime(SystemInterruptTime { value: 0 })?;
-        self.manager.Present()?;
-        Ok(lease)
+        // SAFETY: live device, texture and HWND on the owning video thread.
+        unsafe {
+            let lease = if let Some((_, lease)) = self.buffers.iter().find(|(t, _)| t == texture) {
+                lease.clone()
+            } else {
+                ensure!(self.buffers.len() < 31, "presentation buffer limit");
+                let lease = Rc::new(Lease {
+                    buffer: self.manager.AddBufferFromResource(texture)?,
+                });
+                self.buffers.push((texture.clone(), lease.clone()));
+                lease
+            };
+            self.surface.SetSourceRect(&RECT {
+                left: layout.left as i32,
+                top: layout.top as i32,
+                right: (layout.left + layout.width) as i32,
+                bottom: (layout.top + layout.height) as i32,
+            })?;
+            self.surface.SetColorSpace(if layout.full_range {
+                DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709
+            } else {
+                DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709
+            })?;
+            self.surface.SetTransform(&PresentationTransform {
+                M11: (target[2] - target[0]) as f32 / layout.width as f32,
+                M22: (target[3] - target[1]) as f32 / layout.height as f32,
+                M31: target[0] as f32,
+                M32: target[1] as f32,
+                ..Default::default()
+            })?;
+            self.surface.SetBuffer(&lease.buffer)?;
+            // Immediate readiness, no target-time pacing and no CPU completion wait.
+            self.manager
+                .SetTargetTime(SystemInterruptTime { value: 0 })?;
+            self.manager.Present()?;
+            Ok(lease)
+        }
     }
 }
 impl Drop for Presenter {
@@ -249,9 +258,26 @@ self_cell!(
         dependent: State,
     }
 );
+struct ComApartment;
+impl ComApartment {
+    fn enter() -> Result<Self> {
+        unsafe {
+            CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
+        }
+        Ok(Self)
+    }
+}
+impl Drop for ComApartment {
+    fn drop(&mut self) {
+        unsafe {
+            CoUninitialize();
+        }
+    }
+}
 pub struct Session {
     cell: Cell,
     sequence: usize,
+    _apartment: ComApartment,
 }
 #[derive(Default)]
 pub struct Output {
@@ -263,14 +289,19 @@ impl Session {
     /// All creation, feed and destruction must take place on the video worker.
     /// `hwnd` must remain valid until this session is dropped.
     pub fn open(luid: u64, hwnd: HWND) -> Result<Self> {
+        let apartment = ComApartment::enter()?;
         let device = Device::open(luid)?;
         let cell = Cell::try_new(device, |device| -> Result<State<'_>> {
             Ok(State {
-                presenter: unsafe { Presenter::new(device, hwnd)? },
+                presenter: Presenter::new(device, hwnd)?,
                 decoder: direct::Backend::displayable(device),
             })
         })?;
-        Ok(Self { cell, sequence: 0 })
+        Ok(Self {
+            cell,
+            sequence: 0,
+            _apartment: apartment,
+        })
     }
     pub fn adapter(&self) -> &str {
         &self.cell.borrow_owner().name
@@ -307,7 +338,7 @@ impl Session {
                 if !visible {
                     return Ok(None);
                 }
-                let lease = unsafe { state.presenter.present(texture, layout, target(layout)?)? };
+                let lease = state.presenter.present(texture, layout, target(layout)?)?;
                 output.presented += 1;
                 Ok(Some(lease))
             })? {}
