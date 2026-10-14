@@ -1955,15 +1955,12 @@ dependencies = [
  "lowlat-client",
  "lowlat-core",
  "lowlat-crypto",
- "lowlat-decode",
- "lowlat-drivers",
  "rustls",
  "serde_json",
  "tokio",
  "tokio-tungstenite",
  "url",
  "webpki-roots 1.0.9",
- "windows",
 ]
 
 [[package]]
