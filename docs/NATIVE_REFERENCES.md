@@ -7,9 +7,11 @@ documented APIs; reverse-engineered Parsec contracts stay isolated and explicit.
 
 ## lowlat
 
-[nomi-san/lowlat](https://github.com/nomi-san/lowlat) is an independent Rust Linux
-**host** implementation serving stock Parsec clients and browser clients. It is
-not a Linux replacement client connecting to a Parsec host.
+[nomi-san/lowlat](https://github.com/nomi-san/lowlat) implements independent Parsec
+host and client components. The originally reviewed **main** revision below
+contains the Linux host only. The maintainer subsequently pointed out that the
+native client SDK and Windows work are on **feat/win-seams**; the main-only
+finding must not be generalized to the entire project.
 
 Reviewed revision: `7b4dc4ae79990ea8c59a108c80b3c89b695c3cb4` (2026-10-11).
 Its MIT-licensed documentation is useful for future protocol investigations:
@@ -34,6 +36,27 @@ They do not implement BUD in the WebRTC client. The `pmtu` source explicitly say
 its probing mechanism has no callers in this revision; its presence alone is not
 evidence of an active optimization. Host encoder settings similarly do not prove
 the internal behavior of a stock client's decoder.
+
+Additional reviewed revision on `feat/win-seams` (2026-10-14):
+`5f8db5689e55de0d396b0520824caa9fc053dd86`.
+
+- `crates/client`, `crates/sdk`, `include/lowlat.h` and `docs/10-client.md`
+  implement/document the native client. Its session API resembles our private
+  web imports, but the client accepts BUD and refuses the web transport; this is
+  not a drop-in WebRTC replacement. Applications still supply signaling.
+- `crates/decode/src/amf.rs`, `nvdec.rs`, `vpl.rs`, and the Windows client seam
+  are concrete decoder references. AMF requests `ReorderMode` and
+  `LowLatencyDecode`, checks support, and uses the caller's D3D11 device. GPU
+  handle exports may still require plane splitting and GPU copies; CPU plane
+  output is not equivalent to a GPU-only path.
+- `docs/10-client.md` section 11 and `docs/03-connectivity.md` section 7 describe
+  BUD through a client-allocated UDP TURN relay, transparent to the host. This
+  has documented stock-host testing; compatibility with our Cloudflare setup
+  remains to be demonstrated. TURN/TCP and TURN/TLS are not provided by this path.
+
+The next development scope and isolation requirements are recorded in
+[BUD and vendor decoder investigation](native-bud-vendor-decoders.md). No lowlat
+runtime or vendor decoder has been integrated into the distributed client yet.
 
 ## libparsec
 

@@ -168,6 +168,8 @@ delivery commitment. There are no fixed release dates for these milestones.
 | Custom STUN and TURN relay support | Available | Cloudflare or custom TURN servers, including UDP, TCP and TLS server connections. Compatible with the earlier client's server settings file. |
 | More audio formats and menu integration | Planned | Support additional audio choices and review which Parsec settings need native integration. |
 | Native connection and playback statistics | Available | Separate native stats window: active direct/TURN route, relay server, RTT, traffic, decoded FPS, video/audio details, DTLS state and app CPU/GPU usage. Missing data stays unknown. |
+| Vendor-specific Windows decoders | Investigating | Evaluate AMD AMF first, then NVIDIA NVDEC and Intel VPL against the existing low-latency GPU path. Adopt only measured benefits; no vendor backend is available yet. |
+| BUD transport with TURN/UDP | Planned, experimental | Add an explicitly selected alternative using the lowlat client SDK. Preserve the default WebRTC path and its working TURN over UDP, TCP and TLS. |
 | Vulkan rendering backend | Planned | Add another GPU rendering option alongside D3D11 and build toward Linux support. |
 | D3D12 rendering backend | Exploring | Investigate an additional native GPU rendering option on Windows. |
 | Linux client, distributed as Flatpak | Planned | Make the native client available on Linux with straightforward installation. |
