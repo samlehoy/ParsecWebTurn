@@ -174,7 +174,9 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         GetClientRect(parent, &mut rect);
     }
     let hwnd = CreateWindowExW(
-        WS_EX_CONTROLPARENT,
+        // Buffer the GDI page and its native child controls together. This
+        // class has no CS_OWNDC/CS_CLASSDC/CS_PARENTDC; the GL parent is unchanged.
+        WS_EX_CONTROLPARENT | WS_EX_COMPOSITED,
         name.as_ptr(),
         wide("Settings").as_ptr(),
         // Build the entire page offscreen before making any control visible.
@@ -711,6 +713,27 @@ unsafe fn layout(hwnd: HWND) {
     );
 }
 
+unsafe fn scroll_to(hwnd: HWND, requested: i32) {
+    let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Page;
+    if pointer.is_null() {
+        return;
+    }
+    let mut info = SCROLLINFO {
+        cbSize: size_of::<SCROLLINFO>() as u32,
+        fMask: SIF_RANGE | SIF_PAGE,
+        ..std::mem::zeroed()
+    };
+    if GetScrollInfo(hwnd, SB_VERT, &mut info) == 0 {
+        return;
+    }
+    let limit = (info.nMax - info.nPage as i32 + 1).max(info.nMin);
+    let position = requested.clamp(info.nMin, limit);
+    if (*pointer).scroll != position {
+        (*pointer).scroll = position;
+        layout(hwnd);
+    }
+}
+
 unsafe fn paint_page(hwnd: HWND, dc: HDC, page: &Page) {
     let mut rect: RECT = std::mem::zeroed();
     GetClientRect(hwnd, &mut rect);
@@ -882,8 +905,8 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                 return 0;
             }
             WM_MOUSEWHEEL => {
-                page.scroll -= ((wp >> 16) as u16 as i16 as i32) * 72 / 120;
-                layout(hwnd);
+                let requested = page.scroll - ((wp >> 16) as u16 as i16 as i32) * 72 / 120;
+                scroll_to(hwnd, requested);
                 return 0;
             }
             WM_VSCROLL => {
@@ -893,7 +916,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     ..std::mem::zeroed()
                 };
                 GetScrollInfo(hwnd, SB_VERT, &mut info);
-                page.scroll = match (wp & 0xffff) as i32 {
+                let requested = match (wp & 0xffff) as i32 {
                     SB_LINEUP => page.scroll - 36,
                     SB_LINEDOWN => page.scroll + 36,
                     SB_PAGEUP => page.scroll - info.nPage as i32,
@@ -903,7 +926,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     SB_BOTTOM => info.nMax,
                     _ => page.scroll,
                 };
-                layout(hwnd);
+                scroll_to(hwnd, requested);
                 return 0;
             }
             WM_MEASUREITEM if wp == PROVIDER || wp == GPU => {
@@ -980,13 +1003,12 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                 let mut client = std::mem::zeroed();
                 GetClientRect(hwnd, &mut client);
                 if rect.top < 8 {
-                    page.scroll += rect.top - 8;
+                    scroll_to(hwnd, page.scroll + rect.top - 8);
                 } else if rect.bottom > client.bottom - 8 {
-                    page.scroll += rect.bottom - client.bottom + 8;
+                    scroll_to(hwnd, page.scroll + rect.bottom - client.bottom + 8);
                 } else {
                     return 0;
                 }
-                layout(hwnd);
                 return 0;
             }
             WM_COMMAND => match wp & 0xffff {
@@ -1127,6 +1149,7 @@ mod tests {
             capture(page, "cloudflare");
             assert_combo_label_visible(page, PROVIDER);
             paint_regression(page);
+            scroll_boundary_does_not_repaint(page);
             // The last control remains reachable at a small window size and
             // keyboard focus scrolls it into view without touching real data.
             SendMessageW(
@@ -1258,6 +1281,75 @@ mod tests {
                 );
             }
         }
+    }
+
+    unsafe fn scroll_boundary_does_not_repaint(hwnd: HWND) {
+        use std::cell::Cell;
+        use windows_sys::Win32::UI::Shell::{
+            DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass,
+        };
+        unsafe extern "system" fn observe(
+            hwnd: HWND,
+            msg: u32,
+            wp: WPARAM,
+            lp: LPARAM,
+            _id: usize,
+            data: usize,
+        ) -> LRESULT {
+            if msg == WM_PAINT {
+                let count = &*(data as *const Cell<usize>);
+                count.set(count.get() + 1);
+            }
+            DefSubclassProc(hwnd, msg, wp, lp)
+        }
+        assert_ne!(
+            GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_COMPOSITED,
+            0
+        );
+        assert_eq!(
+            GetClassLongW(hwnd, GCL_STYLE) & (CS_OWNDC | CS_CLASSDC | CS_PARENTDC),
+            0
+        );
+        let paints = Cell::new(0usize);
+        let id = 0x5057;
+        assert_ne!(
+            SetWindowSubclass(
+                hwnd,
+                Some(observe),
+                id,
+                (&paints as *const Cell<usize>) as usize
+            ),
+            0
+        );
+        struct Remove(HWND, usize);
+        impl Drop for Remove {
+            fn drop(&mut self) {
+                unsafe {
+                    RemoveWindowSubclass(self.0, Some(observe), self.1);
+                }
+            }
+        }
+        let _remove = Remove(hwnd, id);
+        for (edge, delta, line, page) in [
+            (SB_BOTTOM, -120i16, SB_LINEDOWN, SB_PAGEDOWN),
+            (SB_TOP, 120i16, SB_LINEUP, SB_PAGEUP),
+        ] {
+            SendMessageW(hwnd, WM_VSCROLL, edge as usize, 0);
+            paints.set(0);
+            for _ in 0..5 {
+                SendMessageW(hwnd, WM_MOUSEWHEEL, (delta as u16 as usize) << 16, 0);
+                SendMessageW(hwnd, WM_VSCROLL, line as usize, 0);
+                SendMessageW(hwnd, WM_VSCROLL, page as usize, 0);
+                SendMessageW(hwnd, WM_VSCROLL, SB_ENDSCROLL as usize, 0);
+            }
+            assert_eq!(
+                paints.get(),
+                0,
+                "Scrolling beyond the boundary repainted Settings"
+            );
+        }
+        SendMessageW(hwnd, WM_MOUSEWHEEL, (-120i16 as u16 as usize) << 16, 0);
+        assert!(paints.get() > 0, "Real scrolling must repaint");
     }
 
     // Compare the actual incremental window painting against a clean repaint.

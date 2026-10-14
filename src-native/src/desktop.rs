@@ -77,6 +77,7 @@ pub fn dispatch(
         "web_set_app" => {
             let app = int(0)?;
             caller.data_mut().app_pointer = Some(app as u32);
+            window.gui_visibility.publish_app(app as u32);
             let (w, h) = *window.dimensions.lock().unwrap_or_else(|e| e.into_inner());
             let (x, y, screen_w, screen_h, focused) = window.initial_geometry();
             for (name, x, y) in [
@@ -214,6 +215,19 @@ fn run_worker_callback(caller: &mut Caller<'_, HostState>, index: u32, opaque: i
     while !window.closing.load(Ordering::Acquire) && (window.live || Instant::now() < until) {
         let started = Instant::now();
         caller.set_fuel(if first { 500_000_000 } else { 50_000_000 })?;
+        // Only the GUI worker owns a graphics context. Audio/other worker
+        // callbacks and their polling cadence remain unchanged. Consume at
+        // most one phase per callback so the core observes hidden -> visible
+        // even if Settings was opened and closed between render iterations.
+        if caller.data().graphics.is_some() {
+            if let Some((app, visible)) = window.gui_visibility.next() {
+                invoke(
+                    caller,
+                    "mty_window_update_visibility",
+                    &[Val::I32(app as i32), Val::I32(visible as i32)],
+                )?;
+            }
+        }
         if callback.call(&mut *caller, opaque)? == 0 {
             return Ok(());
         }

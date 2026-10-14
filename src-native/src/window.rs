@@ -38,6 +38,7 @@ pub struct Window {
     // Covers construction and destruction as well as the visible page. Its HWND
     // is not available until open() has already painted the native controls.
     settings_active: AtomicBool,
+    pub gui_visibility: crate::gui_visibility::State,
     pub hwnd: AtomicUsize,
     pub closing: AtomicBool,
     pub active_contexts: AtomicUsize,
@@ -163,6 +164,7 @@ impl Window {
             connection_settings: Default::default(),
             settings_page: AtomicUsize::new(0),
             settings_active: AtomicBool::new(false),
+            gui_visibility: Default::default(),
             hwnd: AtomicUsize::new(0),
             closing: AtomicBool::new(false),
             active_contexts: AtomicUsize::new(0),
@@ -344,6 +346,7 @@ impl Window {
             // Suspend GL swaps before open() creates/shows/paints the GDI child,
             // not after it returns. The video surface must also be hidden first.
             self.settings_active.store(true, Ordering::Release);
+            self.gui_visibility.cover(true);
             self.input_suspended.store(true, Ordering::Release);
             self.apply_input_capture();
             self.apply_relative_mouse(false);
@@ -352,6 +355,7 @@ impl Window {
             self.settings_page.store(page as usize, Ordering::Release);
             if page.is_null() {
                 self.settings_active.store(false, Ordering::Release);
+                self.gui_visibility.cover(false);
                 self.redraw_client();
             }
             self.input_suspended.store(false, Ordering::Release);
@@ -359,11 +363,8 @@ impl Window {
         }
     }
     unsafe fn redraw_client(&self) {
-        // Reuse the existing core window-size/expose notification with the
-        // unchanged client size. Native child invalidation alone cannot request
-        // a new frame from the original GUI on its separate worker.
-        let (w, h) = *self.dimensions.lock().unwrap_or_else(|e| e.into_inner());
-        self.push(Event::Size(w, h));
+        // Core GUI repaint comes from its visibility transition on the render
+        // worker, not a resize notification with unchanged dimensions.
         RedrawWindow(
             self.handle(),
             std::ptr::null(),
@@ -966,6 +967,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                     // all its controls have actually finished destruction.
                     DestroyWindow(page);
                     s.settings_active.store(false, Ordering::Release);
+                    s.gui_visibility.cover(false);
                     SetFocus(hwnd);
                     s.show_video_surface();
                     s.redraw_client();
@@ -1445,85 +1447,132 @@ unsafe extern "system" fn video_surface_proc(
 mod tests {
     use super::*;
     #[test]
-    fn settings_back_requests_gui_redraw_without_mouse_or_window_resize() {
-        struct Close(Arc<Window>);
-        impl Drop for Close {
-            fn drop(&mut self) {
-                self.0.close();
-            }
-        }
+    fn idle_core_gui_presents_after_back_without_extra_input() {
         let mut nonce = [0; 16];
         getrandom::fill(&mut nonce).unwrap();
         let suffix: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
         let path = std::env::temp_dir().join(format!("parsec-settings-redraw-{suffix}.json"));
         assert!(!path.exists());
-        let window = Window::create_mode(false, false, false, false, false).unwrap();
-        let _close = Close(window.clone());
+        // Original embedded core, anonymous in-memory filesystem, networking
+        // disabled. No production profile, credentials or host are involved.
+        let window = Window::create_mode(false, true, false, false, true).unwrap();
         window.install_connection_settings(crate::connection_settings::Manager::open(path.clone()));
-        for _ in 0..3 {
-            unsafe {
-                // Queue behind menu installation, as a real menu command would
-                // be. SendMessage could overtake it and change client height
-                // halfway through the test when the menu is finally installed.
-                assert_ne!(
-                    PostMessageW(
-                        window.handle(),
-                        WM_COMMAND,
-                        crate::connection_settings_ui::OPEN,
-                        0,
-                    ),
-                    0
-                );
-            }
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while window.settings_page.load(Ordering::Acquire) == 0
-                || window.input_suspended.load(Ordering::Acquire)
-            {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "Settings did not open"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            let page = window.settings_page.load(Ordering::Acquire) as HWND;
-            assert!(!page.is_null());
-            assert!(window.settings_open());
-            let size = *window.dimensions.lock().unwrap();
-            // Discard notifications from construction. Only Back is delivered
-            // below: no mouse, keyboard, activation or resize is synthesized.
-            window.events.drain();
-            unsafe {
-                let class: Vec<u16> = "BUTTON\0".encode_utf16().collect();
-                let label: Vec<u16> = "Back\0".encode_utf16().collect();
-                let back =
-                    FindWindowExW(page, std::ptr::null_mut(), class.as_ptr(), label.as_ptr());
-                assert!(!back.is_null());
-                SendMessageW(page, WM_COMMAND, GetDlgCtrlID(back) as usize, back as isize);
-            }
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-            let mut redrawn = false;
-            loop {
-                for event in window.events.drain() {
-                    if let Event::Size(w, h) = event {
-                        assert_eq!((w, h), size);
-                        redrawn = true;
-                    }
+        let worker_window = window.clone();
+        let runtime = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || -> anyhow::Result<()> {
+                let engine = wasmtime::Engine::new(&crate::core_config::config())?;
+                let module = crate::core_runtime::load(&engine)?;
+                let (mut store, instance) =
+                    crate::instantiate_mode(&engine, &module, Some(worker_window.clone()))?;
+                let startup = instance
+                    .get_typed_func::<(), ()>(&mut store, "_start")?
+                    .call(&mut store, ());
+                let outcome = if store.data().event_loop.is_some() {
+                    crate::desktop::run(&mut store, &instance)
+                } else {
+                    startup
+                };
+                store
+                    .data()
+                    .backend
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .destroy();
+                worker_window.request_stop();
+                engine.increment_epoch();
+                if let Some(runtime) = &store.data().threads {
+                    runtime.http.shutdown();
+                    runtime.websocket.shutdown();
                 }
-                if redrawn && !window.settings_open() {
-                    break;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                while worker_window.active_contexts.load(Ordering::Acquire) != 0
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "Back did not wake GUI redraw"
+                anyhow::ensure!(
+                    worker_window.active_contexts.load(Ordering::Acquire) == 0,
+                    "GUI context did not stop"
                 );
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                worker_window.close();
+                match outcome {
+                    Err(error) if crate::lifecycle::is_cancellation(&error) => Ok(()),
+                    other => other,
+                }
+            })
+            .unwrap();
+        let frames = || {
+            window
+                .graphics
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map_or(0, |g| g.frames_presented)
+        };
+        let wait = |ready: &dyn Fn() -> bool, seconds: u64| -> anyhow::Result<()> {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+            while !ready() {
+                anyhow::ensure!(!runtime.is_finished(), "Core GUI stopped unexpectedly");
+                anyhow::ensure!(
+                    std::time::Instant::now() < deadline,
+                    "Core GUI transition timed out"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
-            assert_eq!(unsafe { IsWindow(page) }, 0);
-            assert_eq!(window.settings_page.load(Ordering::Acquire), 0);
-            assert_eq!(*window.dimensions.lock().unwrap(), size);
+            Ok(())
+        };
+        let result = (|| -> anyhow::Result<()> {
+            wait(&|| frames() > 0, 10)?;
+            for _ in 0..3 {
+                unsafe {
+                    anyhow::ensure!(
+                        PostMessageW(
+                            window.handle(),
+                            WM_COMMAND,
+                            crate::connection_settings_ui::OPEN,
+                            0
+                        ) != 0
+                    );
+                }
+                wait(
+                    &|| {
+                        window.settings_page.load(Ordering::Acquire) != 0
+                            && !window.input_suspended.load(Ordering::Acquire)
+                    },
+                    5,
+                )?;
+                let page = window.settings_page.load(Ordering::Acquire) as HWND;
+                let size = *window.dimensions.lock().unwrap_or_else(|e| e.into_inner());
+                // Let an idle GUI observe coverage; Back must produce a real
+                // SwapBuffers afterward, not merely enqueue a notification.
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                let before = frames();
+                unsafe {
+                    let class: Vec<u16> = "BUTTON\0".encode_utf16().collect();
+                    let label: Vec<u16> = "Back\0".encode_utf16().collect();
+                    let back =
+                        FindWindowExW(page, std::ptr::null_mut(), class.as_ptr(), label.as_ptr());
+                    anyhow::ensure!(!back.is_null());
+                    SendMessageW(page, WM_COMMAND, GetDlgCtrlID(back) as usize, back as isize);
+                }
+                // No mouse, keyboard, activation or size event is injected.
+                wait(&|| !window.settings_open() && frames() > before, 3)?;
+                anyhow::ensure!(unsafe { IsWindow(page) } == 0);
+                anyhow::ensure!(
+                    *window.dimensions.lock().unwrap_or_else(|e| e.into_inner()) == size
+                );
+            }
+            anyhow::ensure!(!path.exists());
+            Ok(())
+        })();
+        window.request_stop();
+        let finished = runtime.join().unwrap();
+        if window.active_contexts.load(Ordering::Acquire) == 0 {
+            window.close();
         }
-        // This fixture never saves settings or accesses a real account/profile.
-        assert!(!path.exists());
+        result.unwrap();
+        finished.unwrap();
     }
 
     #[test]

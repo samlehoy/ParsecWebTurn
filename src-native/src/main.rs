@@ -48,6 +48,8 @@ mod fullscreen;
 mod gpu_windows;
 #[cfg(windows)]
 mod graphics;
+#[cfg(windows)]
+mod gui_visibility;
 mod host;
 mod http;
 #[cfg(any(test, feature = "diagnostics"))]
