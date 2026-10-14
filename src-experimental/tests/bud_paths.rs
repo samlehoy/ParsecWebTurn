@@ -25,8 +25,15 @@ fn connect(route: Route, relay_expected: bool) {
     let right_ours = right
         .offer("right", Route::Direct { stun: vec![] })
         .unwrap();
+    // A real host seals BOTH directions with its answer's media key. Two
+    // clients otherwise each select a different peer's key: ICE establishes
+    // but authenticated native control cannot be decoded. Emulate the host's
+    // single selected key explicitly in this symmetric transport fixture.
+    let host_media_key = right_ours.aes256.clone();
     left.answer("left", peer(right_ours)).unwrap();
-    right.answer("right", peer(left_ours)).unwrap();
+    let mut fixture_peer = peer(left_ours);
+    fixture_peer.aes256 = Some(host_media_key);
+    right.answer("right", fixture_peer).unwrap();
     let began = Instant::now();
     let mut connected = [false; 2];
     let mut left_candidates = 0;
