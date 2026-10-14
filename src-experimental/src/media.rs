@@ -1,6 +1,7 @@
 //! Remove native BUD media headers, leaving borrowed original codec payloads.
 //! No decoder, resampler, pixel conversion, render resource or media copy.
 use anyhow::{Result, ensure};
+pub use lowlat_core::video::Rotation;
 use lowlat_core::{audio, video};
 
 pub enum Video<'a> {

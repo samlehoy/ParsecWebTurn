@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[workspace]
+members = ["vendor/lowlat-client"]
+resolver = "2"
+
 # Deliberately independent from src-native: no change to the WebRTC binary.
 [dependencies]
 anyhow = "1"
