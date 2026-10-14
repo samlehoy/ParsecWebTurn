@@ -1,31 +1,38 @@
-ParsecWebTurn v0.9.3-dev.1 - Connection and input improvements
+ParsecWebTurn v0.9.3 - Native Windows client
 
-This native Windows development release improves connection routing, mouse and
-keyboard capture, overlay compatibility and streaming stability. Changes below
-are compared with v0.9.2-dev.1.
+This stable release replaces the v0.7.0 WebView2 application with the native Rust
+Windows client. It retains Parsec's familiar interface and adds native decoding,
+input and connection controls. The changes below cover everything delivered
+since the previous stable release, v0.7.0.
 
 ## What's new and improved
 
-- **Force TURN relay:** a new Settings checkbox keeps the next connection on a TURN relay even when a direct route is available, including over a VPN. Conflicting STUN-only settings and missing custom TURN servers are checked before connecting.
-- **TURN transport preference:** relay connections prefer UDP, with TLS and then plain TCP available as timed fallbacks when the preferred route has not connected.
-- **Working immersive input:** Mouse confines the pointer to the client window, Keyboard forwards reserved shortcuts while the client has focus, and Both combines them. Capture is released on focus loss and disconnect; Windows security shortcuts remain controlled by Windows.
-- **Smoother relative mouse control:** host cursor signals now activate native Raw Input correctly, including during desktop drags. Changing direction no longer requires moving back from outside the client. Cursor Warp restores the host cursor position when leaving relative mode and respects its overlay setting.
-- **More compatible overlay:** software drawing is now the default for the interface, resolving the reported Intel overlay flicker. Video decoding and presentation retain their GPU path without adding decoded-frame CPU readback.
-- **Reliable disconnect:** disconnecting from the overlay returns to the computer list instead of freezing on a black screen. Callbacks from an ended stream cannot reveal its old video surface.
-- **Cleaner fullscreen:** the Settings, Connection stats and Help menu disappears in fullscreen and returns in windowed mode.
-- **Custom hotkeys:** Parsec hotkey assignments take priority when they conflict with native F8/F11, Settings or Connection stats shortcuts. Hotkey recording and saving remain handled by the original core.
-- **Less allocation and lock contention:** audio and video reuse bounded input buffers, and media hand-off holds the shared connection lock for less time.
-- **Video recovery:** after a temporary decoder error or input overload, the client can request a fresh keyframe and restart decoding. Recovery has bounded retries and depends on the host supplying the requested keyframe.
-- **Low-latency HEVC:** the 8-bit HEVC decoder also requests low-latency operation through Windows transform attributes when its codec API does not accept the existing request. The benefit depends on the decoder and driver.
+- **Native Windows client:** the Rust client replaces Tauri/WebView2. Run a single portable EXE without a browser runtime. The embedded Parsec core is precompiled, so it needs no download or compilation at startup.
+- **H.265 / HEVC playback:** enable Prefer H.265 / HEVC to request an 8-bit stream. H.264 remains the default and fallback. Playback uses Windows Media Foundation and D3D11; HEVC requires compatible host, GPU, driver and Windows decoder support.
+- **Video GPU selection:** choose the adapter for stream decoding and rendering on multi-GPU systems, or keep Automatic. Virtual display-only adapters no longer appear as duplicate GPUs.
+- **More responsive controls:** input wakes processing immediately. Native relative mouse input and cursor warp handle desktop drags correctly; immersive Mouse, Keyboard and Both modes capture the selected input while the app has focus. Custom Parsec hotkeys are respected.
+- **Flexible connection routing:** use Cloudflare or custom STUN/TURN servers over UDP, TCP or TLS. STUN-only excludes relays; Force TURN relay keeps the connection on a relay even when a direct route is available, including over a VPN.
+- **More reliable TURN connections:** forced relay setup signals readiness without waiting for every transport endpoint. TURN channel bindings renew before the five-minute boundary, addressing the reported ExpressTURN interruption. Multiple server addresses can be entered on separate lines.
+- **Compatible overlay and fullscreen:** software drawing is the default for the interface, resolving the reported Intel overlay flicker while streamed video retains its GPU path. The native menu hides in fullscreen.
+- **Reliable session controls:** overlay disconnect returns to the computer list. Settings opens and closes more reliably; coordinated control painting and scroll limits reduce redraw flicker.
+- **Stream efficiency and recovery:** reuse media buffers and GPU video views, shorten shared locks, disable extra picture processing and request low-latency decoding. Bounded keyframe recovery helps restart video after temporary decoder errors or overload. Results depend on the driver and host.
+- **Native sound and saved preferences:** Opus playback uses native Windows audio with device-supported low-latency output and fallback. Sign-in and Parsec preferences persist in an encrypted Windows-user profile; existing server settings remain compatible.
+- **Connection stats and About:** separate native statistics show actual direct/TURN routing, relay details, traffic, RTT, decoded video format, decoder, GPU, audio format and app resource usage. About compares the embedded core version with Parsec's public version without installing a new core.
+- **Stable update notifications:** background checks and Help > Check for updates show stable releases and their notes. Download the ZIP through your browser and replace the EXE manually while keeping your settings.
 
-## Updating
+## Requirements and upgrading
 
-Close the app and replace `ParsecWebTurn.exe` in its existing folder. Keep your
-`settings.json`; saved native sign-in and preferences remain in place.
+Windows x64 with compatible D3D11 and OpenGL graphics drivers is required.
+WebView2 is no longer needed. H.264 is the default; optional HEVC playback needs
+a compatible GPU and installed Windows HEVC decoder.
 
-To use a relay over a VPN, configure a TURN provider, enable **Force TURN relay**
-in Settings, save and reconnect. Connection settings apply to the next connection.
+Close the app, extract `ParsecWebTurn-v0.9.3-win64.zip`, and keep your existing
+`settings.json` beside the new EXE. Server settings and Windows-protected
+credentials remain compatible under the same Windows account. When upgrading
+from v0.7.0, sign in to Parsec once in the native client. Its encrypted profile is
+separate from the old WebView2 profile, which remains untouched. Existing native
+users keep their saved sign-in and preferences when replacing the EXE.
 
-This is a Windows x64 development release. H.264 remains the default video codec;
-8-bit HEVC is available through **Prefer H.265 / HEVC** when supported by the host,
-graphics driver and installed Windows decoder.
+The earlier WebView2 source is preserved on the
+[legacy branch](https://github.com/vampywiz17/ParsecWebTurn/tree/legacy), and the
+v0.7.0 download remains available.

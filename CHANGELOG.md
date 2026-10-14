@@ -3,14 +3,22 @@
 User-facing changes are listed below. Native versions marked **dev** are development
 builds, not published stable releases.
 
-## Unreleased
+## 0.9.3 - Native Windows client (2026-10-14)
 
-- **Settings repaint:** opening and closing Settings coordinates native controls with the underlying GUI. Back restores the core GUI's visibility so an idle computer list redraws without another click or fullscreen change. Settings controls paint together to reduce scrolling flicker, and scrolling past the top or bottom no longer repaints the page.
-- **More reliable TURN sessions:** automatically refresh TURN channel bindings before the five-minute boundary to avoid the reported ExpressTURN disconnect. No additional setting is needed; other TURN timers and connection routing are unchanged.
-- **Multiline server fields:** Enter now starts a new line in the custom STUN and TURN server fields, so multiple server URLs can be entered as described.
-- **Earlier Force TURN readiness:** forced relay connections retain all configured TURN endpoints and send the readiness signal as soon as the first relay and the host answer are available. Later candidates continue to be shared without waiting for all transport tiers. Sequential reconnect attempts have been removed; normal routing is unchanged.
-- **Public Parsec core version:** About shows the embedded WASM version alongside the version currently served by Parsec's web client, and indicates whether they differ. The check never installs or executes the public core; changing the embedded core still requires compatibility testing and a new app build.
-- **Stable release updates:** Help > Check for updates shows newer stable GitHub releases and their notes in a native window. Startup checks run in the background. Download the official Windows ZIP through your browser, then close the app and replace the EXE manually. Development builds can upgrade to the matching stable version; older stable releases are not offered as downgrades.
+Changes since the previous stable release, v0.7.0.
+
+- **Native Windows client:** the Rust client replaces Tauri/WebView2. Run a single portable EXE without a browser runtime. The embedded Parsec core is precompiled, so it needs no download or compilation at startup.
+- **H.265 / HEVC playback:** enable Prefer H.265 / HEVC to request an 8-bit stream. H.264 remains the default and fallback. Playback uses Windows Media Foundation and D3D11; HEVC requires compatible host, GPU, driver and Windows decoder support.
+- **Video GPU selection:** choose the adapter for stream decoding and rendering on multi-GPU systems, or keep Automatic. Virtual display-only adapters no longer appear as duplicate GPUs.
+- **More responsive controls:** input wakes processing immediately. Native relative mouse input and cursor warp handle desktop drags correctly; immersive Mouse, Keyboard and Both modes capture the selected input while the app has focus. Custom Parsec hotkeys are respected.
+- **Flexible connection routing:** use Cloudflare or custom STUN/TURN servers over UDP, TCP or TLS. STUN-only excludes relays; Force TURN relay keeps the connection on a relay even when a direct route is available, including over a VPN.
+- **More reliable TURN connections:** forced relay setup signals readiness without waiting for every transport endpoint. TURN channel bindings renew before the five-minute boundary, addressing the reported ExpressTURN interruption. Multiple server addresses can be entered on separate lines.
+- **Compatible overlay and fullscreen:** software drawing is the default for the interface, resolving the reported Intel overlay flicker while streamed video retains its GPU path. The native menu hides in fullscreen.
+- **Reliable session controls:** overlay disconnect returns to the computer list. Settings opens and closes more reliably; coordinated control painting and scroll limits reduce redraw flicker.
+- **Stream efficiency and recovery:** reuse media buffers and GPU video views, shorten shared locks, disable extra picture processing and request low-latency decoding. Bounded keyframe recovery helps restart video after temporary decoder errors or overload. Results depend on the driver and host.
+- **Native sound and saved preferences:** Opus playback uses native Windows audio with device-supported low-latency output and fallback. Sign-in and Parsec preferences persist in an encrypted Windows-user profile; existing server settings remain compatible.
+- **Connection stats and About:** separate native statistics show actual direct/TURN routing, relay details, traffic, RTT, decoded video format, decoder, GPU, audio format and app resource usage. About compares the embedded core version with Parsec's public version without installing a new core.
+- **Stable update notifications:** background checks and Help > Check for updates show stable releases and their notes. Download the ZIP through your browser and replace the EXE manually while keeping your settings.
 
 ## 0.9.3-dev.1 - Connection and input improvements (2026-10-12)
 

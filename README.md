@@ -10,13 +10,11 @@ The native client runs without Edge or WebView2. It keeps Parsec's web-client co
 and familiar interface, while Rust handles the connection, video, audio and input.
 On Windows, you launch a single **ParsecWebTurn.exe**.
 
-> **You are viewing the native client's development branch.** It already supports
-> real remote sessions, but some features are still being built. The `main` branch
-> and current stable release use the earlier Tauri/WebView2 client.
-> ParsecWebTurn is not the official Parsec app and is not affiliated with Parsec or Unity.
-
-This branch contains only the native client. The earlier WebView2 source remains
-available on `main` and in the [v0.7.0 source](https://github.com/vampywiz17/ParsecWebTurn/tree/v0.7.0).
+The stable `main` branch contains the native Windows client. The earlier
+Tauri/WebView2 implementation is preserved on the
+[legacy branch](https://github.com/vampywiz17/ParsecWebTurn/tree/legacy) and in
+[v0.7.0](https://github.com/vampywiz17/ParsecWebTurn/releases/tag/v0.7.0).
+ParsecWebTurn is not affiliated with Parsec or Unity.
 
 ## Why this project?
 
@@ -29,12 +27,12 @@ available on `main` and in the [v0.7.0 source](https://github.com/vampywiz17/Par
 - **Better visibility:** useful connection and playback statistics from the
   native client itself.
 
-These are development goals, not a promise of lower resource usage than every
+These goals do not promise lower resource usage than every
 other client. Performance depends on your computer, graphics driver and stream.
 
 ## What can I use today?
 
-The native Windows development build currently supports:
+The Windows client supports:
 
 - Signing in, browsing your computers and connecting to a Parsec host.
 - H.264 video and optional H.265 / HEVC Main (8-bit) playback with a D3D11-based
@@ -42,8 +40,7 @@ The native Windows development build currently supports:
 - Opus audio, keyboard and mouse input.
 - The familiar Parsec stream overlay, including its relative-mouse option. The
   overlay uses software drawing for compatibility; streamed video stays on the
-  existing GPU path. `--d3d-overlay` selects the previous overlay renderer for
-  troubleshooting.
+  existing GPU path.
 - Remembering your sign-in and Parsec preferences between launches.
 - Graceful disconnect from the overlay and when closing the app.
 - Custom STUN servers and TURN relays over UDP, TCP or TLS, including Cloudflare.
@@ -59,9 +56,8 @@ the original interface has been integrated or tested yet.
 
 ## Getting started
 
-1. Download **ParsecWebTurn-dev-win64** from a successful
-   [native Windows build](https://github.com/vampywiz17/ParsecWebTurn/actions/workflows/native-wasm-prototype.yml?query=branch%3Adev).
-   GitHub may require you to sign in to download build artifacts.
+1. Download the Windows x64 ZIP from the
+   [latest stable release](https://github.com/vampywiz17/ParsecWebTurn/releases/latest).
 2. Unzip the package and run **ParsecWebTurn.exe**.
 3. Sign in to your Parsec account and select your computer.
 
@@ -88,9 +84,8 @@ can only be changed after compatibility testing and a new app build.
 Open **Help > Check for updates** to check for a newer stable GitHub release and
 read its release notes in a native window. The app also checks once in the
 background at startup and shows an available update without taking focus away
-from your current window. It checks stable releases only, including when running
-a dev build: `0.9.3` is newer than `0.9.3-dev.1`, while an older stable release is
-never offered as a downgrade. Dev prereleases are not offered by this updater.
+from your current window. It checks stable releases only; older releases are
+never offered as downgrades. Development prereleases are not offered by this updater.
 
 Choose **Download ZIP** to open the official release archive in your default
 browser, then close the app and replace `ParsecWebTurn.exe` manually. Keep
@@ -118,12 +113,9 @@ and enter your TURN Key ID and API token. Changes apply on the next connection.
 
 Enable **Force TURN relay** to use TURN even when a direct route is available,
 for example when a VPN's direct route gives unstable playback. This requires a
-configured TURN provider and cannot be combined with STUN only. Forced mode retains
-all configured TURN URLs and keeps STUN discovery enabled. It sends the Parsec
-readiness signal once the host answer and first relay candidate are available,
-without waiting for later TLS/TCP allocations. Later candidates continue through
-the same connection; failed endpoints do not trigger sequential reconnects.
-Without this checkbox, normal ICE selection and timed transport tiers are unchanged.
+configured TURN provider and cannot be combined with STUN only. All configured
+TURN endpoints remain available, with UDP preferred and TLS/TCP alternatives
+when needed. Without this checkbox, ICE selects the route automatically.
 
 The embedded Parsec **Hotkeys** page remains responsible for configuring and
 saving stream shortcuts. Custom bindings take priority over conflicting native
@@ -151,12 +143,18 @@ encrypted for your Windows user. Replacing the EXE keeps these settings. When
 moving from the older WebView2 client, sign in once in the native app; your old
 settings and browser profile are left in place.
 
-For the previous WebView2-based stable client, see
-[Releases](https://github.com/vampywiz17/ParsecWebTurn/releases).
+## Upgrading from v0.7.0
+
+Close the old app, extract the new ZIP and keep your existing `settings.json`
+beside the new executable. Saved server settings and Windows-protected credentials
+remain compatible under the same Windows account. Sign in to Parsec once in the
+native client; its encrypted profile is separate from the old WebView2 profile.
+Keep the old profile if you want to return to v0.7.0. WebView2 is no longer required.
+
 
 ## Milestones and roadmap
 
-**Available** means implemented in the native dev build. **Planned** means it is
+**Available** means implemented in the native Windows release. **Planned** means it is
 not available there yet. **Exploring** means a possible future direction, with no
 delivery commitment. There are no fixed release dates for these milestones.
 
@@ -207,7 +205,7 @@ around it.
 is unavailable.** This can be useful on restrictive networks or computers where
 installing a VPN is not possible.
 
-The native dev client configures its Rust WebRTC transport directly. No browser
+The native client configures its Rust WebRTC transport directly. No browser
 or JavaScript injection is involved. It reads the earlier client's `settings.json`
 beside the executable, preserving its fields and Windows-protected credentials.
 To use a different writable directory, launch with `--data-dir "C:\YourFolder"`.
@@ -222,34 +220,17 @@ a VPN or Parsec's paid relay offering. Your relay provider may still charge for
 traffic. A relay also needs to be reachable and permitted by the network; no
 client can guarantee access through every company or school firewall.
 
-## Three approaches, one goal
-
-The illustration below compares the native Rust direction, the official Parsec
-app and the earlier Tauri/WebView2 approach.
-
-> **Concept illustration:** it includes planned features and potential benefits.
-> In particular, Vulkan and broader platform support are not present in this
-> dev build. Use the roadmap above
-> for the current status. The image is not a benchmark or an up-to-date reference
-> for the official app's features or pricing.
-
-![Comparison of native Rust, official Parsec and Tauri/WebView2 clients, including planned rendering and connection options](assets/native-client-comparison-v2.png)
-
-[Open the full-size comparison](assets/native-client-comparison-v2.png).
-
 ## Help improve the client
 
 Found a problem? [Open an issue](https://github.com/vampywiz17/ParsecWebTurn/issues)
 with your app version, Windows version, graphics card and the steps to reproduce
-it. Say whether you are connecting directly, through a VPN or using the earlier
-WebView2 client's relay options. Never include passwords, session tokens or TURN
+it. Say whether you are connecting directly, through a VPN or using a TURN relay. Never include passwords, session tokens or TURN
 credentials in a public report.
 
 For implementation, build instructions and host-certificate compatibility details,
 see the [technical guide](docs/NATIVE_TECHNICAL.md). The
 [configuration compatibility notes](docs/NATIVE_CONFIG_COMPATIBILITY.md) describe
-compatibility of old STUN/TURN settings, and the
-[validation history](docs/NATIVE_DEV_0_8.md) records what has been tested.
+compatibility of old STUN/TURN settings.
 
 Parsec and its client core belong to their respective owners. ParsecWebTurn is an
 independent project; included third-party license notices must accompany binary
