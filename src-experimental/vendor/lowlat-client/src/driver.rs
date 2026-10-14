@@ -1080,7 +1080,7 @@ mod tests {
         let mut driver = make();
         assert_eq!(driver.encode_latency_us(0), 0);
         for (reported, expected) in [(3400, 3400), (0, 3400), (4200, 4200), (0, 4200)] {
-            driver.on_control(&Control {
+            let _ = driver.on_control(&Control {
                 a0: 1,
                 a1: reported,
                 a2: 0,
