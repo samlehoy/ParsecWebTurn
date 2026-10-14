@@ -1,7 +1,5 @@
 //! Separate CI fixture; never linked into the shipped client.
 #[cfg(test)]
-mod renewal;
-#[cfg(test)]
 #[path = "../../../src-native/src/signaling.rs"]
 mod signaling;
 #[cfg(test)]

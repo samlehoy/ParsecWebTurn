@@ -28,7 +28,6 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/webrtc-rs/webrtc"
 
 [features]
-turn-renewal-diagnostics = ["turn/renewal-diagnostics"]
 openssl = ["srtp/openssl"]
 pem = [
     "dep:pem",

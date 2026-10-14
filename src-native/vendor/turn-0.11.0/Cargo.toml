@@ -29,7 +29,6 @@ repository = "https://github.com/webrtc-rs/webrtc/tree/master/turn"
 
 [features]
 metrics = []
-renewal-diagnostics = []
 
 [lib]
 name = "turn"

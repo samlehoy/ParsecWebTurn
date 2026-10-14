@@ -5,6 +5,7 @@ builds, not published stable releases.
 
 ## Unreleased
 
+- **More reliable TURN sessions:** automatically refresh TURN channel bindings before the five-minute boundary to avoid the reported ExpressTURN disconnect. No additional setting is needed; other TURN timers and connection routing are unchanged.
 - **Multiline server fields:** Enter now starts a new line in the custom STUN and TURN server fields, so multiple server URLs can be entered as described.
 - **Earlier Force TURN readiness:** forced relay connections retain all configured TURN endpoints and send the readiness signal as soon as the first relay and the host answer are available. Later candidates continue to be shared without waiting for all transport tiers. Sequential reconnect attempts have been removed; normal routing is unchanged.
 - **Public Parsec core version:** About shows the embedded WASM version alongside the version currently served by Parsec's web client, and indicates whether they differ. The check never installs or executes the public core; changing the embedded core still requires compatibility testing and a new app build.

@@ -25,8 +25,9 @@ use super::transaction::*;
 use crate::{proto, Error};
 
 const PERM_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
+// Refresh before the five-minute permission boundary; validated with ExpressTURN.
+const CHANNEL_BIND_REFRESH_INTERVAL: Duration = Duration::from_secs(240);
 const MAX_RETRY_ATTEMPTS: u16 = 3;
-const CHANNEL_BIND_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 pub(crate) struct InboundData {
     pub(crate) data: Vec<u8>,
@@ -59,8 +60,6 @@ pub(crate) struct RelayConnConfig {
 }
 
 pub struct RelayConnInternal<T: 'static + RelayConnObserver + Send + Sync> {
-    #[cfg(feature = "renewal-diagnostics")]
-    channel_bind_refresh_interval: Duration,
     obs: Arc<Mutex<T>>,
     relayed_addr: SocketAddr,
     perm_map: PermissionMap,
@@ -196,37 +195,9 @@ impl<T: RelayConnObserver + Send + Sync> Conn for RelayConn<T> {
 }
 
 impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
-    fn channel_bind_refresh_interval(&self) -> Duration {
-        #[cfg(feature = "renewal-diagnostics")]
-        {
-            self.channel_bind_refresh_interval
-        }
-        #[cfg(not(feature = "renewal-diagnostics"))]
-        {
-            CHANNEL_BIND_REFRESH_INTERVAL
-        }
-    }
     /// Creates a new [`RelayConnInternal`].
     fn new(obs: Arc<Mutex<T>>, config: RelayConnConfig) -> Self {
-        #[cfg(feature = "renewal-diagnostics")]
-        let channel_bind_refresh_interval = {
-            // Opt-in, fixed-value experiments. Normal builds do not read this
-            // environment variable; default diagnostic behavior remains 300 s.
-            let interval =
-                match std::env::var_os("PARSECWEBTURN_TURN_EARLY_BIND_REFRESH").as_deref() {
-                    Some(value) if value == std::ffi::OsStr::new("1") => Duration::from_secs(60),
-                    Some(value) if value == std::ffi::OsStr::new("240") => Duration::from_secs(240),
-                    _ => CHANNEL_BIND_REFRESH_INTERVAL,
-                };
-            log::debug!(
-                "TURN renewal channel-bind-interval seconds={}",
-                interval.as_secs()
-            );
-            interval
-        };
         RelayConnInternal {
-            #[cfg(feature = "renewal-diagnostics")]
-            channel_bind_refresh_interval,
             obs,
             relayed_addr: config.relayed_addr,
             perm_map: PermissionMap::new(),
@@ -346,7 +317,7 @@ impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
                 && Instant::now()
                     .checked_duration_since(bind_at)
                     .unwrap_or_else(|| Duration::from_secs(0))
-                    > self.channel_bind_refresh_interval()
+                    > CHANNEL_BIND_REFRESH_INTERVAL
             {
                 let binding_mgr = Arc::clone(&self.binding_mgr);
                 let rc_obs = Arc::clone(&self.obs);
@@ -358,7 +329,6 @@ impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
                         b.set_state(BindingState::Refresh);
                     }
                 }
-                log::debug!("TURN renewal channel-bind-refresh-start");
                 tokio::spawn(async move {
                     let result =
                         RelayConnInternal::bind(rc_obs, bind_addr, bind_number, nonce, integrity)
@@ -495,10 +465,6 @@ impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
         lifetime: Duration,
         dont_wait: bool,
     ) -> Result<(), Error> {
-        log::debug!(
-            "TURN renewal allocation-request lifetime_s={}",
-            lifetime.as_secs()
-        );
         let res = {
             let mut obs = self.obs.lock().await;
 
@@ -533,9 +499,6 @@ impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
         if res.typ.class == CLASS_ERROR_RESPONSE {
             let mut code = ErrorCodeAttribute::default();
             let result = code.get_from(&res);
-            if result.is_ok() {
-                log::debug!("TURN renewal allocation-error code={}", code.code.0);
-            }
             if result.is_err() {
                 return Err(Error::Other(format!("{}", res.typ)));
             } else if code.code == CODE_STALE_NONCE {
@@ -551,10 +514,6 @@ impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
         updated_lifetime.get_from(&res)?;
 
         self.lifetime = updated_lifetime.0;
-        log::debug!(
-            "TURN renewal allocation-success lifetime_s={}",
-            self.lifetime.as_secs()
-        );
         log::debug!("updated lifetime: {} seconds", self.lifetime.as_secs());
         Ok(())
     }
@@ -615,10 +574,6 @@ impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
         let res = tr_res.msg;
 
         if res.typ != MessageType::new(METHOD_CHANNEL_BIND, CLASS_SUCCESS_RESPONSE) {
-            let mut code = ErrorCodeAttribute::default();
-            if res.typ.class == CLASS_ERROR_RESPONSE && code.get_from(&res).is_ok() {
-                log::debug!("TURN renewal channel-bind-error code={}", code.code.0);
-            }
             return Err(Error::ErrUnexpectedResponse);
         }
 

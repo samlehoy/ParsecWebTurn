@@ -15,20 +15,7 @@ turnserver --listening-ip=127.0.0.1 --relay-ip=127.0.0.1 --listening-port=43478 
   --userdb="$fixture/turn.db" --pidfile="$fixture/turn.pid" --log-file=stdout > "$fixture/turn.log" 2>&1 &
 turn_pid=$!
 sleep 2
-unset PARSECWEBTURN_TURN_EARLY_BIND_REFRESH
 if ! cargo test --locked --manifest-path tests/turn-integration/Cargo.toml --target x86_64-unknown-linux-gnu -- --nocapture; then
-  cat "$fixture/turn.log"
-  exit 1
-fi
-
-# Separate process: fixed 60-second ChannelBind-only experiment, no global
-# environment mutation while the ordinary fixtures run in parallel.
-if ! PARSECWEBTURN_TURN_EARLY_BIND_REFRESH=1 cargo test --locked --manifest-path tests/turn-integration/Cargo.toml --target x86_64-unknown-linux-gnu --features renewal-diagnostics renewal::early_channel_bind_refresh_only -- --exact --ignored --nocapture; then
-  cat "$fixture/turn.log"
-  exit 1
-fi
-
-if ! PARSECWEBTURN_TURN_EARLY_BIND_REFRESH=240 cargo test --locked --manifest-path tests/turn-integration/Cargo.toml --target x86_64-unknown-linux-gnu --features renewal-diagnostics renewal::channel_bind_refresh_240_seconds -- --exact --ignored --nocapture; then
   cat "$fixture/turn.log"
   exit 1
 fi
