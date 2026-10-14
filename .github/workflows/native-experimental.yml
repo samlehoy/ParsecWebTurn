@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [dev]
-    paths: ['src-experimental/**', '.github/workflows/native-experimental.yml']
+    paths: ['src-experimental/**', 'tests/latency-probes/src/bin/decoder-wait.rs', '.github/workflows/native-experimental.yml']
 permissions:
   contents: read
 jobs:
