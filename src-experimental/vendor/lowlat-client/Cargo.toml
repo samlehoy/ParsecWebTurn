@@ -11,16 +11,10 @@ authors = ["Nguyen Duy"]
 [features]
 default = []
 external-video = []
-gpl-libavcodec = ["lowlat-drivers/gpl-libavcodec"]
 
 [dependencies]
 lowlat-common = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
 lowlat-core = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
 lowlat-net = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
-lowlat-portmap = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
 lowlat-crypto = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
-lowlat-decode = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
-lowlat-drivers = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
-lowlat-audio = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
-miniz_oxide = { version = "0.9", default-features = false }
 zeroize = "1"

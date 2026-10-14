@@ -1573,28 +1573,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "lowlat-audio"
-version = "0.0.0"
-source = "git+https://github.com/nomi-san/lowlat?rev=5f8db5689e55de0d396b0520824caa9fc053dd86#5f8db5689e55de0d396b0520824caa9fc053dd86"
-dependencies = [
- "lowlat-common",
- "lowlat-core",
- "rusty-opus",
-]
-
-[[package]]
 name = "lowlat-client"
 version = "0.0.0"
 dependencies = [
- "lowlat-audio",
  "lowlat-common",
  "lowlat-core",
  "lowlat-crypto",
- "lowlat-decode",
- "lowlat-drivers",
  "lowlat-net",
- "lowlat-portmap",
- "miniz_oxide 0.9.1",
  "zeroize",
 ]
 
@@ -1635,25 +1620,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lowlat-decode"
-version = "0.0.0"
-source = "git+https://github.com/nomi-san/lowlat?rev=5f8db5689e55de0d396b0520824caa9fc053dd86#5f8db5689e55de0d396b0520824caa9fc053dd86"
-dependencies = [
- "lowlat-common",
- "lowlat-core",
- "lowlat-drivers",
-]
-
-[[package]]
-name = "lowlat-drivers"
-version = "0.0.0"
-source = "git+https://github.com/nomi-san/lowlat?rev=5f8db5689e55de0d396b0520824caa9fc053dd86#5f8db5689e55de0d396b0520824caa9fc053dd86"
-dependencies = [
- "libc",
- "lowlat-common",
-]
-
-[[package]]
 name = "lowlat-net"
 version = "0.0.0"
 source = "git+https://github.com/nomi-san/lowlat?rev=5f8db5689e55de0d396b0520824caa9fc053dd86#5f8db5689e55de0d396b0520824caa9fc053dd86"
@@ -1664,19 +1630,6 @@ dependencies = [
  "lowlat-common",
  "lowlat-core",
  "lowlat-crypto",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "lowlat-portmap"
-version = "0.0.0"
-source = "git+https://github.com/nomi-san/lowlat?rev=5f8db5689e55de0d396b0520824caa9fc053dd86#5f8db5689e55de0d396b0520824caa9fc053dd86"
-dependencies = [
- "httparse",
- "libc",
- "lowlat-common",
- "lowlat-crypto",
- "roxmltree",
  "windows-sys 0.61.2",
 ]
 
@@ -2438,15 +2391,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "roxmltree"
-version = "0.21.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "rtcp"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2561,12 +2505,6 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
-
-[[package]]
-name = "rusty-opus"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70e241f0b809c02cf3a868ab7ad0568ac35eadcc6ba3997663eb920d9f425f75"
 
 [[package]]
 name = "ryu"

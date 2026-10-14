@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 
 use anyhow::{Result, anyhow, ensure};
 pub use lowlat_client::Event;
-use lowlat_client::config::{Backend, Decoding, FrameKind, Port, Relay};
+use lowlat_client::config::{Port, Relay};
 use lowlat_client::driver::Units;
 use lowlat_client::{Client, Config, Peer, Transport};
 use lowlat_core::conn::Kind;
@@ -43,25 +43,6 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn transport_probe() -> Result<Self> {
-        let client = Client::new(
-            &Decoding {
-                backend: Backend::None,
-                kind: FrameKind::Planes,
-                ..Decoding::default()
-            },
-            Port::Any,
-        )
-        .map_err(|e| anyhow!("BUD create: {e:?}"))?;
-        Ok(Self {
-            client,
-            attempt: None,
-            external_units: None,
-            prefer_hevc: false,
-            cipher: None,
-        })
-    }
-
     /// Native transport with application-owned video decode. The caller must
     /// have verified its existing MF decoder's HEVC support before setting it.
     /// Only 8-bit 4:2:0 is advertised. No SDK video decoder is created.
@@ -83,25 +64,6 @@ impl Session {
             prefer_hevc: hevc_available,
             cipher: None,
         })
-    }
-
-    /// The sole compressed-video consumer. The SDK pool lease stays live
-    /// throughout the callback, and is returned even if the sink rejects it.
-    /// The callback must not retain a borrowed pointer after returning.
-    pub fn with_video<T>(
-        &mut self,
-        sink: impl FnOnce(&[u8], u64) -> Result<T>,
-    ) -> Result<Option<T>> {
-        ensure!(self.attempt.is_some(), "no BUD attempt");
-        let units = self
-            .external_units
-            .as_ref()
-            .ok_or_else(|| anyhow!("transport-only BUD probe has no video consumer"))?;
-        let Some(unit) = units.take() else {
-            return Ok(None);
-        };
-        let arrived_us = self.client.arrived_us(unit.stamp());
-        sink(unit.bytes(), arrived_us).map(Some)
     }
 
     pub fn request_keyframe(&self) -> bool {
@@ -134,27 +96,6 @@ impl Session {
 
     pub fn send_user_data(&mut self, id: u32, text: &[u8]) -> bool {
         self.client.send_user_data(id, text)
-    }
-
-    pub fn send_input(&mut self, input: lowlat_client::input::Input) -> Result<()> {
-        self.client
-            .send_input(input)
-            .map_err(|e| anyhow!("BUD input: {e:?}"))
-    }
-
-    pub fn set_viewport(&mut self, viewport: lowlat_client::input::Viewport) -> bool {
-        self.client.set_viewport(viewport)
-    }
-
-    pub fn with_audio<T>(&mut self, sink: impl FnOnce(&[u8]) -> Result<T>) -> Result<Option<T>> {
-        let Some(packet) = self
-            .client
-            .take_external_audio()
-            .map_err(|e| anyhow!("BUD external audio: {e:?}"))?
-        else {
-            return Ok(None);
-        };
-        sink(packet.bytes()).map(Some)
     }
 
     pub fn offer(&mut self, id: &str, route: Route) -> Result<Credentials> {
@@ -334,8 +275,6 @@ mod tests {
             .unwrap();
         let mut source = session.take_media().unwrap();
         assert!(session.take_media().is_err());
-        assert!(session.with_video(|_, _| Ok(())).is_err());
-        assert!(session.with_audio(|_| Ok(())).is_err());
         assert!(source.with_video(|_| Ok(())).unwrap().is_none());
         assert!(source.with_audio(|_| Ok(())).unwrap().is_none());
         drop(source);
@@ -344,7 +283,7 @@ mod tests {
 
     #[test]
     fn native_credentials_lifecycle_and_stale_attempts() {
-        let mut session = Session::transport_probe().unwrap();
+        let mut session = Session::external_video(false).unwrap();
         let ours = session
             .offer("isolated-test", Route::Direct { stun: vec![] })
             .unwrap();

@@ -153,7 +153,7 @@ mod tests {
     use crate::bud::Route;
     #[test]
     fn native_offer_has_bud_mode_and_media_key() {
-        let mut session = Session::transport_probe().unwrap();
+        let mut session = Session::external_video(false).unwrap();
         let ours = session
             .offer("test", Route::Direct { stun: vec![] })
             .unwrap();
@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn wrong_attempt_and_invalid_endpoint_are_isolated() {
         let signal = Signaling::new("peer", "test").unwrap();
-        let mut session = Session::transport_probe().unwrap();
+        let mut session = Session::external_video(false).unwrap();
         session
             .offer("test", Route::Direct { stun: vec![] })
             .unwrap();

@@ -7,7 +7,7 @@
 //! on the control channel, and speaks the little a client has to say
 //! (docs/10-client.md).
 //!
-//! The public surface is the C ABI in `lowlat-sdk`; the seam is [`Client`].
+//! This transport-only copy exposes [`Client`] to ParsecWebTurn, without the SDK C ABI.
 
 #![deny(
     clippy::unwrap_used,
@@ -30,16 +30,9 @@
 )]
 
 pub mod config;
-pub mod cursor;
-pub mod decode;
 pub mod driver;
-pub mod enumerate;
 pub mod event;
-pub mod feed;
-pub mod frames;
 pub mod input;
-pub mod nat;
-pub mod report;
 pub mod seam;
 mod shell;
 pub mod sound;
@@ -48,7 +41,6 @@ pub use config::Config;
 pub use driver::{Driver, Lag, Telemetry};
 pub use event::{Error, Event, Outcome, Peer, Transport};
 pub use seam::Client;
-pub use sound::Sound;
 
 /// Video, stream 0; sound (docs/01-protocol.md section 6).
 pub const VIDEO_CHANNEL: u8 = 1;

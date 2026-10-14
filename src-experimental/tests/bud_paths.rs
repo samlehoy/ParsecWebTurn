@@ -20,7 +20,7 @@ fn connect(route: Route, relay_expected: bool) {
     // Exercise the actual application-decoded media mode on the client side.
     // The other endpoint is a connectivity peer, not a stock media host.
     let mut left = Session::external_video(false).unwrap();
-    let mut right = Session::transport_probe().unwrap();
+    let mut right = Session::external_video(false).unwrap();
     let left_ours = left.offer("left", route).unwrap();
     let right_ours = right
         .offer("right", Route::Direct { stun: vec![] })
@@ -91,14 +91,8 @@ fn connect(route: Route, relay_expected: bool) {
     frame[..4].copy_from_slice(&37u32.to_be_bytes());
     frame[12] = 28;
     left.send_control(&frame).unwrap();
-    right
-        .send_input(lowlat_client::input::Input::Control {
-            opcode: 28,
-            a0: 41,
-            a1: 0,
-            a2: 0,
-        })
-        .unwrap();
+    frame[..4].copy_from_slice(&41u32.to_be_bytes());
+    right.send_control(&frame).unwrap();
     let until = Instant::now() + Duration::from_secs(3);
     let mut delivered = [false; 2];
     while !delivered.iter().all(|v| *v) && Instant::now() < until {
@@ -112,7 +106,11 @@ fn connect(route: Route, relay_expected: bool) {
             }
         }
         while let Some(event) = right.poll().unwrap() {
-            if matches!(event, Event::HostMode { mode: 37 }) {
+            if let Event::ExternalControl { bytes } = event
+                && bytes.len() == 13
+                && bytes[12] == 28
+                && bytes[..4] == 37u32.to_be_bytes()
+            {
                 delivered[1] = true;
             }
         }

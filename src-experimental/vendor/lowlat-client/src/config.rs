@@ -2,10 +2,16 @@
 
 use std::fmt;
 use std::net::SocketAddr;
-use std::num::NonZeroU16;
 
 use lowlat_core::init::{self, Init};
-pub use lowlat_decode::Caps;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Caps {
+    pub h264: bool,
+    pub hevc: bool,
+    pub hevc_10: bool,
+    pub hevc_444: bool,
+    pub hevc_444_10: bool,
+}
 use zeroize::Zeroizing;
 
 /// The largest picture the current client generation declares it will take.
@@ -15,137 +21,11 @@ use zeroize::Zeroizing;
 /// smaller.
 pub const MAX_DIMENSION: u32 = 4096;
 
-/// Which decoder to build.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Backend {
-    /// The first that opens on the device named: the system's own
-    /// interface, then the vendor's, then software.
-    #[default]
-    Auto,
-    /// The system's own decoding interface: the open stack on Linux, the
-    /// system's video decoding interface on Windows.
-    Vaapi,
-    /// The vendor interface, on the card behind the render node named, or
-    /// the first.
-    Nvdec,
-    /// The machine's own codec library, an LGPL build of it -- or a GPL one
-    /// as well, in a build with the `gpl-libavcodec` feature -- or none;
-    /// the device names the directory it is taken from, or is empty for the
-    /// search of its own.
-    Software,
-    /// The system's own decoder, in software: the media framework's on
-    /// Windows, H.264 and, where its extension is installed, HEVC at eight
-    /// and ten bits; on no other system.
-    System,
-    /// No decoder at all: the session carries control and sound, and every
-    /// picture is taken off the wire and dropped. A test peer, or a client
-    /// with nowhere to draw.
-    None,
-}
-
-/// How pictures leave the library.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum FrameKind {
-    /// Planes in memory the library owns for the lease.
-    #[default]
-    Planes,
-    /// A device-level handle. No backend exports one yet: refused at
-    /// creation.
-    Handle,
-}
-
-/// What the decoder is built on, settled at creation.
-#[derive(Debug, Clone, Default)]
-pub struct Decoding {
-    pub backend: Backend,
-    /// The device: a render node on Linux, an adapter's identity
-    /// (`luid:HIGH:LOW`) on Windows; or empty for the first that opens.
-    pub device: String,
-    pub kind: FrameKind,
-    /// The largest picture the slots take; zero for the generation's
-    /// declared maximum.
-    pub ceiling: (u32, u32),
-}
-
-impl Decoding {
-    /// The ceiling in force.
-    pub fn ceiling(&self) -> (u32, u32) {
-        (
-            if self.ceiling.0 == 0 {
-                MAX_DIMENSION
-            } else {
-                self.ceiling.0
-            },
-            if self.ceiling.1 == 0 {
-                MAX_DIMENSION
-            } else {
-                self.ceiling.1
-            },
-        )
-    }
-}
-
-/// The port every attempt binds, settled at creation.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// The application lets the operating system choose its UDP port.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Port {
-    /// One the system picks, per attempt.
     #[default]
     Any,
-    /// This one, or the first free one above it, at every attempt; and, with
-    /// a mapping, the handle's own from creation, kept open on the gateway
-    /// (docs/03-connectivity.md 6).
-    Stable {
-        first: NonZeroU16,
-        mapping: Option<Mapping>,
-    },
-}
-
-/// How the gateway is asked to keep a port open.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Mapping {
-    /// How the gateway lists the mapping, and how this side tells its own.
-    pub description: String,
-    /// The gateway to ask instead of the system's default: none but in a
-    /// test, whose fake gateway makes one.
-    pub gateway: Option<lowlat_portmap::Gateway>,
-}
-
-impl Port {
-    /// A stable port from what an application names: the port itself, or the
-    /// one its seed picks -- the seed its own, or the machine's name when it
-    /// gives none -- and, when it asks, the mapping listed under the seed and
-    /// the machine.
-    pub fn seeded(port: u16, seed: &str, mapping: bool) -> Self {
-        let seed = if seed.is_empty() {
-            lowlat_portmap::seed::machine_name()
-        } else {
-            seed.to_owned()
-        };
-        let first = if port == 0 {
-            lowlat_portmap::seed::port(&seed)
-        } else {
-            port
-        };
-        // A seed's port is never zero, so this is the stable port.
-        match NonZeroU16::new(first) {
-            Some(first) => Port::Stable {
-                first,
-                mapping: mapping.then(|| Mapping {
-                    description: lowlat_portmap::seed::description(&seed),
-                    gateway: None,
-                }),
-            },
-            None => Port::Any,
-        }
-    }
-
-    /// The port an attempt asks for first: zero for any.
-    pub fn first(&self) -> u16 {
-        match self {
-            Port::Any => 0,
-            Port::Stable { first, .. } => first.get(),
-        }
-    }
 }
 
 /// What the application would like of the picture, for the one stream.
@@ -397,31 +277,6 @@ mod tests {
             ..Caps::default()
         };
         assert_eq!(all.flags(&h264_only), 0);
-    }
-
-    /// A port named is kept; none named is the seed's, and the machine's
-    /// name is the seed when the application gives none. The mapping is
-    /// listed under the seed and the machine, and only when asked for.
-    #[test]
-    fn a_seeded_port_is_the_one_named_or_the_seeds() {
-        let first = |port: &Port| port.first();
-        assert_eq!(first(&Port::seeded(30_000, "", false)), 30_000);
-        assert_eq!(first(&Port::seeded(0, "HOST-1", false)), 24097);
-        assert_eq!(
-            Port::seeded(0, "", false),
-            Port::seeded(0, &lowlat_portmap::seed::machine_name(), false)
-        );
-        let Port::Stable { mapping, .. } = Port::seeded(30_000, "HOST-1", true) else {
-            panic!("a named port is a stable one");
-        };
-        let listed = mapping.unwrap().description;
-        assert_eq!(listed, lowlat_portmap::seed::description("HOST-1"));
-        assert!(listed.starts_with("ll-b596f0a1"), "{listed}");
-        assert!(matches!(
-            Port::seeded(0, "HOST-1", false),
-            Port::Stable { mapping: None, .. }
-        ));
-        assert_eq!(first(&Port::default()), 0);
     }
 
     /// IPv4 only refuses an IPv6 address and keeps an IPv4 one in either

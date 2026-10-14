@@ -6,8 +6,8 @@
 //! fake clock. Nothing here reads time, owns a socket or spawns a thread.
 //!
 //! **The receive ring is this thread's, so the catch-up is too.** Access
-//! units are taken off the video channel here and handed to the decoder's
-//! thread through a pool by index; when the reader is more than one message
+//! units are taken off the video channel here and handed to the application
+//! through a pool by index; when the reader is more than one message
 //! behind, this looks ahead through the messages the ring holds for keyframe
 //! metadata whose picture has also arrived and skips to it, so a lagging
 //! reader recovers in one step. Nothing is skipped over a gap, and nothing is
@@ -22,21 +22,16 @@ use lowlat_common::spsc::Ring;
 use lowlat_core::audio;
 use lowlat_core::channel::Arrivals;
 use lowlat_core::control::{self, CONTROL_CHANNEL, Control, op};
-use lowlat_core::cursor;
 use lowlat_core::endpoint::Endpoint;
 use lowlat_core::init::{self, Init};
-use lowlat_core::microphone;
 use lowlat_core::relay::{self, Failure, Relay};
 use lowlat_core::session::{Health, Session};
 use lowlat_core::video::{self, METADATA_LEN, VIDEO_HEADER_LEN};
 use lowlat_core::{Error, conn};
 
-use crate::cursor::{Cache, Shape};
 use crate::event::{Event, Outcome};
-use crate::input::{Input, Mapper, MicFrame, Viewport};
 use crate::sound::{self, Packets};
 use crate::{AUDIO_CHANNEL, UNIT_BYTES, UNIT_SLOTS, VIDEO_CHANNEL};
-use lowlat_core::pad;
 
 /// The longest inbound control message that will be taken: the user-data
 /// ceiling plus its header. A longer one cannot be consumed and the channel
@@ -201,9 +196,6 @@ pub struct Lag {
     pub behind_ms: u32,
 }
 
-/// [`Telemetry::decoder`] once no decoder can serve the stream.
-pub const DECODER_FAILED: u32 = 2;
-
 /// What the loop publishes about itself, for the seam to read from any thread.
 #[derive(Debug, Default)]
 pub struct Telemetry {
@@ -225,62 +217,21 @@ pub struct Telemetry {
     /// Set by the decoder's consumer when its feed asked for a keyframe; the
     /// loop sends the request on its next pass and clears it.
     pub request: AtomicBool,
-    /// The decoder: 0 none yet, 1 built, [`DECODER_FAILED`] failed for good,
-    /// which the loop acts on by leaving the session.
-    pub decoder: AtomicU32,
-    /// The last picture's decode and read-back, in microseconds.
-    pub decode_us: AtomicU32,
-    pub readback_us: AtomicU32,
-    /// The smoothed decode and hand-over per picture, and per sound packet,
-    /// in microseconds: what the client reports to the host.
-    pub decode_reported_us: AtomicU32,
-    pub audio_reported_us: AtomicU32,
     /// The declaration: what the application asked, and what went out after
     /// the mask; and the stream as decoded, the layout's code or zero.
     pub asked_flags: AtomicU32,
     pub declared_flags: AtomicU32,
     pub stream_format: AtomicU32,
-    /// Bumped by the loop when the declaration changed mid-session: the
-    /// decode thread tears its decoder down and asks for a keyframe.
-    pub reconfigure: AtomicU32,
-    /// Bumped by the loop when the application chose another decoder
-    /// mid-session, once the declaration has been restated: the decode
-    /// thread takes the pending choice, moves to it, and asks for a keyframe
-    /// once the new decoder can take one.
-    pub switch: AtomicU32,
-    /// Pictures decoded and handed to the queue.
-    pub decoded: AtomicU64,
-    /// Pictures published and not yet taken by the application.
-    pub queue_depth: AtomicU32,
     /// The host's own encode time for the stream, as it last reported it,
     /// in microseconds.
     pub encode_us: AtomicU32,
-    /// The codec the decoder was built for, on the wire's numbering: 0
-    /// none yet, 1 the first codec, 2 the second.
-    pub codec: AtomicU32,
     /// Input reports refused because the ring to the session thread was
     /// full, counted where they were dropped.
     pub input_dropped: AtomicU32,
-    /// A pad's own reports: sent to the host, received from it, and received
-    /// for a pad this client never sent as reports, which are dropped.
-    pub pad_reports_sent: AtomicU32,
-    pub pad_reports_received: AtomicU32,
-    pub pad_reports_dropped: AtomicU32,
-    /// Sound: packets decoded and handed over; dropped because the pool
-    /// was full; refused by the decoder; the last hand-over's age; the codec
-    /// the decoder was built for on the wire's numbering, 0 for none.
-    pub audio_decoded: AtomicU64,
+    /// Compressed audio packets dropped because the pool is full.
     pub audio_dropped: AtomicU32,
-    pub audio_refused: AtomicU32,
-    pub audio_age_ms: AtomicU32,
-    pub audio_codec: AtomicU32,
     /// This client's number on the host's roster; zero until told.
     pub number: AtomicU32,
-    /// The pointer: pictures delivered, names the cache did not hold, and
-    /// pictures the boundary's reader refused.
-    pub cursor_images: AtomicU32,
-    pub cursor_misses: AtomicU32,
-    pub cursor_refused: AtomicU32,
     /// Per channel, what a receiver can count (docs/10-client.md section 9):
     /// fragments accepted, those that arrived behind a later one, duplicates
     /// and out-of-window drops, the negatives sent, bytes and messages taken
@@ -300,12 +251,6 @@ pub struct Telemetry {
     pub relayed: AtomicU64,
     /// Whether the path goes through the relay.
     pub path_relayed: AtomicBool,
-    /// The microphone: closed by the host's `"0"` and open otherwise, as at
-    /// each attempt's start; frames sent, and frames dropped because the ring
-    /// to the session thread was full.
-    pub microphone_off: AtomicBool,
-    pub microphone_sent: AtomicU32,
-    pub microphone_dropped: AtomicU32,
 }
 
 /// A relayed address in one word, so it is published without a lock: the
@@ -341,8 +286,6 @@ fn relay_outcome(relay: &Relay<'_>) -> Option<Outcome> {
 /// One session's driver.
 #[derive(Debug)]
 pub struct Driver {
-    #[cfg(feature = "external-video")]
-    external_controls: bool,
     init: Init,
     units: Units,
     emit: events::Sender<Event>,
@@ -377,21 +320,6 @@ pub struct Driver {
     audio_bytes: u64,
     audio_dropped: u32,
     first_audio_said: bool,
-    /// The window-to-picture mapping the application's input goes through.
-    mapper: Mapper,
-    /// The picture's size and turn as last seen, so the mapper is told only
-    /// on a change.
-    picture: (u16, u16, video::Rotation),
-    /// Whether the host has this client in relative mode.
-    relative: bool,
-    /// The pointer pictures the host may name again, and the count of
-    /// names it did not resolve.
-    cursor_cache: Cache,
-    cursor_images: u32,
-    cursor_misses: u32,
-    /// The picture last delivered, by checksum: a host that names it again,
-    /// or sends it again, does not have the application decode it again.
-    cursor_delivered: u32,
     /// Bytes taken off the control channel; the other two channels' are
     /// counted where their messages are taken.
     control_bytes: u64,
@@ -401,22 +329,9 @@ pub struct Driver {
     loss_sampled_ms: f64,
     loss_seen: [Arrivals; CHANNELS],
     loss_ewma: [f64; CHANNELS],
-    /// The microphone: whether the host's answer lets it go out; the encoder,
-    /// built on the first compressed frame, and whether it would not build;
-    /// and the payload and the body each frame is written into.
-    microphone_open: bool,
-    microphone_encoder: Option<lowlat_audio::Encoder>,
-    microphone_refused: bool,
-    microphone_payload: Vec<u8>,
-    microphone_body: Vec<u8>,
 }
 
 impl Driver {
-    #[cfg(feature = "external-video")]
-    pub fn external_controls(&mut self, enabled: bool) {
-        self.external_controls = enabled;
-    }
-
     pub fn new(
         init: Init,
         units: Units,
@@ -425,8 +340,6 @@ impl Driver {
         telemetry: Arc<Telemetry>,
     ) -> Self {
         Self {
-            #[cfg(feature = "external-video")]
-            external_controls: false,
             init,
             units,
             packets,
@@ -453,116 +366,12 @@ impl Driver {
             audio_bytes: 0,
             audio_dropped: 0,
             first_audio_said: false,
-            mapper: Mapper::default(),
-            picture: (0, 0, video::Rotation::Unknown),
-            relative: false,
-            cursor_cache: Cache::default(),
-            cursor_images: 0,
-            cursor_misses: 0,
-            cursor_delivered: 0,
             control_bytes: 0,
             established_ms: 0.0,
             loss_sampled_ms: 0.0,
             loss_seen: [Arrivals::default(); CHANNELS],
             loss_ewma: [0.0; CHANNELS],
-            microphone_open: true,
-            microphone_encoder: None,
-            microphone_refused: false,
-            microphone_payload: vec![0u8; microphone::PAYLOAD_MAX],
-            microphone_body: vec![0u8; microphone::BODY_LEN],
         }
-    }
-
-    /// Where the application drew the picture.
-    pub fn set_viewport(&mut self, viewport: Viewport) {
-        self.mapper.set_viewport(viewport);
-    }
-
-    /// One report from the application, onto the wire if the rules allow it.
-    pub fn send_input(&mut self, session: &mut Session<'_>, input: &Input) {
-        if !self.established {
-            return;
-        }
-        if let Input::PadReport {
-            pad,
-            product,
-            kind,
-            transport,
-            len,
-            report,
-        } = input
-        {
-            let report = report.get(..usize::from(*len)).unwrap_or(&[]);
-            for wire in self
-                .mapper
-                .encode_report(*pad, *product, *kind, *transport, report)
-                .iter()
-                .flatten()
-            {
-                self.send_control(session, &wire.control());
-            }
-            self.telemetry
-                .pad_reports_sent
-                .fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-        if let Some(wire) = self.mapper.encode(input) {
-            self.send_control(session, &wire.control());
-        }
-    }
-
-    /// The application changed its declaration: restate it to the host on
-    /// the secondary streams, and have the decode thread tear its decoder
-    /// down and ask for the keyframe on the first. Before the session is
-    /// established the new flags simply go into the initialization.
-    pub fn set_flags(&mut self, session: &mut Session<'_>, flags: u32) {
-        if !self.restate(session, flags) {
-            return;
-        }
-        self.telemetry.reconfigure.fetch_add(1, Ordering::Release);
-        self.units.wake();
-    }
-
-    /// The application chose another decoder mid-session: the declaration
-    /// restated where it changed, then the one word to the decode thread,
-    /// which moves to the choice it was handed and asks for the keyframe
-    /// once the new decoder can take one -- one request per switch, whether
-    /// or not the declaration moved with it.
-    pub fn switch_decoder(&mut self, session: &mut Session<'_>, flags: u32) {
-        self.restate(session, flags);
-        self.telemetry.switch.fetch_add(1, Ordering::Release);
-        self.units.wake();
-    }
-
-    /// The new declaration to the secondary streams, when it changed and the
-    /// session is established; stream 0's travels with the keyframe request.
-    /// Whether it changed.
-    fn restate(&mut self, session: &mut Session<'_>, flags: u32) -> bool {
-        if flags == self.init.flags {
-            return false;
-        }
-        self.init.flags = flags;
-        if !self.established {
-            return false;
-        }
-        for stream in [2, 1] {
-            self.send_control(
-                session,
-                &Control {
-                    a0: stream,
-                    a1: flags,
-                    a2: 0,
-                    opcode: op::ENCODER_CONFIG,
-                    body: &[],
-                },
-            );
-        }
-        true
-    }
-
-    /// Whether the host has put this client in relative mode.
-    pub fn relative(&self) -> bool {
-        self.relative
     }
 
     pub fn established(&self) -> bool {
@@ -648,16 +457,6 @@ impl Driver {
         }
         if !self.established {
             return None;
-        }
-
-        // A decoder that failed for good ends the session from this side:
-        // the departure goes out once, and when it has had its grace the
-        // stream ends as the decoder's failure.
-        if self.telemetry.decoder.load(Ordering::Acquire) == DECODER_FAILED {
-            self.leave(endpoint.session(), now_ms);
-            if self.left(now_ms) {
-                return Some(Outcome::DecoderFailed);
-            }
         }
 
         if let Some(outcome) = self.check_health(endpoint, now_ms) {
@@ -772,94 +571,6 @@ impl Driver {
         sent
     }
 
-    /// Ten milliseconds of the application's microphone, onto the control
-    /// channel as the virtual device's message (docs/01-protocol.md 11.4b):
-    /// uncompressed when this client declared uncompressed sound, compressed
-    /// otherwise. Nothing goes out before the session is up, or while the
-    /// host's answer is no -- which is also what empties what was queued
-    /// behind a `"0"`.
-    pub fn send_microphone(&mut self, session: &mut Session<'_>, frame: &MicFrame) {
-        if !self.established || !self.microphone_open {
-            return;
-        }
-        let (len, encoding) = if self.init.raw_audio {
-            for (dst, sample) in self.microphone_payload.chunks_exact_mut(2).zip(frame) {
-                dst.copy_from_slice(&sample.to_le_bytes());
-            }
-            (frame.len() * 2, microphone::Encoding::Raw)
-        } else {
-            if self.microphone_encoder.is_none() && !self.microphone_refused {
-                match lowlat_audio::Encoder::microphone() {
-                    Ok(encoder) => self.microphone_encoder = Some(encoder),
-                    Err(error) => {
-                        self.microphone_refused = true;
-                        lowlat_common::log_warn!("client: no microphone encoder, error={error}");
-                    }
-                }
-            }
-            let Some(encoder) = self.microphone_encoder.as_mut() else {
-                return;
-            };
-            let Ok(packet) = encoder.encode_samples(frame) else {
-                return;
-            };
-            let Some(dst) = self.microphone_payload.get_mut(..packet.len()) else {
-                return;
-            };
-            dst.copy_from_slice(packet);
-            (packet.len(), microphone::Encoding::Compressed)
-        };
-        let Some(payload) = self.microphone_payload.get(..len) else {
-            return;
-        };
-        if microphone::encode(
-            &mut self.microphone_body,
-            &microphone::Packet { payload, encoding },
-        )
-        .is_err()
-        {
-            return;
-        }
-        let mut header = [0u8; control::CONTROL_HEADER_LEN];
-        let control = Control {
-            a0: u32::try_from(microphone::BODY_LEN).unwrap_or(u32::MAX),
-            a1: microphone::MICROPHONE_ARGUMENT,
-            a2: microphone::MICROPHONE_SELECTOR,
-            opcode: op::VIRTUAL_DEVICE,
-            body: &[],
-        };
-        if control::encode_header(&mut header, &control).is_err() {
-            return;
-        }
-        if session
-            .send_message(CONTROL_CHANNEL, &header, &self.microphone_body)
-            .is_ok()
-        {
-            self.count_sent(op::VIRTUAL_DEVICE);
-            self.telemetry
-                .microphone_sent
-                .fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    /// The host's answer on this client's microphone: **a `"0"` closes it and
-    /// anything else opens it** -- told nothing, it stays open, as it is at
-    /// every session's start. The application hears of a change only.
-    fn hear_microphone_answer(&mut self, text: &[u8]) {
-        let open = text.first() != Some(&b'0');
-        if open == self.microphone_open {
-            return;
-        }
-        self.microphone_open = open;
-        // Relaxed: a flag the seam reads to refuse early, with nothing
-        // published behind it; this thread's own gate is the one that holds.
-        self.telemetry
-            .microphone_off
-            .store(!open, Ordering::Relaxed);
-        lowlat_common::log_info!("client: the host's microphone answer, open={open}");
-        self.emit.send(Event::Microphone { enabled: open });
-    }
-
     /// What a client says when the path comes up, in order: the
     /// initialization, the diagnostics opcode with every bit clear, and the
     /// declaration for each secondary stream. Stream 0 declares through the
@@ -922,9 +633,9 @@ impl Driver {
     /// the figure first, then the kind. Zero until something has been timed,
     /// and sent anyway.
     fn report(&mut self, session: &mut Session<'_>) {
-        let video = self.telemetry.decode_reported_us.load(Ordering::Relaxed);
-        let audio = self.telemetry.audio_reported_us.load(Ordering::Relaxed);
-        for (us, kind) in [(video, KIND_VIDEO), (audio, KIND_AUDIO)] {
+        // No SDK decoder is timed in this seam. Preserve the initial zero
+        // reports and their protocol cadence; do not invent decode timings.
+        for (us, kind) in [(0, KIND_VIDEO), (0, KIND_AUDIO)] {
             self.send_control(
                 session,
                 &Control {
@@ -938,7 +649,6 @@ impl Driver {
         }
     }
 
-    #[cfg(feature = "external-video")]
     pub(crate) fn send_external(&mut self, session: &mut Session<'_>, bytes: &[u8]) {
         if let Ok(message) = control::parse(bytes) {
             if message.opcode == op::ENCODER_CONFIG && message.a0 == 0 {
@@ -1038,8 +748,7 @@ impl Driver {
                 }
                 *count = count.saturating_add(1);
             }
-            #[cfg(feature = "external-video")]
-            if self.external_controls {
+            {
                 self.emit.send(Event::ExternalControl {
                     bytes: inbound.get(..len).unwrap_or_default().to_vec(),
                 });
@@ -1050,229 +759,38 @@ impl Driver {
         }
     }
 
-    /// The control vocabulary of docs/10-client.md section 7.
+    /// Session-owned control only. Original frames are forwarded to the
+    /// retained application UI without cursor/input/gamepad reprocessing.
     fn on_control(&mut self, message: &Control<'_>) -> Option<Outcome> {
-        #[allow(
-            clippy::cast_possible_wrap,
-            reason = "a status is signed and travels in an unsigned argument"
-        )]
-        #[cfg(feature = "external-video")]
-        if self.external_controls
-            && !matches!(
-                message.opcode,
-                op::DISCONNECT | op::ENCODE_LATENCY | op::ENCODER_GENERATION | op::GUEST_LIST
-            )
-        {
-            return None;
-        }
         match message.opcode {
-            op::CURSOR => {
-                if let Ok(pointer) = cursor::parse(message) {
-                    self.on_cursor(&pointer);
-                }
-            }
-            // Per-frame timing is not asked for and not read.
-            op::FRAME_TIMING => {}
-            // (pad, low, high): the motors travel as bytes in the low eight
-            // bits of their arguments, the low-frequency one first.
-            op::RUMBLE => self.emit.send(Event::Rumble {
-                pad: message.a0,
-                low: (message.a1 & 0xFF) as u8,
-                high: (message.a2 & 0xFF) as u8,
-            }),
-            // What the host's device was written, framed for the pad it
-            // names; a pad never sent as reports has no framing and is
-            // dropped.
-            op::PAD_OUTPUT => {
-                if let Some(output) = pad::parse_output(message) {
-                    let mut framed = [0u8; pad::REPORT_MAX];
-                    match self.mapper.frame_output(
-                        output.pad,
-                        output.kind,
-                        output.report,
-                        &mut framed,
-                    ) {
-                        Some(len) => {
-                            self.telemetry
-                                .pad_reports_received
-                                .fetch_add(1, Ordering::Relaxed);
-                            self.emit.send(Event::PadReport {
-                                pad: output.pad,
-                                kind: output.kind,
-                                len: u8::try_from(len).unwrap_or(u8::MAX),
-                                report: framed,
-                            });
-                        }
-                        None => {
-                            self.telemetry
-                                .pad_reports_dropped
-                                .fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                }
-            }
             op::DISCONNECT => {
                 let status = message.a0 as i32;
                 self.telemetry
                     .disconnect
                     .store(message.a0, Ordering::Relaxed);
-                // **Zero is not an ending.** A peer stores the status and
-                // stops on a non-zero one.
                 if status != 0 {
                     return Some(Outcome::Disconnected(status));
                 }
             }
-            op::STREAM_ENDED => self.emit.send(Event::StreamEnded {
-                stream: message.a0,
-                status: message.a2 as i32,
-            }),
-            op::BLOCKED => self.emit.send(Event::Blocked {
-                blocked: message.a0 != 0,
-            }),
-            op::USER_DATA => {
-                if let Some((id, text)) = control::user_data(message) {
-                    if id == microphone::ANNOUNCE_ID {
-                        self.hear_microphone_answer(text);
-                    } else {
-                        self.emit.send(Event::UserData {
-                            id,
-                            text: text.to_vec(),
-                        });
-                    }
-                }
-            }
-            // A host sends (kind, microseconds, stream).
             op::ENCODE_LATENCY => {
                 if let Some(slot) = self.encode_latency_us.get_mut(message.a2 as usize) {
                     *slot = message.a1;
                 }
             }
-            // The body is the host's application's; what the library reads
-            // is its own number beside it.
-            op::GUEST_LIST => {
-                self.number = Some(message.a1);
-                self.telemetry.number.store(message.a1, Ordering::Relaxed);
-                #[cfg(feature = "external-video")]
-                if self.external_controls {
-                    return None;
-                }
-                let body = message.body.strip_suffix(&[0]).unwrap_or(message.body);
-                self.emit.send(Event::GuestList {
-                    number: message.a1,
-                    body: body.to_vec(),
-                });
-            }
-            op::HOST_MODE => self.emit.send(Event::HostMode { mode: message.a0 }),
-            // (stream, generation, 0): the value the video header's frame
-            // identifier will carry from the next encoder.
             op::ENCODER_GENERATION => {
                 if let Some(slot) = self.generation.get_mut(message.a0 as usize) {
                     *slot = Some(message.a1);
                 }
+            }
+            op::GUEST_LIST => {
+                self.number = Some(message.a1);
+                self.telemetry.number.store(message.a1, Ordering::Relaxed);
             }
             _ => {}
         }
         None
     }
 
-    /// The host's pointer: the picture it sent or named, the mode it is in,
-    /// and where it reappears.
-    ///
-    /// **Either bit puts a client into relative mode**, and that event is
-    /// raised on the transition alone. The cursor event is raised on every
-    /// update; a name the cache does not hold delivers it without a picture,
-    /// and a name that carries no size takes the picture's size and hotspot
-    /// from what was stored with it (docs/10-client.md section 7).
-    fn on_cursor(&mut self, pointer: &cursor::Message<'_>) {
-        // One stream: a pointer for another belongs to a picture this
-        // client does not show.
-        if pointer.update.stream != 0 {
-            return;
-        }
-        if pointer.flags.contains(cursor::Flags::FORGET) {
-            self.cursor_cache.clear();
-        }
-        let mut shape = Shape {
-            width: pointer.width,
-            height: pointer.height,
-            hot_x: pointer.update.hot_x,
-            hot_y: pointer.update.hot_y,
-        };
-        let mut checksum = 0;
-        let mut png = Vec::new();
-        if pointer.flags.contains(cursor::Flags::IMAGE) && !pointer.image.is_empty() {
-            checksum = self.cursor_cache.insert(shape, pointer.image);
-            png = pointer.image.to_vec();
-        } else if pointer.flags.contains(cursor::Flags::CACHED) {
-            match self.cursor_cache.get(pointer.checksum) {
-                Some((stored, bytes)) => {
-                    if pointer.width == 0 {
-                        shape = stored;
-                    }
-                    checksum = pointer.checksum;
-                    png = bytes.to_vec();
-                }
-                None => {
-                    self.cursor_misses = self.cursor_misses.saturating_add(1);
-                    self.telemetry
-                        .cursor_misses
-                        .store(self.cursor_misses, Ordering::Relaxed);
-                    if self.cursor_misses == 1 {
-                        lowlat_common::log_warn!(
-                            "client: cursor named a picture not held, checksum={:#010x}",
-                            pointer.checksum
-                        );
-                    }
-                }
-            }
-        }
-        // The same picture as last time travels as its name alone: the
-        // application holds the picture it was given, and a host that
-        // repeats a name on every update would otherwise have it decoded
-        // on every update.
-        if !png.is_empty() && checksum == self.cursor_delivered {
-            png = Vec::new();
-        }
-        if !png.is_empty() {
-            self.cursor_delivered = checksum;
-            self.cursor_images = self.cursor_images.saturating_add(1);
-            self.telemetry
-                .cursor_images
-                .store(self.cursor_images, Ordering::Relaxed);
-        }
-
-        let want = pointer.update.relative || pointer.update.hidden;
-        let (x, y) = self.mapper.to_window(pointer.update.x, pointer.update.y);
-        if want != self.relative {
-            self.relative = want;
-            self.emit.send(Event::Relative {
-                relative: want,
-                x,
-                y,
-            });
-        }
-        self.emit.send(Event::Cursor {
-            x,
-            y,
-            width: shape.width,
-            height: shape.height,
-            hot_x: shape.hot_x,
-            hot_y: shape.hot_y,
-            hidden: pointer.update.hidden,
-            relative: pointer.update.relative,
-            suppressed: pointer.update.suppressed,
-            checksum,
-            png,
-        });
-    }
-
-    /// Every complete access unit on the video channel, into the pool,
-    /// stamped with the pass that completed it.
-    ///
-    /// Before each take, if the reader is more than one message behind, look
-    /// ahead for an announced keyframe and skip to it. **The producer never
-    /// blocks**: a full pool leaves the backlog in the receive ring, where the
-    /// next pass's look-ahead sees it.
     fn drain_video(&mut self, session: &mut Session<'_>, now_ms: f64) -> Option<Outcome> {
         loop {
             let pending = session.pending_messages(VIDEO_CHANNEL);
@@ -1303,16 +821,6 @@ impl Driver {
             let len = content.len();
             let header = video::parse(content).ok();
             let is_metadata = header.is_some_and(|header| header.metadata);
-            // The picture's size is the coordinate space the host expects
-            // absolute input in, so the mapper follows the stream itself.
-            if let Some(header) = header.filter(|header| !header.metadata) {
-                let seen = (header.width, header.height, header.rotation);
-                if seen != self.picture {
-                    self.picture = seen;
-                    self.mapper
-                        .set_picture(header.width, header.height, header.rotation);
-                }
-            }
             let tag = (stamp_us(now_ms) << 1) | if is_metadata { TAG_METADATA } else { 0 };
             // **The pool never refuses here.** The ring is as deep as the
             // pool has slots, so a slot that was free has a place in it.

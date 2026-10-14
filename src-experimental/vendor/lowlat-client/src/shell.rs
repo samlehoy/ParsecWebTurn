@@ -4,7 +4,7 @@
 //! opened, lends them their rings for the life of the thread, and runs the
 //! shell's loop with the driver as its application.
 
-use std::net::{SocketAddr, SocketAddrV4};
+use std::net::SocketAddr;
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 
@@ -20,15 +20,13 @@ use lowlat_core::init::Init;
 use lowlat_core::relay::{Relay, State as RelayState};
 use lowlat_core::send::{SendRing, SendSlot};
 use lowlat_core::session::Session;
-use lowlat_core::stun::canonical;
 use lowlat_net::{Running, Shell, Socket, Wake};
-use lowlat_portmap::{Reader, confirmed};
 use std::sync::atomic::Ordering;
 
 use crate::config;
 use crate::driver::{Driver, Telemetry, Units, pack_relayed};
 use crate::event::{Arrival, Ask, Event, Outcome};
-use crate::input::{MICROPHONE_DEPTH, MicFrame, RING_DEPTH, Request};
+use crate::input::{RING_DEPTH, Request};
 use crate::sound::Packets;
 use crate::{
     AUDIO_CHANNEL, AUDIO_RECV_SLOTS, BODY, CONTROL_RECV_SLOTS, CONTROL_SEND_SLOTS, VIDEO_CHANNEL,
@@ -40,9 +38,6 @@ const REPORT_EVERY: u32 = 16;
 
 /// Everything the thread is handed at spawn.
 pub(crate) struct Attached {
-    #[cfg(feature = "external-video")]
-    pub external_controls: bool,
-    #[cfg(feature = "external-video")]
     pub external_consumer: Option<std::thread::Thread>,
     pub socket: Socket,
     pub servers: Vec<SocketAddr>,
@@ -53,12 +48,6 @@ pub(crate) struct Attached {
     /// identifiers are derived from.
     pub relay: Option<config::Relay>,
     pub relay_seed: [u8; 16],
-    /// The gateway's mapping of the attempt's port, read without a lock;
-    /// none when no mapping is kept.
-    pub mapping: Option<Reader>,
-    /// Where the translation in front of the port is kept, for what the
-    /// attempt's own reflexive answers say of it.
-    pub nat: crate::nat::Shared,
     pub ours: (String, String),
     pub theirs: (String, String),
     pub material: [u8; 36],
@@ -69,8 +58,6 @@ pub(crate) struct Attached {
     pub asked: mpsc::Receiver<Ask>,
     /// The consumer end of the input ring; the seam holds the producer.
     pub requests: Arc<Ring<Request, RING_DEPTH>>,
-    /// The consumer end of the microphone's ring, likewise.
-    pub microphone: Arc<Ring<MicFrame, MICROPHONE_DEPTH>>,
     pub emit: events::Sender<Event>,
     pub telemetry: Arc<Telemetry>,
     pub units: Units,
@@ -106,17 +93,12 @@ fn attach_send<'a>(
 
 pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
     let Attached {
-        #[cfg(feature = "external-video")]
-        external_controls,
-        #[cfg(feature = "external-video")]
         external_consumer,
         socket,
         servers,
         hosts,
         relay,
         relay_seed,
-        mapping,
-        nat,
         ours,
         theirs,
         material,
@@ -126,7 +108,6 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
         arrivals,
         asked,
         requests,
-        microphone,
         emit,
         telemetry,
         units,
@@ -220,18 +201,14 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
     let mut shell = Shell::new(socket, wake, endpoint);
     let _ = epoch.set(shell.base());
     let mut driver = Driver::new(init, units, packets, emit.clone(), Arc::clone(&telemetry));
-    #[cfg(feature = "external-video")]
-    driver.external_controls(external_controls);
     let mut reported: Vec<SocketAddr> = Vec::new();
     let mut offered = false;
-    let mut mapped = false;
     let mut pass: u32 = 0;
 
     while !running.stopping() {
         let arrivals = &arrivals;
         let asked = &asked;
         let requests = &requests;
-        let microphone = &microphone;
         let driving = &mut driver;
         let mut leaving = false;
         let mut ended: Option<Outcome> = None;
@@ -253,27 +230,15 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
                     Ask::Leave => leaving = true,
                 }
             }
-            // Input in the order the application gave it, the viewport
-            // taking effect for what follows it.
+            // Application input is already framed by the retained UI.
             while let Some(request) = requests.pop() {
-                match request {
-                    #[cfg(feature = "external-video")]
-                    Request::External { bytes, len } => driving.send_external(
-                        endpoint.session(),
-                        bytes.get(..usize::from(len)).unwrap_or_default(),
-                    ),
-                    Request::Input(input) => driving.send_input(endpoint.session(), &input),
-                    Request::Viewport(viewport) => driving.set_viewport(viewport),
-                    Request::Video(flags) => driving.set_flags(endpoint.session(), flags),
-                    Request::Decoder(flags) => {
-                        driving.switch_decoder(endpoint.session(), flags);
-                    }
-                }
-            }
-            // The microphone, oldest frame first; the driver decides whether
-            // the host takes it.
-            while let Some(frame) = microphone.pop() {
-                driving.send_microphone(endpoint.session(), &frame);
+                driving.send_external(
+                    endpoint.session(),
+                    request
+                        .bytes
+                        .get(..usize::from(request.len))
+                        .unwrap_or_default(),
+                );
             }
         }) {
             Ok(turn) => turn,
@@ -290,7 +255,6 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
         if let Some(outcome) = driver.turn(shell.endpoint(), now) {
             ended = Some(outcome);
         }
-        #[cfg(feature = "external-video")]
         if let Some(consumer) = &external_consumer {
             consumer.unpark();
         }
@@ -349,14 +313,6 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
             .reflexive()
             .filter(|addr| !reported.contains(addr))
             .collect();
-        if !fresh.is_empty() {
-            // What the answers so far say of the translation, once they can.
-            let answers: Vec<_> = shell.endpoint().conn().answers().collect();
-            let port = shell.socket().local_addr().map_or(0, |local| local.port());
-            if let Some(observed) = crate::nat::attempt(&answers, &servers, port) {
-                crate::nat::publish(&nat, observed);
-            }
-        }
         for addr in fresh {
             reported.push(addr);
             // Raised already, as a host candidate: where nothing translates --
@@ -370,71 +326,11 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
                 lan: addr.is_ipv6(),
             });
         }
-        // The gateway's mapping, once it is confirmed.
-        if !mapped {
-            match offer(mapping.as_ref().and_then(Reader::external), &reported) {
-                Offer::Unconfirmed => {}
-                Offer::Known(addr) => {
-                    mapped = true;
-                    lowlat_common::log_info!(
-                        "client: the gateway's mapping confirmed, mapped={addr} offered=0"
-                    );
-                }
-                Offer::New(addr) => {
-                    mapped = true;
-                    lowlat_common::log_info!(
-                        "client: the gateway's mapping confirmed, mapped={addr} offered=1"
-                    );
-                    reported.push(addr);
-                    emit.send(mapped_candidate(addr));
-                }
-            }
-        }
-        #[cfg(feature = "external-video")]
         if let Some(consumer) = &external_consumer {
             consumer.unpark();
         }
     }
     telemetry.state.store(2, Ordering::Relaxed);
-}
-
-/// What the gateway's mapping adds to the candidates.
-#[derive(Debug, PartialEq, Eq)]
-enum Offer {
-    /// Nothing yet: no reflexive server has seen the gateway's own address,
-    /// or one saw another, a translator beyond the gateway.
-    Unconfirmed,
-    /// Confirmed, and a reflexive candidate is the mapped address already,
-    /// as behind a gateway that keeps ports.
-    Known(SocketAddr),
-    /// Confirmed, and the one address of the client's a peer can reach
-    /// behind a gateway that moves source ports.
-    New(SocketAddr),
-}
-
-/// The mapping a mapper states, against the reflexive addresses reported so
-/// far: offered when a reflexive server saw the gateway's own address, so
-/// nothing translates beyond it and the mapped port is open to anyone.
-fn offer(external: Option<SocketAddrV4>, reported: &[SocketAddr]) -> Offer {
-    let Some(addr) = external.and_then(|external| confirmed(external, reported)) else {
-        return Offer::Unconfirmed;
-    };
-    if reported.iter().any(|seen| canonical(*seen) == addr) {
-        Offer::Known(addr)
-    } else {
-        Offer::New(addr)
-    }
-}
-
-/// The mapped address as a peer is offered it: unmarked, neither an address
-/// of this machine nor a reflexive server's report of this socket, so a peer
-/// checks it once the readiness marker has come, as it does a reflexive one.
-fn mapped_candidate(addr: SocketAddr) -> Event {
-    Event::Candidate {
-        addr,
-        from_stun: false,
-        lan: false,
-    }
 }
 
 /// Release the relay's allocation on the way out, rather than hold a relay
@@ -447,36 +343,5 @@ fn release(shell: &mut Shell<'_, Session<'_>>) {
     if matches!(relay.state(), RelayState::Setup | RelayState::Ready(_)) {
         relay.release();
         let _ = shell.turn(|_| {});
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::net::Ipv4Addr;
-
-    /// Offered once a reflexive server saw the gateway's address, at
-    /// whatever port and in either notation; not again where a reflexive
-    /// candidate is it already; and unmarked.
-    #[test]
-    fn the_mapping_is_offered_once_confirmed_and_unmarked() {
-        let external = SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 7), 25637);
-        let beyond: SocketAddr = "198.51.100.9:25637".parse().unwrap();
-        let moved: SocketAddr = "203.0.113.7:51461".parse().unwrap();
-        let kept: SocketAddr = "[::ffff:203.0.113.7]:25637".parse().unwrap();
-        let mapped = SocketAddr::V4(external);
-        assert_eq!(offer(None, &[moved]), Offer::Unconfirmed);
-        assert_eq!(offer(Some(external), &[]), Offer::Unconfirmed);
-        assert_eq!(offer(Some(external), &[beyond]), Offer::Unconfirmed);
-        assert_eq!(offer(Some(external), &[beyond, moved]), Offer::New(mapped));
-        assert_eq!(offer(Some(external), &[kept]), Offer::Known(mapped));
-        assert!(matches!(
-            mapped_candidate(mapped),
-            Event::Candidate {
-                from_stun: false,
-                lan: false,
-                ..
-            }
-        ));
     }
 }

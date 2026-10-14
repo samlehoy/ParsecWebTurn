@@ -76,6 +76,7 @@ impl Attempt {
                 if !state.output_finished { state.output_finished = true; let _ = output.finish_values(None); }
                 }
             }
+            withdraw_pending(&worker_state);
             let mut retired = worker_session.lock().unwrap_or_else(|e| e.into_inner()).take();
             if let Some(session) = &mut retired { session.close(); }
 
@@ -307,6 +308,28 @@ fn switch_offer(state: &Mutex<State>, cancel: &AtomicBool, id: &str, data: Value
     Ok(true)
 }
 
+// A cancelled relay retry may not have reached the retained guest yet. Retire
+// its native account offer here, outside the UI/session locks. Established
+// sessions leave through the SDK's existing authenticated teardown instead.
+fn withdraw_pending(state: &Mutex<State>) {
+    let pending = {
+        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.established {
+            return;
+        }
+        state.template.take().and_then(|mut message| {
+            let writer = state.writer.clone()?;
+            message["action"] = json!("offer_cancel");
+            message["payload"]["attempt_id"] = json!(state.wire_id);
+            message["payload"]["data"] = json!({});
+            Some((writer, message.to_string()))
+        })
+    };
+    if let Some((writer, message)) = pending {
+        let _ = writer(message);
+    }
+}
+
 // Serialize guest completion against retirement. A delayed offer must never
 // write credentials or wake a guest buffer reused by the next attempt.
 fn complete_offer(
@@ -330,32 +353,16 @@ fn complete_offer(
     Ok(true)
 }
 
-// BUD uses an explicit direct route, or one UDP relay when Force TURN is selected.
-// TCP/TLS URLs are never interpreted as UDP and there is no silent fallback.
+// Force TURN starts on UDP relay; otherwise direct discovery is tried first.
+// The worker may retry via UDP relay without changing the selected BUD transport.
 async fn route(
     manager: &crate::connection_settings::Manager,
 ) -> Result<(Route, crate::connection_settings::Settings)> {
     let (settings, servers) = manager.resolve_bud().await?;
     if settings.force_relay {
-        for server in servers {
-            for raw in server.urls {
-                let url = webrtc::ice::url::Url::parse_url(&raw)?;
-                if url.scheme == webrtc::ice::url::SchemeType::Turn
-                    && url.proto == webrtc::ice::url::ProtoType::Udp
-                {
-                    let addr = tokio::net::lookup_host((url.host.as_str(), url.port))
-                        .await?
-                        .find(|a| a.is_ipv4())
-                        .context("BUD UDP TURN has no IPv4 address")?;
-                    return Ok((
-                        Route::turn_udp(addr, &server.username, &server.credential),
-                        settings,
-                    ));
-                }
-            }
-        }
-        bail!("Experimental BUD requires a UDP TURN URL for Force TURN");
+        return Ok((udp_relay(servers).await?, settings));
     }
+
     let mut stun = Vec::new();
     for server in servers {
         for raw in server.urls {
@@ -378,7 +385,10 @@ async fn relay_route(
     manager: &crate::connection_settings::Manager,
     settings: &crate::connection_settings::Settings,
 ) -> Result<Route> {
-    let servers = manager.resolve_bud_relay(settings).await?;
+    udp_relay(manager.resolve_bud_relay(settings).await?).await
+}
+
+async fn udp_relay(servers: Vec<webrtc::ice_transport::ice_server::RTCIceServer>) -> Result<Route> {
     for server in servers {
         for raw in server.urls {
             let url = webrtc::ice::url::Url::parse_url(&raw)?;
@@ -508,8 +518,6 @@ fn run(
                 }
                 Event::Ended { .. } => ended = true,
                 Event::ExternalControl { bytes } => shared.controls.push_back(bytes.into()),
-                // Semantic SDK events are already represented by original control frames.
-                _ => {}
             }
         }
         let mut ingress = media.ingress();
@@ -712,6 +720,13 @@ mod tests {
         assert_eq!(sent[2]["payload"]["to"], "real-host");
         assert_eq!(sent[2]["payload"]["attempt_id"], "isolated-turn-1");
         assert_eq!(sent[2]["payload"]["data"]["sync"], true);
+        drop(sent);
+        withdraw_pending(&attempt.state);
+        withdraw_pending(&attempt.state);
+        let sent = writes.lock().unwrap();
+        assert_eq!(sent.len(), 4, "pending offer is withdrawn only once");
+        assert_eq!(sent[3]["action"], "offer_cancel");
+        assert_eq!(sent[3]["payload"]["attempt_id"], "isolated-turn-1");
     }
 
     #[test]
