@@ -1,147 +1,256 @@
 # ParsecWebTurn
 
-A portable Windows application for **Parsec Web**, written in **Rust with Tauri 2**. It opens the web client inside the app and lets you use Cloudflare Realtime or your own STUN/TURN servers, including coturn, eturnal and ExpressTURN.
+**Connect to your Parsec computer with a lightweight, portable client.**
 
-The connection can be direct when the network allows it, or use a TURN relay when needed. No VPN or driver installation is required. A TLS TURN endpoint on port 443 can help on restrictive networks, but the network must also permit Parsec's HTTPS/WebSocket services and the selected relay.
+ParsecWebTurn is an independent community client for Parsec, built with Rust.
+The goal is simple: smooth remote video and sound, more control over
+how you connect, and support for more devices over time.
 
-<img width="1840" height="865" alt="image" src="https://github.com/user-attachments/assets/baa323f6-3afc-4622-8cfe-38ec51c93116" />
+The native client runs without Edge or WebView2. It keeps Parsec's web-client core
+and familiar interface, while Rust handles the connection, video, audio and input.
+On Windows, you launch a single **ParsecWebTurn.exe**.
 
-## Requirements and first run
+> **You are viewing the native client's development branch.** It already supports
+> real remote sessions, but some features are still being built. The `main` branch
+> and current stable release use the earlier Tauri/WebView2 client.
+> ParsecWebTurn is not the official Parsec app and is not affiliated with Parsec or Unity.
 
-- Windows 10/11 x64, with **Microsoft Edge WebView2 Runtime** already installed.
-- A writable directory for the executable, settings and browser profiles.
-- Cloudflare TURN credentials or an existing custom TURN account.
+This branch contains only the native client. The earlier WebView2 source remains
+available on `main` and in the [v0.7.0 source](https://github.com/vampywiz17/ParsecWebTurn/tree/v0.7.0).
 
-The WebView2 runtime is **separate from the Microsoft Edge browser**. Windows 11 normally includes it, but managed computers may have different configurations. ParsecWebTurn does not silently install a runtime or require administrator rights when the runtime is present. If it is missing, ask your administrator or use Microsoft's [WebView2 Runtime installer](https://developer.microsoft.com/en-us/microsoft-edge/webview2/).
+## Why this project?
 
-1. Extract the release ZIP to a writable directory.
-2. Run `ParsecWebTurn.exe`.
-3. Choose Cloudflare Realtime or Custom server, enter the relay details, and click **Save & connect**.
+- **A portable client:** one executable, with no browser runtime to install.
+- **GPU-focused video:** use the graphics card for the video pipeline and aim to
+  keep CPU work low.
+- **More connection options:** bring custom STUN/TURN servers to the native client,
+  building on the earlier WebView2 version.
+- **More platforms:** work toward Linux, then explore Android and Android TV.
+- **Better visibility:** useful connection and playback statistics from the
+  native client itself.
 
-STUN and TURN addresses have separate fields. A custom configuration can contain
-only STUN URLs, without TURN credentials. **STUN only — no TURN relay** ignores
-all configured TURN servers; with Cloudflare selected and the STUN field empty,
-it uses `stun:stun.cloudflare.com:3478` without an API token or credential request.
-An explicit STUN address also overrides Cloudflare's STUN addresses while keeping
-its generated TURN credentials when relay is enabled. STUN-only can work over
-LAN, VPN or a reachable internet path, but has no relay fallback. Configuring TURN
-allows relay selection even when a direct path exists. This setting takes effect
-on the next connection; it preserves the client's ICE transport policy.
-4. Sign into Parsec inside the application.
+These are development goals, not a promise of lower resource usage than every
+other client. Performance depends on your computer, graphics driver and stream.
 
-Web assets and the ICE override are embedded in the executable. There is no browser extension to install or `extension` directory to copy. The native app menu provides **Connection settings**, **Connection stats**, **Developer tools** and **Exit**. Settings can be saved without interrupting an active connection; **Save & connect** replaces the current session.
+## What can I use today?
 
-On subsequent launches, valid saved settings open Parsec automatically. Use `ParsecWebTurn.exe --settings` or `/settings` to start with the settings window instead. `--data-dir <directory>` selects a different portable configuration/profile directory.
+The native Windows development build currently supports:
 
-## Application updates
+- Signing in, browsing your computers and connecting to a Parsec host.
+- H.264 video and optional H.265 / HEVC Main (8-bit) playback with a D3D11-based
+  GPU video pipeline.
+- Opus audio, keyboard and mouse input.
+- The familiar Parsec stream overlay, including its relative-mouse option. The
+  overlay uses software drawing for compatibility; streamed video stays on the
+  existing GPU path. `--d3d-overlay` selects the previous overlay renderer for
+  troubleshooting.
+- Remembering your sign-in and Parsec preferences between launches.
+- Graceful disconnect from the overlay and when closing the app.
+- Custom STUN servers and TURN relays over UDP, TCP or TLS, including Cloudflare.
+- A separate Connection stats window with live traffic, RTT, FPS, video/audio details,
+  encryption status and this app's CPU/GPU usage. It identifies the active direct or
+  TURN route and, when available, the relay server actually in use.
+- Windows media scheduling and device-supported low-latency audio output,
+  with automatic fallback for endpoints that need the standard audio path.
+- A saved video GPU choice for multi-GPU systems, with Automatic as the default.
 
-On startup the application checks the latest stable GitHub release metadata in the background and notifies you when a newer version is available. The update window shows release notes and **Download ZIP from GitHub** opens the official release ZIP's direct HTTPS link in your default browser. **App → Check for updates** checks manually and shows network/rate-limit errors; background failures do not interrupt startup.
+Your remote computer still needs the regular Parsec host. Not every setting in
+the original interface has been integrated or tested yet.
 
-The app does not download EXEs, create an update helper, replace itself or restart for updates. Download and extract the ZIP, close the app, and replace only `ParsecWebTurn.exe` manually. Keep `settings.json` and `WebView2Profile` to retain credentials and the Parsec sign-in. Your browser and your organization's download controls handle the download. An organization may still block unsigned software or GitHub downloads; this feature does not bypass those policies. Published `SHA256SUMS.txt` checksums establish file integrity, not publisher identity.
+## Getting started
 
-Set `PARSECWEBTURN_NO_UPDATE_CHECK=1` to skip automatic checks; the menu check remains available. Pre-update-notification releases such as v0.5.0 need one manual EXE upgrade to gain version notifications.
+1. Download **ParsecWebTurn-dev-win64** from a successful
+   [native Windows build](https://github.com/vampywiz17/ParsecWebTurn/actions/workflows/native-wasm-prototype.yml?query=branch%3Adev).
+   GitHub may require you to sign in to download build artifacts.
+2. Unzip the package and run **ParsecWebTurn.exe**.
+3. Sign in to your Parsec account and select your computer.
 
-## Upgrading from v0.4.0
+You need Windows x64 and compatible graphics drivers with D3D11 and OpenGL support.
+There is no installer and the app does not require administrator rights to run.
+Windows may separately ask about firewall access; network rules can affect whether
+a connection succeeds.
 
-Keep your existing `settings.json` beside the new executable. The field names and Windows DPAPI / CurrentUser format remain compatible, so saved API tokens and TURN passwords continue to work under the same Windows account.
+**Shortcuts:** F11 switches fullscreen on or off. F8 shows or hides the video layer
+if you need to reach the interface underneath. Use the Parsec overlay for stream
+controls, volume and relative mouse mode.
 
-Tauri uses a new `WebView2Profile` directory. The previous Edge `Profile` is not modified or imported; sign into Parsec again once. The settings and Parsec windows share a browser environment, with separate native permissions. Keep the profile private. Only one app instance can use the same data directory at a time.
+**Help > About ParsecWebTurn** also compares the embedded core version with the
+version currently served at `https://web.parsec.app/parsecd`. Opening About starts
+a background, read-only check. The response is streamed through a small memory
+buffer to inspect its version labels, then discarded; no core is saved, executed
+or installed. Successful results are cached for one hour in the running app.
+Unavailable or unrecognized versions remain unknown; a different label does not
+establish compatibility or indicate which other Parsec release channels are newer.
+This public-file convention may change. The embedded core remains SHA-pinned and
+can only be changed after compatibility testing and a new app build.
+`PARSECWEBTURN_NO_UPDATE_CHECK` disables this check as well as app update checks.
 
-## Cloudflare Realtime
+Open **Help > Check for updates** to check for a newer stable GitHub release and
+read its release notes in a native window. The app also checks once in the
+background at startup and shows an available update without taking focus away
+from your current window. It checks stable releases only, including when running
+a dev build: `0.9.3` is newer than `0.9.3-dev.1`, while an older stable release is
+never offered as a downgrade. Dev prereleases are not offered by this updater.
 
-Create a Cloudflare Realtime TURN key and enter its **Key ID** and **API token**. ParsecWebTurn requests a temporary username/password directly from Cloudflare over HTTPS. The default lifetime is 24 hours; accepted values are 60–172800 seconds (maximum 48 hours).
+Choose **Download ZIP** to open the official release archive in your default
+browser, then close the app and replace `ParsecWebTurn.exe` manually. Keep
+`settings.json`; your saved native sign-in and preferences remain in place.
+The app does not download, execute or install updates itself. Network failures
+do not block startup or streaming. Set `PARSECWEBTURN_NO_UPDATE_CHECK=1` in the
+environment to disable the startup check; the Help command remains available.
 
-**Reuse valid credentials for faster startup** enables an optional DPAPI-encrypted cache. It is reused only when the key, token and lifetime match, the clock has not moved behind the issue time, and more than a quarter of the requested lifetime remains (at least five minutes). Cache corruption or write failures do not prevent a fresh request. Existing v0.4.0 cache entries can also be read.
+Open **Connection stats** or press **Ctrl+Shift+S** for native measurements in a
+separate window. Unknown measurements stay unknown. Traffic shows actual usage,
+not your maximum connection speed. Audio format remains visible during silence;
+the host's configured audio bitrate is not exposed. Network packet loss is not
+available for this client's SCTP video transport; local dropped frames are separate.
+Hardware decode shows **Likely (D3D11 decoder surface)** when the decoded frame
+uses a decoder-specific GPU surface. This is evidence from the actual output,
+not a guarantee of hardware execution. A plain GPU surface is insufficient;
+missing evidence stays **Not reported**.
 
-Cloudflare requests have a 20-second timeout, reject redirects and limit responses to 1 MiB. Errors do not include API tokens or reflected server response bodies.
+Open **Settings** or press **Ctrl+,** to change servers. The Network page shows only
+the fields for your selected TURN provider, with descriptions beside each setting.
+Leave the STUN field empty to use Parsec's default. For LAN/VPN connections, you
+can supply your own STUN server and enable **STUN only** to exclude all TURN relays.
+For a custom relay, enter its TURN URL, username and password; or select Cloudflare
+and enter your TURN Key ID and API token. Changes apply on the next connection.
 
-Credentials are resolved when connecting, **not refreshed within an already open session**. Choose a lifetime longer than the session, or reconnect to obtain a new pair. Cached credentials may have less time remaining.
+Enable **Force TURN relay** to use TURN even when a direct route is available,
+for example when a VPN's direct route gives unstable playback. This requires a
+configured TURN provider and cannot be combined with STUN only. Forced mode retains
+all configured TURN URLs and keeps STUN discovery enabled. It sends the Parsec
+readiness signal once the host answer and first relay candidate are available,
+without waiting for later TLS/TCP allocations. Later candidates continue through
+the same connection; failed endpoints do not trigger sequential reconnects.
+Without this checkbox, normal ICE selection and timed transport tiers are unchanged.
 
-## Custom TURN (coturn, eturnal, ExpressTURN)
+The embedded Parsec **Hotkeys** page remains responsible for configuring and
+saving stream shortcuts. Custom bindings take priority over conflicting native
+shortcuts, including F8/F11. They work while the client has focus; background
+global hotkeys are not implemented by this core.
 
-Enter one STUN/TURN URL per line, for example:
+**Video GPU** selects the adapter for native stream decoding and rendering;
+it does not change the host or the GPU used by the embedded interface. Automatic
+keeps Windows' default adapter. Choose a GPU that supports D3D11 and H.264 decoding.
+If a saved GPU becomes unavailable or cannot be identified uniquely, select
+Automatic or another available GPU before reconnecting. Using a different GPU
+from your display can introduce driver-managed transfers on hybrid systems.
 
-```text
-stun:turn.example.com:3478
-turn:turn.example.com:3478?transport=udp
-turn:turn.example.com:3478?transport=tcp
-turns:turn.example.com:443?transport=tcp
-```
+Enable **Prefer H.265 / HEVC** in Settings to advertise HEVC support on your next
+connection. This needs a compatible GPU and an installed Windows HEVC decoder.
+The host may still send H.264; Connection stats shows the codec actually received.
 
-All configured TURN URLs share the supplied username/password. STUN-only configurations can leave both empty. STUN/STUNS URIs accept a host and optional port, without a query. TURN/TURNS URIs additionally accept `?transport=udp` or `?transport=tcp`, the supported WebRTC subset. Scheme names are case-insensitive and normalized to lowercase before passing them to WebView2. The existing port 53 filter is an application compatibility policy, not an RFC requirement or a complete list of browser port restrictions.
+Examples: `turn:turn.example.com:3478?transport=udp`,
+`turn:turn.example.com:3478?transport=tcp`, or
+`turns:turn.example.com:443?transport=tcp`. The last option requires a TLS-enabled
+TURN server with a trusted certificate; changing the port alone does not enable TLS.
 
-The document-start hook replaces the Parsec ICE server list before the native RTCPeerConnection constructor runs. Its dictionary adapter replaces only `iceServers`: the native WebIDL converter reads all other fields, including inherited/non-enumerable fields and getters with their original receiver, and rejects invalid primitive arguments. Frozen inputs are supported without mutation. The same adapter applies to `setConfiguration`. This is an application integration hook, not an official Parsec configuration API; SDP, candidates and priorities are left to the client/browser. Changing active ICE credentials can require an ICE restart and offer/answer negotiation; the app does not initiate this automatically.
+Sign-in and preferences are saved under `%LOCALAPPDATA%\ParsecWebTurn\Native`,
+encrypted for your Windows user. Replacing the EXE keeps these settings. When
+moving from the older WebView2 client, sign in once in the native app; your old
+settings and browser profile are left in place.
 
-Custom mode makes no Cloudflare calls. Use static credentials or a temporary username/password generated by your TURN service. A TURN REST `static-auth-secret` or eturnal shared `secret` is **not a client password**. The app does not generate or renew custom REST credentials.
+For the previous WebView2-based stable client, see
+[Releases](https://github.com/vampywiz17/ParsecWebTurn/releases).
 
-For [coturn](https://github.com/coturn/coturn/blob/master/examples/etc/turnserver.conf), use a long-term user or a generated REST pair. For [eturnal](https://eturnal.net/doc/), use configured static credentials or a generated pair. For ExpressTURN, enter the host, transport, port and credentials supplied by the service. TLS endpoints need a certificate trusted by WebView2; server firewall and relay-port setup remain server-side responsibilities.
+## Milestones and roadmap
 
-Switching providers preserves each provider's saved credentials. Password fields stay blank in the settings UI: leave them blank to retain the saved value, enter a replacement, or select **Forget saved…** to remove it. Only valid settings are written.
+**Available** means implemented in the native dev build. **Planned** means it is
+not available there yet. **Exploring** means a possible future direction, with no
+delivery commitment. There are no fixed release dates for these milestones.
 
-Closing the Parsec window exits the entire application, including hidden settings and open statistics. Closing settings while Parsec is running hides only the settings window. Reconnecting from settings replaces the Parsec window internally without exiting the app.
+| Milestone | Status | What it means for you |
+| --- | --- | --- |
+| Native Rust WebRTC client | Available | Connect to a Parsec host without WebView2, using the existing Parsec WASM core. |
+| Native Windows video, audio and controls | Available | D3D11 video output, H.264 playback, Opus sound, keyboard, mouse and the Parsec overlay. |
+| H.265 / HEVC playback | Available (opt-in) | Request HEVC Main (8-bit), recognize the incoming codec and decode it through Media Foundation with D3D11 GPU presentation. Verified in a live 1080p session; requires compatible GPU/decoder support. H.264 remains the default. |
+| Single executable and saved settings | Available | Run the portable EXE; keep your sign-in and preferences after restarting. |
+| STUN connectivity | Available | Parsec's default STUN server, custom discovery servers and a STUN-only option for LAN/VPN use. |
+| Custom STUN and TURN relay support | Available | Cloudflare or custom TURN servers, including UDP, TCP and TLS server connections. Compatible with the earlier client's server settings file. |
+| More audio formats and menu integration | Planned | Support additional audio choices and review which Parsec settings need native integration. |
+| Native connection and playback statistics | Available | Separate native stats window: active direct/TURN route, relay server, RTT, traffic, decoded FPS, video/audio details, DTLS state and app CPU/GPU usage. Missing data stays unknown. |
+| Vulkan rendering backend | Planned | Add another GPU rendering option alongside D3D11 and build toward Linux support. |
+| D3D12 rendering backend | Exploring | Investigate an additional native GPU rendering option on Windows. |
+| Linux client, distributed as Flatpak | Planned | Make the native client available on Linux with straightforward installation. |
+| Native Android and Android TV clients | Exploring | Investigate a mobile/TV client using the shared Rust foundation and a Vulkan rendering path. |
 
-Automatic startup keeps settings hidden to avoid a brief settings-window flash. The ready settings form appears on first run, with `--settings`, or when saved settings or connection preparation fail.
+Vulkan is one part of bringing the client to other platforms. Linux and Android
+also need their own video decoding, audio, window and input integration; adding
+Vulkan alone will not make the Windows client run there.
 
-## Connection statistics
+## The Parsec core, beyond the browser
 
-Open **Connection stats** from the native menu. The application samples `RTCPeerConnection.getStats()` once per second and displays:
+Although our Parsec core comes from the web client, it runs here inside a native
+Rust application, using an embedded WebAssembly runtime and a precompiled core.
+It does not need a browser or WebView2. Rust supplies the surrounding connection,
+video decoding, sound and input support. Our investigation points to shared
+native foundations with Parsec's official client and SDK, rather than an entirely
+separate browser-only implementation. That does not establish that their code
+or feature sets are identical.
 
-- Incoming/outgoing WebRTC traffic in Mbps, calculated from byte-counter changes.
-- RTT of the selected ICE candidate pair, when available.
-- Direct/relay route and transport of the most active connection.
-- Video FPS, codec, decoder, resolution and lost packets, when the web client exposes standard inbound-video statistics.
+WebRTC acts as the **transport** in this client. Video, audio and control messages
+travel through WebRTC data channels using Parsec's own application protocol;
+they do not use the usual WebRTC audio/video track and RTP playback pipeline.
+The WebRTC connection itself still uses standard ICE, DTLS and SCTP mechanisms.
 
-A document-start hook counts frames delivered through the public WebCodecs VideoDecoder API when RTP video statistics are absent. This is decoded FPS, not display refresh rate; the original callback keeps ownership of every frame. Native WebIDL callback validation, inherited/getter members and frozen inputs are preserved.
+This lets us rebuild the surrounding client in Rust while retaining the Parsec
+core and host compatibility. We can control native decoding and rendering,
+including the working HEVC path, while keeping WebRTC's connection options:
+direct routes, custom STUN discovery and TURN relays over UDP, TCP or TLS.
+We reuse the core rather than rewriting it, and build our own native integration
+around it.
 
-**Detailed decoder diagnostics (experimental)** in Connection settings is an optional, disabled-by-default extension. It uses WebView2's documented DevTools protocol API and Chromium's experimental Media domain to supplement codec, decoder, hardware decoding, profile, backend and visible resolution. These are vendor diagnostics, not W3C WebRTC data, and availability/message formats can vary by runtime. Apply the setting on your next connection. Unavailable information remains unknown and Media failures do not block the standard statistics or connection. No remote debugging port is opened in the shipped application.
+## STUN, TURN and restricted networks
 
-Video packet loss is available only when inbound RTP statistics provide it. Parsec's data-channel video does not expose an equivalent counter: decoded/dropped frames, ICE checks and local send discards cannot establish end-to-end packet loss. Missing loss statistics remain unknown rather than zero.
+**STUN helps find a direct connection. TURN forwards traffic when a direct route
+is unavailable.** This can be useful on restrictive networks or computers where
+installing a VPN is not possible.
 
-Route describes the selected ICE candidates, whose local/remote types are displayed. Configuring TURN does not force a relay; ambiguous candidate-pair selection stays unknown.
+The native dev client configures its Rust WebRTC transport directly. No browser
+or JavaScript injection is involved. It reads the earlier client's `settings.json`
+beside the executable, preserving its fields and Windows-protected credentials.
+To use a different writable directory, launch with `--data-dir "C:\YourFolder"`.
+Your Parsec sign-in profile remains in its separate location described above.
 
-Relay detection checks the selected candidate types **and the selected local TURN transport**. Chromium can rename a local relay candidate to peer-reflexive (`prflx`) while preserving `relayProtocol` and its TURN URL; this still confirms relay use. The selected server URL is matched to the configured TURN endpoints with default port/transport normalization. The panel shows route evidence, whether our configured TURN is in use, the matched server and the TURN transport separately from the ICE transport. A remote-only relay does not mean our configured TURN is used.
+TURN is an alternative route offered to ICE, and may be selected even when a
+direct route is possible. **STUN only** prevents this by excluding TURN entirely.
+With that option enabled, Cloudflare credentials are not requested or required.
 
-If report selection is ambiguous, the data-channel ICE transport's `getSelectedCandidatePair()` supplies route information without guessing another pair's RTT. When the report identifies a pair, both complete endpoints must match before transport data can enrich it. Peer-reflexive candidates can also be correlated against gathered local/remote candidates using exact address, port and protocol matches; conflicting ICE generations or ambiguous origins remain unverified. Positive TURN evidence always wins. A confirmed **Direct — no TURN** route can run through a VPN underneath WebRTC; this label describes TURN use, not the physical network path. Candidate addresses are used only inside the WebView and are not exported in statistics.
+The goal is to offer direct connections and user-chosen relays without requiring
+a VPN or Parsec's paid relay offering. Your relay provider may still charge for
+traffic. A relay also needs to be reachable and permitted by the network; no
+client can guarantee access through every company or school firewall.
 
-Merely gathering a relay candidate or reaching a TURN server does not prove that the stream uses it. A TURN URL on a STUN-derived candidate is also insufficient. No connection policy or live session is changed to test routing.
+## Three approaches, one goal
 
-Parsec starts in a normal window. The application owns fullscreen: **F11** toggles it, **Ctrl+Shift+W** restores windowed mode, and the settings screen has a recovery button. Document-start capture handlers reserve these shortcuts even when the Parsec canvas has focus and the native menu is hidden. Automatic HTML fullscreen and locking Escape/F11/KeyW are blocked. The **App** and **View** native submenus remain separate from Parsec's controls; the menu is hidden during fullscreen.
+The illustration below compares the native Rust direction, the official Parsec
+app and the earlier Tauri/WebView2 approach.
 
-Traffic is **actual usage, not a bandwidth-capacity test**. RTT is a WebRTC path measurement, not a separate ICMP ping. Parsec may carry video through data channels; in that case traffic/RTT can be available while video-specific fields remain unknown. Multiple connected peers have their traffic rates summed; route/RTT come from the most active connected peer. Stale samples are marked and their rate/RTT values cleared after five seconds.
+> **Concept illustration:** it includes planned features and potential benefits.
+> In particular, Vulkan and broader platform support are not present in this
+> dev build. Use the roadmap above
+> for the current status. The image is not a benchmark or an up-to-date reference
+> for the official app's features or pricing.
 
-The remote Parsec view can submit bounded statistics and toggle or exit its own fullscreen mode. It cannot invoke settings, credential storage, fallback or connection commands. Diagnostics never include candidate IP addresses or credentials.
+![Comparison of native Rust, official Parsec and Tauri/WebView2 clients, including planned rendering and connection options](assets/native-client-comparison-v2.png)
 
-This migration does not claim to fix HEVC driver issues or long-session freezing. WebView2 still uses a browser engine for the web client. Developer tools are available from the menu for troubleshooting.
+[Open the full-size comparison](assets/native-client-comparison-v2.png).
 
-## Local fallback
+## Help improve the client
 
-If the provider cannot supply usable credentials, the settings window offers **Connect using local ice.json instead**. Copy `ice.example.json` to `ice.json` and supply a valid `iceServers` object. The fallback is explicit and uses the same validation as provider responses.
+Found a problem? [Open an issue](https://github.com/vampywiz17/ParsecWebTurn/issues)
+with your app version, Windows version, graphics card and the steps to reproduce
+it. Say whether you are connecting directly, through a VPN or using the earlier
+WebView2 client's relay options. Never include passwords, session tokens or TURN
+credentials in a public report.
 
-## Security
+For implementation, build instructions and host-certificate compatibility details,
+see the [technical guide](docs/NATIVE_TECHNICAL.md). The
+[configuration compatibility notes](docs/NATIVE_CONFIG_COMPATIBILITY.md) describe
+compatibility of old STUN/TURN settings, and the
+[validation history](docs/NATIVE_DEV_0_8.md) records what has been tested.
 
-Saved secrets and the credential cache use Windows DPAPI for the current user. They are not portable to another Windows account. The web client's ICE configuration necessarily contains the active TURN username/password in memory; do not share developer-tools exports or browser profiles containing private data.
-
-The Parsec page has no native settings/storage privileges. The local settings and stats pages have separate, narrowly scoped Tauri capabilities and a content security policy. Only `https://web.parsec.app` receives the ICE override. GPU acceleration is left to WebView2; the application does not disable the browser sandbox or TLS verification.
-
-## Build
-
-Install stable Rust with the MSVC toolchain, Visual Studio C++ Build Tools / Windows SDK, WebView2 Runtime and Node.js (for regression tests). No Go toolchain, npm frontend framework or Tauri CLI is required.
-
-```powershell
-rustup component add rustfmt clippy
-./scripts/build.ps1
-```
-
-The script checks version consistency and formatting, runs Rust and JavaScript tests, runs Clippy, builds the embedded application and packages an explicit file allowlist. `src-tauri/Cargo.lock` locks dependencies. The Windows CI uses the same script; `v*` tags publish releases after successful validation.
-
-`node scripts/smoke-webview.cjs` tests the packaged app with an isolated WebView2 profile, a mock Parsec document and real loopback WebRTC traffic. It checks DPAPI saving, initialization order, traffic/RTT reporting and remote command isolation. The debugging port is enabled only in this test process; normal app launches do not expose it. CI runs this test before a release can be published.
-
-For development:
-
-```powershell
-cargo run --manifest-path src-tauri/Cargo.toml -- --settings --data-dir ./dev-data
-```
-
-## Attribution
-
-ParsecWebTurn is an independent community project, not affiliated with Parsec or Unity. The [Parsec icon](assets/README.md) identifies the Parsec-focused application. Parsec trademarks belong to their owners.
+Parsec and its client core belong to their respective owners. ParsecWebTurn is an
+independent project; included third-party license notices must accompany binary
+redistribution.

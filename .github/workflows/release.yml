@@ -28,24 +28,17 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - name: Validate, build and package
+          workspaces: src-native
+      - name: Validate, build and package native client
         shell: pwsh
         run: ./scripts/build.ps1
-      - name: Ensure CI WebView2 Runtime
-        shell: pwsh
-        run: ./scripts/setup-webview2-ci.ps1
-      - name: Native WebView2 smoke test
-        shell: pwsh
-        run: node scripts/smoke-webview.cjs
       - name: Publish release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
-          gh release create $tag ParsecWebTurn.exe "dist/ParsecWebTurn-$tag-win64.zip" dist/SHA256SUMS.txt --verify-tag --title "ParsecWebTurn $tag" --notes-file RELEASE_NOTES.md
+          $releaseOptions = @()
+          if ($tag.Contains('-')) { $releaseOptions = @('--prerelease', '--latest=false') }
+          gh release create $tag ParsecWebTurn.exe "dist/ParsecWebTurn-$tag-win64.zip" dist/SHA256SUMS.txt --verify-tag --title "ParsecWebTurn $tag" --notes-file RELEASE_NOTES.md @releaseOptions
           if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }

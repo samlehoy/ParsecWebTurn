@@ -1,14 +1,31 @@
-ParsecWebTurn v0.7.0 adds explicit STUN-only connections and expands connection statistics.
+ParsecWebTurn v0.9.3-dev.1 - Connection and input improvements
 
-- Separate STUN and custom TURN address fields. Existing mixed address lists migrate automatically.
-- **STUN only — no TURN relay** supports direct LAN/VPN/internet connections without offering a TURN relay. With Cloudflare selected and no custom STUN address, it uses Cloudflare's public STUN endpoint without an API token or generated TURN credentials.
-- Custom STUN addresses can also be used alongside Cloudflare's generated TURN configuration. When TURN is enabled, native ICE selects the route; a reachable direct path does not guarantee that ICE selects it.
-- Connection statistics include reported DTLS state, version, cipher and SRTP profile, plus application/WebView2 CPU and WebView2 GPU utilization when available.
-- Audio codec, sample rate and channel metadata remain visible after detection, including during silence. The sender's configured bitrate remains unknown when receiving APIs do not expose it; measured throughput is not substituted for it.
-- Grant clipboard-read permission for the exact Parsec web origin through Microsoft's documented WebView2 profile API.
+This native Windows development release improves connection routing, mouse and
+keyboard capture, overlay compatibility and streaming stability. Changes below
+are compared with v0.9.2-dev.1.
 
-**Known limitation:** client-to-host clipboard paste remains broken in the tested Parsec session and also reproduces in standalone Edge. The WebView2 permission fix does not resolve Parsec's end-to-end clipboard synchronization. HEVC driver issues and long-session freezing are not claimed to be fixed.
+## What's new and improved
 
-Download **ParsecWebTurn-v0.7.0-win64.zip**, extract it to a writable directory, and run `ParsecWebTurn.exe`. **Microsoft Edge WebView2 Runtime must be installed.** Ordinary use requires no administrator rights when the runtime is present; network connectivity depends on the selected STUN/TURN configuration.
+- **Force TURN relay:** a new Settings checkbox keeps the next connection on a TURN relay even when a direct route is available, including over a VPN. Conflicting STUN-only settings and missing custom TURN servers are checked before connecting.
+- **TURN transport preference:** relay connections prefer UDP, with TLS and then plain TCP available as timed fallbacks when the preferred route has not connected.
+- **Working immersive input:** Mouse confines the pointer to the client window, Keyboard forwards reserved shortcuts while the client has focus, and Both combines them. Capture is released on focus loss and disconnect; Windows security shortcuts remain controlled by Windows.
+- **Smoother relative mouse control:** host cursor signals now activate native Raw Input correctly, including during desktop drags. Changing direction no longer requires moving back from outside the client. Cursor Warp restores the host cursor position when leaving relative mode and respects its overlay setting.
+- **More compatible overlay:** software drawing is now the default for the interface, resolving the reported Intel overlay flicker. Video decoding and presentation retain their GPU path without adding decoded-frame CPU readback.
+- **Reliable disconnect:** disconnecting from the overlay returns to the computer list instead of freezing on a black screen. Callbacks from an ended stream cannot reveal its old video surface.
+- **Cleaner fullscreen:** the Settings, Connection stats and Help menu disappears in fullscreen and returns in windowed mode.
+- **Custom hotkeys:** Parsec hotkey assignments take priority when they conflict with native F8/F11, Settings or Connection stats shortcuts. Hotkey recording and saving remain handled by the original core.
+- **Less allocation and lock contention:** audio and video reuse bounded input buffers, and media hand-off holds the shared connection lock for less time.
+- **Video recovery:** after a temporary decoder error or input overload, the client can request a fresh keyframe and restart decoding. Recovery has bounded retries and depends on the host supplying the requested keyframe.
+- **Low-latency HEVC:** the 8-bit HEVC decoder also requests low-latency operation through Windows transform attributes when its codec API does not accept the existing request. The benefit depends on the decoder and driver.
 
-**Upgrading:** close the app and replace the EXE. Keep `settings.json` and `WebView2Profile` to preserve configuration, encrypted credentials and Parsec sign-in. Update notifications remain metadata-only; ZIP downloads and installation are manual.
+## Updating
+
+Close the app and replace `ParsecWebTurn.exe` in its existing folder. Keep your
+`settings.json`; saved native sign-in and preferences remain in place.
+
+To use a relay over a VPN, configure a TURN provider, enable **Force TURN relay**
+in Settings, save and reconnect. Connection settings apply to the next connection.
+
+This is a Windows x64 development release. H.264 remains the default video codec;
+8-bit HEVC is available through **Prefer H.265 / HEVC** when supported by the host,
+graphics driver and installed Windows decoder.
