@@ -544,21 +544,13 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     #[cfg(feature = "vendor-video")]
     {
         let y = 1110 + BUD_EXTRA;
-        let hint = if cfg!(feature = "intel-video-test") {
-            "Experimental NVIDIA / Intel HEVC: present decoder surfaces directly.\nWindows 11 / compatible driver. Reconnect after changing."
-        } else {
-            "Experimental NVIDIA HEVC: present decoder surfaces directly.\nWindows 11 / compatible driver. Reconnect after changing."
-        };
+        let hint = "Present original HEVC decoder surfaces on supported GPUs.\nWindows 11 / compatible driver. Reconnect after changing.";
         row_label(hwnd, page, "Video presentation", hint, y, 0, 40);
         add(
             hwnd,
             page,
             "BUTTON",
-            if cfg!(feature = "intel-video-test") {
-                "Zero copy (experimental, NVIDIA / Intel HEVC)"
-            } else {
-                "Zero copy (experimental, NVIDIA HEVC)"
-            },
+            "Zero copy (experimental, HEVC)",
             BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
             [420, y, 400, 36],
             ZERO_COPY,

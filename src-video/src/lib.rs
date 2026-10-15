@@ -35,7 +35,9 @@ pub fn preferred(vendor: u32, hevc: bool) -> Option<Mode> {
     }
 }
 pub fn original_surface_vendor_allowed(vendor: u32) -> bool {
-    vendor == 0x10de || (cfg!(feature = "intel-video-test") && vendor == 0x8086)
+    vendor == 0x10de
+        || (cfg!(feature = "intel-video-test") && vendor == 0x8086)
+        || (cfg!(feature = "amd-video-test") && vendor == 0x1002)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -296,7 +298,10 @@ mod tests {
         #[cfg(feature = "intel-video-test")]
         assert_eq!(preferred(0x8086, true), Some(Mode::IntelVpl));
         assert!(original_surface_vendor_allowed(0x10de));
-        assert!(!original_surface_vendor_allowed(0x1002));
+        assert_eq!(
+            original_surface_vendor_allowed(0x1002),
+            cfg!(feature = "amd-video-test")
+        );
         assert_eq!(
             original_surface_vendor_allowed(0x8086),
             cfg!(feature = "intel-video-test")

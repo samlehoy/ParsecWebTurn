@@ -9,6 +9,7 @@ publish = false
 [features]
 default = []
 intel-video-test = []
+amd-video-test = []
 
 [dependencies]
 anyhow = "1"

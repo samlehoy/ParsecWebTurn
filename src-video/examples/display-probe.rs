@@ -28,11 +28,16 @@ fn main() -> anyhow::Result<()> {
     unsafe {
         CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
         let result = (|| -> anyhow::Result<()> {
+            let vendor = if std::env::args().any(|arg| arg == "--amd") {
+                0x1002
+            } else {
+                0x10de
+            };
             let adapter = D3d11::load()?
                 .adapters()?
                 .into_iter()
-                .find(|a| a.vendor == 0x10de && a.decodes_here())
-                .context("NVIDIA GPU missing")?;
+                .find(|a| a.vendor == vendor && a.decodes_here())
+                .context("requested GPU missing")?;
             let instance = GetModuleHandleW(None)?;
             let class = w!("ParsecOriginalSurfaceProbe");
             let wc = WNDCLASSW {
@@ -46,7 +51,7 @@ fn main() -> anyhow::Result<()> {
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 class,
-                w!("Synthetic NVIDIA NV12 presentation test"),
+                w!("Synthetic GPU NV12 presentation test"),
                 WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
@@ -60,7 +65,11 @@ fn main() -> anyhow::Result<()> {
             let test = (|| -> anyhow::Result<()> {
                 let mut decoder = Session::open(adapter.luid.value(), hwnd)?;
                 println!("Adapter: {}", decoder.adapter());
-                let mode = std::env::args().nth(1).unwrap_or_default();
+                let mode = std::env::args()
+                    .find(|arg| {
+                        matches!(arg.as_str(), "--empty-close" | "--failed-start" | "--burst")
+                    })
+                    .unwrap_or_default();
                 if mode == "--empty-close" {
                     drop(decoder);
                     println!("PASS: presentation session closed before its first buffer");
