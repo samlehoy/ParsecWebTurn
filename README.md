@@ -220,6 +220,29 @@ a VPN or Parsec's paid relay offering. Your relay provider may still charge for
 traffic. A relay also needs to be reachable and permitted by the network; no
 client can guarantee access through every company or school firewall.
 
+## Legal notice and original Parsec code
+
+**This project was developed without access to Parsec's proprietary source code.
+No proprietary Parsec source code has been edited or incorporated into the Rust
+implementation. The embedded original Parsec WASM binary is unmodified.**
+
+ParsecWebTurn uses the publicly served Parsec web-client WASM binary as a pinned,
+closed-source component. The build verifies its SHA-256 against the pinned
+reference before precompiling it for Wasmtime. Precompilation does not involve
+editing Parsec's source or patching the WASM. The binary is included in the
+distributed application; it is not an open-source component of this project.
+
+The Rust code provides the native runtime, platform services and integrations
+around that component. It does not constitute a rewrite of the original Parsec
+client.
+
+The project's MIT license applies to its own code; it does not relicense the
+proprietary Parsec component. Third-party components remain subject to their
+respective licenses and applicable terms. Binary integrity checks establish
+identity with the pinned reference, not permission to redistribute it.
+ParsecWebTurn is independent and is not affiliated with or endorsed by Parsec
+or Unity. Parsec names and marks belong to their respective owners.
+
 ## Help improve the client
 
 Found a problem? [Open an issue](https://github.com/vampywiz17/ParsecWebTurn/issues)
