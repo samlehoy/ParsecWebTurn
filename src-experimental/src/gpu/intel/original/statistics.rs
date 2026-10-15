@@ -1,5 +1,11 @@
 //! Public Windows presentation feedback only; never reads texture pixels.
 use super::*;
+use windows::Win32::Graphics::CompositionSwapchain::{
+    CompositionFrameInstanceKind_ComposedOnScreen as COMPOSED_ON_SCREEN,
+    CompositionFrameInstanceKind_ScanoutOnScreen as SCANOUT_ON_SCREEN,
+    PresentStatus_Canceled as STATUS_CANCELED, PresentStatus_Queued as STATUS_QUEUED,
+    PresentStatus_Skipped as STATUS_SKIPPED,
+};
 use windows::Win32::System::Threading::WaitForSingleObject;
 
 pub(super) struct Trace {
@@ -63,9 +69,9 @@ impl Trace {
                 let mut record = json!({"present_id":item.GetPresentId(),"kind":item.GetKind().0});
                 if let Ok(status) = item.cast::<IPresentStatusPresentStatistics>() {
                     record["status"] = json!(match status.GetPresentStatus() {
-                        PresentStatus_Queued => "queued",
-                        PresentStatus_Skipped => "skipped",
-                        PresentStatus_Canceled => "canceled",
+                        STATUS_QUEUED => "queued",
+                        STATUS_SKIPPED => "skipped",
+                        STATUS_CANCELED => "canceled",
                         _ => "unknown",
                     });
                 } else if let Ok(frame) = item.cast::<ICompositionFramePresentStatistics>() {
@@ -80,8 +86,7 @@ impl Trace {
                             if frame.GetContentTag() == 770 {
                                 if matches!(
                                     instance.instanceKind,
-                                    CompositionFrameInstanceKind_ComposedOnScreen
-                                        | CompositionFrameInstanceKind_ScanoutOnScreen
+                                    COMPOSED_ON_SCREEN | SCANOUT_ON_SCREEN
                                 ) {
                                     self.on_screen += 1;
                                 }
