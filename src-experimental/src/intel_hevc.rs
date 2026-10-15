@@ -234,6 +234,7 @@ fn engine_trial(luid: u64, fixture: &std::path::Path, realtime: bool) -> Value {
         let began = Instant::now();
         let mut playing: Option<Instant> = None;
         let mut last_sample = Instant::now();
+        let mut peak_frames = 0;
         while began.elapsed() < Duration::from_secs(20) {
             unsafe {
                 let mut msg = MSG::default();
@@ -271,6 +272,13 @@ fn engine_trial(luid: u64, fixture: &std::path::Path, realtime: bool) -> Value {
                 playing = Some(Instant::now());
             }
             if last_sample.elapsed() >= Duration::from_millis(200) {
+                // Preserve a witnessed snapshot when the short source loops;
+                // do not invent a cumulative count by summing counter resets.
+                if let Ok(frames) =
+                    unsafe { statistic(&ex, MF_MEDIA_ENGINE_STATISTIC_FRAMES_RENDERED) }
+                {
+                    peak_frames = peak_frames.max(frames);
+                }
                 if let Some(counter) = &mut counter {
                     counter.sample();
                 }
@@ -299,10 +307,11 @@ fn engine_trial(luid: u64, fixture: &std::path::Path, realtime: bool) -> Value {
             (width, height) == (1280, 720),
             "unexpected decoded geometry {width}x{height}"
         );
-        ensure!(frames >= 60, "too few rendered HEVC frames: {frames}");
+        peak_frames = peak_frames.max(frames);
         Ok(
-            json!({"played":true,"frames_rendered":frames,"frames_dropped":dropped,"size":[width,height],
-            "decode_engine":counter.as_ref().map(|counter|counter.report(frames)),
+            json!({"played":peak_frames>=60,"frames_rendered_last_snapshot":frames,
+            "frames_rendered_peak_snapshot":peak_frames,"frames_dropped_last_snapshot":dropped,"size":[width,height],
+            "decode_engine":counter.as_ref().map(|counter|counter.report(peak_frames)),
             "cpu_pixel_readback":false,"app_decoded_texture_copy":false,
             "gpu_internal_copies":"unknown", "latency_improvement_verified":false}),
         )
