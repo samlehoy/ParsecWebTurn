@@ -1,14 +1,14 @@
-Intel HEVC offline comparison - UHD 770 / working Intel HEVC systems
+Intel H.264 / HEVC offline comparison - UHD 770 / working Intel HEVC systems
 
 Extract the complete test folder, then run Run-Intel-HEVC-Comparison.cmd.
 Use your normal Windows account; administrator rights and PowerShell are not
 needed. Close other video players/remote desktop streams for a cleaner result.
 No settings.json, Parsec account, host or network connection is needed.
 
-Three isolated paths use the same 120-frame 1280x720 HEVC Main 8-bit fixture:
-1. Media Foundation with the current low-latency requests.
-2. Current Intel VPL, AsyncDepth=1, original NV12 -> video processor.
-3. Current Intel VPL -> original NV12 -> Windows Presentation API.
+Three isolated paths use 120-frame 1280x720 8-bit fixtures:
+1. H.264 and HEVC: Media Foundation with the current low-latency requests.
+2. H.264 and HEVC: current Intel VPL, AsyncDepth=1, original NV12 -> video processor.
+3. HEVC only: current Intel VPL -> original NV12 -> Windows Presentation API.
 
 Paths 1 and 2 alternate order over five rounds each at 30 and 60 fps. The first
 16 frames per round are warmup. Both exercise the same video processor output
@@ -17,6 +17,9 @@ validation, conversion and CPU polling; it is NOT pure GPU decode duration.
 VPL explicitly synchronizes before external use; output-availability timestamps
 therefore have different semantics from MF. Compare the shared completion
 endpoint first, and only when both paths provide valid completion samples.
+The VPL wrapper does not expose null-bitstream draining. Frames still buffered
+at the end are reported separately (held_at_end_without_drain); they are not
+counted as decoded. Steady-state measurements retain normal display ordering.
 
 Path 3 runs at 60 fps in a visible synthetic test window when supported. It uses
 a presentation-compatible D3D11 device on the same Intel adapter, holds the
@@ -25,8 +28,13 @@ conversion pass or decoded-frame copy. A rejected resource is reported as
 refused, with NO copy fallback. This tests the current VPL native allocations;
 refusal does not rule out all possible VPL external-allocation designs.
 Presentation submission is NOT display/scanout completion and must not be ranked
-against the completion endpoint from paths 1 and 2. Actual scanout, compositor
-copies and internal decoder/driver copies remain unknown.
+against the completion endpoint from paths 1 and 2. Windows presentation feedback and the first native texture descriptor are now
+recorded separately from submission counts. Feedback can report composition,
+scanout and cross-adapter copies; missing feedback remains unknown. It does not
+prove pixel correctness or exclude internal decoder/driver copies. The test
+window uses WS_EX_NOREDIRECTIONBITMAP and waits for its initial visual commit.
+It stays open for five seconds after the clip to make visual checking easier.
+These changes are isolated to this test. Allow approximately two minutes.
 
 All output must remain GPU-only NV12 on the intended D3D11 device. Decoded pixels
 are never mapped/read back. Compressed input bytes naturally reside on the CPU.

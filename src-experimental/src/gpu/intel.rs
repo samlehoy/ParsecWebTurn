@@ -6,10 +6,23 @@ use lowlat_drivers::{
 };
 mod original;
 
-fn vpl_trial(session: &Session<'_>, device: &Device, units: &[&[u8]], fps: u64) -> Result<Value> {
+fn vpl_trial(
+    session: &Session<'_>,
+    device: &Device,
+    clip: Clip,
+    units: &[&[u8]],
+    fps: u64,
+) -> Result<Value> {
     let mut param = session
-        .header(units[0], MFX_CODEC_HEVC as u32)?
-        .context("HEVC header")?;
+        .header(
+            units[0],
+            if clip == Clip::H264 {
+                MFX_CODEC_AVC as u32
+            } else {
+                MFX_CODEC_HEVC as u32
+            },
+        )?
+        .context("codec header")?;
     param.IOPattern = MFX_IOPATTERN_OUT_VIDEO_MEMORY as u16;
     param.AsyncDepth = 1;
     unsafe {
@@ -58,7 +71,7 @@ fn vpl_trial(session: &Session<'_>, device: &Device, units: &[&[u8]], fps: u64) 
                             texture,
                             0,
                             device,
-                            Clip::Hevc,
+                            clip,
                         )?;
                         if bits.DataLength == 0 {
                             break;
@@ -70,7 +83,7 @@ fn vpl_trial(session: &Session<'_>, device: &Device, units: &[&[u8]], fps: u64) 
                 }
             }
         }
-        let mut report = samples.finish(units.len())?;
+        let mut report = samples.finish_buffered(units.len())?;
         report["async_depth"] = json!(param.AsyncDepth);
         report["vpl_sync_before_external_use"] = json!(true);
         Ok(report)
@@ -97,29 +110,33 @@ pub fn compare() -> Result<Value> {
             .context("DXGI adapter index")?;
         let vpl = Vpl::for_adapter(&adapter);
         let mut trials = Vec::new();
-        for fps in [30, 60] {
-            for round in 0..5 {
-                for backend in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
-                    eprintln!(
-                        "  {} / {fps} fps / round {}",
-                        if backend == 0 { "MF" } else { "VPL" },
-                        round + 1
-                    );
-                    let result = if backend == 0 {
-                        mf::trial(&device, Clip::Hevc, &units, fps)
-                    } else {
-                        (|| -> Result<Value> {
-                            let vpl = vpl.as_ref().map_err(|e| anyhow::anyhow!("{e}"))?;
-                            ensure!(
-                                vpl.runtime() == VplRuntime::Current,
-                                "current GPU VPL runtime required"
-                            );
-                            let session = vpl.session(&device, index)?;
-                            vpl_trial(&session, &device, &units, fps)
-                        })()
-                    };
-                    trials.push(json!({"backend":if backend == 0 {"MF + video processor"} else {"VPL + video processor"},
+        for clip in [Clip::H264, Clip::Hevc] {
+            let units = clip.units()?;
+            for fps in [30, 60] {
+                for round in 0..5 {
+                    for backend in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
+                        eprintln!(
+                            "  {} {} / {fps} fps / round {}",
+                            clip.name(),
+                            if backend == 0 { "MF" } else { "VPL" },
+                            round + 1
+                        );
+                        let result = if backend == 0 {
+                            mf::trial(&device, clip, &units, fps)
+                        } else {
+                            (|| -> Result<Value> {
+                                let vpl = vpl.as_ref().map_err(|e| anyhow::anyhow!("{e}"))?;
+                                ensure!(
+                                    vpl.runtime() == VplRuntime::Current,
+                                    "current GPU VPL runtime required"
+                                );
+                                let session = vpl.session(&device, index)?;
+                                vpl_trial(&session, &device, clip, &units, fps)
+                            })()
+                        };
+                        trials.push(json!({"codec":clip.name(),"backend":if backend == 0 {"MF + video processor"} else {"VPL + video processor"},
                         "fps":fps,"round":round+1,"result":match result {Ok(v)=>v,Err(e)=>json!({"refused":format!("{e:#}")})}}));
+                    }
                 }
             }
         }
@@ -133,13 +150,13 @@ pub fn compare() -> Result<Value> {
             );
             original::trial(&device, index, &units)
         })();
-        trials.push(json!({"backend":"VPL original NV12 / Windows Presentation API","fps":60,
+        trials.push(json!({"codec":"HEVC Main","backend":"VPL original NV12 / Windows Presentation API","fps":60,
             "result":match original {Ok(v)=>v,Err(e)=>json!({"refused":format!("{e:#}"),"copy_fallback":false})}}));
         adapters.push(json!({"adapter":adapter.description,"driver":adapter.driver,"luid":adapter.luid.to_string(),"trials":trials}));
     }
     ensure!(!adapters.is_empty(), "no Intel GPU found");
     Ok(
-        json!({"fixture":"synthetic-720p-hevc.bin","frames_per_trial":120,"warmup_frames":16,
+        json!({"fixtures":["synthetic-720p-h264.bin","synthetic-720p-hevc.bin"],"frames_per_trial":120,"warmup_frames":16,
         "adapters":adapters,"live_client_modified":false,"cpu_pixel_readback":false,
         "warning":"Synthetic offline waits. MF/VPL completion includes the same video processor output write and validation. Original-surface submission is a different endpoint; scanout and internal driver copies are unknown. GPU textures alone do not prove hardware codec execution."}),
     )

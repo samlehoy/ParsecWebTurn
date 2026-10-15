@@ -1,5 +1,6 @@
 //! Isolated VPL original-surface presentation gate. No copy fallback.
 use super::*;
+mod statistics;
 use parsec_gpu_video::Layout;
 use std::{ffi::c_void, rc::Rc};
 use windows::{
@@ -160,7 +161,7 @@ pub(super) fn trial(probe_device: &Device, index: u32, units: &[&[u8]]) -> Resul
             "register test window"
         );
         let hwnd = CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
+            WS_EX_NOREDIRECTIONBITMAP,
             class,
             w!("Intel VPL original NV12 - experimental test"),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
@@ -175,6 +176,11 @@ pub(super) fn trial(probe_device: &Device, index: u32, units: &[&[u8]]) -> Resul
         )?;
         let result = (|| -> Result<Value> {
             let mut presenter = Presenter::new(&device, hwnd)?;
+            let mut trace = statistics::Trace::new(&presenter.manager)?;
+            // Offline visibility gate: ensure the visual-tree commit is applied
+            // before the first frame. This does not add a decoded-frame copy.
+            presenter.composition.WaitForCommitCompletion()?;
+            pump();
             let mut held: Vec<(Surface, Rc<Lease>)> = Vec::new();
             let mut presented = 0;
             let mut busy = 0;
@@ -183,9 +189,11 @@ pub(super) fn trial(probe_device: &Device, index: u32, units: &[&[u8]]) -> Resul
             let mut submit_us = Vec::new();
             let origin = Instant::now();
             let mut pending = BTreeMap::new();
+            let mut texture_descriptors = Vec::new();
             for (index, unit) in units.iter().enumerate() {
                 pace(origin, index, 60);
                 pump();
+                trace.collect(&presenter.manager);
                 held.retain(|(_, lease)| !lease.available());
                 let start = Instant::now();
                 pending.insert(index as u64 + 1, (index, start));
@@ -244,6 +252,15 @@ pub(super) fn trial(probe_device: &Device, index: u32, units: &[&[u8]]) -> Resul
                             .context("native texture")?;
                         let mut desc = D3D11_TEXTURE2D_DESC::default();
                         texture.GetDesc(&mut desc);
+                        if texture_descriptors.is_empty() {
+                            texture_descriptors.push(json!({"width":desc.Width,"height":desc.Height,
+                                "array_size":desc.ArraySize,"mip_levels":desc.MipLevels,"format":desc.Format.0,
+                                "usage":desc.Usage.0,"bind_flags":desc.BindFlags,"misc_flags":desc.MiscFlags,
+                                "cpu_access_flags":desc.CPUAccessFlags,"sample_count":desc.SampleDesc.Count,
+                                "shared_displayable":desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_DISPLAYABLE.0 as u32 != 0,
+                                "shared_nt_handle":desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0 as u32 != 0,
+                                "decoder_bind":desc.BindFlags & D3D11_BIND_DECODER.0 as u32 != 0}));
+                        }
                         ensure!(
                             desc.Format == DXGI_FORMAT_NV12
                                 && desc.CPUAccessFlags == 0
@@ -278,12 +295,14 @@ pub(super) fn trial(probe_device: &Device, index: u32, units: &[&[u8]]) -> Resul
                 }
             }
             // Keep decoder surfaces leased until the compositor returns them.
-            let deadline = Instant::now() + Duration::from_secs(3);
-            while !held.is_empty() && Instant::now() < deadline {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
                 pump();
+                trace.collect(&presenter.manager);
                 held.retain(|(_, lease)| !lease.available());
                 std::thread::sleep(Duration::from_millis(1));
             }
+            let feedback = trace.report();
             // The currently displayed buffer may stay unavailable until detached.
             drop(presenter);
             drop(held);
@@ -292,10 +311,12 @@ pub(super) fn trial(probe_device: &Device, index: u32, units: &[&[u8]]) -> Resul
                 "incomplete original-surface trial"
             );
             Ok(
-                json!({"frames":decoded,"presented":presented,"busy_display_updates_skipped":busy,
+                json!({"frames":decoded,"submitted":presented,"busy_display_updates_skipped":busy,
+                "presentation_feedback":feedback,"native_texture_descriptors":texture_descriptors,
+                "window_no_redirection_bitmap":true,"visual_commit_waited":true,
                 "submission_to_vpl_completion_us":decode_us,"submission_to_present_call_return_us":submit_us,
                 "application_decoded_frame_copies":0,"application_conversion_passes":0,"cpu_pixel_readback":false,
-                "same_d3d11_device":true,"scanout_verified":false,"runtime_internal_copies":"unknown"}),
+                "same_d3d11_device":true,"visual_confirmation_required":true,"runtime_internal_copies":"unknown"}),
             )
         })();
         let _ = DestroyWindow(hwnd);
@@ -358,6 +379,7 @@ impl Presenter {
             let manager = factory.CreatePresentationManager()?;
             let handle = OwnedHandle(DCompositionCreateSurfaceHandle(0x001f0003, None)?);
             let surface = manager.CreatePresentationSurface(handle.0)?;
+            surface.SetTag(770)?;
             surface.SetAlphaMode(DXGI_ALPHA_MODE_IGNORE)?;
             let dxgi: IDXGIDevice = device.native.cast()?;
             let composition: IDCompositionDesktopDevice = DCompositionCreateDevice2(&dxgi)?;

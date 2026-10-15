@@ -262,6 +262,23 @@ impl Samples {
         }
         Ok(())
     }
+    fn finish_buffered(mut self, submitted: usize) -> Result<Value> {
+        let held = self.pending.len();
+        ensure!(
+            self.outputs > 16 && self.outputs + held == submitted,
+            "inconsistent steady-state output accounting"
+        );
+        // The current VPL wrapper cannot pass a null bitstream for drain.
+        // Preserve this limitation explicitly instead of hiding codec buffering
+        // by forcing decoded-order mode or reporting missing outputs as decoded.
+        self.pending.clear();
+        let decoded = self.outputs;
+        let mut report = self.finish(decoded)?;
+        report["frames_submitted"] = json!(submitted);
+        report["held_at_end_without_drain"] = json!(held);
+        report["drain_performed"] = json!(false);
+        Ok(report)
+    }
     fn finish(mut self, count: usize) -> Result<Value> {
         ensure!(
             self.outputs == count && self.pending.is_empty(),
