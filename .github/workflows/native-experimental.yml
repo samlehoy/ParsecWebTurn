@@ -141,4 +141,5 @@ jobs:
             src-experimental/target/x86_64-pc-windows-msvc/release/intel-hevc-compare.exe
             docs/INTEL-HEVC-COMPARE.txt
             scripts/Run-Intel-HEVC-Comparison.cmd
+            scripts/Run-Intel-Presentation-Diagnostics.cmd
             src-experimental/target/x86_64-pc-windows-msvc/release/mf-baseline-probe.exe

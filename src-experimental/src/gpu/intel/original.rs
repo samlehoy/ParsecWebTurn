@@ -1,5 +1,6 @@
 //! Isolated VPL original-surface presentation gate. No copy fallback.
 use super::*;
+mod control;
 mod statistics;
 use parsec_gpu_video::Layout;
 use std::{ffi::c_void, rc::Rc};
@@ -175,6 +176,15 @@ pub(super) fn trial(probe_device: &Device, index: u32, units: &[&[u8]]) -> Resul
             None,
         )?;
         let result = (|| -> Result<Value> {
+            // Separate RGB control: no VPL pixels are copied or converted.
+            let rgb_control = match control::run(&device, hwnd) {
+                Ok(value) => value,
+                Err(error) => json!({"refused":format!("{error:#}")}),
+            };
+            SetWindowTextW(
+                hwnd,
+                w!("Intel VPL original NV12 - look for grey/green pattern"),
+            )?;
             let mut presenter = Presenter::new(&device, hwnd)?;
             let mut trace = statistics::Trace::new(&presenter.manager)?;
             // Offline visibility gate: ensure the visual-tree commit is applied
@@ -312,7 +322,7 @@ pub(super) fn trial(probe_device: &Device, index: u32, units: &[&[u8]]) -> Resul
             );
             Ok(
                 json!({"frames":decoded,"submitted":presented,"busy_display_updates_skipped":busy,
-                "presentation_feedback":feedback,"native_texture_descriptors":texture_descriptors,
+                "presentation_feedback":feedback,"rgb_control":rgb_control,"native_texture_descriptors":texture_descriptors,
                 "window_no_redirection_bitmap":true,"visual_commit_waited":true,
                 "submission_to_vpl_completion_us":decode_us,"submission_to_present_call_return_us":submit_us,
                 "application_decoded_frame_copies":0,"application_conversion_passes":0,"cpu_pixel_readback":false,
@@ -439,11 +449,16 @@ impl Presenter {
                 right: (layout.left + layout.width) as i32,
                 bottom: (layout.top + layout.height) as i32,
             })?;
-            self.surface.SetColorSpace(if layout.full_range {
-                DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709
-            } else {
-                DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709
-            })?;
+            let mut description = D3D11_TEXTURE2D_DESC::default();
+            texture.GetDesc(&mut description);
+            self.surface
+                .SetColorSpace(if description.Format == DXGI_FORMAT_B8G8R8A8_UNORM {
+                    DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709
+                } else if layout.full_range {
+                    DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709
+                } else {
+                    DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709
+                })?;
             self.surface.SetLetterboxingMargins(
                 target[0] as f32,
                 target[1] as f32,

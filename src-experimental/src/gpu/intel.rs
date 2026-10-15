@@ -93,6 +93,7 @@ fn vpl_trial(
 }
 
 pub fn compare() -> Result<Value> {
+    let presentation_only = std::env::args().any(|arg| arg == "--presentation-only");
     let _runtime = Runtime::start()?;
     let d3d = D3d11::load()?;
     let units = Clip::Hevc.units()?;
@@ -110,7 +111,11 @@ pub fn compare() -> Result<Value> {
             .context("DXGI adapter index")?;
         let vpl = Vpl::for_adapter(&adapter);
         let mut trials = Vec::new();
-        for clip in [Clip::H264, Clip::Hevc] {
+        for clip in if presentation_only {
+            Vec::new()
+        } else {
+            vec![Clip::H264, Clip::Hevc]
+        } {
             let units = clip.units()?;
             for fps in [30, 60] {
                 for round in 0..5 {
@@ -157,7 +162,7 @@ pub fn compare() -> Result<Value> {
     ensure!(!adapters.is_empty(), "no Intel GPU found");
     Ok(
         json!({"fixtures":["synthetic-720p-h264.bin","synthetic-720p-hevc.bin"],"frames_per_trial":120,"warmup_frames":16,
-        "adapters":adapters,"live_client_modified":false,"cpu_pixel_readback":false,
+        "adapters":adapters,"presentation_only":presentation_only,"live_client_modified":false,"cpu_pixel_readback":false,
         "warning":"Synthetic offline waits. MF/VPL completion includes the same video processor output write and validation. Original-surface submission is a different endpoint; inspect presentation feedback and visually confirm the image. Internal driver copies are unknown. GPU textures alone do not prove hardware codec execution."}),
     )
 }

@@ -5,6 +5,14 @@ Use your normal Windows account; administrator rights and PowerShell are not
 needed. Close other video players/remote desktop streams for a cleaner result.
 No settings.json, Parsec account, host or network connection is needed.
 
+For the short presentation-only check, run Run-Intel-Presentation-Diagnostics.cmd.
+This skips the already measured H.264/HEVC timing matrix. The same test window
+first shows a solid MAGENTA RGB control for three seconds, then the synthetic
+grey/green HEVC pattern. Report separately which of the two phases was visible.
+The RGB control uses an independent GPU clear on its own texture: it does not
+copy or convert a VPL frame and is never used as a fallback for the video path.
+Send intel-presentation-diagnostics.json and intel-presentation-console.txt.
+
 Three isolated paths use 120-frame 1280x720 8-bit fixtures:
 1. H.264 and HEVC: Media Foundation with the current low-latency requests.
 2. H.264 and HEVC: current Intel VPL, AsyncDepth=1, original NV12 -> video processor.
