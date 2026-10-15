@@ -38,3 +38,7 @@ Only the thin current VPL driver binding and existing HEVC parser are reused.
 No lowlat VPL exporter, plane splitter, CPU decoder, SDK session or alternative
 renderer is introduced. Original VPL surfaces are retained until a renderer
 completion fence signals; live frames do not CPU-wait for GPU completion.
+At most two VPL output leases are retained for renderer reads. During a burst,
+additional outputs are decoded but their display update is skipped until the
+GPU catches up. This counts as a busy presentation, not an encoded-frame drop
+or a decoder failure. It adds no wait, pixel copy or larger frame queue.

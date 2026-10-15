@@ -8,6 +8,13 @@ use lowlat_drivers::{
 };
 use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::DXGI_FORMAT_NV12};
 
+// Bound only renderer reads, never decode input or codec reference pictures.
+const MAX_RENDERER_READS: usize = 2;
+fn renderer_has_room<T>(pending: &mut Vec<(T, u64)>, completed: u64) -> bool {
+    pending.retain(|(_, value)| *value > completed);
+    pending.len() < MAX_RENDERER_READS
+}
+
 struct Owner {
     device: DeviceOwner,
     runtime: Vpl,
@@ -99,12 +106,7 @@ impl Backend {
     ) -> Result<usize> {
         self.0.with_dependent_mut(|context, state| {
             let device = &context.borrow_owner().device.device;
-            let completed = state.fence.completed();
-            state.pending.retain(|(_, value)| *value > completed);
-            ensure!(
-                state.pending.len() < 4,
-                "Intel GPU renderer fell behind; refusing to grow the queue"
-            );
+            renderer_has_room(&mut state.pending, state.fence.completed());
             let mut picture = false;
             for unit in nal::Units::new(bytes) {
                 let Some(&first) = unit.bytes.first() else {
@@ -200,6 +202,18 @@ impl Backend {
                             held.timestamp() > 0 && held.timestamp() <= sequence as u64 + 1,
                             "Intel output timestamp mismatch"
                         );
+                        outputs += 1;
+                        if !renderer_has_room(&mut state.pending, state.fence.completed()) {
+                            // No renderer read is submitted for this output.
+                            // Release only our external VPL reference; the codec
+                            // retains its own decode/reference-picture ownership.
+                            // Keep decoding even during a startup/network burst.
+                            drop(held);
+                            if bits.DataLength == 0 {
+                                break;
+                            }
+                            continue;
+                        }
                         // Current VPL queues decode on this caller's protected
                         // D3D11 immediate context. Queue the existing processor
                         // read on that same context, then fence its completion.
@@ -215,7 +229,6 @@ impl Backend {
                         device.signal(&state.fence, state.signaled)?;
                         state.pending.push((held, state.signaled));
                         result?;
-                        outputs += 1;
                         if bits.DataLength == 0 {
                             break;
                         }
@@ -238,5 +251,48 @@ impl Backend {
             state.sets.clear();
             Ok(outputs)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{cell::Cell, rc::Rc};
+
+    struct Lease(Rc<Cell<usize>>);
+    impl Drop for Lease {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    #[test]
+    fn burst_releases_unpresented_outputs_but_keeps_inflight_reads_alive() {
+        let released = Rc::new(Cell::new(0));
+        let mut pending = Vec::new();
+        for sequence in 1..=120 {
+            let output = Lease(released.clone());
+            if renderer_has_room(&mut pending, 0) {
+                pending.push((output, sequence));
+            }
+        }
+        // A stalled renderer cannot make output leases grow with the burst.
+        // Only unpresented outputs have been released, with no fence wait.
+        assert_eq!(pending.len(), 2);
+        assert_eq!(released.get(), 118);
+        assert!(!renderer_has_room(&mut pending, 0));
+        assert!(renderer_has_room(&mut pending, 1));
+        assert_eq!(released.get(), 119);
+        assert_eq!(pending[0].1, 2);
+        // Rendering resumes as soon as a slot retires, even if another read
+        // remains in flight. That read must still retain its original lease.
+        pending.push((Lease(released.clone()), 3));
+        assert!(!renderer_has_room(&mut pending, 1));
+        assert!(renderer_has_room(&mut pending, 2));
+        assert_eq!(released.get(), 120);
+        assert_eq!(pending[0].1, 3);
+        assert!(renderer_has_room(&mut pending, 3));
+        assert!(pending.is_empty());
+        assert_eq!(released.get(), 121);
     }
 }

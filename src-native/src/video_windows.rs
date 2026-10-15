@@ -1010,8 +1010,10 @@ impl Session {
         if let Some(vendor) = &mut self.vendor {
             let renderer = self.renderer.as_mut().unwrap();
             let generation = self.surface_generation;
+            let mut consumed = 0usize;
             return vendor
                 .feed(&frame.bytes, |picture| {
+                    consumed += 1;
                     let layout = picture.layout;
                     let source = RECT {
                         left: layout.left as i32,
@@ -1067,9 +1069,14 @@ impl Session {
                     }
                     Ok(())
                 })
-                .map(|_| {
+                .map(|decoded| {
                     update(shared, |s| {
-                        s.frames_submitted = s.frames_submitted.saturating_add(1)
+                        s.frames_submitted = s.frames_submitted.saturating_add(1);
+                        // VPL can skip display updates while keeping every
+                        // compressed picture decoded and its references intact.
+                        let skipped = decoded.saturating_sub(consumed) as u64;
+                        s.frames_decoded = s.frames_decoded.saturating_add(skipped);
+                        s.presentations_busy = s.presentations_busy.saturating_add(skipped);
                     })
                 })
                 .map_err(|error| {

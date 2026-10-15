@@ -218,6 +218,8 @@ impl Decoder {
             _ => false,
         }
     }
+    /// Returns all decoded outputs. Under renderer backpressure an output may
+    /// be released without invoking `consume`; encoded input is still decoded.
     pub fn feed(
         &mut self,
         bytes: &[u8],
