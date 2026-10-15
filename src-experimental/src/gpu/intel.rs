@@ -158,6 +158,6 @@ pub fn compare() -> Result<Value> {
     Ok(
         json!({"fixtures":["synthetic-720p-h264.bin","synthetic-720p-hevc.bin"],"frames_per_trial":120,"warmup_frames":16,
         "adapters":adapters,"live_client_modified":false,"cpu_pixel_readback":false,
-        "warning":"Synthetic offline waits. MF/VPL completion includes the same video processor output write and validation. Original-surface submission is a different endpoint; scanout and internal driver copies are unknown. GPU textures alone do not prove hardware codec execution."}),
+        "warning":"Synthetic offline waits. MF/VPL completion includes the same video processor output write and validation. Original-surface submission is a different endpoint; inspect presentation feedback and visually confirm the image. Internal driver copies are unknown. GPU textures alone do not prove hardware codec execution."}),
     )
 }

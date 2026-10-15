@@ -379,7 +379,7 @@ impl Presenter {
             let manager = factory.CreatePresentationManager()?;
             let handle = OwnedHandle(DCompositionCreateSurfaceHandle(0x001f0003, None)?);
             let surface = manager.CreatePresentationSurface(handle.0)?;
-            surface.SetTag(770)?;
+            surface.SetTag(770);
             surface.SetAlphaMode(DXGI_ALPHA_MODE_IGNORE)?;
             let dxgi: IDXGIDevice = device.native.cast()?;
             let composition: IDCompositionDesktopDevice = DCompositionCreateDevice2(&dxgi)?;
