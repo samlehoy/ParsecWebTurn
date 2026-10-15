@@ -388,9 +388,9 @@ pub(crate) fn observe_trial(
                     counter.sample();
                 }
             }
-            counter
-                .as_ref()
-                .map_or(Value::Null, |c| c.report(observed.1.load(Ordering::Relaxed)))
+            counter.as_ref().map_or(Value::Null, |c| {
+                c.report(observed.1.load(Ordering::Relaxed))
+            })
         });
         let guard = Stop(&stop);
         let _ = wait.recv();
