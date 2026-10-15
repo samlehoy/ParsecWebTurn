@@ -113,7 +113,7 @@ struct Engine {
     engine: IMFMediaEngine,
     composition: Option<IDCompositionDesktopDevice>,
     target: Option<IDCompositionTarget>,
-    visual: Option<IDCompositionVisual>,
+    visual: Option<IDCompositionVisual2>,
     handle: Option<HANDLE>,
 }
 impl Drop for Engine {

@@ -140,6 +140,9 @@ jobs:
           Copy-Item src-experimental/target/x86_64-pc-windows-msvc/release/intel-hevc-paths.exe dist/intel-hevc-paths/
           Copy-Item src-experimental/Run-Intel-HEVC-Paths.cmd dist/intel-hevc-paths/
           Copy-Item src-experimental/LICENSE-lowlat dist/intel-hevc-paths/LOWLAT-LICENSE.txt
+          $cell = Get-ChildItem -Path (Join-Path $env:CARGO_HOME "registry/src/*/self_cell-1.3.0") -Directory | Select-Object -First 1
+          if (!$cell) { throw 'GPU helper license missing' }
+          Copy-Item (Join-Path $cell.FullName 'LICENSE-APACHE') dist/intel-hevc-paths/SELF-CELL-LICENSE-APACHE.txt
           Copy-Item LICENSE dist/intel-hevc-paths/LICENSE.txt
           Copy-Item docs/INTEL-HEVC-PATHS.txt dist/intel-hevc-paths/README.txt
           git rev-parse HEAD | Set-Content dist/intel-hevc-paths/SOURCE.txt -Encoding ascii
