@@ -196,6 +196,12 @@ impl Attempt {
             .try_send(text.to_owned())
             .context("BUD signaling queue unavailable")?;
         self.thread.unpark();
+        // Native attempt termination belongs to the BUD worker. Forwarding it
+        // to the retained web guest would cancel the whole connection before
+        // that worker can replace a failed direct attempt with a relay offer.
+        if value["action"] == "close" {
+            return Ok(Some(String::new()));
+        }
         if value["action"] == "answer_relay" {
             self.state
                 .lock()
@@ -491,7 +497,7 @@ fn run(
     )? {
         return Ok(());
     }
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut deadline = Instant::now() + Duration::from_secs(30);
     let mut established = false;
     let mut answered_at: Option<Instant> = None;
     let mut retried = settings.force_relay
@@ -506,16 +512,21 @@ fn run(
         );
         let mut guard = shared_session.lock().unwrap_or_else(|e| e.into_inner());
         let session = guard.as_mut().context("BUD session retired")?;
+        let mut ended = false;
         for _ in 0..64 {
             let Ok(text) = incoming.try_recv() else {
                 break;
             };
+            if native_close(&text, &wire_id) {
+                ended = true;
+                break;
+            }
             signaling.receive(&text, session)?;
             if let Ok(value) = serde_json::from_str::<Value>(&text) {
                 if value["action"] == "answer_relay"
                     && value["payload"]["attempt_id"].as_str() == Some(&wire_id)
                 {
-                    answered_at = Some(Instant::now());
+                    answered_at.get_or_insert_with(Instant::now);
                 }
             }
         }
@@ -530,7 +541,6 @@ fn run(
         media.recover(session);
         drop(guard);
         let pumped = media.pump(&mut source)?;
-        let mut ended = false;
         for event in &events {
             if matches!(event, Event::Candidate { .. } | Event::Ready) {
                 send_candidate(state, event)?;
@@ -621,7 +631,8 @@ fn run(
             }
             drop(old);
             let relay = runtime.block_on(async {
-                tokio::time::timeout(Duration::from_secs(8), relay_route(manager, &settings)).await
+                // Match the credential/DNS allowance used by Force relay.
+                tokio::time::timeout(Duration::from_secs(15), relay_route(manager, &settings)).await
             })??;
             if cancel.load(Ordering::Acquire) {
                 return Ok(());
@@ -642,6 +653,9 @@ fn run(
                 return Ok(());
             }
             answered_at = None;
+            // A fresh relay attempt needs the same establishment allowance as
+            // Force relay, independent of time spent discovering a direct path.
+            deadline = Instant::now() + Duration::from_secs(30);
             continue;
         }
         ensure!(!ended, "BUD transport ended");
@@ -652,6 +666,12 @@ fn run(
         std::thread::park_timeout(Duration::from_millis(100));
     }
     Ok(())
+}
+
+fn native_close(text: &str, attempt: &str) -> bool {
+    serde_json::from_str::<Value>(text).is_ok_and(|value| {
+        value["action"] == "close" && value["payload"]["attempt_id"].as_str() == Some(attempt)
+    })
 }
 
 #[cfg(test)]
@@ -786,6 +806,32 @@ mod tests {
         assert_eq!(sent.len(), 4, "pending offer is withdrawn only once");
         assert_eq!(sent[3]["action"], "offer_cancel");
         assert_eq!(sent[3]["payload"]["attempt_id"], "isolated-turn-1");
+    }
+
+    #[test]
+    fn direct_close_is_owned_by_worker_and_cannot_cancel_guest_before_relay_retry() {
+        let (attempt, incoming) = isolated();
+        let close = r#"{"action":"close","payload":{"attempt_id":"isolated"}}"#;
+        assert_eq!(attempt.incoming(close).unwrap(), Some(String::new()));
+        let queued = incoming.try_recv().unwrap();
+        assert!(native_close(&queued, "isolated"));
+        assert!(!native_close(&queued, "isolated-turn-1"));
+        assert!(!attempt.cancel.load(Ordering::Acquire));
+        assert!(attempt.failure().is_none());
+        // A late close from the retired direct route must not terminate relay.
+        {
+            let mut state = attempt.state.lock().unwrap();
+            state.retired_wire = Some("isolated".into());
+            state.wire_id = "isolated-turn-1".into();
+        }
+        assert_eq!(attempt.incoming(close).unwrap(), Some(String::new()));
+        assert!(incoming.try_recv().is_err());
+        let relay_close = r#"{"action":"close","payload":{"attempt_id":"isolated-turn-1"}}"#;
+        assert_eq!(attempt.incoming(relay_close).unwrap(), Some(String::new()));
+        assert!(native_close(
+            &incoming.try_recv().unwrap(),
+            "isolated-turn-1"
+        ));
     }
 
     #[test]

@@ -17,6 +17,10 @@ answers but direct connectivity fails (or has not established after 4 seconds),
 the client makes one fresh BUD attempt through the first configured UDP TURN
 endpoint. STUN-only mode disables this retry. Established streams are not
 silently rerouted.
+The BUD worker owns native close messages: a failed direct offer must not
+cancel the retained web UI before the relay retry. The relay offer gets a fresh
+30-second establishment budget and the same credential lookup allowance as
+Force TURN. These are maximum waits, not delays added to successful connects.
 BUD with Force TURN selects the first configured UDP TURN endpoint. The
 Cloudflare provider can generate temporary credentials as before.
 BUD does not support TURN TCP/TLS and does not silently fall back to WebRTC.
