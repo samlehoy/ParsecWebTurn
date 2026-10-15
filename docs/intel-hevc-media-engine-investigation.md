@@ -85,3 +85,42 @@ queue events, preserves the ordinary-account target and gives each collection
 a unique instance. Trial UTC timestamps and target PID allow event correlation.
 See [GPU trace instructions](INTEL-HEVC-GPU-TRACE.txt). No software decoder or
 Media Engine backend is integrated into the live client on this evidence.
+
+## GPU ETW result: no hardware HEVC execution by the probe
+
+The laptop supplied a successful WPR collection from the `551a68a` probe.
+Both Media Engine trials played the synthetic video without reported drops.
+The ETL reader reported **zero lost events**. Adapter metadata maps the Intel
+GPU to LUID `0x2d5cd`, matching the probe's selected adapter. Its physical
+VideoDecode nodes are present (ordinals 1 and 4).
+
+Correlating DxgKrnl device ownership, context ownership and node metadata found
+no VideoDecode context belonging to the probe. Its contexts belonged to 3D,
+Copy, VideoProcessing and Other nodes. Queue/DMA work during the two UTC trial
+windows likewise did not establish VideoDecode execution by the probe.
+GPU context/node activity is not counted as HEVC decode merely because it
+comes from this process. Duplicate records from the two GPU collectors are
+not independent work items or a GPU-copy count.
+
+The trace does contain VideoDecode DMA execution, but its mapped owner is a
+separate, already-running `ParsecWebTurn.exe` process, with a different parent
+from the probe. That is useful evidence that decoder-engine execution was
+observable; it is **not** evidence of HEVC execution by Media Engine. The codec
+used by that other process cannot be inferred from those queue events.
+
+CPU sampling during the ordinary and real-time trials recorded 3,800 and
+3,009 samples with the instruction pointer inside `HEVCDECODER_STORE.dll`.
+These are instruction samples, not frames or milliseconds. CPU activity alone
+would not prove software decoding because hardware decoders also parse input
+on the CPU. Together with the lack of a probe-owned VideoDecode context,
+the failed direct HEVC profile check and the zero PDH decoder activity, the
+results strongly support software fallback with GPU presentation/processing.
+No decoder event in this capture supplies an explicit hardware/fallback flag.
+
+**Integration decision:** this Media Engine experiment has not supplied a
+verified hardware-only HEVC route on the affected Intel driver. Do not integrate
+it as an Intel hardware workaround or relax the live client's GPU-only policy.
+The evidence does not prove that the physical chip lacks HEVC capability,
+nor distinguish an OEM restriction from a driver defect. A driver/OEM fix or
+a separately proven supported hardware route would be required to revisit it.
+The live decoder and proprietary WASM remain unchanged.
