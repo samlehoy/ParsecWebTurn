@@ -370,3 +370,30 @@ pub fn probe() -> Result<Value> {
         "warning":"Output availability is not GPU completion. Completion includes offline input-view validation. No live performance or zero-copy claim."}),
     )
 }
+
+/// Existing GPU-only MF/direct paths, without the live client's HEVC profile
+/// preflight. An actual fixture decode decides this isolated trial's result.
+pub fn intel_hevc_baseline(luid: u64) -> Result<Value> {
+    let _runtime = Runtime::start()?;
+    let d3d = D3d11::load()?;
+    let adapter = d3d
+        .adapters()?
+        .into_iter()
+        .find(|a| a.luid.value() == luid)
+        .context("requested adapter missing")?;
+    let device = d3d.open(adapter.luid)?;
+    ensure!(device.protect(), "D3D11 multithread protection unavailable");
+    let clip = Clip::Hevc;
+    let units = clip.units()?;
+    let mut trials = Vec::new();
+    for direct in [false, true] {
+        let result = if direct {
+            direct::trial(&device, clip, &units, 60)
+        } else {
+            mf::trial(&device, clip, &units, 60)
+        };
+        trials.push(json!({"path":if direct {"direct_d3d11"} else {"synchronous_mft"},
+            "result":match result {Ok(value)=>value, Err(error)=>json!({"failed":format!("{error:#}")})}}));
+    }
+    Ok(json!(trials))
+}

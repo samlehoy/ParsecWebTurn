@@ -4,5 +4,7 @@ pub mod bud;
 pub mod gpu;
 #[cfg(all(windows, feature = "gpu-probes"))]
 pub mod intel;
+#[cfg(all(windows, feature = "gpu-probes"))]
+pub mod intel_hevc;
 pub mod media;
 pub mod signaling;
