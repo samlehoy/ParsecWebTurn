@@ -1,7 +1,7 @@
 //! Isolated VPL original-surface presentation gate. No copy fallback.
 use super::*;
 use parsec_gpu_video::Layout;
-use std::{ffi::c_void, mem::size_of, rc::Rc};
+use std::{ffi::c_void, rc::Rc};
 use windows::{
     Win32::{
         Foundation::*,
