@@ -13,8 +13,14 @@ The previous Tauri/WebView2 client is preserved on `legacy` and in v0.7.0.
 - Original Parsec account interface, Computers list and stream overlay.
 - Native WebRTC data-channel transport, with certificate fingerprints and
   signatures checked. No forced Cloudflare STUN/TURN configuration.
-- H.264 and optional 8-bit HEVC video through Media Foundation, D3D11 NV12 GPU surfaces, GPU colour
-  conversion and DXGI presentation. No live decoded-video CPU readback.
+- H.264 through Media Foundation. Normal 8-bit HEVC uses NVIDIA Direct D3D11,
+  AMD AMF or Intel VPL, retaining GPU MF fallback. Original NV12 surfaces feed
+  the existing GPU conversion/DXGI path; optional original-surface presentation
+  uses Direct D3D11 and Windows Presentation API on all three supported vendors.
+  No application intermediate decoded-frame copy or live CPU readback is added.
+- Explicit experimental BUD selection, with direct UDP and automatic/forced UDP
+  TURN. It reuses native decoding, audio and input. WebRTC stays the default and
+  retains TURN over UDP/TCP/TLS; there is no silent transport switch.
 - Opus audio, 48 kHz stereo, through shared-mode Windows WASAPI.
 - Keyboard, mouse buttons, wheel and absolute video-coordinate input. Relative
   mouse remains controlled by the original Parsec overlay option; focus loss
@@ -29,6 +35,15 @@ It is unmodified. Its private ABI is an explicit compatibility boundary, not a
 public Parsec SDK. A changed upstream core requires another ABI audit.
 
 ## Run and saved data
+
+Settings has Network and Video tabs with shared save semantics. All control IDs,
+JSON keys, saved GPU preferences and Windows-protected secrets are retained.
+Switching tabs hides controls without destroying them or losing unsaved values.
+
+The application is under `src-native/src`; transport-only BUD lives in
+`src-native/crates/bud`, and GPU backends in `src-native/crates/video`. Their
+required licenses and vendored provenance are retained. One-off decoder and
+latency comparison executables have been retired; offline regressions remain.
 
 Windows x64 with working D3D11 and OpenGL support is currently required.
 Unzip the release package and run `ParsecWebTurn.exe`. Only that executable
@@ -149,7 +164,8 @@ validate these fields over UDP, TCP and TLS with real encrypted SCTP traffic.
 
 Traffic uses ICE transport byte deltas (not an available-bandwidth estimate); FPS
 uses native decoder frame deltas. Video metadata comes from the existing H.264 SPS
-inspector and Media Foundation/D3D11 snapshots. Audio format reflects the actual
+inspector and native GPU decoder snapshots. BUD uses native protocol traffic,
+RTT, encode-time and delivery counters instead of ICE/DTLS rows. Audio format reflects the actual
 native Opus pipeline, persists during silence, and distinguishes measured traffic
 from the unknown host encoder bitrate. SCTP data channels do not expose RTP packet
 loss; local queue drops are labeled separately. DTLS state is available, but its
@@ -165,10 +181,12 @@ References: [WebRTC statistics](https://www.w3.org/TR/webrtc-stats/),
 [PDH formatted counter arrays](https://learn.microsoft.com/en-us/windows/win32/api/pdh/nf-pdh-pdhgetformattedcounterarrayw).
 
 ParsecWebTurn is an independent project. Parsec and its core belong to their
-respective owners. Included Opus and WebRTC license notices must accompany binary
+respective owners. Included Opus, WebRTC, lowlat and self_cell license notices must accompany binary
 redistribution.
 
-Experimental native HEVC negotiation is described in
-[HEVC negotiation](hevc-negotiation.md), including its exact control bit,
-Media Foundation prerequisites and unverified host interoperability. Additional
-[research references](NATIVE_REFERENCES.md) include lowlat for future protocol work.
+The historical [HEVC negotiation investigation](hevc-negotiation.md) records the
+web contract. HEVC and optional original-surface presentation have now been
+verified with live hosts on selected NVIDIA, AMD and Intel GPUs using both
+transports; see the current README for support limits. The original core is
+unchanged. Additional [research references](NATIVE_REFERENCES.md) record lowlat
+provenance and the limits of applying its findings to this client.
