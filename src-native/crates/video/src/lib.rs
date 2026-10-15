@@ -204,11 +204,7 @@ impl Decoder {
         }
     }
     pub fn low_latency_request_accepted(&self) -> bool {
-        match self.inner {
-            Inner::Amd(_) => true,
-            Inner::Intel(_) => true,
-            _ => false,
-        }
+        matches!(self.inner, Inner::Amd(_) | Inner::Intel(_))
     }
     /// Returns all decoded outputs. Under renderer backpressure an output may
     /// be released without invoking `consume`; encoded input is still decoded.
