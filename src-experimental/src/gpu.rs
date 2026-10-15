@@ -16,7 +16,9 @@ use windows::{
 };
 mod amf;
 mod direct;
+mod intel;
 mod mf;
+pub use intel::compare as intel_hevc_compare;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Clip {

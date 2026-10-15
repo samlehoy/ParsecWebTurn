@@ -1,0 +1,43 @@
+Intel HEVC offline comparison - UHD 770 / working Intel HEVC systems
+
+Extract the complete test folder, then run Run-Intel-HEVC-Comparison.cmd.
+Use your normal Windows account; administrator rights and PowerShell are not
+needed. Close other video players/remote desktop streams for a cleaner result.
+No settings.json, Parsec account, host or network connection is needed.
+
+Three isolated paths use the same 120-frame 1280x720 HEVC Main 8-bit fixture:
+1. Media Foundation with the current low-latency requests.
+2. Current Intel VPL, AsyncDepth=1, original NV12 -> video processor.
+3. Current Intel VPL -> original NV12 -> Windows Presentation API.
+
+Paths 1 and 2 alternate order over five rounds each at 30 and 60 fps. The first
+16 frames per round are warmup. Both exercise the same video processor output
+write and fence endpoint. The reported completion time includes offline view
+validation, conversion and CPU polling; it is NOT pure GPU decode duration.
+VPL explicitly synchronizes before external use; output-availability timestamps
+therefore have different semantics from MF. Compare the shared completion
+endpoint first, and only when both paths provide valid completion samples.
+
+Path 3 runs at 60 fps in a visible synthetic test window when supported. It uses
+a presentation-compatible D3D11 device on the same Intel adapter, holds the
+original VPL surfaces until presentation releases them, and has no application
+conversion pass or decoded-frame copy. A rejected resource is reported as
+refused, with NO copy fallback. This tests the current VPL native allocations;
+refusal does not rule out all possible VPL external-allocation designs.
+Presentation submission is NOT display/scanout completion and must not be ranked
+against the completion endpoint from paths 1 and 2. Actual scanout, compositor
+copies and internal decoder/driver copies remain unknown.
+
+All output must remain GPU-only NV12 on the intended D3D11 device. Decoded pixels
+are never mapped/read back. Compressed input bytes naturally reside on the CPU.
+This test does not modify the live client or the embedded WASM core. Offline
+per-frame waits must not be copied into the playback pipeline. A GPU texture
+alone is not proof of hardware codec execution: this is an API/surface and timing
+gate, not an ETW hardware-engine trace or an end-to-end latency benchmark.
+
+After the test, send:
+- intel-hevc-comparison.json
+- intel-hevc-console.txt
+
+If the third path opens a window, also report whether its synthetic picture was
+visible and stable. The image is synthetic; it is not your desktop.
