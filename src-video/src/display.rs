@@ -49,7 +49,10 @@ impl Device {
             let dxgi: IDXGIDevice = probe.cast()?;
             let adapter = dxgi.GetAdapter()?;
             let desc = adapter.GetDesc()?;
-            ensure!(desc.VendorId == 0x10de, "Zero copy requires an NVIDIA GPU");
+            ensure!(
+                crate::original_surface_vendor_allowed(desc.VendorId),
+                "Zero copy GPU is not enabled in this build"
+            );
             let mut native = None;
             let mut context = None;
             // Presentation API requires PREVENT_INTERNAL_THREADING_OPTIMIZATIONS.

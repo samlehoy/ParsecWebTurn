@@ -1,0 +1,40 @@
+Intel HEVC live test - test-only build, not a release
+
+Use a separate folder. If you copy settings.json from your working client,
+remember this test client saves changes in that copied file. No settings file
+or credentials are distributed with the test.
+
+Select the working Intel UHD 770 in Settings, enable Prefer H.265 / HEVC,
+save and start a new connection using the web launch option in the host list.
+Both WebRTC and experimental BUD use the same video backends.
+
+1. Zero copy OFF: Connection stats should show Intel VPL HEVC and the existing
+   D3D11 VideoProcessor / DXGI renderer. The original NV12 texture is consumed
+   on its decoder device. No plane split, decoded-frame copy, export, staging
+   texture or CPU pixel readback; one existing conversion/output write remains.
+
+2. Disconnect, enable Zero copy, save and reconnect. Connection stats should
+   show Direct D3D11 HEVC and Original NV12 / Windows Presentation API. This is
+   the existing NVIDIA path enabled for Intel by this test build's vendor gate;
+   hardware, decoder-format and displayable-texture checks remain in place.
+   It does NOT use VPL output, and adds no conversion or intermediate frame copy.
+   Actual scanout and internal driver copies are not claimed.
+
+H.264 remains Media Foundation. AMD/NVIDIA keep their current backends. The
+intel-video-test build feature is OFF by default; ordinary builds keep Intel MF.
+The embedded Parsec WASM and network paths are unchanged. These paths are not
+expected to bypass the firmware/driver HEVC restriction on affected Dell PCs.
+
+If initialization or playback fails, the existing GPU fallback/recovery remains
+available. Check Decoder fallback / Zero copy status: a fallback is NOT a pass
+for the requested backend. For unsupported zero copy, Intel may run VPL instead.
+
+Please report both modes independently: actual decoder/renderer from Connection
+stats, visible correct colors/cropping, motion, resize/fullscreen, overlays and
+disconnect/reconnect. Test both transports if available. Send a screenshot of
+Connection stats if there is a fallback, black image or stopped video.
+
+Only the thin current VPL driver binding and existing HEVC parser are reused.
+No lowlat VPL exporter, plane splitter, CPU decoder, SDK session or alternative
+renderer is introduced. Original VPL surfaces are retained until a renderer
+completion fence signals; live frames do not CPU-wait for GPU completion.

@@ -2,6 +2,8 @@
 #![cfg(windows)]
 pub mod direct;
 pub mod display;
+#[cfg(feature = "intel-video-test")]
+mod intel;
 use anyhow::{Context as _, Result, ensure};
 use lowlat_core::video::Codec;
 use lowlat_decode::{Fed, hevc, nal};
@@ -17,6 +19,8 @@ use windows::{Win32::Graphics::Direct3D11::ID3D11Device, core::Interface};
 pub enum Mode {
     AmdAmf,
     DirectD3d11,
+    #[cfg(feature = "intel-video-test")]
+    IntelVpl,
 }
 pub fn preferred(vendor: u32, hevc: bool) -> Option<Mode> {
     if !hevc {
@@ -25,8 +29,13 @@ pub fn preferred(vendor: u32, hevc: bool) -> Option<Mode> {
     match vendor {
         0x1002 => Some(Mode::AmdAmf),
         0x10de => Some(Mode::DirectD3d11),
+        #[cfg(feature = "intel-video-test")]
+        0x8086 => Some(Mode::IntelVpl),
         _ => None,
     }
+}
+pub fn original_surface_vendor_allowed(vendor: u32) -> bool {
+    vendor == 0x10de || (cfg!(feature = "intel-video-test") && vendor == 0x8086)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -124,6 +133,8 @@ self_cell!(
 enum Inner {
     Direct(DirectCell),
     Amd(AmfCell),
+    #[cfg(feature = "intel-video-test")]
+    Intel(intel::Backend),
 }
 pub struct Decoder {
     inner: Inner,
@@ -137,6 +148,8 @@ impl Decoder {
         );
         let device = DeviceOwner::open(luid)?;
         let inner = match mode {
+            #[cfg(feature = "intel-video-test")]
+            Mode::IntelVpl => Inner::Intel(intel::Backend::open(device, size)?),
             Mode::DirectD3d11 => Inner::Direct(DirectCell::new(device, |owner| {
                 direct::Backend::new(&owner.device, Codec::H265)
             })),
@@ -178,6 +191,8 @@ impl Decoder {
         match &self.inner {
             Inner::Direct(c) => &c.borrow_owner().device,
             Inner::Amd(c) => &c.borrow_owner().borrow_owner().device.device,
+            #[cfg(feature = "intel-video-test")]
+            Inner::Intel(c) => c.device(),
         }
     }
     pub fn native_device(&self) -> Result<ID3D11Device> {
@@ -191,10 +206,17 @@ impl Decoder {
         match &self.inner {
             Inner::Direct(_) => "Direct D3D11 HEVC",
             Inner::Amd(_) => "AMD AMF HEVC",
+            #[cfg(feature = "intel-video-test")]
+            Inner::Intel(_) => "Intel VPL HEVC",
         }
     }
     pub fn low_latency_request_accepted(&self) -> bool {
-        matches!(self.inner, Inner::Amd(_))
+        match self.inner {
+            Inner::Amd(_) => true,
+            #[cfg(feature = "intel-video-test")]
+            Inner::Intel(_) => true,
+            _ => false,
+        }
     }
     pub fn feed(
         &mut self,
@@ -204,6 +226,8 @@ impl Decoder {
         let sequence = self.sequence;
         self.sequence = self.sequence.wrapping_add(1);
         match &mut self.inner {
+            #[cfg(feature = "intel-video-test")]
+            Inner::Intel(backend) => backend.feed(bytes, sequence, consume),
             Inner::Direct(cell)=>cell.with_dependent_mut(|owner,decoder| {
                 let fed=decoder.feed(bytes,sequence)?;
                 ensure!(fed!=Fed::FormatChanged,"direct decoder format changed");
@@ -265,6 +289,15 @@ mod tests {
         for vendor in [0x1002, 0x10de, 0x8086, 0] {
             assert_eq!(preferred(vendor, false), None);
         }
+        #[cfg(not(feature = "intel-video-test"))]
         assert_eq!(preferred(0x8086, true), None);
+        #[cfg(feature = "intel-video-test")]
+        assert_eq!(preferred(0x8086, true), Some(Mode::IntelVpl));
+        assert!(original_surface_vendor_allowed(0x10de));
+        assert!(!original_surface_vendor_allowed(0x1002));
+        assert_eq!(
+            original_surface_vendor_allowed(0x8086),
+            cfg!(feature = "intel-video-test")
+        );
     }
 }

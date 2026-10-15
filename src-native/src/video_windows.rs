@@ -682,7 +682,7 @@ impl Session {
         let (_allow_vendor, _zero_copy) = policy;
         let mut fallback = None;
         let zero_copy_status =
-            _zero_copy.then(|| "Unavailable: select NVIDIA and enable HEVC".into());
+            _zero_copy.then(|| "Unavailable: select a supported GPU and enable HEVC".into());
         #[cfg(feature = "vendor-video")]
         let mut zero_copy_status = zero_copy_status;
         #[cfg(feature = "vendor-video")]
@@ -703,7 +703,8 @@ impl Session {
                 let luid = (u64::from(adapter.AdapterLuid.HighPart as u32) << 32)
                     | u64::from(adapter.AdapterLuid.LowPart);
                 drop((probe_context, probe));
-                if _zero_copy && mode == parsec_gpu_video::Mode::DirectD3d11 {
+                if _zero_copy && parsec_gpu_video::original_surface_vendor_allowed(adapter.VendorId)
+                {
                     match parsec_gpu_video::display::Session::open(luid, hwnd) {
                         Ok(display) => {
                             return Ok(Some(Self {

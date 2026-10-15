@@ -9,6 +9,7 @@ publish = false
 [features]
 default = []
 vendor-video = ["dep:parsec-gpu-video"]
+intel-video-test = ["vendor-video", "parsec-gpu-video/intel-video-test"]
 experimental-bud = ["dep:parsec-native-experimental"]
 diagnostics = ["dep:log", "dep:rcgen", "dep:ring", "dep:rustls", "dep:tokio-rustls", "wasmtime/wat", "wasmtime/cranelift"]
 
