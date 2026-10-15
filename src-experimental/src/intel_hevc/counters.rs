@@ -117,7 +117,12 @@ impl DecodeCounter {
     }
 }
 fn matches_engine(name: &str, prefix: &str) -> bool {
-    name.starts_with(prefix) && name.ends_with("engtype_VideoDecode")
+    const SUFFIX: &str = "engtype_VideoDecode";
+    name.get(..prefix.len())
+        .is_some_and(|s| s.eq_ignore_ascii_case(prefix))
+        && name
+            .get(name.len().saturating_sub(SUFFIX.len())..)
+            .is_some_and(|s| s.eq_ignore_ascii_case(SUFFIX))
 }
 impl Drop for DecodeCounter {
     fn drop(&mut self) {
@@ -134,6 +139,10 @@ mod tests {
         let prefix = "pid_12_luid_0x00000000_0x00000123_";
         assert!(matches_engine(
             "pid_12_luid_0x00000000_0x00000123_phys_0_eng_2_engtype_VideoDecode",
+            prefix
+        ));
+        assert!(matches_engine(
+            "pid_12_luid_0x00000000_0x00000123_phys_0_eng_2_engtype_videodecode",
             prefix
         ));
         for name in [
