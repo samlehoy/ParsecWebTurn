@@ -156,7 +156,11 @@ unsafe fn device(luid: u64) -> Result<ID3D11Device> {
         )?;
         let device = device.context("D3D11 device missing")?;
         let protection: ID3D10Multithread = device.cast()?;
-        protection.SetMultithreadProtected(true);
+        let _ = protection.SetMultithreadProtected(true);
+        ensure!(
+            protection.GetMultithreadProtected().as_bool(),
+            "D3D11 multithread protection unavailable"
+        );
         Ok(device)
     }
 }
