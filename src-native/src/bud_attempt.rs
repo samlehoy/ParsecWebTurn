@@ -1,7 +1,7 @@
 //! Explicit experimental BUD lifecycle. RTC attempts never enter this adapter.
 use anyhow::{bail, ensure, Context, Result};
 use parsec_native_experimental::{
-    bud::{Event, Route, Session},
+    bud::{Event, Outcome, Route, Session},
     signaling::Signaling,
 };
 use serde_json::{json, Value};
@@ -97,7 +97,9 @@ impl Attempt {
         );
         let attempt_id = id.to_owned();
         let worker = std::thread::Builder::new().name("parsec-bud-media".into()).spawn(move || {
-            let result = run(&attempt_id, &output, &window, &manager, &worker_state, &worker_session, &worker_audio, &worker_cancel, incoming);
+            let mut trace = crate::bud_trace::Trace::start();
+            let result = run(&attempt_id, &output, &window, &manager, &worker_state, &worker_session, &worker_audio, &worker_cancel, incoming, &mut trace);
+            trace.record(if result.is_err() { "worker_error" } else { "worker_returned" }, &[("cancelled", u64::from(worker_cancel.load(Ordering::Acquire)))]);
             if result.is_err() {
                 let mut state = worker_state.lock().unwrap_or_else(|e| e.into_inner());
                 if !worker_cancel.load(Ordering::Acquire) {
@@ -456,13 +458,20 @@ fn run(
     audio: &SharedAudio,
     cancel: &AtomicBool,
     incoming: mpsc::Receiver<String>,
+    trace: &mut crate::bud_trace::Trace,
 ) -> Result<()> {
+    trace.mark("initial_route_resolution");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let (route, settings) = runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(15), route(manager)).await
     })??;
+    trace.mark(if settings.force_relay {
+        "initial_relay_selected"
+    } else {
+        "initial_direct_selected"
+    });
     if cancel.load(Ordering::Acquire) {
         return Ok(());
     }
@@ -483,11 +492,13 @@ fn run(
     };
     state.lock().unwrap_or_else(|e| e.into_inner()).wire_id = id.into();
     session.wake_consumer(std::thread::current());
+    trace.mark("initial_native_offer");
     let creds = session.offer(id, route)?;
     let mut source = session.take_media()?;
     let mut signaling = Signaling::new("host", id)?;
     *audio.lock().unwrap_or_else(|e| e.into_inner()) = Some(media.audio_pipeline());
     *shared_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
+    trace.mark("initial_guest_offer_completion");
     if !complete_offer(
         state,
         cancel,
@@ -505,7 +516,12 @@ fn run(
         || (settings.provider == "custom" && settings.turn_urls.is_empty());
     let mut wire_id = id.to_owned();
     let mut last_stats = Instant::now();
+    let mut last_trace = Instant::now();
+    trace.mark("initial_waiting_for_host");
     while !cancel.load(Ordering::Acquire) {
+        if !established && Instant::now() >= deadline {
+            trace.mark("establishment_deadline");
+        }
         ensure!(
             established || Instant::now() < deadline,
             "BUD establishment deadline"
@@ -518,15 +534,33 @@ fn run(
                 break;
             };
             if native_close(&text, &wire_id) {
+                trace.mark("host_close_received");
                 ended = true;
                 break;
             }
+            if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                if value["action"] == "answer_relay" {
+                    trace.record(
+                        "host_answer_received",
+                        &[("approved", u64::from(value["payload"]["approved"] == true))],
+                    );
+                }
+            }
+            trace.mark("native_signal_processing");
             signaling.receive(&text, session)?;
+            trace.mark("native_signal_processed");
             if let Ok(value) = serde_json::from_str::<Value>(&text) {
                 if value["action"] == "answer_relay"
                     && value["payload"]["attempt_id"].as_str() == Some(&wire_id)
                 {
                     answered_at.get_or_insert_with(Instant::now);
+                    trace.mark("host_answer_accepted");
+                } else if value["action"] == "candex_relay" {
+                    trace.mark(if value["payload"]["data"]["sync"] == true {
+                        "host_readiness_received"
+                    } else {
+                        "host_candidate_received"
+                    });
                 }
             }
         }
@@ -538,12 +572,30 @@ fn run(
             events.push(event);
         }
         let transport = session.snapshot();
+        if !established && last_trace.elapsed() >= Duration::from_secs(1) {
+            trace.record(
+                "transport_progress",
+                &[
+                    ("udp_received", transport.udp_received),
+                    ("udp_sent", transport.udp_sent),
+                    ("connected", u64::from(transport.connected)),
+                    ("relay", u64::from(transport.relay)),
+                ],
+            );
+            last_trace = Instant::now();
+        }
         media.recover(session);
         drop(guard);
         let pumped = media.pump(&mut source)?;
         for event in &events {
             if matches!(event, Event::Candidate { .. } | Event::Ready) {
+                trace.mark(if matches!(event, Event::Ready) {
+                    "local_readiness_sending"
+                } else {
+                    "local_candidate_sending"
+                });
                 send_candidate(state, event)?;
+                trace.mark("local_signal_sent");
             }
         }
         let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -555,13 +607,27 @@ fn run(
             match event {
                 Event::Candidate { .. } | Event::Ready => {}
                 Event::Established { .. } => {
+                    trace.mark("transport_established");
                     established = true;
                     shared.established = true;
                     shared.events.push_back(
                         json!({"type":7,"status":0,"state":4,"attemptID":id,"duration":0}),
                     );
                 }
-                Event::Ended { .. } => ended = true,
+                Event::Ended { outcome } => {
+                    trace.mark(match outcome {
+                        Outcome::ConnectivityFailed => "ended_connectivity_failed",
+                        Outcome::PeerGone => "ended_peer_gone",
+                        Outcome::Undeliverable => "ended_undeliverable",
+                        Outcome::TransportFailed => "ended_transport_failed",
+                        Outcome::Disconnected(_) => "ended_host_disconnected",
+                        Outcome::Unreadable => "ended_unreadable",
+                        Outcome::RelayUnreachable => "ended_relay_unreachable",
+                        Outcome::RelayRefused => "ended_relay_refused",
+                        Outcome::RelayLost => "ended_relay_lost",
+                    });
+                    ended = true;
+                }
                 Event::ExternalControl { bytes } => shared.controls.push_back(bytes.into()),
             }
         }
@@ -620,6 +686,7 @@ fn run(
         let fallback_due = !established
             && (ended || answered_at.is_some_and(|t| t.elapsed() >= Duration::from_secs(4)));
         if fallback_due && !retried {
+            trace.mark("relay_retry_started");
             retried = true;
             drop(source);
             let mut old = shared_session
@@ -630,20 +697,24 @@ fn run(
                 old.close();
             }
             drop(old);
+            trace.mark("relay_credentials_resolution");
             let relay = runtime.block_on(async {
                 // Match the credential/DNS allowance used by Force relay.
                 tokio::time::timeout(Duration::from_secs(15), relay_route(manager, &settings)).await
             })??;
+            trace.mark("relay_credentials_ready");
             if cancel.load(Ordering::Acquire) {
                 return Ok(());
             }
             wire_id = format!("{}-turn-1", id.chars().take(200).collect::<String>());
             let mut next = Session::external_video(hevc_available)?;
             next.wake_consumer(std::thread::current());
+            trace.mark("relay_native_offer");
             let creds = next.offer(&wire_id, relay)?;
             source = next.take_media()?;
             signaling = Signaling::new("host", &wire_id)?;
             *shared_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(next);
+            trace.mark("relay_account_offer_sending");
             if !switch_offer(
                 state,
                 cancel,
@@ -652,6 +723,7 @@ fn run(
             )? {
                 return Ok(());
             }
+            trace.mark("relay_account_offer_sent");
             answered_at = None;
             // A fresh relay attempt needs the same establishment allowance as
             // Force relay, independent of time spent discovering a direct path.

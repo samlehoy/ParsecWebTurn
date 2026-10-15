@@ -2,10 +2,10 @@
 use std::net::SocketAddr;
 
 use anyhow::{Result, anyhow, ensure};
-pub use lowlat_client::Event;
 use lowlat_client::config::{Port, Relay};
 use lowlat_client::driver::Units;
 use lowlat_client::{Client, Config, Peer, Transport};
+pub use lowlat_client::{Event, Outcome};
 use lowlat_core::conn::Kind;
 use lowlat_crypto::Credentials;
 

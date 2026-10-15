@@ -10,6 +10,14 @@ directory if you need your TURN settings; do not send that file to anyone.
 Close other native ParsecWebTurn instances before starting this test client.
 The normal protected account profile is reused; sign in if prompted.
 
+For connection troubleshooting only, start with Start-BUD-Diagnostics.cmd.
+Each new BUD connection overwrites bud-diagnostics.jsonl beside the executable.
+It records bounded connection stages, relative times and UDP byte counters;
+no addresses, account identifiers, credentials or media contents are recorded.
+Copy the file after the failed attempt before reconnecting. To compare Force
+TURN, save its log separately. Starting the executable normally disables this
+trace and leaves connection behavior unchanged.
+
 Settings -> Experimental BUD (UDP only) -> Save settings.
 Connect to a stock Parsec host using the normal computer picker.
 BUD without Force TURN first tries direct UDP with STUN discovery. If the host

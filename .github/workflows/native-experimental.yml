@@ -49,6 +49,7 @@ jobs:
           Copy-Item (Join-Path $opus.FullName "LICENSE") dist/bud-test/LIBOPUS-SYS-LICENSE.txt
           Copy-Item (Join-Path $opus.FullName "opus/COPYING") dist/bud-test/OPUS-LICENSE.txt
           Copy-Item docs/BUD-TEST.txt dist/bud-test/README.txt
+          @('@echo off', 'set "PARSEC_BUD_DIAGNOSTICS=1"', 'cd /d "%~dp0"', 'start "" /wait "%~dp0ParsecWebTurn.exe"') | Set-Content dist/bud-test/Start-BUD-Diagnostics.cmd -Encoding ascii
           git rev-parse HEAD | Set-Content dist/bud-test/SOURCE.txt -Encoding ascii
       - uses: actions/upload-artifact@v4
         with:
