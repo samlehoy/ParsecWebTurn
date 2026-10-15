@@ -387,12 +387,15 @@ pub fn intel_hevc_baseline(luid: u64) -> Result<Value> {
     let units = clip.units()?;
     let mut trials = Vec::new();
     for direct in [false, true] {
-        let result = if direct {
-            direct::trial(&device, clip, &units, 60)
-        } else {
-            mf::trial(&device, clip, &units, 60)
-        };
+        let (result, activity) = crate::intel_hevc::observe_trial(luid, || {
+            if direct {
+                direct::trial(&device, clip, &units, 60)
+            } else {
+                mf::trial(&device, clip, &units, 60)
+            }
+        });
         trials.push(json!({"path":if direct {"direct_d3d11"} else {"synchronous_mft"},
+            "decode_engine":activity,
             "result":match result {Ok(value)=>value, Err(error)=>json!({"failed":format!("{error:#}")})}}));
     }
     Ok(json!(trials))

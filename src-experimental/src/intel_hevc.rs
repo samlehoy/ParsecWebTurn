@@ -360,3 +360,50 @@ pub fn probe() -> Result<Value> {
         "note":"A control GPU does not prove Intel compatibility. Played frames without process/adapter-scoped VideoDecode activity do not establish hardware decoding. No latency or global zero-copy claim."}),
     )
 }
+
+/// The baseline decoder stays on its COM owner thread. PDH sampling alone runs
+/// separately so blocking decode calls cannot hide the hardware engine activity.
+pub(crate) fn observe_trial(
+    luid: u64,
+    trial: impl FnOnce() -> Result<Value>,
+) -> (Result<Value>, Value) {
+    use std::sync::{atomic::AtomicU32, mpsc};
+    let stop = AtomicBool::new(false);
+    let frames = AtomicU32::new(0);
+    struct Stop<'a>(&'a AtomicBool);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    std::thread::scope(|scope| {
+        let (ready, wait) = mpsc::sync_channel(1);
+        let observer = scope.spawn(|| {
+            let mut counter = DecodeCounter::open(luid);
+            let _ = ready.send(());
+            while !stop.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(200));
+                if let Some(counter) = &mut counter {
+                    counter.sample();
+                }
+            }
+            counter
+                .as_ref()
+                .map_or(Value::Null, |c| c.report(frames.load(Ordering::Relaxed)))
+        });
+        let guard = Stop(&stop);
+        let _ = wait.recv();
+        let result = trial();
+        frames.store(
+            result
+                .as_ref()
+                .ok()
+                .and_then(|r| r["frames"].as_u64())
+                .unwrap_or(0)
+                .min(u64::from(u32::MAX)) as u32,
+            Ordering::Relaxed,
+        );
+        drop(guard);
+        (result, observer.join().unwrap_or(Value::Null))
+    })
+}
