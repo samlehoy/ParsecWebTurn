@@ -753,7 +753,9 @@ fn native_attempt_id() -> Result<String> {
     let mut random = [0u8; 24];
     getrandom::fill(&mut random).map_err(|_| anyhow::anyhow!("BUD attempt entropy unavailable"))?;
     Ok(random
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|part| {
             format!(
                 "{:02x}{:02x}{:02x}{:02x}",
