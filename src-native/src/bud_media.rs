@@ -1,7 +1,7 @@
 //! Opt-in BUD media handoff to the existing native decoders.
 //! No alternate decoder, renderer, decoded-frame export or GPU interop path.
 use anyhow::{ensure, Result};
-use parsec_native_experimental::{
+use parsec_native_bud::{
     bud::{MediaSource, Session},
     media::{self, Rotation, Video},
 };

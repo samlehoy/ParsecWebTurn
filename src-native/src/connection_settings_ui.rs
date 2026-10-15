@@ -49,11 +49,6 @@ const BUD_EXTRA: i32 = if cfg!(feature = "experimental-bud") {
 } else {
     0
 };
-const ZERO_EXTRA: i32 = if cfg!(feature = "vendor-video") {
-    94
-} else {
-    0
-};
 #[cfg(feature = "vendor-video")]
 const ZERO_COPY: usize = 4120;
 const BG: u32 = 0x00282828;
@@ -64,7 +59,13 @@ const ACCENT: u32 = 0x00ffbb00;
 const CUSTOM: u8 = 1;
 const CLOUDFLARE: u8 = 2;
 const HELP: usize = 4200;
-const TAB: usize = 4201;
+const NETWORK_TAB: usize = 4201;
+const VIDEO_TAB: usize = 4121;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Network,
+    Video,
+}
 const SECTION: usize = 4202;
 const NOTICE: usize = 4203;
 fn wide(s: &str) -> Vec<u16> {
@@ -74,6 +75,7 @@ struct Item {
     hwnd: HWND,
     rect: RECT,
     group: u8,
+    tab: Option<Tab>,
 }
 struct Page {
     window_owned: bool,
@@ -87,6 +89,8 @@ struct Page {
     heading: HFONT,
     small: HFONT,
     items: Vec<Item>,
+    active_tab: Tab,
+    building_tab: Option<Tab>,
     scroll: i32,
     reflowing: bool,
 }
@@ -168,6 +172,8 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         heading: font(46, 300),
         small: font(13, 400),
         items: Vec::new(),
+        active_tab: Tab::Network,
+        building_tab: None,
         scroll: 0,
         reflowing: false,
     });
@@ -232,28 +238,36 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         0,
         page.font,
     );
+    for (id, label, rect) in [
+        (NETWORK_TAB, "Network", [0, 142, 128, 40]),
+        (VIDEO_TAB, "Video", [140, 142, 128, 40]),
+        (BACK, "Back", [550, 142, 110, 40]),
+        (SAVE, "Save settings", [676, 142, 144, 40]),
+    ] {
+        add(
+            hwnd,
+            page,
+            "BUTTON",
+            label,
+            BS_OWNERDRAW as u32 | WS_TABSTOP,
+            rect,
+            id,
+            0,
+            page.font,
+        );
+    }
     add(
         hwnd,
         page,
         "STATIC",
-        "Network and video",
+        "NETWORK",
         0,
-        [4, 142, 300, 24],
-        TAB,
-        0,
-        page.font,
-    );
-    add(
-        hwnd,
-        page,
-        "STATIC",
-        "CONNECTION AND VIDEO SETTINGS",
-        0,
-        [0, 192, 820, 25],
+        [0, 204, 820, 25],
         SECTION,
         0,
         page.font,
     );
+    page.building_tab = Some(Tab::Network);
     row(hwnd, page, "STUN servers",
         "Discover a direct route. One stun: URL per line.\nLeave blank to use the default discovery server.",
         STUN, &s.stun_urls.join("\r\n"), 242, 76, 0, ES_MULTILINE as u32 | ES_WANTRETURN as u32 | ES_AUTOVSCROLL as u32 | WS_CLIPCHILDREN);
@@ -419,12 +433,13 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         page.font,
     );
     check(hwnd, CACHE, s.cache_credentials);
+    page.building_tab = Some(Tab::Video);
     row_label(
         hwnd,
         page,
         "Video GPU",
         "GPU for stream decoding and rendering.\nAutomatic uses Windows' default. Next connection.",
-        816,
+        242,
         0,
         40,
     );
@@ -438,7 +453,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
             | CBS_HASSTRINGS as u32
             | WS_VSCROLL
             | WS_TABSTOP,
-        [420, 816, 400, 200],
+        [420, 242, 400, 200],
         GPU,
         0,
         page.font,
@@ -491,25 +506,34 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         })
         .unwrap_or(0);
     SendMessageW(gpu, CB_SETCURSEL, selected, 0);
-    row_label(hwnd, page, "Video codec", "Try HEVC (8-bit) when supported by this GPU and Windows.\nExperimental; reconnect after changing.", 916, 0, 40);
+    row_label(
+        hwnd,
+        page,
+        "Video codec",
+        "Use HEVC (8-bit) when supported by this GPU and driver.\nReconnect after changing.",
+        344,
+        0,
+        40,
+    );
     add(
         hwnd,
         page,
         "BUTTON",
         "Prefer H.265 / HEVC",
         BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 916, 400, 36],
+        [420, 344, 400, 36],
         HEVC,
         0,
         page.font,
     );
     check(hwnd, HEVC, s.prefer_hevc);
+    page.building_tab = Some(Tab::Network);
     row_label(
         hwnd,
         page,
         "Connection route",
         "Use a TURN relay even when a direct route is available.",
-        1010,
+        844,
         0,
         40,
     );
@@ -519,7 +543,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         "BUTTON",
         "Force TURN relay",
         BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 1010, 400, 36],
+        [420, 844, 400, 36],
         FORCE_RELAY,
         0,
         page.font,
@@ -527,14 +551,14 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     check(hwnd, FORCE_RELAY, s.force_relay);
     #[cfg(feature = "experimental-bud")]
     {
-        row_label(hwnd, page, "Transport", "Experimental native BUD: direct UDP or Force TURN over UDP.\nWebRTC supports TURN TCP/TLS. Reconnect after changing.", 1104, 0, 40);
+        row_label(hwnd, page, "Transport", "Experimental BUD: direct UDP or TURN over UDP.\nWebRTC also supports TURN TCP/TLS. Reconnect after changing.", 938, 0, 40);
         add(
             hwnd,
             page,
             "BUTTON",
             "Experimental BUD (UDP only)",
             BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-            [420, 1104, 400, 36],
+            [420, 938, 400, 36],
             BUD,
             0,
             page.font,
@@ -543,7 +567,8 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     }
     #[cfg(feature = "vendor-video")]
     {
-        let y = 1110 + BUD_EXTRA;
+        page.building_tab = Some(Tab::Video);
+        let y = 438;
         let hint = "Present original HEVC decoder surfaces on supported GPUs.\nWindows 11 / compatible driver. Reconnect after changing.";
         row_label(hwnd, page, "Video presentation", hint, y, 0, 40);
         add(
@@ -559,9 +584,10 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         );
         check(hwnd, ZERO_COPY, s.experimental_zero_copy);
     }
+    page.building_tab = None;
     add(hwnd, page, "STATIC",
         "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection.",
-        0, [0, 1110 + BUD_EXTRA + ZERO_EXTRA, 820, 48], NOTICE, 0, page.small);
+        0, [0, 938 + BUD_EXTRA, 820, 48], NOTICE, 0, page.small);
     let status = error.unwrap_or_else(|| {
         "Saved in settings.json. Secrets are protected for your Windows user.".into()
     });
@@ -571,32 +597,10 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         "STATIC",
         &status,
         0,
-        [0, 1172 + BUD_EXTRA + ZERO_EXTRA, 820, 40],
+        [0, 1000 + BUD_EXTRA, 820, 40],
         STATUS,
         0,
         page.small,
-    );
-    add(
-        hwnd,
-        page,
-        "BUTTON",
-        "Back",
-        BS_OWNERDRAW as u32 | WS_TABSTOP,
-        [550, 1228 + BUD_EXTRA + ZERO_EXTRA, 110, 40],
-        BACK,
-        0,
-        page.font,
-    );
-    add(
-        hwnd,
-        page,
-        "BUTTON",
-        "Save settings",
-        BS_OWNERDRAW as u32 | WS_TABSTOP,
-        [676, 1228 + BUD_EXTRA + ZERO_EXTRA, 144, 40],
-        SAVE,
-        0,
-        page.font,
     );
     update_enabled(hwnd);
     ShowWindow(hwnd, SW_SHOW);
@@ -632,6 +636,7 @@ unsafe fn add(
             bottom: y + h,
         },
         group,
+        tab: page.building_tab,
     });
     hwnd
 }
@@ -710,8 +715,17 @@ unsafe fn layout(hwnd: HWND) {
     let mut client = std::mem::zeroed();
     GetClientRect(hwnd, &mut client);
     let cloudflare = SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1;
-    let shift = if cloudflare { 0 } else { 44 };
-    let height = 1294 + HEADER_EXTRA + BUD_EXTRA + ZERO_EXTRA - shift;
+    let footer = match page.active_tab {
+        Tab::Network => 938 + BUD_EXTRA,
+        Tab::Video => {
+            if cfg!(feature = "vendor-video") {
+                532
+            } else {
+                438
+            }
+        }
+    };
+    let height = footer + 122 + HEADER_EXTRA;
     page.scroll = page.scroll.clamp(0, (height - client.bottom).max(0));
     let info = SCROLLINFO {
         cbSize: size_of::<SCROLLINFO>() as u32,
@@ -728,9 +742,19 @@ unsafe fn layout(hwnd: HWND) {
     GetClientRect(hwnd, &mut client);
     let x = ((client.right - 820) / 2).max(24);
     for item in &page.items {
-        let visible = item.group == 0 || item.group == if cloudflare { CLOUDFLARE } else { CUSTOM };
-        let r = item.rect;
-        let dy = if r.top >= 816 { shift } else { 0 };
+        let visible = item.tab.is_none_or(|tab| tab == page.active_tab)
+            && (item.group == 0 || item.group == if cloudflare { CLOUDFLARE } else { CUSTOM });
+        let mut r = item.rect;
+        let id = GetDlgCtrlID(item.hwnd) as usize;
+        let new_top = match id {
+            NOTICE => Some(footer),
+            STATUS => Some(footer + 62),
+            _ => None,
+        };
+        if let Some(top) = new_top {
+            r.bottom += top - r.top;
+            r.top = top;
+        }
         // Moving overlapping child windows individually must not preserve old
         // pixels or paint halfway through reflow. A parent-only invalidation
         // excludes children (WS_CLIPCHILDREN), leaving clipped text/buttons.
@@ -738,7 +762,7 @@ unsafe fn layout(hwnd: HWND) {
             item.hwnd,
             null_mut(),
             x + r.left,
-            r.top + if r.top >= 88 { HEADER_EXTRA } else { 0 } - page.scroll - dy,
+            r.top + if r.top >= 88 { HEADER_EXTRA } else { 0 } - page.scroll,
             r.right - r.left,
             r.bottom - r.top,
             SWP_NOZORDER
@@ -991,13 +1015,25 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
             }
             WM_DRAWITEM => {
                 let draw = &*(lp as *const DRAWITEMSTRUCT);
-                if [SAVE as u32, BACK as u32, PROVIDER as u32, GPU as u32].contains(&draw.CtlID) {
+                if [
+                    SAVE as u32,
+                    BACK as u32,
+                    NETWORK_TAB as u32,
+                    VIDEO_TAB as u32,
+                    PROVIDER as u32,
+                    GPU as u32,
+                ]
+                .contains(&draw.CtlID)
+                {
                     let dc = draw.hDC;
                     let state = SaveDC(dc);
                     let primary = draw.CtlID == SAVE as u32;
+                    let selected_tab = (draw.CtlID == NETWORK_TAB as u32
+                        && page.active_tab == Tab::Network)
+                        || (draw.CtlID == VIDEO_TAB as u32 && page.active_tab == Tab::Video);
                     let color = if draw.itemState & ODS_SELECTED != 0 {
                         0x00404040
-                    } else if primary {
+                    } else if primary || selected_tab {
                         ACCENT
                     } else {
                         FIELD
@@ -1011,7 +1047,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                         dc,
                         if draw.itemState & ODS_DISABLED != 0 {
                             MUTED
-                        } else if primary && draw.itemState & ODS_SELECTED == 0 {
+                        } else if (primary || selected_tab) && draw.itemState & ODS_SELECTED == 0 {
                             FIELD
                         } else {
                             FG
@@ -1029,6 +1065,10 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                             .get(draw.itemID as usize)
                             .cloned()
                             .unwrap_or_default()
+                    } else if draw.CtlID == NETWORK_TAB as u32 {
+                        "Network".into()
+                    } else if draw.CtlID == VIDEO_TAB as u32 {
+                        "Video".into()
                     } else if primary {
                         "Save settings".into()
                     } else {
@@ -1068,6 +1108,30 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                 return 0;
             }
             WM_COMMAND => match wp & 0xffff {
+                NETWORK_TAB | VIDEO_TAB if (wp >> 16) as u32 == BN_CLICKED => {
+                    page.active_tab = if wp & 0xffff == VIDEO_TAB {
+                        Tab::Video
+                    } else {
+                        Tab::Network
+                    };
+                    page.scroll = 0;
+                    SetWindowTextW(
+                        GetDlgItem(hwnd, SECTION as i32),
+                        wide(if page.active_tab == Tab::Video {
+                            "VIDEO"
+                        } else {
+                            "NETWORK"
+                        })
+                        .as_ptr(),
+                    );
+                    SetWindowTextW(GetDlgItem(hwnd, NOTICE as i32), wide(if page.active_tab == Tab::Video {
+                        "Video changes apply to your next connection."
+                    } else {
+                        "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection."
+                    }).as_ptr());
+                    layout(hwnd);
+                    return 0;
+                }
                 SAVE | 1 => {
                     let status = match save(hwnd, page) {
                         Ok(()) => "Settings saved. They apply on your next connection.".into(),
@@ -1099,7 +1163,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                 let id = GetDlgCtrlID(lp as HWND) as usize;
                 SetTextColor(
                     dc,
-                    if id == TAB {
+                    if id == SECTION {
                         ACCENT
                     } else if matches!(id, HELP | NOTICE | STATUS)
                         || IsWindowEnabled(lp as HWND) == 0
@@ -1221,7 +1285,24 @@ mod tests {
             GetClientRect(page, &mut client);
             assert!(button.top >= 0 && button.bottom <= client.bottom);
             capture(page, "cloudflare-bottom");
+            SetWindowTextW(
+                GetDlgItem(page, TOKEN as i32),
+                wide("fixture-token").as_ptr(),
+            );
+            #[cfg(feature = "experimental-bud")]
+            check(page, BUD, true);
+            SendMessageW(page, WM_COMMAND, VIDEO_TAB, 0);
+            assert_eq!(IsWindowVisible(GetDlgItem(page, PROVIDER as i32)), 0);
+            assert_ne!(IsWindowVisible(GetDlgItem(page, GPU as i32)), 0);
+            check(page, HEVC, true);
+            assert_no_overlaps(page);
+            capture(page, "video");
             assert_combo_label_visible(page, GPU);
+            SendMessageW(page, WM_COMMAND, NETWORK_TAB, 0);
+            assert_eq!(IsWindowVisible(GetDlgItem(page, GPU as i32)), 0);
+            assert!(checked(page, HEVC));
+            assert_eq!(text(page, TOKEN), "fixture-token");
+            assert_eq!(text(page, USERNAME), "unsaved-user");
             SendMessageW(GetDlgItem(page, PROVIDER as i32), CB_SETCURSEL, 0, 0);
             update_enabled(page);
             assert_eq!(text(page, USERNAME), "unsaved-user");
@@ -1244,6 +1325,8 @@ mod tests {
             check(page, FORCE_RELAY, true);
             SendMessageW(page, WM_COMMAND, SAVE, 0);
             assert!(manager.view().0.force_relay);
+            #[cfg(feature = "experimental-bud")]
+            assert!(manager.view().0.experimental_bud);
             assert_eq!(manager.view().0.stun_urls.len(), 2);
             assert_eq!(manager.view().0.turn_urls.len(), 2);
             check(page, STUN_ONLY, true);

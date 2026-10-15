@@ -7,11 +7,9 @@ publish = false
 
 # Independent crate: neither Tauri nor WebView2 is linked.
 [features]
-default = []
+default = ["vendor-video", "experimental-bud"]
 vendor-video = ["dep:parsec-gpu-video"]
-intel-video-test = ["vendor-video", "parsec-gpu-video/intel-video-test"]
-amd-video-test = ["vendor-video", "parsec-gpu-video/amd-video-test"]
-experimental-bud = ["dep:parsec-native-experimental"]
+experimental-bud = ["dep:parsec-native-bud"]
 diagnostics = ["dep:log", "dep:rcgen", "dep:ring", "dep:rustls", "dep:tokio-rustls", "wasmtime/wat", "wasmtime/cranelift"]
 
 [dependencies]
@@ -53,7 +51,7 @@ codegen-units = 1
 opt-level = "s"
 
 [target.'cfg(windows)'.dependencies]
-parsec-native-experimental = { path = "../src-experimental", optional = true }
+parsec-native-bud = { path = "crates/bud", optional = true }
 windows = { version = "=0.62.2", features = ["Wdk_Graphics_Direct3D", "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D10", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Media_MediaFoundation", "Win32_Media_Audio", "Win32_System_Threading", "Win32_System_Performance", "Win32_Security", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_Variant"] }
 windows-sys = { version = "0.61", features = [ "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Graphics_OpenGL", "Win32_System_Power", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_UI_Shell"] }
 
@@ -68,5 +66,5 @@ wasmtime = { version = "38", default-features = false, features = ["std", "runti
 sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies.parsec-gpu-video]
-path = "../src-video"
+path = "crates/video"
 optional = true

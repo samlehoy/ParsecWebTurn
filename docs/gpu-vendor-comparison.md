@@ -1,3 +1,7 @@
+> Historical investigation results. One-off comparison executables and test-only
+> build gates have been retired; current behavior and build instructions are in
+> the [project README](../README.md).
+
 # 8-bit GPU decoder comparison
 
 The standard client retains Media Foundation. The optional vendor-video test

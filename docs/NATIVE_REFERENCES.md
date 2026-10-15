@@ -1,11 +1,11 @@
 # Native development research references
 
-These are research inputs, not compatibility guarantees. The independent
-`src-experimental` crate now pins lowlat libraries for Intel/BUD gates; they are
-not dependencies of the normal WebRTC client. Check
-the relevant source revision and validate against our pinned core and actual
-Parsec hosts before adopting behavior. Platform integrations remain based on
-documented APIs; reverse-engineered Parsec contracts stay isolated and explicit.
+These are research inputs, not compatibility guarantees. The native application
+now keeps its transport-only BUD adapter in `src-native/crates/bud` and GPU
+backends in `src-native/crates/video`. Both use pinned, trimmed lowlat components;
+there is no second SDK decoder/session/UI around WebRTC. BUD stays explicitly
+selected, and all live decoded pixels stay on the application's native GPU path.
+Historical measurements below should be read alongside the current root README.
 
 ## lowlat
 
@@ -28,10 +28,9 @@ Its MIT-licensed documentation is useful for future protocol investigations:
   to our WebRTC data channels: their media framing differs.
 
 The HEVC investigation uses it as independent corroboration of `_flags` bit 0;
-see [HEVC negotiation evidence and limitations](hevc-negotiation.md). No lowlat
-library, host implementation, socket/crypto replacement or copied source is
-included in the default WebRTC binary. The optional BUD test build uses a pinned,
-transport-only subset of the client SDK; see its vendored provenance document.
+see [HEVC negotiation evidence and limitations](hevc-negotiation.md). The native build uses a pinned transport-only BUD subset and GPU driver/parser
+components; it does not replace WebRTC sockets/crypto or embed a lowlat host.
+See the vendored provenance documents for the retained subset.
 
 The client-side reuse/critical-section changes inspired by the IO design are
 documented in [native input and network hand-off](native-input-network-handoff.md).
@@ -58,8 +57,8 @@ Additional reviewed revision on `feat/win-seams` (2026-10-14):
   playback with the optional BUD test client. TURN/TCP and TURN/TLS are not provided by this path.
 
 The next development scope and isolation requirements are recorded in
-[BUD and vendor decoder investigation](native-bud-vendor-decoders.md). No lowlat
-runtime or vendor decoder has been integrated into the distributed client yet.
+[BUD and vendor decoder investigation](native-bud-vendor-decoders.md). The current integration and tested vendor decoder paths are described in the
+root README; the investigation document records earlier scope and limitations.
 
 ## libparsec
 

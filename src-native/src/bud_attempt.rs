@@ -1,6 +1,6 @@
 //! Explicit experimental BUD lifecycle. RTC attempts never enter this adapter.
 use anyhow::{bail, ensure, Context, Result};
-use parsec_native_experimental::{
+use parsec_native_bud::{
     bud::{Event, Outcome, Route, Session},
     signaling::Signaling,
 };

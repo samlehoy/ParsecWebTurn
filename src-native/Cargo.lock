@@ -1861,7 +1861,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "parsec-native-experimental"
+name = "parsec-native-bud"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1886,7 +1886,7 @@ dependencies = [
  "libopus_sys",
  "log",
  "parsec-gpu-video",
- "parsec-native-experimental",
+ "parsec-native-bud",
  "rcgen",
  "reqwest",
  "ring",

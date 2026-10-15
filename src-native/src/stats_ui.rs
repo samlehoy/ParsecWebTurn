@@ -273,8 +273,8 @@ fn rows(
             .unwrap_or("Not reported")
             .into(),
     );
-    if let Some(reason) = video.and_then(|v| v.decoder_fallback.clone()) {
-        row("Decoder fallback", reason);
+    if video.is_some_and(|v| v.decoder_fallback.is_some()) {
+        row("Decoder fallback", "Compatibility decoder in use".into());
     }
     row(
         "Renderer",
@@ -289,8 +289,18 @@ fn rows(
             .and_then(|x| x.adapter.clone())
             .unwrap_or_else(|| "Not reported".into()),
     );
-    if let Some(status) = video.and_then(|v| v.zero_copy_status.clone()) {
-        row("Zero copy (experimental)", status);
+    if let Some(status) = video.and_then(|v| v.zero_copy_status.as_deref()) {
+        row(
+            "Zero copy (experimental)",
+            if status.starts_with("Original NV12") {
+                "Active"
+            } else if status.starts_with("Starting") {
+                "Starting"
+            } else {
+                "Unavailable; using normal GPU rendering"
+            }
+            .into(),
+        );
     }
     if video.is_some_and(|v| v.recovering) {
         row(
@@ -308,17 +318,17 @@ fn rows(
                 "video-d3d11-device" | "video-decoder-not-d3d11-aware" => {
                     "Video GPU unavailable or unsupported; try another GPU.".into()
                 }
-                _ => match video.and_then(|v| v.failure_hresult.as_deref()) {
-                    Some(code) => format!("Video stopped: {stage} ({code})"),
-                    None => format!("Video stopped: {stage}"),
-                },
+                _ => "Playback stopped. Reconnect or select another GPU.".into(),
             },
         );
     }
     row(
         "Hardware decode",
         video
-            .map(|x| x.hardware_decode_status())
+            .map(|x| match x.hardware_decode_status() {
+                "Likely (D3D11 decoder surface)" => "Likely (GPU decoder output)",
+                status => status,
+            })
             .unwrap_or("Not reported")
             .into(),
     );
@@ -669,10 +679,49 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn playback_status_is_readable_without_exposing_internal_error_details() {
+        let mut sample = Sample {
+            video: Some(crate::video_output::Snapshot {
+                decoder_fallback: Some("Intel GPU renderer fell behind; internal detail".into()),
+                zero_copy_status: Some(
+                    "Original NV12 surfaces; no app conversion pass. Scanout not verified.".into(),
+                ),
+                failure_stage: Some("video-vendor-process"),
+                failure_hresult: Some("0x80004005".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let displayed = rows(&sample, &Values::default(), (None, None, None));
+        assert!(displayed
+            .iter()
+            .any(|(k, v)| k == "Zero copy (experimental)" && v == "Active"));
+        assert!(displayed
+            .iter()
+            .any(|(k, v)| k == "Decoder fallback" && v == "Compatibility decoder in use"));
+        assert!(!displayed.iter().any(|(_, v)| v.contains("internal detail")
+            || v.contains("Scanout")
+            || v.contains("video-vendor-process")
+            || v.contains("0x80004005")));
+        // Detailed telemetry is retained; only its UI presentation changes.
+        assert_eq!(
+            sample.video.as_ref().unwrap().failure_hresult.as_deref(),
+            Some("0x80004005")
+        );
+        sample.video.as_mut().unwrap().zero_copy_status =
+            Some("Fallback: unsupported allocation".into());
+        let displayed = rows(&sample, &Values::default(), (None, None, None));
+        assert!(displayed
+            .iter()
+            .any(|(k, v)| k == "Zero copy (experimental)"
+                && v == "Unavailable; using normal GPU rendering"));
+    }
+
     #[cfg(feature = "experimental-bud")]
     #[test]
     fn bud_statistics_use_native_counters_and_hide_ice_dtls_and_unknowns() {
-        let mut native = parsec_native_experimental::bud::Snapshot {
+        let mut native = parsec_native_bud::bud::Snapshot {
             connected: true,
             relay: true,
             cipher: Some("AES-256-GCM"),

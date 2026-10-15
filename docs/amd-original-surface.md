@@ -1,3 +1,7 @@
+> Historical investigation results. One-off comparison executables and test-only
+> build gates have been retired; current behavior and build instructions are in
+> the [project README](../README.md).
+
 # AMD HEVC presentation validation
 
 The test build uses AMF for normal HEVC playback and the existing Direct D3D11
@@ -44,4 +48,4 @@ Fixture: 120 HEVC Main 8-bit 4:2:0 pictures at 1280 x 720; no account or network
 The presentation probe verifies successful API submission and bounded ownership,
 not visual correctness, scanout mode or end-to-end latency. Live motion, colors,
 overlays, resize and reconnect still need verification independently with both
-WebRTC and BUD using the full test client; see [AMD live test](AMD-LIVE-TEST.txt).
+WebRTC and BUD using the full test client; see [current client instructions](../README.md).

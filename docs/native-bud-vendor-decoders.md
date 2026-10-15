@@ -1,3 +1,7 @@
+> Historical investigation results. One-off comparison executables and test-only
+> build gates have been retired; current behavior and build instructions are in
+> the [project README](../README.md).
+
 # Next development: vendor decoding and optional BUD
 
 Scope agreed 2026-10-14. These are planned work, not shipped capabilities.
@@ -22,7 +26,7 @@ GPU in the Core Ultra 5 235U test laptop. The independent `src-experimental`
 crate now binds current VPL to a caller-owned D3D11 device and checks original
 NV12 surfaces with an offline fixture. It refuses legacy host-memory output.
 It is not a live playback integration or evidence of a latency improvement.
-See [implementation gates](../src-experimental/README.md).
+See [implementation gates](../src-native/crates/bud/README.md).
 
 The first Intel H.264 screening is complete: see
 [measurements and decision](intel-h264-screening.md). Both GPU paths work, but

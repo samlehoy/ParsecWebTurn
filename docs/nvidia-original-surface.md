@@ -1,3 +1,7 @@
+> Historical investigation results. One-off comparison executables and test-only
+> build gates have been retired; current behavior and build instructions are in
+> the [project README](../README.md).
+
 # Experimental NVIDIA original-surface presentation
 
 Disabled by default and only included with `vendor-video`. The Settings

@@ -10,7 +10,7 @@ use webrtc::{peer_connection::RTCPeerConnection, stats::StatsReportType};
 #[derive(Clone)]
 pub struct Sample {
     #[cfg(feature = "experimental-bud")]
-    pub bud: Option<parsec_native_experimental::bud::Snapshot>,
+    pub bud: Option<parsec_native_bud::bud::Snapshot>,
     pub at: Instant,
     pub generation: u64,
     pub state: String,
@@ -275,7 +275,7 @@ mod tests {
         let mut sample = Sample {
             generation: 1,
             state: "Connected (experimental BUD)".into(),
-            bud: Some(parsec_native_experimental::bud::Snapshot {
+            bud: Some(parsec_native_bud::bud::Snapshot {
                 connected: true,
                 ..Default::default()
             }),

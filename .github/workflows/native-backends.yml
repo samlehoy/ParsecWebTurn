@@ -1,0 +1,82 @@
+name: Native transport and video backends
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev, main]
+    paths: ['src-native/crates/**', '.github/workflows/native-backends.yml']
+  pull_request:
+    paths: ['src-native/crates/**', '.github/workflows/native-backends.yml']
+permissions:
+  contents: read
+jobs:
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-native/crates/bud
+      - name: Start isolated UDP TURN fixture
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y coturn
+          sudo systemctl stop coturn || true
+          fixture_ip=$(hostname -I | awk '{print $1}')
+          echo "PWT_TEST_TURN=$fixture_ip:3478" >> "$GITHUB_ENV"
+          turnserver -c /dev/null --listening-ip="$fixture_ip" --relay-ip="$fixture_ip" \
+            --listening-port=3478 --min-port=59160 --max-port=59260 \
+            --realm=pwt-fixture --user=pwt-fixture:isolated-fixture-only \
+            --lt-cred-mech --no-tls --no-dtls --no-tcp \
+            --no-cli --pidfile=/tmp/pwt-experimental-turn.pid \
+            --log-file=/tmp/pwt-experimental-turn.log >/tmp/pwt-turn-stdout.log 2>&1 &
+          for i in $(seq 1 50); do
+            if ss -uln | grep -q ':3478 '; then exit 0; fi
+            sleep 0.1
+          done
+          cat /tmp/pwt-turn-stdout.log
+          exit 1
+      - name: Check isolated adapters
+        shell: pwsh
+        run: |
+          cargo fmt --manifest-path src-native/crates/video/Cargo.toml -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'GPU decoder formatting failed' }
+          cargo fmt --manifest-path src-native/crates/bud/Cargo.toml -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
+          cargo fmt --manifest-path src-native/crates/bud/vendor/lowlat-client/Cargo.toml -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'External media seam formatting failed' }
+          cargo clippy --locked --manifest-path src-native/crates/bud/Cargo.toml --target ${{ matrix.target }} --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
+          cargo clippy --locked --manifest-path src-native/crates/video/Cargo.toml --target ${{ matrix.target }} --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'GPU backend Clippy failed' }
+          cargo test --locked --manifest-path src-native/crates/video/Cargo.toml --target ${{ matrix.target }}
+          if ($LASTEXITCODE -ne 0) { throw 'Default GPU backend contract tests failed' }
+          cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml --target ${{ matrix.target }}
+          if ($LASTEXITCODE -ne 0) { throw 'Adapter tests failed' }
+          cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml --target ${{ matrix.target }} -p lowlat-client --features lowlat-client/external-video --lib
+          if ($LASTEXITCODE -ne 0) { throw 'External media seam tests failed' }
+          cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml --target ${{ matrix.target }} -p lowlat-net --lib send::tests
+          if ($LASTEXITCODE -ne 0) { throw 'Native UDP send accounting tests failed' }
+          cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml --target ${{ matrix.target }} -p lowlat-net --lib a_queued_datagram_is_received_on_the_pass_it_woke
+          if ($LASTEXITCODE -ne 0) { throw 'Native UDP receive accounting test failed' }
+          if ('${{ matrix.os }}' -eq 'ubuntu-latest') {
+            cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml --target ${{ matrix.target }} --test bud_paths turn_udp_connectivity -- --ignored --exact
+            if ($LASTEXITCODE -ne 0) { throw 'Native BUD UDP TURN connectivity failed' }
+          }
+      - uses: actions/upload-artifact@v4
+        if: failure() && matrix.os == 'ubuntu-latest'
+        with:
+          name: Isolated-BUD-TURN-fixture-logs
+          path: /tmp/pwt*turn*.log
