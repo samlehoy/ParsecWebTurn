@@ -7,6 +7,11 @@ with native Windows video, audio, input and networking. It needs no browser,
 WebView2 or installer: launch a single **ParsecWebTurn.exe**.
 It is an independent community project, not affiliated with Parsec or Unity.
 
+**The embedded Parsec WASM core is completely unmodified.** ParsecWebTurn is
+not a Rust rewrite of the original Parsec client. Rust provides the native
+runtime and platform framework around the existing core, implementing the
+services it needs outside a browser and the additional integrations described below.
+
 `main` contains the stable native client. This `dev` branch includes the newer
 features described below; check a release's notes for what its binary includes.
 The earlier Tauri/WebView2 client is preserved on the
@@ -162,16 +167,51 @@ portable to them.
 
 ## The Parsec core, beyond the browser
 
-The pinned WebAssembly core runs in a native Rust application, precompiled at
-build time. Rust supplies its platform integration; no browser is involved.
-Research suggests shared foundations with Parsec's native client, but does not
-establish identical code or feature sets. The original core remains unmodified.
+The original, pinned Parsec WebAssembly binary is embedded without modifying its
+code. It is precompiled for Wasmtime at build time; this prepares the same core
+for native execution rather than rewriting or patching it. No browser is involved.
+
+Rust acts as the surrounding runtime and platform framework. It implements the
+core's host interfaces for windows, graphics, GPU video decoding/presentation,
+audio, input and networking, and adds native settings and statistics. These are
+substantial native integrations, but they do not replace the original Parsec
+core with a newly written client. Features added through this framework, including
+the optional BUD transport and vendor-specific decoding, do not modify the WASM.
+
+Research suggests shared foundations between Parsec's web core and its official
+native client, but does not establish identical source code or feature sets.
+Running the web core outside a browser should not be read as reconstructing the
+official native client.
 
 In WebRTC mode, Parsec's own video/audio/control messages travel through data
 channels using ICE, DTLS and SCTP, rather than ordinary WebRTC media tracks/RTP
 playback. This retains TURN's UDP/TCP/TLS connectivity. Optional BUD provides an
 independent native UDP media transport, while the same client handles decoding,
 sound, input and the embedded interface. A regular Parsec host supports both paths.
+
+## Legal notice and original Parsec code
+
+**This project was developed without access to Parsec's proprietary source code.
+No proprietary Parsec source code has been edited or incorporated into the Rust
+implementation. The embedded original Parsec WASM binary is unmodified.**
+
+ParsecWebTurn uses the publicly served Parsec web-client WASM binary as a pinned,
+closed-source component. The build verifies its SHA-256 against the pinned
+reference before precompiling it for Wasmtime. Precompilation does not involve
+editing Parsec's source or patching the WASM. The binary is included in the
+distributed application; it is not an open-source component of this project.
+
+The Rust code provides the native runtime, platform services and integrations
+around that component. It does not constitute a rewrite of the original Parsec
+client. The experimental BUD adapter is a separate, lowlat-based protocol
+implementation, not a modification of Parsec's WASM or proprietary source.
+
+The project's MIT license applies to its own code; it does not relicense the
+proprietary Parsec component. Third-party components remain subject to their
+respective licenses and applicable terms. Binary integrity checks establish
+identity with the pinned reference, not permission to redistribute it.
+ParsecWebTurn is independent and is not affiliated with or endorsed by Parsec
+or Unity. Parsec names and marks belong to their respective owners.
 
 ## Build and contribute
 
