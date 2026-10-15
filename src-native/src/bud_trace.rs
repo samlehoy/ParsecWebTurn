@@ -9,6 +9,46 @@ pub struct Trace {
     records: usize,
 }
 
+impl Trace {
+    pub fn start() -> Self {
+        let file = (std::env::var_os("PARSEC_BUD_DIAGNOSTICS").as_deref()
+            == Some(std::ffi::OsStr::new("1")))
+        .then(|| {
+            let exe = std::env::current_exe().ok()?;
+            File::create(exe.parent()?.join("bud-diagnostics.jsonl")).ok()
+        })
+        .flatten();
+        let mut trace = Self {
+            file,
+            began: Instant::now(),
+            stage: "start",
+            records: 0,
+        };
+        trace.mark("start");
+        trace
+    }
+    pub fn mark(&mut self, stage: &'static str) {
+        self.stage = stage;
+        self.record(stage, &[]);
+    }
+    pub fn record(&mut self, event: &'static str, counters: &[(&'static str, u64)]) {
+        let Some(file) = &mut self.file else { return };
+        if self.records >= 1024 {
+            return;
+        }
+        let entry = serde_json::json!({
+            "ms": self.began.elapsed().as_millis(),
+            "event": event, "stage": self.stage,
+            "build": env!("CARGO_PKG_VERSION"),
+            "counters": counters.iter().map(|(key, value)| ((*key).to_owned(), serde_json::json!(value))).collect::<serde_json::Map<_, _>>()
+        });
+        if writeln!(file, "{entry}").is_err() {
+            self.file = None;
+        }
+        self.records += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -47,44 +87,5 @@ mod tests {
             assert_eq!(keys, ["build", "counters", "event", "ms", "stage"]);
             assert_eq!(entry["counters"], serde_json::json!({"udp_received": 42}));
         }
-    }
-}
-impl Trace {
-    pub fn start() -> Self {
-        let file = (std::env::var_os("PARSEC_BUD_DIAGNOSTICS").as_deref()
-            == Some(std::ffi::OsStr::new("1")))
-        .then(|| {
-            let exe = std::env::current_exe().ok()?;
-            File::create(exe.parent()?.join("bud-diagnostics.jsonl")).ok()
-        })
-        .flatten();
-        let mut trace = Self {
-            file,
-            began: Instant::now(),
-            stage: "start",
-            records: 0,
-        };
-        trace.mark("start");
-        trace
-    }
-    pub fn mark(&mut self, stage: &'static str) {
-        self.stage = stage;
-        self.record(stage, &[]);
-    }
-    pub fn record(&mut self, event: &'static str, counters: &[(&'static str, u64)]) {
-        let Some(file) = &mut self.file else { return };
-        if self.records >= 1024 {
-            return;
-        }
-        let entry = serde_json::json!({
-            "ms": self.began.elapsed().as_millis(),
-            "event": event, "stage": self.stage,
-            "build": env!("CARGO_PKG_VERSION"),
-            "counters": counters.iter().map(|(key, value)| ((*key).to_owned(), serde_json::json!(value))).collect::<serde_json::Map<_, _>>()
-        });
-        if writeln!(file, "{entry}").is_err() {
-            self.file = None;
-        }
-        self.records += 1;
     }
 }
