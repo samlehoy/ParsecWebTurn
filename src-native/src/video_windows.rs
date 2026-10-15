@@ -280,6 +280,7 @@ fn run(
     let mut parameters = crate::video_stream::ParameterCache::default();
     let mut awaiting_random_access = true;
     let mut vendor_failed = false;
+    let mut vendor_fallback = None;
     let mut zero_failed = false;
     let mut zero_fallback = None;
     #[cfg(feature = "vendor-video")]
@@ -406,7 +407,11 @@ fn run(
                 s.decoder_initialized = true;
                 s.low_latency_request_accepted = native.low_latency_request_accepted;
                 s.decoder = Some(native.name(frame.codec));
-                s.decoder_fallback = native.fallback.clone();
+                s.decoder_fallback = if vendor_failed {
+                    vendor_fallback.clone().or_else(|| native.fallback.clone())
+                } else {
+                    native.fallback.clone()
+                };
                 s.renderer = Some(native.renderer_name());
                 s.adapter = Some(native.adapter_name());
                 s.zero_copy_status = if zero_failed {
@@ -473,6 +478,13 @@ fn run(
             }
             if error.stage == "video-vendor-process" {
                 vendor_failed = true;
+                vendor_fallback = shared
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .report
+                    .decoder_fallback
+                    .clone();
             }
             let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
             if q.reset_generation == generation && !q.recover(Instant::now()) {
@@ -1060,7 +1072,14 @@ impl Session {
                         s.frames_submitted = s.frames_submitted.saturating_add(1)
                     })
                 })
-                .map_err(|_| unavailable("video-vendor-process"));
+                .map_err(|error| {
+                    update(shared, |s| {
+                        s.decoder_fallback = Some(format!(
+                            "Using Media Foundation after vendor decoder error: {error:#}"
+                        ));
+                    });
+                    unavailable("video-vendor-process")
+                });
         }
         let buffer = api(
             "video-input-buffer",

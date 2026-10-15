@@ -174,10 +174,9 @@ impl Backend {
             let mut outputs = 0;
             let session = state.session;
             loop {
-                ensure!(
-                    Instant::now() < deadline,
-                    "Intel VPL input availability timeout"
-                );
+                ensure!(Instant::now() < deadline,
+                    "Intel VPL input availability timeout (remaining={}, outputs={}, picture={picture})",
+                    bits.DataLength, outputs);
                 match unsafe { session.decode(&mut bits, std::ptr::null_mut()) }? {
                     Decoded::Picture(held) => {
                         let raw = held.texture();
@@ -222,7 +221,15 @@ impl Backend {
                         }
                     }
                     Decoded::MoreData => break,
-                    Decoded::Busy | Decoded::Warning => std::thread::yield_now(),
+                    Decoded::Warning => {
+                        // A positive status without a surface is not failure.
+                        // Separate parameter packets (common on the WASM path)
+                        // can be fully consumed this way. Do not retry an empty
+                        // input until our own watchdog falsely reports a stall.
+                        if bits.DataLength == 0 { break; }
+                        std::thread::yield_now();
+                    }
+                    Decoded::Busy => std::thread::yield_now(),
                     _ => {
                         anyhow::bail!("Intel VPL requires unsupported surfaces or a format change")
                     }
