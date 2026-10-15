@@ -12,6 +12,11 @@ features described below; check a release's notes for what its binary includes.
 The earlier Tauri/WebView2 client is preserved on the
 [legacy branch](https://github.com/vampywiz17/ParsecWebTurn/tree/legacy).
 
+**Development release:** BUD, vendor-specific HEVC decoding and Zero copy are
+experimental. For stability-first use, select WebRTC with H.264 and leave the
+experimental options disabled, or use the
+[latest stable release](https://github.com/vampywiz17/ParsecWebTurn/releases/latest).
+
 ## Current features
 
 - Sign in, choose a computer and connect to a regular Parsec host.
@@ -142,7 +147,7 @@ Statuses below describe this branch, not necessarily the latest stable release.
 | Native Windows client without WebView2 | Implemented |
 | H.264, Opus, keyboard/mouse, overlay and saved profiles | Implemented |
 | WebRTC direct and TURN over UDP/TCP/TLS, including forced relay | Implemented |
-| HEVC: NVIDIA Direct D3D11, AMD AMF, Intel VPL | Implemented; live tested on selected GPUs |
+| HEVC: NVIDIA Direct D3D11, AMD AMF, Intel VPL | Experimental; live tested on selected GPUs |
 | Original-surface HEVC presentation on NVIDIA/AMD/Intel | Experimental; live tested on selected GPUs |
 | Optional BUD direct and UDP TURN, automatic relay fallback | Experimental; live tested |
 | Transport-aware connection and playback statistics | Implemented |

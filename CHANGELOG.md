@@ -3,10 +3,24 @@
 User-facing changes are listed below. Native versions marked **dev** are development
 builds, not published stable releases.
 
-## Unreleased
+## 0.9.4-dev.1 - Experimental BUD and GPU video paths (2026-10-15)
 
-- **Less input overhead:** reuse the bounded event-batch storage and pass native input arguments on the stack, avoiding repeated temporary vectors while preserving event order and immediate input wakeups.
-- **Shorter network lock holds:** copy queued control messages outside the shared connection lock so large control payloads do not hold that lock throughout the copy. Audio/video hand-off, queue limits and WebRTC reliability remain unchanged.
+Changes since the stable v0.9.3 release.
+
+**BUD, vendor-specific HEVC decoding and Zero copy are experimental.** For
+stability-first use, select WebRTC with H.264 and leave the experimental options
+disabled, or use the published stable v0.9.3 release. H.264 remains the default
+and uses Media Foundation on every GPU vendor.
+
+- **Experimental BUD transport:** enable Experimental BUD in Settings to use the native UDP protocol with a regular Parsec host. Direct UDP, automatic fallback to a configured UDP TURN relay and Force TURN are supported. WebRTC remains the default and retains TURN over UDP, TCP and TLS; BUD supports UDP only and does not silently switch to WebRTC.
+- **Experimental vendor-specific HEVC decoding:** when Prefer H.265 / HEVC is enabled, normal 8-bit HEVC playback uses Direct D3D11 on NVIDIA, AMF on AMD and VPL on Intel. These paths keep decoder output on the GPU and feed the existing presentation path directly. The existing GPU Media Foundation fallback/recovery remains available when a vendor path cannot be used.
+- **Experimental Zero copy presentation:** the Video tab can select original NV12 decoder-surface presentation through Direct D3D11 and Windows Presentation API on supported NVIDIA, AMD and Intel GPUs. This removes the application's conversion/output pass and introduces no intermediate decoded-frame copy or CPU pixel readback. Windows 11 and compatible hardware/drivers are required; internal Windows/driver copies and direct scanout are not guaranteed.
+- **More reliable HEVC startup and recovery:** handle short arrival bursts without exhausting presentation surfaces or unnecessarily abandoning the working Intel decoder. Original-surface presentation preserves the picture's aspect ratio and can recover to normal GPU rendering when unavailable.
+- **BUD connection statistics:** show native RTT, decoded FPS, incoming/outgoing traffic, direct or relay route, host encode time when available and BUD delivery counters. Irrelevant WebRTC ICE/DTLS fields are hidden in BUD mode, and the last valid host encode time no longer flickers between reports.
+- **Network and Video settings tabs:** connection servers, credentials, routing and transport settings are separated from GPU, codec and presentation choices. Both tabs share Save settings and retain unsaved edits when switching tabs.
+- **Clearer playback status:** Connection stats uses shorter Zero copy, decoder fallback and playback-error descriptions while retaining detailed diagnostic information separately.
+- **Safer host launch selection:** choosing the unsupported native-client launch option now explains that the web launch option is required instead of crashing the application. The web launch option is also used when BUD is selected in Settings.
+- **Less input and shared-lock overhead:** reuse bounded input-event storage, pass native input arguments without temporary vectors and copy queued control messages outside the shared connection lock. Event ordering, immediate input wakeups and WebRTC reliability remain unchanged.
 
 ## 0.9.3 - Native Windows client (2026-10-14)
 
