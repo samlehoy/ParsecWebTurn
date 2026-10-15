@@ -27,3 +27,6 @@ For optional decoder identification after an inconclusive GPU report, see
 TRACE-README.txt and Run-Intel-HEVC-Trace.cmd. That separate diagnostic uses
 Microsoft MFTrace and obtains Microsoft tools on first run. Start the test
 normally; only its separate trace-attachment helper requires elevation.
+
+For GPU execution evidence when MFTrace identifies the decoder but not its
+acceleration, use Run-Intel-HEVC-GPU-Trace.cmd and GPU-TRACE-README.txt instead.

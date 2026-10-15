@@ -8,7 +8,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use windows::{
     Win32::{
@@ -174,6 +174,7 @@ unsafe fn statistic(engine: &IMFMediaEngineEx, kind: MF_MEDIA_ENGINE_STATISTIC) 
 }
 
 fn engine_trial(luid: u64, fixture: &std::path::Path, realtime: bool) -> Value {
+    let started_utc_ms = utc_millis();
     let mut stage = "COM/MF startup";
     let result = (|| -> Result<Value> {
         let _runtime = Runtime::start()?;
@@ -317,7 +318,15 @@ fn engine_trial(luid: u64, fixture: &std::path::Path, realtime: bool) -> Value {
         )
     })();
     json!({"path":"media_engine_directcomposition", "realtime":realtime,
+        "started_utc_ms":started_utc_ms,"finished_utc_ms":utc_millis(),
         "result":match result{Ok(value)=>value,Err(error)=>json!({"failed":format!("{error:#}"),"stage":stage})}})
+}
+
+fn utc_millis() -> Option<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|time| u64::try_from(time.as_millis()).ok())
 }
 
 pub fn probe() -> Result<Value> {
@@ -356,6 +365,7 @@ pub fn probe() -> Result<Value> {
     }
     Ok(
         json!({"scope":"offline HEVC Main 8-bit 4:2:0 route identification", "control_gpu_run":control,
+        "process_id":std::process::id(),
         "adapters":adapters, "live_client_modified":false,"network_used":false,
         "note":"A control GPU does not prove Intel compatibility. Played frames without process/adapter-scoped VideoDecode activity do not establish hardware decoding. No latency or global zero-copy claim."}),
     )

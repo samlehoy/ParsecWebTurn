@@ -1,0 +1,20 @@
+@echo off
+setlocal DisableDelayedExpansion
+cd /d "%~dp0"
+"%SystemRoot%\System32\fltmc.exe" >nul 2>&1
+if errorlevel 1 (
+    echo Run this SAVE helper as administrator.
+    pause
+    exit /b 1
+)
+"%SystemRoot%\System32\wpr.exe" -stop "%~dp0intel-hevc-gpu.etl" "Synthetic HEVC hardware execution investigation" -compress -skipPdbGen -instancename @TRACE_INSTANCE@ >wpr-stop.txt 2>&1
+set "stop_exit=%ERRORLEVEL%"
+type wpr-stop.txt
+if not "%stop_exit%"=="0" (
+    echo Could not save the recording. Keep this folder and wpr-stop.txt.
+    echo To cancel ONLY this diagnostic session if needed:
+    echo wpr -cancel -instancename @TRACE_INSTANCE@
+    exit /b 1
+)
+echo Recording saved. Return to the original test console to package the results.
+exit /b 0

@@ -60,3 +60,28 @@ These results do not identify the decoder used in the previously successful
 playback. A changed account/codec-registration context is the leading explanation,
 not yet a demonstrated root cause. The revised attach flow preserves the ordinary
 account and instruments it before MFStartup. A new laptop capture is pending.
+
+## Second laptop trace: working decoder identified, hardware still unknown
+
+The ordinary-account attachment run found HEVC Video Extensions 2.5.33.0,
+`HEVCDECODER_STORE.dll`. Both Media Engine trials successfully configured the
+same package's HEVC-to-NV12 transform, fed compressed inputs and received
+decoded outputs. The first captured transform had 538 input / 529 output log
+entries; the real-time trial had 543 / 543. These are trace-entry counts across
+looped playback, not distinct-frame throughput or latency measurements.
+The JSON reported playback without drops in both trials, with 40 and 39 valid
+VideoDecode counter samples but no positive samples. The synchronous baseline
+again failed with E_FAIL; direct D3D11 still found no supported HEVC profile.
+
+The trace confirms which decoder actually processed the stream. It does not
+expose enough of that decoder's internal acceleration decision to establish
+hardware execution or software fallback. D3D-awareness and displayable-resource
+attributes are capabilities/configuration, not execution evidence.
+
+The next optional offline diagnostic combines the built-in Windows WPR GPU
+profile with a small event-provider profile based on Microsoft's public MF
+tracing profile. This includes HEVC decoder events and hardware-scheduled GPU
+queue events, preserves the ordinary-account target and gives each collection
+a unique instance. Trial UTC timestamps and target PID allow event correlation.
+See [GPU trace instructions](INTEL-HEVC-GPU-TRACE.txt). No software decoder or
+Media Engine backend is integrated into the live client on this evidence.

@@ -1,0 +1,57 @@
+Intel HEVC hardware execution investigation - Windows GPU/decoder ETW
+
+Extract this package into a fresh writable folder. Close the live client and
+other video players. No settings.json, account, host or Internet is needed.
+This uses the built-in, Microsoft-signed Windows Performance Recorder (WPR),
+Windows CMD and the same synthetic HEVC fixture. No PowerShell, policy change,
+SDK download, driver change or codec installation is used.
+
+1. Start Run-Intel-HEVC-GPU-Trace.cmd NORMALLY under your ordinary Windows
+   account, where the earlier Media Engine test played successfully.
+2. The test prints the path to Start-Intel-HEVC-GPU-Trace-as-admin.cmd.
+   Open that result folder and run ONLY this RECORDING helper as administrator.
+   A different administrator account is OK; the test itself keeps its account.
+3. Wait for 'GPU recording started'. In the ORIGINAL test window, press Enter.
+4. Leave the synthetic windows open until the test completes. Return to the
+   ADMIN recording window and press a key to SAVE the trace.
+5. Wait for 'Recording saved'. In the original console, press a key to create
+   the result ZIP. Send the generated intel-hevc-gpu-trace-....zip.
+
+If the admin recording window was closed prematurely, the same result folder
+contains Stop-Intel-HEVC-GPU-Trace-as-admin.cmd. Run it as administrator to save
+ONLY this diagnostic session. An exact-session cancellation command is shown
+if saving fails. Never use a global WPR cancel command for this test.
+The scripts use a unique instance name and do not cancel other recordings.
+If another trace or policy prevents collection, keep the error; do not change
+organizational policy. Normal playback remains independent of the collector.
+
+The Windows GPU profile records system GPU/CPU scheduling, loaded modules and
+process metadata; other processes and local paths can appear in the ETL.
+The additional profile enables Microsoft's HEVC/Intel decoder diagnostics and
+hardware-scheduled GPU queues. No network recording profile is selected.
+Use this short, synthetic offline test, not a live Parsec session.
+Start and save promptly to avoid an unnecessarily large trace.
+
+The ZIP contains the ETL, GPU JSON report, test PID and unique collector name,
+probe SHA-256 and the collector's start/stop logs. The JSON includes timestamps
+for the two Media Engine trials so their GPU work can be separated.
+
+What counts as evidence:
+- Correlate the target PID, exact Intel adapter and trial time with actual
+  GPU decoder queue execution and/or an explicit decoder acceleration event.
+- Examine HEVC decoder diagnostics for hardware initialization or fallback.
+- Check lost-event telemetry before drawing conclusions from absent events.
+- CPU activity in the decoder module alone is not software-decoding proof:
+  a hardware decoder also performs CPU-side parsing and scheduling.
+- GPU presentation, VideoProcessing or generic 3D activity alone is not
+  fixed-function HEVC hardware decoding. Unknown remains unknown.
+
+This trace is not a latency benchmark, and does not establish internal GPU
+copy counts. No change is made to the live client's decoder or WASM core.
+WPR profile parsing and decoder-wait startup can be checked without elevation;
+a complete capture still requires an authorized administrator on the laptop.
+
+Microsoft sources:
+https://learn.microsoft.com/en-us/windows-hardware/test/wpt/wpr-command-line-options
+https://learn.microsoft.com/en-us/windows-hardware/drivers/display/using-gpuview
+https://github.com/microsoft/media-foundation/blob/master/performanceTracing/MF_TRACE.WPRP
