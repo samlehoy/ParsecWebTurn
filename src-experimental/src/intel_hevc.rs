@@ -378,10 +378,11 @@ pub(crate) fn observe_trial(
     }
     std::thread::scope(|scope| {
         let (ready, wait) = mpsc::sync_channel(1);
-        let observer = scope.spawn(|| {
+        let observed = (&stop, &frames);
+        let observer = scope.spawn(move || {
             let mut counter = DecodeCounter::open(luid);
             let _ = ready.send(());
-            while !stop.load(Ordering::Acquire) {
+            while !observed.0.load(Ordering::Acquire) {
                 std::thread::sleep(Duration::from_millis(200));
                 if let Some(counter) = &mut counter {
                     counter.sample();
@@ -389,7 +390,7 @@ pub(crate) fn observe_trial(
             }
             counter
                 .as_ref()
-                .map_or(Value::Null, |c| c.report(frames.load(Ordering::Relaxed)))
+                .map_or(Value::Null, |c| c.report(observed.1.load(Ordering::Relaxed)))
         });
         let guard = Stop(&stop);
         let _ = wait.recv();
