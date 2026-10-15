@@ -17,6 +17,9 @@ no addresses, account identifiers, credentials or media contents are recorded.
 Copy the file after the failed attempt before reconnecting. To compare Force
 TURN, save its log separately. Starting the executable normally disables this
 trace and leaves connection behavior unchanged.
+Relay retries now mint a fresh native attempt identifier (six random 8-digit
+hex groups, matching the lowlat client example), instead of suffixing the old
+identifier. Service acceptance still needs a stock-host live test.
 
 Settings -> Experimental BUD (UDP only) -> Save settings.
 Connect to a stock Parsec host using the normal computer picker.

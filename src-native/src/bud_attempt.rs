@@ -706,7 +706,10 @@ fn run(
             if cancel.load(Ordering::Acquire) {
                 return Ok(());
             }
-            wire_id = format!("{}-turn-1", id.chars().take(200).collect::<String>());
+            // The native client uses six random 8-hex groups per attempt.
+            // Do not append a diagnostic suffix to an account protocol ID:
+            // local SDK acceptance does not establish service compatibility.
+            wire_id = native_attempt_id()?;
             let mut next = Session::external_video(hevc_available)?;
             next.wake_consumer(std::thread::current());
             trace.mark("relay_native_offer");
@@ -744,6 +747,21 @@ fn native_close(text: &str, attempt: &str) -> bool {
     serde_json::from_str::<Value>(text).is_ok_and(|value| {
         value["action"] == "close" && value["payload"]["attempt_id"].as_str() == Some(attempt)
     })
+}
+
+fn native_attempt_id() -> Result<String> {
+    let mut random = [0u8; 24];
+    getrandom::fill(&mut random).map_err(|_| anyhow::anyhow!("BUD attempt entropy unavailable"))?;
+    Ok(random
+        .chunks_exact(4)
+        .map(|part| {
+            format!(
+                "{:02x}{:02x}{:02x}{:02x}",
+                part[0], part[1], part[2], part[3]
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("-"))
 }
 
 #[cfg(test)]
@@ -968,5 +986,47 @@ mod tests {
         let settings: crate::connection_settings::Settings =
             serde_json::from_str(r#"{"experimentalBud":true}"#).unwrap();
         assert!(settings.experimental_bud);
+    }
+
+    #[test]
+    fn relay_retry_uses_fresh_native_account_identifier_shape() {
+        let first = native_attempt_id().unwrap();
+        let second = native_attempt_id().unwrap();
+        assert_ne!(first, second);
+        for id in [&first, &second] {
+            assert_eq!(id.len(), 53);
+            let groups: Vec<_> = id.split('-').collect();
+            assert_eq!(groups.len(), 6);
+            assert!(groups.iter().all(
+                |group| group.len() == 8 && group.bytes().all(|byte| byte.is_ascii_hexdigit())
+            ));
+        }
+        // Check the actual wire handoff, not just the random generator.
+        let (attempt, _) = isolated();
+        attempt.state.lock().unwrap().wire_id = "isolated".into();
+        let writes = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let collected = writes.clone();
+        let writer: SignalingWrite = Arc::new(move |text| {
+            collected
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(&text).unwrap());
+            true
+        });
+        let offer = json!({"action":"offer","payload":{"attempt_id":"isolated","to":"host","secret":"authorization-sentinel","data":{"mode":2}}}).to_string();
+        attempt.outgoing(&offer, Some(writer)).unwrap();
+        switch_offer(&attempt.state, &attempt.cancel, &first, json!({"mode":1})).unwrap();
+        send_candidate(&attempt.state, &Event::Ready).unwrap();
+        let writes = writes.lock().unwrap();
+        assert_eq!(writes[1]["payload"]["attempt_id"], first);
+        assert_eq!(writes[2]["payload"]["attempt_id"], first);
+        assert_eq!(writes[1]["payload"]["secret"], "authorization-sentinel");
+        drop(writes);
+        assert_eq!(
+            attempt
+                .incoming(r#"{"action":"close","payload":{"attempt_id":"isolated"}}"#)
+                .unwrap(),
+            Some(String::new())
+        );
     }
 }
