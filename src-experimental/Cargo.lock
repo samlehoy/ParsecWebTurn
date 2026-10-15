@@ -522,7 +522,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "windows",
- "windows-core",
 ]
 
 [[package]]

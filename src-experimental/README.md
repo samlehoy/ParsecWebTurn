@@ -12,35 +12,6 @@ transport; the BUD test artifact enables both features.
 
 ## Intel first
 
-### HEVC route identification (2026-10-15)
-
-`Run-Intel-HEVC-Paths.cmd` runs the standalone `intel-hevc-paths.exe` on the
-affected laptop. It needs no Parsec settings, sign-in, remote host or network.
-It writes `intel-hevc-paths.json` and `intel-hevc-console.txt` beside itself.
-Two temporary video windows show the MIT-licensed synthetic 720p HEVC fixture.
-Leave them open until the test finishes (normally around 20-40 seconds).
-
-The existing synchronous MFT and direct D3D11 routes decode the original 120
-access units without the live client's capability preflight. Media Engine uses
-the exact same compressed pictures wrapped in MP4, a caller-selected D3D11
-adapter, Chromium-style device flags, the DXGI manager, windowless swapchain and
-DirectComposition. Its default and real-time modes are tested separately.
-File playback is the first gate; this does NOT implement an application-owned
-live media source or demonstrate low-latency remote-desktop playback.
-
-Media Engine's played-frame count is kept separate from Windows PDH VideoDecode
-engine activity scoped to this PID and the exact selected adapter LUID. Hardware
-decode is reported observed only with at least 60 rendered frames and multiple
-positive decode-engine samples. 3D/video-processing engines, other GPUs and other
-processes cannot satisfy that test. Missing/zero counters remain inconclusive;
-there is no automatic software/GPU classification from CPU usage or an API's
-capability answer. No decoded-pixel readback, texture export or application
-decoded-frame copy is performed. Engine/driver-internal copies remain unknown.
-
-`--control` explicitly includes non-Intel GPUs for local probe validation; such
-results cannot establish that the affected Intel laptop works. No live-client
-decoder, transport, capability gate or setting is changed by this probe.
-
 Run `intel-gpu-probe.exe` on the Intel test laptop. It discovers physical Intel
 adapters by PCI vendor and LUID, loads their installed current VPL runtime, binds
 the caller-owned, multithread-protected D3D11 device and queries codec support.
