@@ -22,3 +22,8 @@ The application never reads back decoded pixels or copies decoded textures.
 
 No changes are made to drivers, Windows codec configuration or Parsec settings.
 No code from this probe is added to the live client's video path.
+
+For optional decoder identification after an inconclusive GPU report, see
+TRACE-README.txt and Run-Intel-HEVC-Trace.cmd. That separate diagnostic uses
+Microsoft MFTrace and obtains Microsoft tools on first run. Start the test
+normally; only its separate trace-attachment helper requires elevation.
