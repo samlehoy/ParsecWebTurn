@@ -104,6 +104,15 @@ pub struct Pipeline {
 }
 struct Decoder(*mut libopus_sys::OpusDecoder);
 impl Decoder {
+    fn reset(&mut self) -> Result<()> {
+        // A PCM interval is a discontinuity in the compressed predictor history.
+        let code =
+            unsafe { libopus_sys::opus_decoder_ctl(self.0, libopus_sys::OPUS_RESET_STATE as i32) };
+        if code != 0 {
+            bail!("Opus decoder reset failed");
+        }
+        Ok(())
+    }
     fn new() -> Result<Self> {
         let mut error = 0;
         // SAFETY: libopus owns this opaque state; this worker alone uses it.
@@ -163,6 +172,7 @@ impl Pipeline {
             #[cfg(windows)]
             let _scheduling = crate::media_scheduling::Registration::audio();
             if let Ok(mut decoder) = Decoder::new() {
+                let mut previous_raw = false;
                 loop {
                     if shared.lock().unwrap_or_else(|e| e.into_inner()).stopped {
                         break;
@@ -189,9 +199,14 @@ impl Pipeline {
                                 .map(|b| i16::from_le_bytes([b[0], b[1]])),
                         );
                         Ok(())
+                    } else if previous_raw {
+                        decoder
+                            .reset()
+                            .and_then(|()| decoder.decode_into(&packet.bytes, &mut pcm))
                     } else {
                         decoder.decode_into(&packet.bytes, &mut pcm)
                     };
+                    previous_raw = packet.raw;
                     let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                     if !state.stopped && state.free_packets.len() < RECYCLED_BUFFERS {
                         state.free_packets.push(packet.bytes);
@@ -441,9 +456,13 @@ mod tests {
         unsafe { libopus_sys::opus_encoder_destroy(encoder) };
         assert!(size > 0);
         packet.truncate(size as usize);
-        let pcm = Decoder::new().unwrap().decode(&packet).unwrap();
+        let mut decoder = Decoder::new().unwrap();
+        let pcm = decoder.decode(&packet).unwrap();
         assert_eq!(pcm.len(), 1920);
         assert!(pcm.iter().map(|v| i64::from(*v).abs()).sum::<i64>() > 100_000);
+        decoder.decode(&packet).unwrap();
+        decoder.reset().unwrap();
+        assert_eq!(decoder.decode(&packet).unwrap(), pcm);
     }
     #[test]
     fn decoded_audio_is_retained_until_a_valid_guest_copy_and_released_on_stop() {
