@@ -21,6 +21,10 @@
 //! load bearing only for demultiplexing against connectivity checks, which
 //! happens before this module is reached.
 
+// The pinned aes-gcm 0.10 API still uses generic-array 0.14. Keep the existing
+// record implementation unchanged when vendoring it as a workspace member.
+#![allow(deprecated)]
+
 use aes_gcm::aead::AeadInPlace;
 use aes_gcm::aead::generic_array::GenericArray;
 use aes_gcm::{Aes128Gcm, Aes256Gcm, KeyInit};

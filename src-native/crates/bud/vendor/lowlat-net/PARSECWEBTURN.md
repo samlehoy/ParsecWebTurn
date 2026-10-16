@@ -28,4 +28,3 @@ wake dispatch and shell integration from lowlat PR #2 at
 befd5a29c7a331111f11378c0b5623de788e9769. UDP batching/accounting is retained.
 Stream counters measure TURN plaintext frames including padding, excluding TLS
 and network headers. There is no additional SDK, browser transport or decoder.
-

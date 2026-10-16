@@ -180,13 +180,8 @@ fn rows(
                 if bud.relay { "TURN relay" } else { "Direct" }.into(),
             );
         }
-        if bud.relay {
-            row(
-                "TURN transport",
-                bud.relay_transport
-                    .map(str::to_uppercase)
-                    .unwrap_or_else(|| "Not reported".into()),
-            );
+        if let Some(carrier) = bud.relay_transport.filter(|_| bud.relay) {
+            row("TURN transport", carrier.to_uppercase());
         }
         row(
             "Host encode time",
@@ -771,6 +766,7 @@ mod tests {
         let mut native = parsec_native_bud::bud::Snapshot {
             connected: true,
             relay: true,
+            relay_transport: Some("tls"),
             cipher: Some("AES-256-GCM"),
             ..Default::default()
         };
@@ -788,6 +784,9 @@ mod tests {
         assert!(rows
             .iter()
             .any(|(k, v)| k == "Media encryption" && v == "AES-256-GCM"));
+        assert!(rows
+            .iter()
+            .any(|(k, v)| k == "TURN transport" && v == "TLS"));
         assert!(!rows
             .iter()
             .any(|(k, v)| k.contains("candidate") || k.contains("DTLS") || v == "Not reported"));

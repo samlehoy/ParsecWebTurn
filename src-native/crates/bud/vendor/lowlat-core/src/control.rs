@@ -45,7 +45,7 @@ pub mod op {
     pub const PAD_REPORT: u8 = 31;
     /// One opcode for several virtual devices, told apart by the header's
     /// arguments rather than by the opcode. A guest's microphone is one of
-    /// them ([`crate::microphone`]); the rest are devices this host does not
+    /// them (the upstream microphone module); the rest are devices this host does not
     /// offer, and arriving is not an error.
     pub const VIRTUAL_DEVICE: u8 = 32;
     /// Turns per-frame timing on. A peer sends it with every bit clear in an
