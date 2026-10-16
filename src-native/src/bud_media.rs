@@ -28,6 +28,7 @@ pub struct Media {
     inspector: crate::video_stream::Inspector,
     waiting_for_keyframe: bool,
     hevc_available: bool,
+    ten_bit_available: bool,
 }
 
 #[derive(Default)]
@@ -67,13 +68,36 @@ impl Media {
                 inspector,
                 waiting_for_keyframe: true,
                 hevc_available,
+                ten_bit_available: hevc_available && ten_bit,
             },
             session,
         ))
     }
 
     fn video_message(&mut self, message: &[u8]) -> Result<bool> {
-        match media::video(message)? {
+        let parsed = media::video(message).inspect_err(|_| {
+            crate::event_log::record(
+                "ERROR",
+                "bud_media_rejected",
+                serde_json::json!({"stage":"video_framing_or_format"}),
+            );
+        })?;
+        let ten_bit = match &parsed {
+            Video::Metadata(metadata) => metadata.ten_bit,
+            Video::AccessUnit { header, .. } => header.ten_bit,
+        };
+        if ten_bit && !self.ten_bit_available {
+            crate::event_log::record(
+                "ERROR",
+                "bud_media_rejected",
+                serde_json::json!({"stage":"main10_not_advertised"}),
+            );
+            anyhow::bail!("BUD host sent Main 10 without an advertised GPU decoder");
+        }
+        // Depth is validated against the negotiated native capability. The
+        // existing pipeline selects MF/P010 from the actual HEVC SPS, without
+        // another decoded-frame copy or a new decoder/presentation path.
+        match parsed {
             Video::Metadata(metadata) => {
                 if metadata.rebuilt {
                     self.waiting_for_keyframe = true;

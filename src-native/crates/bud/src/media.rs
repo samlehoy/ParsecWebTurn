@@ -15,16 +15,12 @@ pub enum Video<'a> {
 pub fn video(message: &[u8]) -> Result<Video<'_>> {
     let header =
         video::parse(message).map_err(|e| anyhow::anyhow!("native video header: {e:?}"))?;
-    ensure!(
-        !header.ten_bit,
-        "10-bit BUD video is not supported by this client"
-    );
     if header.metadata {
         let metadata = video::parse_metadata(message)
             .map_err(|e| anyhow::anyhow!("native video metadata: {e:?}"))?;
         ensure!(
-            !metadata.ten_bit && !metadata.chroma_444,
-            "unsupported BUD color format"
+            !metadata.chroma_444,
+            "BUD 4:4:4 video is not supported by this client"
         );
         return Ok(Video::Metadata(metadata));
     }
@@ -133,8 +129,58 @@ mod tests {
         assert_eq!(annex_b.as_ptr(), packet[video::VIDEO_HEADER_LEN..].as_ptr());
         assert_eq!(annex_b, &[0, 0, 0, 1, 0x65, 0x88]);
         packet[9] |= 8;
-        assert!(video(&packet).is_err());
+        let Video::AccessUnit { header, annex_b } = video(&packet).unwrap() else {
+            panic!("Main 10 flag must not reject an access unit")
+        };
+        assert!(header.ten_bit);
+        assert_eq!(annex_b.as_ptr(), packet[video::VIDEO_HEADER_LEN..].as_ptr());
         assert!(video(&packet[..9]).is_err());
+    }
+
+    #[test]
+    fn main10_metadata_and_picture_are_borrowed_but_444_stays_rejected() {
+        let header = video::VideoHeader {
+            frame_id: 42,
+            width: 1920,
+            height: 1080,
+            codec: video::Codec::H265,
+            rotation: Rotation::None,
+            ten_bit: true,
+            locked: false,
+            announced: true,
+            metadata: false,
+        };
+        let metadata = video::KeyframeMetadata {
+            rebuilt: true,
+            keyframe: true,
+            ten_bit: true,
+            chroma_444: false,
+            rotation: Rotation::None,
+        };
+        let mut packet = vec![0; video::METADATA_LEN];
+        video::encode_metadata(&mut packet, &header, &metadata).unwrap();
+        let Video::Metadata(parsed) = video(&packet).unwrap() else {
+            panic!("Main 10 metadata rejected")
+        };
+        assert!(parsed.ten_bit && parsed.rebuilt && parsed.keyframe);
+        assert!(!parsed.chroma_444);
+        packet.truncate(video::VIDEO_HEADER_LEN);
+        video::encode(&mut packet, &header).unwrap();
+        packet.extend_from_slice(&[0, 0, 0, 1, 0x26, 0x01, 0x80]);
+        let Video::AccessUnit { header, annex_b } = video(&packet).unwrap() else {
+            panic!("Main 10 picture rejected")
+        };
+        assert!(header.ten_bit);
+        assert_eq!(annex_b, &[0, 0, 0, 1, 0x26, 0x01, 0x80]);
+        assert_eq!(annex_b.as_ptr(), packet[video::VIDEO_HEADER_LEN..].as_ptr());
+        packet.resize(video::METADATA_LEN, 0);
+        let metadata = video::KeyframeMetadata {
+            chroma_444: true,
+            ..metadata
+        };
+        video::encode_metadata(&mut packet, &header, &metadata).unwrap();
+        assert!(video(&packet).is_err(), "4:4:4 must remain unsupported");
+        assert!(video(&packet[..video::METADATA_LEN - 1]).is_err());
     }
 
     #[test]
