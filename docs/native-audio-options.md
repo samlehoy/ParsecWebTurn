@@ -82,5 +82,17 @@ The stats/log fields report the actual decoded codec and local queues. They
 exclude network transit, host capture and Bluetooth/headset buffering. There
 are no raw packets, sample contents or credentials in the operational log.
 
+The [local silent WASAPI report](measurements/audio-wasapi-2026-10-16.json)
+records automatic and custom 20/60 ms probes. Both wrote all 9,600 submitted
+frames with zero drops, no API failure and released resources. The low-period
+API request was accepted in the custom case, but device capacity was 1,056
+frames (22 ms) in both cases. One underrun was counted in the custom probe;
+this short finite source includes ending and scheduling effects. Its automatic
+0/200 ms limits are diagnostic inputs, not a measurement of the core's defaults.
+This proves initialization/output/cleanup, not lower end-to-end latency or
+better audible stability. The WASAPI implementation is identical between the
+recorded source and the final audio test client; later changes concern PCM
+packet splitting before the guest boundary.
+
 Supported API reference:
 [Microsoft shared low-latency initialization](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient3-initializesharedaudiostream).
