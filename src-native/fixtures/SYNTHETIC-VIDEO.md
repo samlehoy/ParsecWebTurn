@@ -19,6 +19,13 @@ correctness or reduced latency; the MFT may retain its final picture until a
 next input because this probe does not inject an end-of-stream drain into the
 live pipeline.
 
+Local validation of client source `cf24d12` on AMD Radeon 780M is recorded in
+[`main10-gpu-2026-10-16.json`](../../docs/measurements/main10-gpu-2026-10-16.json):
+120 inputs, 119 decoded/presented pictures, P010 D3D11 decoder surfaces,
+zero dropped pictures and released resources. The final picture was retained
+by the streaming MFT. This establishes the GPU-surface path; it does not measure
+hardware execution counters or establish stock-host Main 10 negotiation.
+
 ## H.264 fixture
 
 Generated locally from FFmpeg's synthetic testsrc2 filter; no captured media,
