@@ -600,7 +600,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         check(hwnd, ZERO_COPY, s.experimental_zero_copy);
     }
     page.building_tab = Some(Tab::Network);
-    row_label(hwnd, page, "Event log", "Record connection changes and decoder errors beside settings.json.\nNo credentials or media payloads. Applies immediately after saving.", 938 + BUD_EXTRA, 0, 40);
+    row_label(hwnd, page, "Event log", "Log connection changes and decoder errors.\nSaved beside settings.json; no credentials or media payloads.\nApplies immediately after saving.", 938 + BUD_EXTRA, 0, 60);
     add(
         hwnd,
         page,
@@ -616,7 +616,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     page.building_tab = None;
     add(hwnd, page, "STATIC",
         "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection.",
-        0, [0, 1032 + BUD_EXTRA, 820, 48], NOTICE, 0, page.small);
+        0, [0, 1056 + BUD_EXTRA, 820, 48], NOTICE, 0, page.small);
     let status = error.unwrap_or_else(|| {
         "Saved in settings.json. Secrets are protected for your Windows user.".into()
     });
@@ -626,7 +626,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         "STATIC",
         &status,
         0,
-        [0, 1094 + BUD_EXTRA, 820, 40],
+        [0, 1118 + BUD_EXTRA, 820, 40],
         STATUS,
         0,
         page.small,
@@ -745,7 +745,7 @@ unsafe fn layout(hwnd: HWND) {
     GetClientRect(hwnd, &mut client);
     let cloudflare = SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1;
     let footer = match page.active_tab {
-        Tab::Network => 1032 + BUD_EXTRA,
+        Tab::Network => 1056 + BUD_EXTRA,
         Tab::Video => {
             if cfg!(feature = "vendor-video") {
                 626
@@ -1320,6 +1320,7 @@ mod tests {
             MapWindowPoints(null_mut(), page, (&mut button as *mut RECT).cast(), 2);
             GetClientRect(page, &mut client);
             assert!(button.top >= 0 && button.bottom <= client.bottom);
+            SendMessageW(page, WM_VSCROLL, SB_BOTTOM as usize, 0);
             capture(page, "cloudflare-bottom");
             SetWindowTextW(
                 GetDlgItem(page, TOKEN as i32),

@@ -545,19 +545,24 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
     };
     #[cfg(not(feature = "experimental-bud"))]
     let footer = "Traffic is measured usage, not available bandwidth. RTT is the active ICE path's round-trip time, not ICMP ping. Local dropped frames are not network packet loss. Missing values remain unknown.";
-    text(
+    // Measure wrapped text using the same font and width as the actual paint.
+    // The BUD explanation can exceed a fixed-height box, especially on resize.
+    let mut footer_rect = RECT {
+        left,
+        top: y,
+        right,
+        bottom: y,
+    };
+    SelectObject(memory, page.font);
+    DrawTextW(
         memory,
-        page.font,
-        MUTED,
-        footer,
-        RECT {
-            left,
-            top: y,
-            right,
-            bottom: y + 100,
-        },
+        wide(footer).as_ptr(),
+        -1,
+        &mut footer_rect,
+        DT_LEFT | DT_WORDBREAK | DT_NOPREFIX | DT_CALCRECT,
     );
-    y += 110;
+    text(memory, page.font, MUTED, footer, footer_rect);
+    y = footer_rect.bottom + 24;
     page.height = y + page.scroll;
     let info = SCROLLINFO {
         cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
@@ -828,6 +833,15 @@ mod tests {
             let page = &*(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Page);
             assert!(page.scroll > 0);
             capture(hwnd, "stats-bottom");
+            #[cfg(feature = "experimental-bud")]
+            {
+                let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Page;
+                (*state).sample.bud = Some(parsec_native_bud::bud::Snapshot::default());
+                RedrawWindow(hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_UPDATENOW);
+                SendMessageW(hwnd, WM_VSCROLL, SB_BOTTOM as usize, 0);
+                capture(hwnd, "stats-bud-bottom");
+                (*state).sample.bud = None;
+            }
             SetWindowPos(
                 hwnd,
                 null_mut(),
