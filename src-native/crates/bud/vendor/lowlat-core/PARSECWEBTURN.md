@@ -7,10 +7,14 @@ This is the existing open protocol dependency, not the proprietary Parsec WASM.
 Only `relay.rs`, `turn.rs` and new `turn/stream.rs` receive the TURN changes from
 [lowlat PR #2](https://github.com/nomi-san/lowlat/pull/2), pinned to
 `befd5a29c7a331111f11378c0b5623de788e9769`. All other retained protocol code
-stays at the original pin, avoiding unrelated newer upstream changes. Unused
+stays at the original pin, apart from the omissions below, avoiding unrelated newer upstream changes. Unused
 cursor/PNG decoding, controller report conversion, microphone and inactive
 PMTU-probe modules and their fixtures are omitted. Existing framed input remains
 forwarded untouched by the transport-only client.
+
+The unused host encoder bitrate controller and its experimental strategies/tests
+are also omitted from `congestion.rs`. The send ring's original window floor,
+three staleness levels and default resolution are retained without tuning changes.
 
 The changes distinguish reliable client-to-TURN transactions from UDP retries,
 bound their deadlines, preserve nonce/authentication recovery and frame TURN

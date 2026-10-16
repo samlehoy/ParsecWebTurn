@@ -39,6 +39,45 @@ nonce renewal with the client's UDP source blocked in stream cases. Synthetic
 media-channel bodies verify delivery, not real decode or latency improvements.
 Live stock-host/provider playback remains an acceptance test.
 
+Live acceptance on 2026-10-16 confirmed TURN/TLS to Metered with a stock host,
+using AMD AMF HEVC and Direct D3D11 HEVC. Both connections established in about
+two seconds without logged transport or decoder errors. This establishes
+compatibility for that setup, not a measured latency improvement or Main 10 proof.
+
+## Low-latency and release audit (2026-10-16)
+
+- Input producers explicitly wake the existing session worker. Socket readiness
+  interrupts its wait; the 50 ms safety cap and 100 ms consumer lifecycle check
+  are not media batching intervals. Buffered stream/TLS input and fairness yields
+  schedule a zero-timeout continuation, interleaving receive, input and deadlines.
+- TCP_NODELAY is enabled after the documented nonblocking connect sequence and
+  before TLS/application writes. Small control/input frames do not wait for a
+  Nagle batch. Both TCP and TLS roundtrip regressions check the socket option.
+  See [Mio's connection and NODELAY contract](https://docs.rs/mio/1.2.4/mio/net/struct.TcpStream.html).
+- Each queued frame is flushed immediately when writable. The single reusable
+  TURN output slot preserves partial writes. The 32 KiB rustls buffer is a bound,
+  not a fill target; ciphertext is drained in the same pass. Work budgets yield
+  without sleeping, preventing receive bursts or writes from starving input.
+- Existing protocol retransmission/acknowledgement tuning and the 240-second TURN
+  renewal are retained. TCP loss still stalls the client-to-relay byte stream;
+  UDP remains first choice. There is no claim of the globally lowest latency.
+- Setup trust loading/DNS happens outside live media processing. Cancellation,
+  certificate validation, bounded backpressure and teardown remain in place.
+- The unused host encoder bitrate controller, experimental strategies and their
+  host-only tests have been removed. Client retransmission levels are unchanged.
+  Required protocol, framing, allocation-reuse, cancellation, TLS and WebRTC
+  regression tests remain; they are exercised by CI and excluded from the normal
+  executable. Optional diagnostic commands, fixtures, rcgen and diagnostic-only
+  compiler support remain behind test/diagnostics build configuration.
+- Direct dependencies were checked against their use sites and feature gates:
+  mio/rustls and trust stores implement the live stream carrier; Windows/Linux IO,
+  protocol, cryptography and vendor decoder dependencies serve retained features.
+  No new dependency or unneeded SDK/C ABI, host encoder, browser transport or
+  standalone vendor comparison tool is introduced by this audit.
+- Native packaging rejects diagnostic markers and synthetic video in the normal
+  executable and checks runtime imports. The original Parsec WASM SHA-256 remains
+  `d663dd96df477c65479fb93eb88756c7fcafff581cc93be563625cd195a4b4a6`.
+
 Operational failures now retain only static setup stages, IO error kinds and
 numeric OS codes, including synchronous carrier creation and asynchronous
 connect/TLS/transport failures. Error strings, endpoints and credentials are

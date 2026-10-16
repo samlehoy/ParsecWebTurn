@@ -58,5 +58,6 @@ omitted from this optional native-only dependency; our WebRTC path is unchanged.
 TURN stream integration: native IO/configuration and established-carrier telemetry
 from lowlat PR #2, revision befd5a29c7a331111f11378c0b5623de788e9769.
 No SDK ABI or decoder API is imported. Common/crypto remain at the original pin;
-core is the sibling pinned copy with only TURN stream additions. See
+core is the sibling pinned copy with TURN stream additions and unused host-only
+modules omitted, as recorded in its PARSECWEBTURN.md. See
 ../../../../../../docs/bud-turn-stream.md for scope and verification.

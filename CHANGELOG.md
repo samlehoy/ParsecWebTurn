@@ -5,14 +5,22 @@ builds, not published stable releases.
 
 ## Unreleased
 
-- **BUD Main 10 startup:** remove an obsolete 8-bit-only check that disconnected BUD after successfully negotiating 10-bit HEVC. Negotiated Main 10 video now reaches the existing MF/P010 GPU path; 4:4:4 remains unsupported. Event logging identifies rejected BUD video framing/formats.
+## 0.9.4-dev.3 - BUD TCP/TLS relays and audio controls (2026-10-16)
 
-- **Experimental BUD over TURN TCP/TLS:** use the existing TURN URLs for BUD as well as WebRTC, with UDP preferred, then TLS and plain TCP (port 80 preferred among TCP URLs). Failed startup attempts can try the next configured relay; direct BUD remains UDP. TLS checks the server identity. Existing decoding, audio and WebRTC routing are retained; live provider compatibility still needs testing.
+Changes since v0.9.4-dev.2.
+
+**BUD, vendor-specific HEVC decoding, Zero copy, 10-bit HEVC and the new Audio
+options are experimental.** For stability-first use, select WebRTC with H.264,
+leave experimental options disabled, or use the published stable v0.9.3 release.
+
+- **Experimental BUD over TURN TCP/TLS:** use the existing TURN URLs for BUD as well as WebRTC, with UDP preferred, then TLS and plain TCP (port 80 preferred among TCP URLs). Failed startup attempts can try the next configured relay; direct BUD remains UDP. TLS checks the server identity. BUD TURN/TLS playback has been confirmed with a stock host using AMD AMF HEVC and Direct D3D11 HEVC.
+- **Reliable TCP/TLS startup and responsive IO:** handle pending nonblocking TCP connections correctly, disable Nagle before sending TLS/application data and retain partial writes under backpressure. The event-driven carrier uses bounded reusable buffers and immediate input wakeups without a batching delay. Event logging identifies failed transport stages and IO error codes without recording credentials or packet contents.
 
 - **Experimental Audio settings:** add a separate Audio tab with optional minimum/maximum playback buffering, supported low-period WASAPI initialization with fallback, bounded fresh PCM playback, and BUD-only raw PCM permission. Automatic playback and Opus remain the defaults. Raw requires host support and can still fall back to Opus; WebRTC audio remains Opus.
 - **Audio visibility:** show actual audio codec, local output buffer and limits, device capacity, decoded PCM backlog and underruns in Connection stats. Operational logging includes audio configuration and playback-error counters without media payloads.
 
 - **HEVC-dependent video options:** disable the Zero copy checkbox while Prefer H.265 / HEVC is off, matching the 10-bit HEVC option. Turning HEVC back on restores access to the saved preference.
+- **BUD Main 10 startup fix:** remove an obsolete 8-bit-only parser check that disconnected BUD when Main 10 video arrived. Advertised Main 10 is passed to the existing MF/P010 GPU path; host/driver compatibility still needs testing. 4:4:4 remains unsupported.
 
 ## 0.9.4-dev.2 - Color range fixes and event logging (2026-10-16)
 

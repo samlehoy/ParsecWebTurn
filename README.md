@@ -17,8 +17,8 @@ features described below; check a release's notes for what its binary includes.
 The earlier Tauri/WebView2 client is preserved on the
 [legacy branch](https://github.com/vampywiz17/ParsecWebTurn/tree/legacy).
 
-**Development release:** BUD, vendor-specific HEVC decoding and Zero copy are
-experimental. For stability-first use, select WebRTC with H.264 and leave the
+**Development release:** BUD, vendor-specific HEVC decoding, Zero copy, 10-bit HEVC
+and custom Audio options are experimental. For stability-first use, select WebRTC with H.264 and leave the
 experimental options disabled, or use the
 [latest stable release](https://github.com/vampywiz17/ParsecWebTurn/releases/latest).
 
@@ -31,8 +31,8 @@ experimental options disabled, or use the
   streamed video stays on the GPU.
 - WebRTC with direct connections and custom STUN/TURN, including Cloudflare and
   TURN over UDP, TCP and TLS.
-- Optional **experimental BUD**, with direct UDP, automatic UDP TURN fallback,
-  and forced UDP relay. It uses the same native video/audio paths as WebRTC.
+- Optional **experimental BUD**, with direct UDP, automatic TURN fallback and
+  forced relay over UDP, TLS or TCP. It uses the existing native video/audio paths.
 - Live Connection stats: active route, RTT, incoming/outgoing traffic, decoded
   FPS, codec, decoder, GPU, host encode time when available, and app resource use.
   Transport-specific statistics adapt to WebRTC or BUD; unknown values stay unknown.
@@ -201,7 +201,8 @@ Statuses below describe this branch, not necessarily the latest stable release.
 | WebRTC direct and TURN over UDP/TCP/TLS, including forced relay | Implemented |
 | HEVC: NVIDIA Direct D3D11, AMD AMF, Intel VPL | Experimental; live tested on selected GPUs |
 | Original-surface HEVC presentation on NVIDIA/AMD/Intel | Experimental; live tested on selected GPUs |
-| Optional BUD direct and UDP TURN, automatic relay fallback | Experimental; live tested |
+| Optional BUD direct UDP and TURN over UDP/TCP/TLS, automatic relay fallback | Experimental; direct/UDP/TLS live tested; TCP covered by isolated relay tests |
+| Custom audio buffering and BUD raw PCM permission | Experimental; Opus and automatic buffering remain default |
 | Transport-aware connection and playback statistics | Implemented |
 | Network/Video/Audio settings tabs | Implemented |
 | Gamepad verification and further native menu integration | Pending |

@@ -5,7 +5,7 @@
 //! every subsequent message. Hard IO failures are terminal, never a reason to
 //! resume the same bytes on a replacement connection/allocation.
 //!
-//! This is a transport building block, not yet a client-selectable TCP/TLS path.
+//! Used by the client's nonblocking TCP/TLS carrier.
 
 use std::io::{self, Write};
 

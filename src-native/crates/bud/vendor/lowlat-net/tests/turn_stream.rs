@@ -1,5 +1,5 @@
-//! Real TCP framing and hot-path allocation checks. These do not claim that
-//! TURN allocation, TLS or the client event loop is integrated yet.
+//! Isolated TCP framing and hot-path allocation checks. Complete TURN/TLS
+//! session integration is exercised by the separate coturn fixtures.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

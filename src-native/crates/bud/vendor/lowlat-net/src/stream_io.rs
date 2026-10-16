@@ -585,6 +585,10 @@ mod tests {
         };
         let mut io = StreamIo::start(address, security).unwrap();
         io.prepare(|| false).unwrap();
+        assert!(
+            io.socket.nodelay().unwrap(),
+            "small input packets must bypass Nagle"
+        );
         io.queue(MESSAGE, address).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut received = 0;
