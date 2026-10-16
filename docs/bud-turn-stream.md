@@ -38,3 +38,9 @@ regressions, and isolated authenticated coturn UDP/TCP/TLS across allocation and
 nonce renewal with the client's UDP source blocked in stream cases. Synthetic
 media-channel bodies verify delivery, not real decode or latency improvements.
 Live stock-host/provider playback remains an acceptance test.
+
+On 2026-10-16 the [Windows/Linux transport validation](https://github.com/vampywiz17/ParsecWebTurn/actions/runs/38945891934)
+passed, including 283 retained protocol tests, application-level direct/UDP/TCP
+connectivity and all three 65-second authenticated coturn renewal cases. The
+stream cases blocked the client's UDP source port. No measured real-video
+latency or public-provider compatibility is inferred from these synthetic tests.
