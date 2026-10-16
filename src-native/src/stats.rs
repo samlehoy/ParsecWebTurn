@@ -65,7 +65,7 @@ pub struct Shared {
 }
 impl Shared {
     pub fn requested(&self) -> bool {
-        self.visible.load(Ordering::Acquire)
+        self.visible.load(Ordering::Acquire) || crate::event_log::enabled()
     }
     pub fn begin(&self) -> u64 {
         let mut data = self.latest.lock().unwrap_or_else(|e| e.into_inner());
@@ -75,12 +75,60 @@ impl Shared {
             state: "Connecting".into(),
             ..Default::default()
         });
+        crate::event_log::record(
+            "INFO",
+            "connection_started",
+            serde_json::json!({"generation":data.0}),
+        );
         data.0
     }
     pub fn publish(&self, generation: u64, mut sample: Sample) {
         let mut data = self.latest.lock().unwrap_or_else(|e| e.into_inner());
         if data.0 == generation {
             sample.generation = generation;
+            if crate::event_log::enabled()
+                && data.1.as_ref().is_none_or(|old| {
+                    old.state != sample.state
+                        || old.route != sample.route
+                        || old.protocol != sample.protocol
+                })
+            {
+                crate::event_log::record(
+                    "INFO",
+                    "connection_state_changed",
+                    serde_json::json!({
+                        "generation":generation,"state":sample.state,"route":sample.route,
+                        "previous_route":data.1.as_ref().map(|old|old.route),"transport":sample.protocol,
+                        "turn_transport":sample.turn_protocol,"dtls":sample.dtls,
+                    }),
+                );
+            }
+            if crate::event_log::enabled()
+                && sample.video.as_ref().is_some_and(|v| {
+                    data.1
+                        .as_ref()
+                        .and_then(|old| old.video.as_ref())
+                        .is_none_or(|old| {
+                            old.decoder != v.decoder
+                                || old.decoder_fallback != v.decoder_fallback
+                                || old.failure_stage != v.failure_stage
+                        })
+                })
+            {
+                let v = sample.video.as_ref().unwrap();
+                crate::event_log::record(
+                    if v.failure_stage.is_some() {
+                        "ERROR"
+                    } else {
+                        "INFO"
+                    },
+                    "decoder_state_changed",
+                    serde_json::json!({
+                        "generation":generation,"decoder":v.decoder,"fallback":v.decoder_fallback.is_some(),
+                        "stage":v.failure_stage,"hresult":v.failure_hresult,"decoded_bit_depth":v.decoded_bit_depth,
+                    }),
+                );
+            }
             data.1 = Some(sample);
         }
     }

@@ -8,6 +8,7 @@ use lowlat_core::init::{self, Init};
 pub struct Caps {
     pub h264: bool,
     pub hevc: bool,
+    pub hevc_10: bool,
     pub hevc_444: bool,
 }
 use zeroize::Zeroizing;
@@ -35,6 +36,7 @@ pub enum Port {
 /// client at its defaults asks for H.264 in the video range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Video {
+    pub ten_bit: bool,
     /// The size asked of the host, or zero for no preference.
     ///
     /// **A request to change the host's display, not a description of this
@@ -76,12 +78,13 @@ impl Video {
             // session is one with nowhere to draw.
             return flags;
         }
-        let hevc = (self.hevc || self.chroma_444) && caps.hevc;
+        let hevc = (self.hevc || self.ten_bit || self.chroma_444) && caps.hevc;
         if !hevc {
             return flags;
         }
         let chroma_444 = self.chroma_444 && caps.hevc_444;
         flags |= init::FLAG_HEVC;
+        if self.ten_bit && caps.hevc_10 && !chroma_444 { flags |= init::FLAG_10BIT; }
         if chroma_444 {
             flags |= init::FLAG_COLOR444;
         }
@@ -93,6 +96,7 @@ impl Video {
         self.flags(&Caps {
             h264: true,
             hevc: true,
+            hevc_10: true,
             hevc_444: true,
         })
     }
@@ -192,12 +196,21 @@ mod tests {
     const EVERYTHING: Caps = Caps {
         h264: true,
         hevc: true,
+        hevc_10: true,
         hevc_444: true,
     };
 
     #[test]
     fn the_defaults_declare_the_first_codec_in_the_video_range() {
         assert_eq!(Video::default().flags(&EVERYTHING), 0);
+    }
+    #[test]
+    fn main10_requires_verified_main_and_main10_decode() {
+        let video = Video { ten_bit:true,full_range:true,..Video::default() };
+        assert_eq!(video.flags(&EVERYTHING), 0x19);
+        let caps = Caps { hevc_10:false,..EVERYTHING };
+        assert_eq!(video.flags(&caps), 0x09);
+        assert_eq!(video.flags(&Caps { hevc:false,..EVERYTHING }), 0x08);
     }
 
     /// The range is the renderer's to take, so it is declared as asked: a

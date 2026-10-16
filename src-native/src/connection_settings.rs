@@ -51,6 +51,8 @@ pub struct Settings {
     #[cfg(feature = "experimental-bud")]
     pub experimental_bud: bool,
     pub prefer_hevc: bool,
+    pub experimental_ten_bit: bool,
+    pub event_logging: bool,
     #[cfg(feature = "vendor-video")]
     pub experimental_zero_copy: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,6 +81,8 @@ impl Default for Settings {
             #[cfg(feature = "experimental-bud")]
             experimental_bud: false,
             prefer_hevc: false,
+            experimental_ten_bit: false,
+            event_logging: false,
             #[cfg(feature = "vendor-video")]
             experimental_zero_copy: false,
             video_gpu: None,
@@ -325,8 +329,11 @@ impl Manager {
             bail!("Settings exceed 64 KiB");
         }
         atomic_write(&self.path, &raw)?;
+        let logging = settings.event_logging;
         *self.state.lock().unwrap_or_else(|e| e.into_inner()) = (settings, None);
         *self.cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        crate::event_log::configure(logging)
+            .context("Settings saved, but the event log could not be opened")?;
         Ok(())
     }
     #[cfg(test)]

@@ -6,6 +6,11 @@ Copyright (c) 2026 Nguyen Duy; original license in `LICENSE`.
 Sibling common/core/net/crypto crates remain pinned to that revision.
 This is a ParsecWebTurn-specific subset, not the upstream SDK's complete API.
 
+Application-verified Main 10 capability is retained for external GPU decoding.
+The stream-0 encoder-config bridge preserves the negotiated HEVC/range/depth
+flags instead of allowing the embedded UI to erase them; it does not enable
+4:4:4. No packet scheduling, retransmission or congestion policy is changed.
+
 The subset retains native credentials, AES-GCM, candidate/readiness exchange,
 BUD rings, acknowledgements/NACKs, congestion control, liveness, UDP TURN,
 allocation/permission renewal and clean departure. Packet/window sizes and the

@@ -32,8 +32,9 @@ impl Media {
     pub fn start_verified(
         window: Arc<crate::window::Window>,
         hevc_available: bool,
+        ten_bit: bool,
     ) -> Result<(Self, Session)> {
-        let session = Session::external_video(hevc_available)?;
+        let session = Session::external_video_depth(hevc_available, ten_bit)?;
         let audio = Arc::new(crate::audio_stream::Pipeline::start());
         let audio_sender = audio
             .sender()

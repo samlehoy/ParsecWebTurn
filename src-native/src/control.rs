@@ -10,14 +10,39 @@ const LIMIT: usize = 1024 * 1024;
 pub struct Config {
     pub video_protocol: crate::backend::VideoProtocol,
     pub allow_hevc: bool,
+    pub ten_bit: bool,
 }
 
 impl Config {
+    pub fn video_flags(&self) -> u32 {
+        0x08 | u32::from(self.allow_hevc)
+            | if self.allow_hevc && self.ten_bit {
+                0x10
+            } else {
+                0
+            }
+    }
+
+    /// Keep the negotiated capabilities on later per-stream reconfigurations.
+    /// 4:4:4 is deliberately not supported, even if the guest asks for it.
+    pub fn encoder_request(&self, bytes: Bytes) -> Bytes {
+        if bytes.len() < 13 || bytes[12] != 13 || bytes[..4] != [0; 4] {
+            return bytes;
+        }
+        let old = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
+        let flags = (old & !0x1b) | self.video_flags();
+        if old == flags {
+            return bytes;
+        }
+        let mut patched = bytes.to_vec();
+        patched[4..8].copy_from_slice(&flags.to_be_bytes());
+        Bytes::from(patched)
+    }
     /// Pinned private opcode, corroborated by lowlat's WebRTC client. Preserve
     /// the negotiated flags; the third argument requests an encoder refresh.
     #[cfg(windows)]
     pub fn keyframe_request(&self) -> Bytes {
-        header(13, 0, i32::from(self.allow_hevc), 1)
+        header(13, 0, self.video_flags() as i32, 1)
     }
     pub fn startup(&self) -> Result<Bytes> {
         text(
@@ -25,7 +50,7 @@ impl Config {
             0,
             // Native SDK 6.0 advertises HEVC with bit 0 of this private field.
             // Keep it isolated from WebRTC/SDP; see docs/hevc-negotiation.md.
-            &json!({"_version":1,"_max_w":60000,"_max_h":60000,"_flags":u32::from(self.allow_hevc),
+            &json!({"_version":1,"_max_w":60000,"_max_h":60000,"_flags":self.video_flags(),
             "resolutionX":1920,"resolutionY":1080,"refreshRate":60,"mediaContainer":0,
             "_VideoProtocolVersion":self.video_protocol.version})
             .to_string(),
@@ -251,10 +276,11 @@ mod tests {
                     flag_offset: 4,
                 },
                 allow_hevc,
+                ten_bit: false,
             };
             assert_eq!(
                 config.keyframe_request(),
-                header(13, 0, i32::from(allow_hevc), 1)
+                header(13, 0, 8 | i32::from(allow_hevc), 1)
             );
             let request = config.keyframe_request();
             assert_eq!(request.len(), 13);
@@ -272,6 +298,7 @@ mod tests {
                 flag_offset: 4,
             },
             allow_hevc: false,
+            ten_bit: false,
         };
         let avc = config.startup().unwrap();
         config.allow_hevc = true;
@@ -287,9 +314,37 @@ mod tests {
         }
         let avc: Value = serde_json::from_slice(&avc[13..avc.len() - 1]).unwrap();
         let mut hevc: Value = serde_json::from_slice(&hevc[13..hevc.len() - 1]).unwrap();
-        assert_eq!(hevc["_flags"], 1);
-        hevc["_flags"] = json!(0);
+        assert_eq!(hevc["_flags"], 9);
+        hevc["_flags"] = json!(8);
         assert_eq!(avc, hevc);
+    }
+    #[test]
+    fn guest_reconfiguration_cannot_erase_main10_or_enable_444() {
+        let config = Config {
+            video_protocol: crate::backend::VideoProtocol {
+                version: 0,
+                message_size: 11,
+                version_offset: 0,
+                flag_offset: 4,
+            },
+            allow_hevc: true,
+            ten_bit: true,
+        };
+        let init = config.startup().unwrap();
+        let init: Value = serde_json::from_slice(&init[13..init.len() - 1]).unwrap();
+        assert_eq!(init["_flags"], 0x19);
+        assert_eq!(
+            config.encoder_request(header(13, 0, 2, 1)),
+            header(13, 0, 0x19, 1)
+        );
+        assert_eq!(
+            config.encoder_request(header(13, 1, 2, 1)),
+            header(13, 1, 2, 1)
+        );
+        assert_eq!(
+            config.encoder_request(header(12, 0, 2, 1)),
+            header(12, 0, 2, 1)
+        );
     }
     #[test]
     fn absolute_motion_requires_a_real_viewport_and_preserves_control_framing() {

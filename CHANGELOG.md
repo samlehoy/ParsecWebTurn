@@ -3,6 +3,12 @@
 User-facing changes are listed below. Native versions marked **dev** are development
 builds, not published stable releases.
 
+## Unreleased
+
+- Fix limited/full-range translation between Media Foundation and D3D11, including vendor HEVC output. Declare full-range support consistently at connection startup and in subsequent encoder requests.
+- Add opt-in experimental Main 10 HEVC negotiation for WebRTC and BUD, verified GPU P010 capability checks, and GPU-only Media Foundation P010 playback through the existing conversion pass. RGB presentation remains 8-bit; original-surface presentation remains 8-bit only. Live Main 10 host validation is pending; 4:4:4 remains unsupported.
+- Add optional bounded JSON Lines event logging beside settings.json for connection/route changes, transport failures, decoder recovery/errors and profile-save errors, without credentials or media payloads.
+
 ## 0.9.4-dev.1 - Experimental BUD and GPU video paths (2026-10-15)
 
 Changes since the stable v0.9.3 release.

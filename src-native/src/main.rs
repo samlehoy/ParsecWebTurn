@@ -43,6 +43,7 @@ mod cursor;
 mod data_only_policy_tests;
 #[cfg(windows)]
 mod desktop;
+mod event_log;
 #[cfg(any(windows, test))]
 mod event_queue;
 #[cfg(any(test, feature = "diagnostics"))]
@@ -109,6 +110,8 @@ mod transport_diagnostics;
 mod updater;
 #[cfg(windows)]
 mod updater_ui;
+#[cfg(any(windows, test))]
+mod video_color;
 mod video_output;
 mod video_stream;
 #[cfg(windows)]

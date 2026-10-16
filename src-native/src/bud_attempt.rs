@@ -101,6 +101,9 @@ impl Attempt {
             let result = run(&attempt_id, &output, &window, &manager, &worker_state, &worker_session, &worker_audio, &worker_cancel, incoming, &mut trace);
             trace.record(if result.is_err() { "worker_error" } else { "worker_returned" }, &[("cancelled", u64::from(worker_cancel.load(Ordering::Acquire)))]);
             if result.is_err() {
+                if !worker_cancel.load(Ordering::Acquire) {
+                    crate::event_log::record("ERROR", "connection_failed", json!({"transport":"BUD","stage":"connection_or_media","route":window.stats.read().map(|s|s.route)}));
+                }
                 let mut state = worker_state.lock().unwrap_or_else(|e| e.into_inner());
                 if !worker_cancel.load(Ordering::Acquire) {
                 state.failure.get_or_insert("BUD connection or media failed");
@@ -478,6 +481,14 @@ fn run(
     // Probe before the lifecycle lock: a slow driver must not stall Cancel.
     let hevc_available =
         settings.prefer_hevc && crate::video_windows::hevc_available(window.video_gpu().as_ref());
+    let ten_bit = hevc_available
+        && settings.experimental_ten_bit
+        && crate::video_windows::hevc_ten_bit_available(window.video_gpu().as_ref());
+    crate::event_log::record(
+        "INFO",
+        "video_capabilities_declared",
+        json!({"transport":"BUD","flags":8 | u32::from(hevc_available) | if ten_bit {16} else {0},"hevc":hevc_available,"main10":ten_bit}),
+    );
     let (mut media, mut session, statistics) = {
         let _state = state.lock().unwrap_or_else(|e| e.into_inner());
         if cancel.load(Ordering::Acquire) {
@@ -487,7 +498,7 @@ fn run(
         // is serialized against retirement, so a cancelled old attempt cannot
         // hide the next attempt's video or reset its statistics.
         let (media, session) =
-            crate::bud_media::Media::start_verified(window.clone(), hevc_available)?;
+            crate::bud_media::Media::start_verified(window.clone(), hevc_available, ten_bit)?;
         (media, session, Statistics::start(window.stats.clone()))
     };
     state.lock().unwrap_or_else(|e| e.into_inner()).wire_id = id.into();

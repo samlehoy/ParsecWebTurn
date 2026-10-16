@@ -61,6 +61,8 @@ const CLOUDFLARE: u8 = 2;
 const HELP: usize = 4200;
 const NETWORK_TAB: usize = 4201;
 const VIDEO_TAB: usize = 4121;
+const TEN_BIT: usize = 4122;
+const EVENT_LOG: usize = 4123;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Network,
@@ -510,7 +512,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         hwnd,
         page,
         "Video codec",
-        "Use HEVC (8-bit) when supported by this GPU and driver.\nReconnect after changing.",
+        "Use HEVC when supported by this GPU and driver.\nReconnect after changing.",
         344,
         0,
         40,
@@ -527,6 +529,19 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         page.font,
     );
     check(hwnd, HEVC, s.prefer_hevc);
+    row_label(hwnd, page, "Color depth", "Request HEVC Main 10 (experimental). Host support required.\nGPU decode; normal 8-bit RGB display output. Reconnect to apply.", 438, 0, 40);
+    add(
+        hwnd,
+        page,
+        "BUTTON",
+        "10-bit HEVC (experimental)",
+        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+        [420, 438, 400, 36],
+        TEN_BIT,
+        0,
+        page.font,
+    );
+    check(hwnd, TEN_BIT, s.experimental_ten_bit);
     page.building_tab = Some(Tab::Network);
     row_label(
         hwnd,
@@ -568,7 +583,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     #[cfg(feature = "vendor-video")]
     {
         page.building_tab = Some(Tab::Video);
-        let y = 438;
+        let y = 532;
         let hint = "Present original HEVC decoder surfaces on supported GPUs.\nWindows 11 / compatible driver. Reconnect after changing.";
         row_label(hwnd, page, "Video presentation", hint, y, 0, 40);
         add(
@@ -584,10 +599,24 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         );
         check(hwnd, ZERO_COPY, s.experimental_zero_copy);
     }
+    page.building_tab = Some(Tab::Network);
+    row_label(hwnd, page, "Event log", "Record connection changes and decoder errors beside settings.json.\nNo credentials or media payloads. Applies immediately after saving.", 938 + BUD_EXTRA, 0, 40);
+    add(
+        hwnd,
+        page,
+        "BUTTON",
+        "Enable event logging",
+        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+        [420, 938 + BUD_EXTRA, 400, 36],
+        EVENT_LOG,
+        0,
+        page.font,
+    );
+    check(hwnd, EVENT_LOG, s.event_logging);
     page.building_tab = None;
     add(hwnd, page, "STATIC",
         "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection.",
-        0, [0, 938 + BUD_EXTRA, 820, 48], NOTICE, 0, page.small);
+        0, [0, 1032 + BUD_EXTRA, 820, 48], NOTICE, 0, page.small);
     let status = error.unwrap_or_else(|| {
         "Saved in settings.json. Secrets are protected for your Windows user.".into()
     });
@@ -597,7 +626,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         "STATIC",
         &status,
         0,
-        [0, 1000 + BUD_EXTRA, 820, 40],
+        [0, 1094 + BUD_EXTRA, 820, 40],
         STATUS,
         0,
         page.small,
@@ -880,6 +909,7 @@ unsafe fn checked(hwnd: HWND, id: usize) -> bool {
     SendMessageW(GetDlgItem(hwnd, id as i32), BM_GETCHECK, 0, 0) == 1
 }
 unsafe fn update_enabled(hwnd: HWND) {
+    EnableWindow(GetDlgItem(hwnd, TEN_BIT as i32), checked(hwnd, HEVC) as i32);
     let turn = !checked(hwnd, STUN_ONLY);
     let cloudflare = SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1;
     for id in [
@@ -908,6 +938,8 @@ unsafe fn update_enabled(hwnd: HWND) {
 unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
     let mut s = page.saved.clone();
     s.prefer_hevc = checked(hwnd, HEVC);
+    s.experimental_ten_bit = checked(hwnd, TEN_BIT);
+    s.event_logging = checked(hwnd, EVENT_LOG);
     #[cfg(feature = "vendor-video")]
     {
         s.experimental_zero_copy = checked(hwnd, ZERO_COPY);
@@ -1148,6 +1180,10 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     update_enabled(hwnd);
                     return 0;
                 }
+                HEVC if (wp >> 16) as u32 == BN_CLICKED => {
+                    update_enabled(hwnd);
+                    return 0;
+                }
                 STUN_ONLY if (wp >> 16) as u32 == BN_CLICKED => {
                     if checked(hwnd, STUN_ONLY) {
                         check(hwnd, FORCE_RELAY, false);
@@ -1323,8 +1359,12 @@ mod tests {
                 wide("fixture-password").as_ptr(),
             );
             check(page, FORCE_RELAY, true);
+            check(page, TEN_BIT, true);
+            check(page, EVENT_LOG, true);
             SendMessageW(page, WM_COMMAND, SAVE, 0);
             assert!(manager.view().0.force_relay);
+            assert!(manager.view().0.experimental_ten_bit);
+            assert!(manager.view().0.event_logging);
             #[cfg(feature = "experimental-bud")]
             assert!(manager.view().0.experimental_bud);
             assert_eq!(manager.view().0.stun_urls.len(), 2);

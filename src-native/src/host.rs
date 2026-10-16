@@ -291,6 +291,11 @@ pub fn dispatch(
     #[cfg(windows)]
     if module == "env" && name == "web_set_fullscreen" {
         let enable = int(args, 0)? != 0;
+        crate::event_log::record(
+            "INFO",
+            "fullscreen_requested",
+            serde_json::json!({"enabled":enable}),
+        );
         if let Some(window) = &caller.data().window {
             window.set_fullscreen(enable);
         }
@@ -531,6 +536,13 @@ pub fn dispatch(
                 .lock()
                 .map_err(|_| anyhow::anyhow!("virtual filesystem lock poisoned"))?;
             let errno = filesystem_call(&m, &mut fs, name, args)?;
+            if errno != 0 && errno != crate::filesystem::NOENT {
+                crate::event_log::record(
+                    "WARN",
+                    "profile_filesystem_operation_failed",
+                    serde_json::json!({"operation":name,"wasi_errno":errno}),
+                );
+            }
             if errno == 0 && matches!(name, "path_unlink_file" | "path_remove_directory") {
                 fs.flush()?;
             }
@@ -763,6 +775,10 @@ fn backend_call(
                         // needs this backend lock or a Wasmtime Store/Caller.
                         let config = b.video_protocol.as_ref().map(|p| crate::control::Config {
                             video_protocol: p.clone(),
+                            ten_bit: b
+                                .connection_settings
+                                .as_ref()
+                                .is_some_and(|m| m.view().0.experimental_ten_bit),
                             allow_hevc: b
                                 .connection_settings
                                 .as_ref()

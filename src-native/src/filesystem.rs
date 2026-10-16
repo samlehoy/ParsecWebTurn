@@ -47,7 +47,14 @@ impl VirtualFs {
     pub fn flush(&self) -> anyhow::Result<()> {
         #[cfg(all(windows, any(test, not(feature = "diagnostics"))))]
         if let Some(profile) = &self.profile {
-            profile.save(self)?;
+            if let Err(error) = profile.save(self) {
+                crate::event_log::record(
+                    "ERROR",
+                    "profile_save_failed",
+                    serde_json::json!({"stage":"virtual_filesystem_commit"}),
+                );
+                return Err(error);
+            }
         }
         Ok(())
     }

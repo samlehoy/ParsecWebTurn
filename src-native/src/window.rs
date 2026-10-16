@@ -1081,8 +1081,19 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                     let mut fullscreen = s.fullscreen.lock().unwrap_or_else(|e| e.into_inner());
                     // Like a rejected browser fullscreen request, an OS failure
                     // leaves the guest running and reports the retained state.
-                    let _ = fullscreen.set(hwnd, pending == 2);
+                    if fullscreen.set(hwnd, pending == 2).is_err() {
+                        crate::event_log::record(
+                            "WARN",
+                            "fullscreen_change_failed",
+                            serde_json::json!({"requested":pending == 2}),
+                        );
+                    }
                     let active = fullscreen.active();
+                    crate::event_log::record(
+                        "INFO",
+                        "fullscreen_state",
+                        serde_json::json!({"active":active}),
+                    );
                     s.fullscreen_active.store(active, Ordering::Release);
                     s.push(Event::Fullscreen(active));
                 }

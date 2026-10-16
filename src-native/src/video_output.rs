@@ -9,6 +9,7 @@ pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
+    pub decoded_bit_depth: Option<u8>,
     pub codec: Option<crate::video_stream::Codec>,
     pub enabled: bool,
     pub decoder_initialized: bool,
@@ -256,6 +257,11 @@ impl Queue {
 
     pub fn fail(&mut self, stage: &'static str, hresult: Option<String>) {
         if self.report.failure_stage.is_none() {
+            crate::event_log::record(
+                "ERROR",
+                "video_stopped",
+                serde_json::json!({"stage":stage,"hresult":hresult}),
+            );
             self.report.failure_stage = Some(stage);
             self.report.failure_hresult = hresult;
         }

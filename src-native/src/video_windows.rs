@@ -1,4 +1,4 @@
-//! Documented Media Foundation H.264/HEVC -> D3D11 NV12 -> DXGI presentation.
+//! Documented Media Foundation H.264/HEVC -> D3D11 NV12/P010 -> DXGI presentation.
 //! COM and all GPU objects are created, used and released on one worker thread.
 use crate::video_output::{Frame, Queue, Snapshot};
 use std::{
@@ -41,7 +41,7 @@ fn unavailable(stage: &'static str) -> Failure {
 }
 
 // Public MFT discovery, not a hard-coded codec-extension DLL/CLSID.
-unsafe fn create_decoder(codec: crate::video_stream::Codec) -> Result<IMFTransform> {
+unsafe fn create_decoder(codec: crate::video_stream::Codec, ten_bit: bool) -> Result<IMFTransform> {
     if codec == crate::video_stream::Codec::H264 {
         return api(
             "video-decoder-create",
@@ -54,7 +54,11 @@ unsafe fn create_decoder(codec: crate::video_stream::Codec) -> Result<IMFTransfo
     };
     let output = MFT_REGISTER_TYPE_INFO {
         guidMajorType: MFMediaType_Video,
-        guidSubtype: MFVideoFormat_NV12,
+        guidSubtype: if ten_bit {
+            MFVideoFormat_P010
+        } else {
+            MFVideoFormat_NV12
+        },
     };
     let mut list = std::ptr::null_mut();
     let mut count = 0;
@@ -113,10 +117,65 @@ pub fn hevc_available(preferred_gpu: Option<&crate::connection_settings::GpuPref
             {
                 return Err(unavailable("video-hevc-profile-unavailable"));
             }
-            let _decoder = create_decoder(crate::video_stream::Codec::Hevc)?;
+            let _decoder = create_decoder(crate::video_stream::Codec::Hevc, false)?;
             Ok(())
         };
         probe().is_ok()
+    }
+}
+
+/// Main 10 is advertised only with a D3D11-aware P010 decoder and GPU conversion.
+pub fn hevc_ten_bit_available(
+    preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
+) -> bool {
+    unsafe {
+        (|| -> Result<()> {
+            let _runtime = Runtime::start()?;
+            let (device, _) = create_device(preferred_gpu)?;
+            let video: ID3D11VideoDevice = api("video-main10-device", device.cast())?;
+            if !api(
+                "video-main10-profile",
+                video.CheckVideoDecoderFormat(
+                    &D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10,
+                    DXGI_FORMAT_P010,
+                ),
+            )?
+            .as_bool()
+            {
+                return Err(unavailable("video-main10-unavailable"));
+            }
+            let desc = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
+                InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
+                InputWidth: 1920,
+                InputHeight: 1080,
+                OutputWidth: 1920,
+                OutputHeight: 1080,
+                InputFrameRate: DXGI_RATIONAL {
+                    Numerator: 60,
+                    Denominator: 1,
+                },
+                OutputFrameRate: DXGI_RATIONAL {
+                    Numerator: 60,
+                    Denominator: 1,
+                },
+                Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
+            };
+            let enumerator = api(
+                "video-main10-processor",
+                video.CreateVideoProcessorEnumerator(&desc),
+            )?;
+            if api(
+                "video-main10-input-format",
+                enumerator.CheckVideoProcessorFormat(DXGI_FORMAT_P010),
+            )? & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT.0 as u32
+                == 0
+            {
+                return Err(unavailable("video-main10-input-unavailable"));
+            }
+            let _decoder = create_decoder(crate::video_stream::Codec::Hevc, true)?;
+            Ok(())
+        })()
+        .is_ok()
     }
 }
 
@@ -456,6 +515,13 @@ fn run(
         }
         header_bytes = 0;
         if let Some(error) = failure {
+            crate::event_log::record(
+                "WARN",
+                "video_decode_or_presentation_error",
+                serde_json::json!({
+                    "stage":error.stage,"hresult":error.hresult,"surface_generation":surface_generation,
+                }),
+            );
             if !matches!(
                 error.stage,
                 "video-process-input"
@@ -642,7 +708,7 @@ impl OutputFormat {
         if matrix.is_some_and(|v| v > 2) || nominal.is_some_and(|v| v > 2) {
             return Err(unavailable("video-unsupported-color-space"));
         }
-        let color = (if matrix.unwrap_or(1) == 1 { 4 } else { 0 }) | (nominal.unwrap_or(2) << 4);
+        let color = crate::video_color::processor_color(matrix, nominal);
         Ok(Self {
             source,
             color,
@@ -653,6 +719,7 @@ impl OutputFormat {
 }
 
 struct Session {
+    ten_bit: bool,
     surface_generation: u64,
     low_latency_request_accepted: bool,
     decoder: Option<IMFTransform>,
@@ -698,7 +765,10 @@ impl Session {
         #[cfg(feature = "vendor-video")]
         let mut zero_copy_status = zero_copy_status;
         #[cfg(feature = "vendor-video")]
-        if _allow_vendor && codec == crate::video_stream::Codec::Hevc {
+        if _allow_vendor
+            && codec == crate::video_stream::Codec::Hevc
+            && hevc.is_some_and(|h| h.bit_depth == 8)
+        {
             let candidate = (|| -> anyhow::Result<Option<Self>> {
                 let config = hevc.ok_or_else(|| anyhow::anyhow!("missing HEVC parameters"))?;
                 anyhow::ensure!(
@@ -720,6 +790,7 @@ impl Session {
                     match parsec_gpu_video::display::Session::open(luid, hwnd) {
                         Ok(display) => {
                             return Ok(Some(Self {
+                                ten_bit: false,
                                 surface_generation,
                                 low_latency_request_accepted: false,
                                 decoder: None,
@@ -745,6 +816,7 @@ impl Session {
                 let renderer = Renderer::create_on_device(hwnd, device, context)
                     .map_err(|e| anyhow::anyhow!("{}", e.stage))?;
                 Ok(Some(Self {
+                    ten_bit: false,
                     surface_generation,
                     low_latency_request_accepted: vendor.low_latency_request_accepted(),
                     decoder: None,
@@ -781,7 +853,11 @@ impl Session {
             "video-dxgi-reset",
             manager.ResetDevice(&renderer.device, token),
         )?;
-        let decoder = create_decoder(codec)?;
+        let ten_bit = hevc.is_some_and(|h| h.bit_depth == 10);
+        if _zero_copy && ten_bit {
+            zero_copy_status = Some("Unavailable for Main 10; using normal GPU rendering".into());
+        }
+        let decoder = create_decoder(codec, ten_bit)?;
         let attrs = api("video-decoder-attributes", decoder.GetAttributes())?;
         if api(
             "video-decoder-d3d11-aware",
@@ -843,8 +919,10 @@ impl Session {
         )?;
         if codec == crate::video_stream::Codec::Hevc {
             let config = hevc.ok_or_else(|| unavailable("video-hevc-sps-missing"))?;
-            if config.profile != 1 || config.bit_depth != 8 || config.chroma != 1 {
-                return Err(unavailable("video-hevc-requires-main-8bit-420"));
+            if config.chroma != 1
+                || !matches!((config.profile, config.bit_depth), (1 | 2, 8) | (2, 10))
+            {
+                return Err(unavailable("video-hevc-requires-main-or-main10-420"));
             }
             api(
                 "video-input-hevc-main",
@@ -862,6 +940,7 @@ impl Session {
         }
         api("video-input-type", decoder.SetInputType(0, &input, 0))?;
         let mut result = Self {
+            ten_bit,
             surface_generation,
             low_latency_request_accepted,
             decoder: Some(decoder),
@@ -917,9 +996,19 @@ impl Session {
                 "video-output-enumerate",
                 self.mf()?.GetOutputAvailableType(0, index),
             )?;
-            if api("video-output-subtype", media.GetGUID(&MF_MT_SUBTYPE))? == MFVideoFormat_NV12 {
+            if api("video-output-subtype", media.GetGUID(&MF_MT_SUBTYPE))?
+                == if self.ten_bit {
+                    MFVideoFormat_P010
+                } else {
+                    MFVideoFormat_NV12
+                }
+            {
                 api(
-                    "video-output-set-nv12",
+                    if self.ten_bit {
+                        "video-output-set-p010"
+                    } else {
+                        "video-output-set-nv12"
+                    },
                     self.mf()?.SetOutputType(0, &media, 0),
                 )?;
                 // Geometry can remain unspecified until the first decoded sample.
@@ -940,7 +1029,11 @@ impl Session {
                 return Ok(());
             }
         }
-        Err(unavailable("video-output-nv12-unavailable"))
+        Err(unavailable(if self.ten_bit {
+            "video-output-p010-unavailable"
+        } else {
+            "video-output-nv12-unavailable"
+        }))
     }
     unsafe fn feed(
         &mut self,
@@ -991,6 +1084,7 @@ impl Session {
                     s.width = Some(layout.width);
                     s.height = Some(layout.height);
                     s.nominal_range = Some(if layout.full_range { 1 } else { 2 });
+                    s.decoded_bit_depth = Some(8);
                     s.gpu_surface_output = true;
                     s.d3d11_decoder_surface = Some(true);
                 }
@@ -1021,7 +1115,10 @@ impl Session {
                         right: (layout.left + layout.width) as i32,
                         bottom: (layout.top + layout.height) as i32,
                     };
-                    let color = 4 | (if layout.full_range { 1 } else { 2 } << 4);
+                    let color = crate::video_color::processor_color(
+                        Some(1),
+                        Some(if layout.full_range { 1 } else { 2 }),
+                    );
                     let mut desc = D3D11_TEXTURE2D_DESC::default();
                     picture.texture.GetDesc(&mut desc);
                     anyhow::ensure!(
@@ -1051,6 +1148,7 @@ impl Session {
                         s.width = Some(layout.width);
                         s.height = Some(layout.height);
                         s.nominal_range = Some(if layout.full_range { 1 } else { 2 });
+                        s.decoded_bit_depth = Some(8);
                         match presented {
                             Presentation::Presented => {
                                 s.frames_presented = s.frames_presented.saturating_add(1)
@@ -1192,6 +1290,11 @@ impl Session {
                 s.frames_decoded = s.frames_decoded.saturating_add(1);
                 s.gpu_surface_output = true;
                 s.d3d11_decoder_surface = Some(decoder_surface);
+                s.decoded_bit_depth = Some(if texture_desc.Format == DXGI_FORMAT_P010 {
+                    10
+                } else {
+                    8
+                });
                 s.width = Some((source.right - source.left) as u32);
                 s.height = Some((source.bottom - source.top) as u32);
                 s.color_matrix = matrix;
@@ -1417,7 +1520,7 @@ impl Renderer {
         let height = (source.bottom - source.top) as u32;
         let mut td = D3D11_TEXTURE2D_DESC::default();
         texture.GetDesc(&mut td);
-        if td.Format != DXGI_FORMAT_NV12
+        if !matches!(td.Format, DXGI_FORMAT_NV12 | DXGI_FORMAT_P010)
             || td.MipLevels != 1
             || td.ArraySize == 0
             || subresource >= td.ArraySize
@@ -1875,6 +1978,89 @@ pub fn probe_recovery() -> anyhow::Result<serde_json::Value> {
         serde_json::json!({"scope":"synthetic-native-h264-recovery", "supported":true,
         "external_requests_enabled":false, "real_account_used":false,
         "cpu_readback_live_enabled":false, "video":pipeline.snapshot()}),
+    )
+}
+
+#[cfg(feature = "diagnostics")]
+pub fn probe_main10() -> anyhow::Result<serde_json::Value> {
+    if !hevc_ten_bit_available(None) {
+        return Ok(
+            serde_json::json!({"scope":"synthetic-main10-gpu","supported":false,
+            "reason":"Main 10/P010 GPU decode and conversion unavailable"}),
+        );
+    }
+    let window = crate::window::Window::create_video_probe()?;
+    let pipeline = Pipeline::start(window.clone());
+    let mut inspector = crate::video_stream::Inspector::default();
+    inspector.enable_hevc(true);
+    let result = (|| -> anyhow::Result<()> {
+        let mut fixture: &[u8] = include_bytes!("../fixtures/synthetic-720p-hevc10.bin");
+        let mut count = 0u64;
+        while !fixture.is_empty() {
+            anyhow::ensure!(fixture.len() >= 4, "truncated fixture size");
+            let len = u32::from_le_bytes(fixture[..4].try_into()?) as usize;
+            fixture = &fixture[4..];
+            anyhow::ensure!(len <= fixture.len(), "truncated fixture unit");
+            let bytes = &fixture[..len];
+            fixture = &fixture[len..];
+            if count == 0 {
+                let sps = crate::video_stream::hevc_configuration(bytes)
+                    .ok_or_else(|| anyhow::anyhow!("Main 10 fixture SPS missing"))?;
+                anyhow::ensure!(
+                    sps.profile == 2 && sps.bit_depth == 10 && sps.chroma == 1,
+                    "fixture must be Main 10 4:2:0"
+                );
+            }
+            anyhow::ensure!(
+                pipeline.submit(
+                    bytes,
+                    inspector
+                        .receive(bytes)
+                        .ok_or_else(|| anyhow::anyhow!("fixture inspection failed"))?
+                ),
+                "fixture submission failed"
+            );
+            count += 1;
+            std::thread::sleep(Duration::from_millis(33));
+        }
+        let until = Instant::now() + Duration::from_secs(5);
+        while pipeline.snapshot().frames_decoded < count.saturating_sub(1) && Instant::now() < until
+        {
+            if pipeline.snapshot().failure_stage.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let report = pipeline.snapshot();
+        anyhow::ensure!(
+            report.failure_stage.is_none(),
+            "Main 10 GPU pipeline failed: {:?}",
+            report.failure_stage
+        );
+        // The live streaming MFT may retain one picture until the next input;
+        // this test does not inject an EOS/drain into the live pipeline.
+        anyhow::ensure!(
+            report.frames_decoded >= count.saturating_sub(1)
+                && report.decoded_bit_depth == Some(10)
+                && report.gpu_surface_output,
+            "Main 10 must produce P010 GPU output without dropping the stream"
+        );
+        Ok(())
+    })();
+    pipeline.stop();
+    let until = Instant::now() + Duration::from_secs(3);
+    while !pipeline.snapshot().worker_finished && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    window.close();
+    result?;
+    anyhow::ensure!(
+        pipeline.snapshot().resources_released,
+        "Main 10 resources not released"
+    );
+    Ok(
+        serde_json::json!({"scope":"synthetic-main10-gpu","supported":true,
+        "pixel_readback":false,"external_requests_enabled":false,"video":pipeline.snapshot()}),
     )
 }
 

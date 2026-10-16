@@ -39,6 +39,7 @@ pub struct Session {
     attempt: Option<String>,
     external_units: Option<Units>,
     prefer_hevc: bool,
+    ten_bit: bool,
     cipher: Option<&'static str>,
 }
 
@@ -47,10 +48,15 @@ impl Session {
     /// have verified its existing MF decoder's HEVC support before setting it.
     /// Only 8-bit 4:2:0 is advertised. No SDK video decoder is created.
     pub fn external_video(hevc_available: bool) -> Result<Self> {
+        Self::external_video_depth(hevc_available, false)
+    }
+
+    pub fn external_video_depth(hevc_available: bool, ten_bit: bool) -> Result<Self> {
         let client = Client::new_external_video(
             lowlat_client::config::Caps {
                 h264: true,
                 hevc: hevc_available,
+                hevc_10: hevc_available && ten_bit,
                 ..Default::default()
             },
             Port::Any,
@@ -62,6 +68,7 @@ impl Session {
             attempt: None,
             external_units: Some(units),
             prefer_hevc: hevc_available,
+            ten_bit: hevc_available && ten_bit,
             cipher: None,
         })
     }
@@ -103,6 +110,8 @@ impl Session {
         ensure!(self.attempt.is_none(), "BUD attempt already active");
         let mut config = route.configure();
         config.video.hevc = self.prefer_hevc;
+        config.video.ten_bit = self.ten_bit;
+        config.video.full_range = true;
         let ours = self
             .client
             .new_attempt(id, config, Transport::Bud)

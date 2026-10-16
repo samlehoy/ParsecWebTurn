@@ -577,7 +577,7 @@ fn control_exchange(
     }
     let config: serde_json::Value = serde_json::from_slice(&startup[13..startup.len() - 1])?;
     if config
-        != serde_json::json!({"_version":1,"_max_w":60000,"_max_h":60000,"_flags":0,"resolutionX":1920,"resolutionY":1080,"refreshRate":60,"mediaContainer":0,"_VideoProtocolVersion":1})
+        != serde_json::json!({"_version":1,"_max_w":60000,"_max_h":60000,"_flags":8,"resolutionX":1920,"resolutionY":1080,"refreshRate":60,"mediaContainer":0,"_VideoProtocolVersion":1})
     {
         bail!("native startup configuration mismatch");
     }

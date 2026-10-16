@@ -653,9 +653,9 @@ impl Driver {
     }
 
     pub(crate) fn send_external(&mut self, session: &mut Session<'_>, bytes: &[u8]) {
-        if let Ok(message) = control::parse(bytes) {
+        if let Ok(mut message) = control::parse(bytes) {
             if message.opcode == op::ENCODER_CONFIG && message.a0 == 0 {
-                self.init.flags = message.a1;
+                message.a1 = (message.a1 & !0x1b) | (self.init.flags & 0x19);
             }
             self.send_control(session, &message);
         }

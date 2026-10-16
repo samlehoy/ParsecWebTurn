@@ -896,6 +896,9 @@ fn worker(
                 .and_then(|m| m.view().0.video_gpu);
             config.allow_hevc =
                 config.allow_hevc && crate::video_windows::hevc_available(gpu.as_ref());
+            config.ten_bit = config.allow_hevc
+                && config.ten_bit
+                && crate::video_windows::hevc_ten_bit_available(gpu.as_ref());
         }
         #[cfg(not(windows))]
         {
@@ -910,6 +913,11 @@ fn worker(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .enable_hevc(config.allow_hevc);
+        crate::event_log::record(
+            "INFO",
+            "video_capabilities_declared",
+            serde_json::json!({"transport":"WebRTC","flags":config.video_flags(),"hevc":config.allow_hevc,"main10":config.ten_bit}),
+        );
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -1296,6 +1304,14 @@ fn worker(
                             }
                         }
                         Command::Send(id, payload) => {
+                            let payload = if id == 0 {
+                                config.as_ref().map_or_else(
+                                    || payload.clone(),
+                                    |c| c.encoder_request(payload.clone()),
+                                )
+                            } else {
+                                payload
+                            };
                             let channel = &channels[usize::from(id)];
                             if channel.ready_state() != RTCDataChannelState::Open {
                                 return Err(FailureStage::ChannelSend.into());
@@ -1360,6 +1376,21 @@ fn worker(
                 .copied()
                 .unwrap_or(FailureStage::Worker);
             state.progress.failure_stage.get_or_insert(stage);
+            #[cfg(windows)]
+            let logged_route = state
+                .telemetry
+                .as_ref()
+                .and_then(|(bus, _)| bus.read())
+                .map(|s| s.route);
+            #[cfg(not(windows))]
+            let logged_route: Option<&str> = None;
+            if !state.cancelled && !matches!(stage, FailureStage::Cancelled) {
+                crate::event_log::record(
+                    "ERROR",
+                    "connection_failed",
+                    serde_json::json!({"transport":"WebRTC","stage":stage.to_string(),"route":logged_route}),
+                );
+            }
             if state.progress.failure_elapsed_ms.is_none() {
                 state.progress.failure_elapsed_ms = Some(state.elapsed_ms());
             }

@@ -242,6 +242,7 @@ fn rows(
                 if s.codec == Some(crate::video_stream::Codec::Hevc) {
                     match p {
                         1 => "Main".into(),
+                        2 => "Main 10".into(),
                         _ => format!("HEVC profile {p}"),
                     }
                 } else {
@@ -275,6 +276,12 @@ fn rows(
     );
     if video.is_some_and(|v| v.decoder_fallback.is_some()) {
         row("Decoder fallback", "Compatibility decoder in use".into());
+    }
+    if let Some(depth) = video.and_then(|v| v.decoded_bit_depth) {
+        row("Decoded color depth", format!("{depth}-bit"));
+        if depth == 10 {
+            row("Display output", "8-bit RGB (GPU conversion)".into());
+        }
     }
     row(
         "Renderer",

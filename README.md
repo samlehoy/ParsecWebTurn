@@ -40,8 +40,10 @@ experimental options disabled, or use the
   sign-in/preferences, and graceful disconnect/reconnect.
 
 Not every setting in the embedded Parsec interface has a native implementation.
-Gamepad support still needs live validation. 10-bit and 4:4:4 streaming are not
-implemented. Linux/Android clients and Vulkan/D3D12 renderers are future work.
+Gamepad support still needs live validation. 4:4:4 streaming is not implemented.
+10-bit HEVC is an opt-in experiment requiring host and client GPU support;
+successful stock-host Main 10 negotiation still needs live validation.
+Linux/Android clients and Vulkan/D3D12 renderers are future work.
 
 ## Getting started
 
@@ -80,6 +82,14 @@ tabs preserves unsaved edits. Changes apply to the next connection.
 - **Experimental BUD:** select BUD instead of the default WebRTC transport.
   BUD supports UDP only, including its relay connection. Keep WebRTC for networks
   that require TURN over TCP or TLS. There is no silent transport switch.
+- **Enable event logging:** write `client-events.jsonl` beside `settings.json`
+  (also when using `--data-dir`). Logs connection/route changes, connection
+  failures, decoder errors/recovery and profile-save failures as JSON Lines with
+  UTC timestamps. No credentials, IP addresses, packet contents or media are
+  recorded. A background writer keeps disk I/O off the media workers; the bounded
+  queue reports dropped log events. Rotation retains the current file and one
+  `client-events.previous.jsonl`, each approximately 5 MiB. Disabled by default;
+  changes apply immediately on Save. Disabling leaves existing files intact.
 
 Examples: `turn:relay.example.com:3478?transport=udp`,
 `turn:relay.example.com:3478?transport=tcp`,
@@ -92,6 +102,14 @@ with a trusted certificate; changing only the port is insufficient.
   default. Re-select a missing adapter or choose Automatic before reconnecting.
 - **Prefer H.265 / HEVC:** request HEVC when supported. H.264 remains the default;
   the host decides the stream actually sent. Connection stats reports the result.
+- **10-bit HEVC (experimental):** with HEVC enabled, request Main 10 only after
+  a selected-GPU P010 decode/conversion capability check. Both transports retain
+  the declaration on later encoder/keyframe requests. Main 10 uses the existing
+  D3D11-aware Media Foundation GPU path, with P010 fed directly to the normal
+  conversion pass. Display output remains 8-bit RGB; this is not an HDR or
+  end-to-end 10-bit display mode. Original-surface presentation is currently
+  8-bit only. The host may still choose 8-bit; inspect the actual profile and
+  decoded color depth in Connection stats, not just the preference.
 - **Zero copy (experimental, HEVC):** present the original NV12 decoder surface
   using Windows Presentation API. Unsupported configurations retain the normal
   GPU rendering/recovery path. Check the actual renderer and status in stats.
