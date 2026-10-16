@@ -261,6 +261,24 @@ identity with the pinned reference, not permission to redistribute it.
 ParsecWebTurn is independent and is not affiliated with or endorsed by Parsec
 or Unity. Parsec names and marks belong to their respective owners.
 
+## Acknowledgements: lowlat
+
+Special thanks to Duy (Nguyen Duy) and the
+[lowlat project](https://github.com/nomi-san/lowlat) for the inspiration,
+open-source work and helpful technical feedback. Duy's suggestions and bug
+reports have also helped improve ParsecWebTurn.
+
+ParsecWebTurn reuses and adapts selected MIT-licensed lowlat components for its
+experimental BUD transport, TURN connectivity and vendor-specific GPU video
+backends. The reused code retains its license and attribution; pinned revisions,
+local adaptations and integration boundaries are documented in the backend
+crates' notices and [research references](docs/NATIVE_REFERENCES.md).
+
+**ParsecWebTurn is an independently developed and maintained project. It is not
+part of lowlat or an official lowlat client or release.** These acknowledgements
+and the reuse of lowlat code do not imply affiliation with or endorsement by
+lowlat or its maintainers.
+
 ## Build and contribute
 
 The native application and its backend crates live under `src-native`:
