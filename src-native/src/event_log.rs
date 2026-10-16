@@ -212,7 +212,14 @@ mod tests {
                 ["event"],
             "connection_failed"
         );
-        output.as_ref().unwrap().set_len(MAX_BYTES).unwrap();
+        // Windows append-only handles cannot truncate or extend a file.
+        drop(output.take());
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(MAX_BYTES)
+            .unwrap();
         write_entry(&path, &mut output, &json!({"event":"decoder_error"})).unwrap();
         drop(output);
         assert!(path.with_extension("previous.jsonl").exists());
