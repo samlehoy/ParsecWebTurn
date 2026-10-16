@@ -1060,6 +1060,33 @@ mod tests {
     }
 
     #[test]
+    fn late_signals_from_all_retired_carriers_are_suppressed() {
+        let (attempt, incoming) = isolated();
+        let offer = json!({"action":"offer","payload":{"attempt_id":"isolated","to":"fixture-host","data":{}}}).to_string();
+        attempt.state.lock().unwrap().wire_id = "isolated".into();
+        attempt.outgoing(&offer, Some(Arc::new(|_| true))).unwrap();
+        for current in ["udp-attempt", "tls-attempt", "tcp-attempt"] {
+            assert!(switch_offer(
+                &attempt.state,
+                &attempt.cancel,
+                current,
+                json!({"creds":{}})
+            )
+            .unwrap());
+        }
+        for retired in ["isolated", "udp-attempt", "tls-attempt"] {
+            for action in ["close", "answer_relay", "candex_relay"] {
+                let signal = json!({"action":action,"payload":{"attempt_id":retired}}).to_string();
+                assert_eq!(attempt.incoming(&signal).unwrap(), Some(String::new()));
+            }
+        }
+        assert!(incoming.try_recv().is_err());
+        let state = attempt.state.lock().unwrap();
+        assert_eq!(state.wire_id, "tcp-attempt");
+        assert_eq!(state.retired_wires.len(), 3);
+    }
+
+    #[test]
     fn malformed_active_answer_fails_without_mutating_guest_or_queue() {
         let (attempt, incoming) = isolated();
         attempt.state.lock().unwrap().web_mode = Some(json!(2));

@@ -52,7 +52,6 @@ pub mod init;
 pub mod message;
 pub mod nat;
 pub mod packet;
-pub mod pad;
 pub mod relay;
 pub mod send;
 pub mod seq;

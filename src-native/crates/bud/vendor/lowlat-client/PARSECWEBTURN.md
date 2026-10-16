@@ -3,7 +3,8 @@
 MIT-licensed source derived from nomi-san/lowlat `feat/win-seams`, revision
 `5f8db5689e55de0d396b0520824caa9fc053dd86`, `crates/client/src`.
 Copyright (c) 2026 Nguyen Duy; original license in `LICENSE`.
-Sibling common/core/net/crypto crates remain pinned to that revision.
+Common/crypto remain pinned to that revision; local net/core copies carry the
+isolated TURN stream additions described below.
 This is a ParsecWebTurn-specific subset, not the upstream SDK's complete API.
 
 Application-verified Main 10 capability is retained for external GPU decoding.
@@ -46,16 +47,13 @@ Remaining upstream config/pool tests and the application's encrypted direct and
 isolated UDP TURN tests validate this subset. Stock-host playback was confirmed
 by the user over direct and relay paths; new automatic direct-to-relay retry
 still needs acceptance on a network where direct access is unavailable.
-The normal WebRTC build does not link this subset. Offline Intel probes remain
-a separate feature and are never part of the live BUD decoder path.
+WebRTC sessions do not use this subset. Removed offline Intel investigations
+are not part of the live BUD decoder path.
 
 UDP totals are published from the native IO shell, independently of delivered
 media/control counters. The narrow socket-accounting copy and its exact scope
 are documented in ../lowlat-net/PARSECWEBTURN.md. Browser/SCTP transport code is
 omitted from this optional native-only dependency; our WebRTC path is unchanged.
-
-The 10-bit video preference/capability fields and associated tests were removed
-on 2026-10-14 at the application owner's request. Initialization remains 8-bit.
 
 TURN stream integration: native IO/configuration and established-carrier telemetry
 from lowlat PR #2, revision befd5a29c7a331111f11378c0b5623de788e9769.

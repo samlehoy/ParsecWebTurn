@@ -41,7 +41,7 @@ pub mod op {
     pub const MOUSE_MOTION_STREAM: u8 = 26;
     pub const PEN_TOUCH: u8 = 30;
     /// A controller's own input report, or a feature report of it, raw
-    /// ([`crate::pad`]).
+    /// (the upstream pad module).
     pub const PAD_REPORT: u8 = 31;
     /// One opcode for several virtual devices, told apart by the header's
     /// arguments rather than by the opcode. A guest's microphone is one of
@@ -66,7 +66,7 @@ pub mod op {
     /// Announces the generation the video header's frame identifier will carry,
     /// on the frame after an encoder initialization.
     pub const ENCODER_GENERATION: u8 = 29;
-    /// What the host's virtual pad was written, raw ([`crate::pad`]).
+    /// What the host's virtual pad was written, raw.
     pub const PAD_OUTPUT: u8 = 33;
     /// Per-frame timing, behind the flag [`DIAGNOSTICS`] carries.
     pub const FRAME_TIMING: u8 = 34;
