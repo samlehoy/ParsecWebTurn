@@ -3,6 +3,10 @@
 User-facing changes are listed below. Native versions marked **dev** are development
 builds, not published stable releases.
 
+## Unreleased
+
+- **HEVC-dependent video options:** disable the Zero copy checkbox while Prefer H.265 / HEVC is off, matching the 10-bit HEVC option. Turning HEVC back on restores access to the saved preference.
+
 ## 0.9.4-dev.2 - Color range fixes and event logging (2026-10-16)
 
 Changes since v0.9.4-dev.1.

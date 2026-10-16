@@ -909,7 +909,10 @@ unsafe fn checked(hwnd: HWND, id: usize) -> bool {
     SendMessageW(GetDlgItem(hwnd, id as i32), BM_GETCHECK, 0, 0) == 1
 }
 unsafe fn update_enabled(hwnd: HWND) {
-    EnableWindow(GetDlgItem(hwnd, TEN_BIT as i32), checked(hwnd, HEVC) as i32);
+    let hevc = checked(hwnd, HEVC) as i32;
+    EnableWindow(GetDlgItem(hwnd, TEN_BIT as i32), hevc);
+    #[cfg(feature = "vendor-video")]
+    EnableWindow(GetDlgItem(hwnd, ZERO_COPY as i32), hevc);
     let turn = !checked(hwnd, STUN_ONLY);
     let cloudflare = SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1;
     for id in [
