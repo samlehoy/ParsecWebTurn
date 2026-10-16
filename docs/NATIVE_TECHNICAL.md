@@ -22,6 +22,14 @@ The previous Tauri/WebView2 client is preserved on `legacy` and in v0.7.0.
   TURN. It reuses native decoding, audio and input. WebRTC stays the default and
   retains TURN over UDP/TCP/TLS; there is no silent transport switch.
 - Opus audio, 48 kHz stereo, through shared-mode Windows WASAPI.
+- Optional experimental Main 10 HEVC uses the existing D3D11-aware Media
+  Foundation path with direct P010 processor input and 8-bit RGB presentation.
+  Capability flags are consistent between init and stream-0 encoder requests;
+  actual host negotiation remains subject to live validation. 4:4:4 is excluded.
+- Optional JSON Lines operational logging beside settings.json: UTC event
+  timestamps, bounded background queue and current/previous approximately 5 MiB
+  files. It records route/state changes, transport and decoder failures, and
+  profile-save errors without credentials, addresses or packet/media contents.
 - Keyboard, mouse buttons, wheel and absolute video-coordinate input. Relative
   mouse remains controlled by the original Parsec overlay option; focus loss
   releases cursor confinement.

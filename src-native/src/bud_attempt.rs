@@ -626,7 +626,7 @@ fn run(
                     );
                 }
                 Event::Ended { outcome } => {
-                    trace.mark(match outcome {
+                    let reason = match outcome {
                         Outcome::ConnectivityFailed => "ended_connectivity_failed",
                         Outcome::PeerGone => "ended_peer_gone",
                         Outcome::Undeliverable => "ended_undeliverable",
@@ -636,7 +636,13 @@ fn run(
                         Outcome::RelayUnreachable => "ended_relay_unreachable",
                         Outcome::RelayRefused => "ended_relay_refused",
                         Outcome::RelayLost => "ended_relay_lost",
-                    });
+                    };
+                    trace.mark(reason);
+                    crate::event_log::record(
+                        "WARN",
+                        "bud_connection_ended",
+                        json!({"reason":reason,"attempt_route":if transport.relay {"TURN relay"} else {"Direct"}}),
+                    );
                     ended = true;
                 }
                 Event::ExternalControl { bytes } => shared.controls.push_back(bytes.into()),
