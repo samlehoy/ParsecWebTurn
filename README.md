@@ -66,7 +66,7 @@ Background global hotkeys are not implemented by this core.
 
 ## Settings
 
-The **Network** and **Video** tabs share one **Save settings** action. Switching
+The **Network**, **Video** and **Audio** tabs share one **Save settings** action. Switching
 tabs preserves unsaved edits. Changes apply to the next connection.
 
 ### Network
@@ -131,6 +131,28 @@ removes that application pass and adds no intermediate decoded-frame copy or
 CPU readback. It does not establish direct scanout or eliminate internal Windows/
 driver transfers; hybrid GPU/display configurations can still introduce them.
 
+### Audio (experimental)
+
+- **Custom audio buffer:** optional minimum/maximum in milliseconds, initially
+  50/100. Off preserves the core's original playback limits and WASAPI policy.
+  On uses the shortest supported shared WASAPI engine period when available,
+  with the existing initialization as fallback. It starts with real PCM, without
+  prefilled silence, and keeps the newest staged stereo audio within the output
+  budget including device padding. Smaller values can cause audible gaps.
+  Limits must satisfy 0 <= minimum <= maximum <= 500 ms, with maximum above zero.
+- **Allow raw PCM audio:** experimental **BUD-only** permission, disabled by
+  default. The host must also enable `network_raw_audio=1`; other guests can
+  affect what the host sends. Both PCM and Opus remain accepted according to
+  each BUD packet's codec header. PCM is 48 kHz stereo, signed 16-bit, about
+  1.54 Mbps before transport overhead. WebRTC remains Opus because its current
+  headerless audio contract cannot safely distinguish PCM from an Opus fallback.
+- Save and reconnect to apply audio changes. Connection stats shows the actual
+  codec, playback buffer, device capacity, decoded PCM waiting and underruns.
+  These local queue measurements exclude transit and Bluetooth/device delay;
+  they are not end-to-end audio/video synchronization measurements.
+
+See [audio-path audit and implementation](docs/native-audio-options.md).
+
 ## Connection stats
 
 Traffic means measured usage, not available bandwidth. RTT is transport-specific,
@@ -174,7 +196,7 @@ Statuses below describe this branch, not necessarily the latest stable release.
 | Original-surface HEVC presentation on NVIDIA/AMD/Intel | Experimental; live tested on selected GPUs |
 | Optional BUD direct and UDP TURN, automatic relay fallback | Experimental; live tested |
 | Transport-aware connection and playback statistics | Implemented |
-| Network/Video settings tabs | Implemented |
+| Network/Video/Audio settings tabs | Implemented |
 | Gamepad verification and further native menu integration | Pending |
 | Vulkan rendering and Linux client | Planned |
 | D3D12, Android and Android TV | Exploring |
