@@ -134,7 +134,9 @@ driver transfers; hybrid GPU/display configurations can still introduce them.
 ### Audio (experimental)
 
 - **Custom audio buffer:** optional minimum/maximum in milliseconds, initially
-  50/100. Off preserves the core's original playback limits and WASAPI policy.
+  75/150 to match the pinned core's automatic limits. Saved custom values are
+  preserved. Off uses the core's actual playback limits and original WASAPI policy;
+  the disabled fields retain the custom values for the next time you enable them.
   On uses the shortest supported shared WASAPI engine period when available,
   with the existing initialization as fallback. It starts with real PCM, without
   prefilled silence, and keeps the newest staged stereo audio within the output

@@ -621,7 +621,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     );
     check(hwnd, EVENT_LOG, s.event_logging);
     page.building_tab = Some(Tab::Audio);
-    row_label(hwnd, page, "Playback buffer", "Experimental: buffer limits in milliseconds.\nOff keeps the original core's playback policy.", 242, 0, 48);
+    row_label(hwnd, page, "Playback buffer", "Experimental: custom limits apply only when enabled.\nOff uses the core's limits (normally 75 / 150 ms).", 242, 0, 48);
     add(
         hwnd,
         page,

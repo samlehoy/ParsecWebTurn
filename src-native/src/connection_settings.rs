@@ -88,8 +88,8 @@ impl Default for Settings {
             experimental_ten_bit: false,
             event_logging: false,
             experimental_audio_buffer: false,
-            audio_min_buffer_ms: 50,
-            audio_max_buffer_ms: 100,
+            audio_min_buffer_ms: 75,
+            audio_max_buffer_ms: 150,
             experimental_raw_audio: false,
             #[cfg(feature = "vendor-video")]
             experimental_zero_copy: false,
@@ -577,7 +577,7 @@ mod tests {
         assert!(!settings.experimental_raw_audio);
         assert_eq!(
             (settings.audio_min_buffer_ms, settings.audio_max_buffer_ms),
-            (50, 100)
+            (75, 150)
         );
         settings.experimental_audio_buffer = true;
         settings.audio_min_buffer_ms = 20;

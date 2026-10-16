@@ -14,6 +14,12 @@ tolerance for less queued audio. The published configuration reference describes
 [official configuration reference](https://support.parsec.app/hc/en-us/articles/32381443626516-All-Advanced-Configuration-Options).
 Neither page exposes the closed-source native client's exact current algorithm.
 
+The pinned web core requests 75/150 ms in the tested automatic session, despite
+the native client's documented 50/100 ms defaults. The Audio menu starts custom
+values at 75/150 for consistency with that core; existing saved overrides are
+preserved. With custom buffering off, those fields are inactive and stats shows
+the limits actually requested by the core.
+
 Reviewed lowlat `feat/win-seams` revision:
 `8674882319b24023547bbed77821c472566af69b`.
 
