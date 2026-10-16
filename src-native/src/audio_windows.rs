@@ -277,9 +277,7 @@ unsafe fn render(
                 &mut maximum,
             )?;
             modern.InitializeSharedAudioStream(
-                AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-                    | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
-                    | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                 minimum,
                 &format,
                 None,

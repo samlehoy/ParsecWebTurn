@@ -301,6 +301,31 @@ impl Drop for Pipeline {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn custom_decoded_backlog_keeps_latest_pcm_instead_of_accumulating_delay() {
+        let mut pipeline = super::Pipeline::start_with_budget(Some(40));
+        let sender = pipeline.sender().unwrap();
+        for value in 0..10i16 {
+            let mut packet = Vec::with_capacity(3840);
+            for _ in 0..960 {
+                packet.extend_from_slice(&value.to_le_bytes());
+                packet.extend_from_slice(&(-value).to_le_bytes());
+            }
+            assert!(sender.submit_pcm(&packet));
+        }
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while pipeline.snapshot().packets_decoded < 10 && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(pipeline.snapshot().packets_decoded, 10);
+        let state = pipeline.state.lock().unwrap();
+        assert_eq!(state.report.queued_samples, 3840);
+        assert_eq!(state.pcm.front().unwrap()[..2], [8, -8]);
+        assert_eq!(state.pcm.back().unwrap()[..2], [9, -9]);
+        assert_eq!(state.report.packets_dropped, 8);
+        drop(state);
+        pipeline.stop();
+    }
+    #[test]
     fn pcm_extrema_and_opus_fallback_share_the_existing_poll_boundary() {
         let mut pipeline = super::Pipeline::start_with_budget(Some(40));
         let sender = pipeline.sender().unwrap();
