@@ -42,6 +42,10 @@ Reviewed lowlat `feat/win-seams` revision:
    at most 32,000 bytes and complete interleaved stereo frames, then converted
    from little-endian i16 into the existing reusable PCM storage. It bypasses
    Opus decoding. The header controls every packet, permitting an Opus fallback.
+   Returning from PCM resets Opus's predictor state using the documented reset
+   control; ordinary continuous Opus does not reset. Long PCM packets are split
+   at the existing maximum guest audio-block capacity. The same capability
+   factory supplies the initial BUD attempt and an automatic relay retry.
 4. Decoded PCM remains bounded. Automatic mode retains its 500 ms storage
    ceiling (capacity, not target delay); custom mode bounds this staging queue
    to its chosen maximum. On backpressure the oldest decoded blocks are dropped.
@@ -55,6 +59,9 @@ Reviewed lowlat `feat/win-seams` revision:
    rejected, a fresh audio client uses the existing 20 ms initialization request.
    Actual endpoint capacity is measured; the requested duration is not a latency
    measurement. WASAPI may perform its normal device-format conversion.
+   During startup/refill the custom worker checks the PCM reserve with a bounded
+   5 ms wait; once playing it is paced by WASAPI events. This is a remaining local
+   scheduling granularity, not a claimed zero-delay handoff.
 7. Custom playback starts with real queued PCM and writes only available real
    frames. There is no prefilled or repeated silence reserve. It refills after
    a real underrun. The output budget counts its staged PCM plus sampled WASAPI
