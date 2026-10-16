@@ -26,6 +26,10 @@ pub struct Sample {
     pub sent: Option<u64>,
     pub audio_bytes: u64,
     pub audio_ready: bool,
+    pub audio_codec: Option<&'static str>,
+    pub audio_decoded_queue_ms: Option<f64>,
+    #[cfg(windows)]
+    pub audio_playback: Option<crate::audio_windows::Snapshot>,
     pub video: Option<crate::video_output::Snapshot>,
     pub profile: Option<u8>,
     pub codec: Option<crate::video_stream::Codec>,
@@ -51,6 +55,10 @@ impl Default for Sample {
             sent: None,
             audio_bytes: 0,
             audio_ready: false,
+            audio_codec: None,
+            audio_decoded_queue_ms: None,
+            #[cfg(windows)]
+            audio_playback: None,
             video: None,
             profile: None,
             codec: None,
@@ -60,10 +68,16 @@ impl Default for Sample {
 }
 #[derive(Default)]
 pub struct Shared {
+    #[cfg(windows)]
+    audio: Mutex<Option<std::sync::Weak<crate::audio_windows::Playback>>>,
     pub visible: AtomicBool,
     latest: Mutex<(u64, Option<Sample>)>,
 }
 impl Shared {
+    #[cfg(windows)]
+    pub fn set_audio(&self, audio: std::sync::Weak<crate::audio_windows::Playback>) {
+        *self.audio.lock().unwrap_or_else(|e| e.into_inner()) = Some(audio);
+    }
     pub fn requested(&self) -> bool {
         self.visible.load(Ordering::Acquire) || crate::event_log::enabled()
     }
@@ -83,9 +97,50 @@ impl Shared {
         data.0
     }
     pub fn publish(&self, generation: u64, mut sample: Sample) {
+        #[cfg(windows)]
+        {
+            sample.audio_playback = self
+                .audio
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .and_then(|a| a.upgrade())
+                .map(|a| a.snapshot());
+        }
         let mut data = self.latest.lock().unwrap_or_else(|e| e.into_inner());
         if data.0 == generation {
             sample.generation = generation;
+            #[cfg(windows)]
+            if crate::event_log::enabled()
+                && sample.audio_playback.as_ref().is_some_and(|audio| {
+                    data.1
+                        .as_ref()
+                        .and_then(|old| old.audio_playback.as_ref())
+                        .is_none_or(|old| {
+                            old.underruns != audio.underruns
+                                || old.frames_dropped != audio.frames_dropped
+                                || old.failure_hresult != audio.failure_hresult
+                        })
+                        || data
+                            .1
+                            .as_ref()
+                            .is_some_and(|old| old.audio_codec != sample.audio_codec)
+                })
+            {
+                let audio = sample.audio_playback.as_ref().unwrap();
+                crate::event_log::record(
+                    "INFO",
+                    "audio_playback_state",
+                    serde_json::json!({
+                        "codec":sample.audio_codec,"queued_frames":audio.queued_frames,
+                        "device_padding":audio.device_padding,"device_capacity":audio.device_capacity_frames,
+                        "minimum_ms":audio.minimum_ms,"maximum_ms":audio.maximum_ms,
+                        "custom":audio.custom_buffer,"low_latency_device":audio.low_latency_device,
+                        "underruns":audio.underruns,"dropped_frames":audio.frames_dropped,
+                        "hresult":audio.failure_hresult,"decoded_queue_ms":sample.audio_decoded_queue_ms
+                    }),
+                );
+            }
             if crate::event_log::enabled()
                 && data.1.as_ref().is_none_or(|old| {
                     old.state != sample.state

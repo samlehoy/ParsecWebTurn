@@ -53,6 +53,10 @@ pub struct Settings {
     pub prefer_hevc: bool,
     pub experimental_ten_bit: bool,
     pub event_logging: bool,
+    pub experimental_audio_buffer: bool,
+    pub audio_min_buffer_ms: u32,
+    pub audio_max_buffer_ms: u32,
+    pub experimental_raw_audio: bool,
     #[cfg(feature = "vendor-video")]
     pub experimental_zero_copy: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -83,6 +87,10 @@ impl Default for Settings {
             prefer_hevc: false,
             experimental_ten_bit: false,
             event_logging: false,
+            experimental_audio_buffer: false,
+            audio_min_buffer_ms: 50,
+            audio_max_buffer_ms: 100,
+            experimental_raw_audio: false,
             #[cfg(feature = "vendor-video")]
             experimental_zero_copy: false,
             video_gpu: None,
@@ -140,6 +148,13 @@ impl Settings {
         })
     }
     pub fn validate(&self) -> Result<()> {
+        if self.experimental_audio_buffer
+            && (self.audio_max_buffer_ms == 0
+                || self.audio_max_buffer_ms > 500
+                || self.audio_min_buffer_ms > self.audio_max_buffer_ms)
+        {
+            bail!("Audio buffer must satisfy 0 <= minimum <= maximum <= 500 ms, with maximum above zero");
+        }
         if self.force_relay && self.stun_only {
             bail!("Force TURN relay cannot be combined with STUN only");
         }
@@ -555,6 +570,29 @@ fn atomic_write(path: &std::path::Path, raw: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn audio_defaults_and_limits_preserve_automatic_settings() {
+        let mut settings = super::Settings::fresh();
+        assert!(!settings.experimental_audio_buffer);
+        assert!(!settings.experimental_raw_audio);
+        assert_eq!(
+            (settings.audio_min_buffer_ms, settings.audio_max_buffer_ms),
+            (50, 100)
+        );
+        settings.experimental_audio_buffer = true;
+        settings.audio_min_buffer_ms = 20;
+        settings.audio_max_buffer_ms = 60;
+        assert!(settings.validate().is_ok());
+        settings.audio_min_buffer_ms = 61;
+        assert!(settings.validate().is_err());
+        settings.audio_min_buffer_ms = 0;
+        settings.audio_max_buffer_ms = 0;
+        assert!(settings.validate().is_err());
+        settings.audio_max_buffer_ms = 501;
+        assert!(settings.validate().is_err());
+        settings.experimental_audio_buffer = false;
+        assert!(settings.validate().is_ok());
+    }
     use super::*;
 
     #[tokio::test]

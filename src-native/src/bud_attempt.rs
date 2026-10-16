@@ -497,8 +497,12 @@ fn run(
         // Creation only starts the existing workers. Surface/stats generation
         // is serialized against retirement, so a cancelled old attempt cannot
         // hide the next attempt's video or reset its statistics.
-        let (media, session) =
-            crate::bud_media::Media::start_verified(window.clone(), hevc_available, ten_bit)?;
+        let (media, session) = crate::bud_media::Media::start_verified(
+            window.clone(),
+            hevc_available,
+            ten_bit,
+            settings.experimental_raw_audio,
+        )?;
         (media, session, Statistics::start(window.stats.clone()))
     };
     state.lock().unwrap_or_else(|e| e.into_inner()).wire_id = id.into();
@@ -685,6 +689,12 @@ fn run(
                     },
                     turn_protocol: transport.relay.then(|| "udp".into()),
                     audio_bytes: shared.ingress.audio_bytes_received,
+                    audio_codec: shared.ingress.audio_output.as_ref().and_then(|a| a.codec),
+                    audio_decoded_queue_ms: shared
+                        .ingress
+                        .audio_output
+                        .as_ref()
+                        .map(|a| a.queued_samples as f64 / 96.0),
                     video: shared.ingress.video_output.clone(),
                     codec: shared.ingress.video_stream.codec,
                     profile: shared.ingress.video_stream.sps_profile_idc,

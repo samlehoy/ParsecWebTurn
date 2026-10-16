@@ -40,6 +40,7 @@ pub struct Session {
     external_units: Option<Units>,
     prefer_hevc: bool,
     ten_bit: bool,
+    raw_audio: bool,
     cipher: Option<&'static str>,
 }
 
@@ -69,12 +70,16 @@ impl Session {
             external_units: Some(units),
             prefer_hevc: hevc_available,
             ten_bit: hevc_available && ten_bit,
+            raw_audio: false,
             cipher: None,
         })
     }
 
     pub fn request_keyframe(&self) -> bool {
         self.client.request_external_keyframe()
+    }
+    pub fn allow_raw_audio(&mut self, enabled: bool) {
+        self.raw_audio = enabled;
     }
 
     pub fn take_media(&mut self) -> Result<MediaSource> {
@@ -112,6 +117,7 @@ impl Session {
         config.video.hevc = self.prefer_hevc;
         config.video.ten_bit = self.ten_bit;
         config.video.full_range = true;
+        config.raw_audio = self.raw_audio;
         let ours = self
             .client
             .new_attempt(id, config, Transport::Bud)

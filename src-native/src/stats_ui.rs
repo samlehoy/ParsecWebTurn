@@ -361,7 +361,7 @@ fn rows(
     );
     row("AUDIO", String::new());
     for (name, value) in [
-        ("Codec", "Opus"),
+        ("Codec", s.audio_codec.unwrap_or("Opus")),
         ("Sample rate", "48,000 Hz"),
         ("Channels", "2 (stereo)"),
     ] {
@@ -375,6 +375,36 @@ fn rows(
         );
     }
     row("Measured audio traffic", number(v.audio, "kbps"));
+    if let Some(audio) = &s.audio_playback {
+        row(
+            "Playback buffer",
+            number(
+                Some((audio.queued_frames as f64 + audio.device_padding as f64) / 48.0),
+                "ms",
+            ),
+        );
+        row(
+            "Buffer limits",
+            format!(
+                "{} / {} ms{}",
+                audio.minimum_ms,
+                audio.maximum_ms,
+                if audio.custom_buffer {
+                    " (experimental)"
+                } else {
+                    " (automatic)"
+                }
+            ),
+        );
+        row("Audio underruns", audio.underruns.to_string());
+        row(
+            "Audio device buffer",
+            number(Some(audio.device_capacity_frames as f64 / 48.0), "ms"),
+        );
+    }
+    if let Some(ms) = s.audio_decoded_queue_ms {
+        row("Decoded audio waiting", number(Some(ms), "ms"));
+    }
     #[cfg(feature = "experimental-bud")]
     if let Some(bud) = &s.bud {
         if let Some(cipher) = bud.cipher {

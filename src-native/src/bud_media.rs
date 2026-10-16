@@ -33,9 +33,13 @@ impl Media {
         window: Arc<crate::window::Window>,
         hevc_available: bool,
         ten_bit: bool,
+        raw_audio: bool,
     ) -> Result<(Self, Session)> {
-        let session = Session::external_video_depth(hevc_available, ten_bit)?;
-        let audio = Arc::new(crate::audio_stream::Pipeline::start());
+        let mut session = Session::external_video_depth(hevc_available, ten_bit)?;
+        session.allow_raw_audio(raw_audio);
+        let audio = Arc::new(crate::audio_stream::Pipeline::start_with_budget(
+            window.audio_buffer().map(|(_, max)| max),
+        ));
         let audio_sender = audio
             .sender()
             .ok_or_else(|| anyhow::anyhow!("native audio sender unavailable"))?;
@@ -111,7 +115,10 @@ impl Media {
         for _ in 0..8 {
             let Some((accepted, size)) = source.with_audio(|message| {
                 Ok((
-                    self.audio_sender.submit(media::opus(message)?),
+                    match media::audio(message)? {
+                        media::Audio::Opus(bytes) => self.audio_sender.submit(bytes),
+                        media::Audio::Pcm(bytes) => self.audio_sender.submit_pcm(bytes),
+                    },
                     message.len(),
                 ))
             })?

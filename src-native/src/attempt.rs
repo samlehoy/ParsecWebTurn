@@ -682,7 +682,9 @@ impl Attempt {
             }
         }
         let generation = window.stats.begin();
-        let audio = crate::audio_stream::Pipeline::start();
+        let audio = crate::audio_stream::Pipeline::start_with_budget(
+            window.audio_buffer().map(|(_, max)| max),
+        );
         let video = Arc::new(crate::video_windows::Pipeline::start(window.clone()));
         let mut state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
         if state.cancelled || state.closing || state.video_output.is_some() {
@@ -1010,6 +1012,11 @@ fn worker(
                     }
                     sample.audio_bytes = s.progress.channel_bytes_received[2];
                     sample.audio_ready = s.audio_stream.is_some();
+                    if let Some(audio) = &s.audio_stream {
+                        let report = audio.snapshot();
+                        sample.audio_codec = report.codec;
+                        sample.audio_decoded_queue_ms = Some(report.queued_samples as f64 / 96.0);
+                    }
                     (s.video_output.clone(), s.video_stream.clone())
                 };
                 let framing = inspector

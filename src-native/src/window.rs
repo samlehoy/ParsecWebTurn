@@ -336,6 +336,20 @@ impl Window {
             .as_ref()
             .and_then(|manager| manager.view().0.video_gpu)
     }
+    pub fn audio_buffer(&self) -> Option<(u32, u32)> {
+        let settings = self
+            .connection_settings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        settings.as_ref().and_then(|m| {
+            let s = m.view().0;
+            (s.experimental_audio_buffer
+                && s.audio_max_buffer_ms > 0
+                && s.audio_max_buffer_ms <= 500
+                && s.audio_min_buffer_ms <= s.audio_max_buffer_ms)
+                .then_some((s.audio_min_buffer_ms, s.audio_max_buffer_ms))
+        })
+    }
     pub fn install_connection_settings(&self, manager: Arc<crate::connection_settings::Manager>) {
         *self
             .connection_settings

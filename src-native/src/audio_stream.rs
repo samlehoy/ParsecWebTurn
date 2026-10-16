@@ -12,6 +12,7 @@ const PCM_SAMPLES: usize = 5760 * 2; // RFC maximum 120 ms, stereo
 const RECYCLED_BUFFERS: usize = 32;
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
+    pub codec: Option<&'static str>,
     pub poll_calls: u64,
     pub packets_decoded: u64,
     pub packets_dropped: u64,
@@ -35,6 +36,15 @@ pub(crate) struct Sender {
 }
 impl Sender {
     pub fn submit(&self, bytes: &[u8]) -> bool {
+        self.submit_format(bytes, false)
+    }
+    pub fn submit_pcm(&self, bytes: &[u8]) -> bool {
+        if bytes.is_empty() || bytes.len() > 32_000 || !bytes.len().is_multiple_of(4) {
+            return false;
+        }
+        self.submit_format(bytes, true)
+    }
+    fn submit_format(&self, bytes: &[u8], raw: bool) -> bool {
         let mut packet = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.stopped || bytes.is_empty() || bytes.len() > 65_536 {
@@ -45,7 +55,7 @@ impl Sender {
         };
         packet.clear();
         packet.extend_from_slice(bytes);
-        match self.tx.try_send(Packet { bytes: packet }) {
+        match self.tx.try_send(Packet { bytes: packet, raw }) {
             Ok(()) => true,
             Err(error) => {
                 let packet = match error {
@@ -65,6 +75,7 @@ impl Sender {
 }
 struct Packet {
     bytes: Vec<u8>,
+    raw: bool,
 }
 pub struct Pipeline {
     tx: Option<mpsc::SyncSender<Packet>>,
@@ -118,11 +129,20 @@ impl Drop for Decoder {
     }
 }
 impl Pipeline {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn start() -> Self {
+        Self::start_with_budget(None)
+    }
+    pub fn start_with_budget(maximum_ms: Option<u32>) -> Self {
+        let max_samples = maximum_ms
+            .map(|ms| ms.clamp(1, 500) as usize * 96)
+            .unwrap_or(MAX_SAMPLES);
         let (tx, rx) = mpsc::sync_channel::<Packet>(64);
         let state = Arc::new(Mutex::new(State::default()));
         let shared = state.clone();
         let worker = std::thread::spawn(move || {
+            #[cfg(windows)]
+            let _scheduling = crate::media_scheduling::Registration::audio();
             if let Ok(mut decoder) = Decoder::new() {
                 loop {
                     if shared.lock().unwrap_or_else(|e| e.into_inner()).stopped {
@@ -139,7 +159,18 @@ impl Pipeline {
                         .free_pcm
                         .pop();
                     let mut pcm = recycled.unwrap_or_else(|| Vec::with_capacity(PCM_SAMPLES));
-                    let decoded = decoder.decode_into(&packet.bytes, &mut pcm);
+                    let decoded = if packet.raw {
+                        pcm.clear();
+                        pcm.extend(
+                            packet
+                                .bytes
+                                .chunks_exact(2)
+                                .map(|b| i16::from_le_bytes([b[0], b[1]])),
+                        );
+                        Ok(())
+                    } else {
+                        decoder.decode_into(&packet.bytes, &mut pcm)
+                    };
                     let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                     if !state.stopped && state.free_packets.len() < RECYCLED_BUFFERS {
                         state.free_packets.push(packet.bytes);
@@ -149,9 +180,18 @@ impl Pipeline {
                     }
                     match decoded {
                         Ok(()) => {
+                            state.report.codec = Some(if packet.raw {
+                                "PCM (uncompressed)"
+                            } else {
+                                "Opus"
+                            });
                             state.report.packets_decoded += 1;
                             // Drop oldest decoded audio on backpressure; never grow latency indefinitely.
-                            while state.report.queued_samples + pcm.len() > MAX_SAMPLES {
+                            if pcm.len() > max_samples {
+                                pcm.drain(..pcm.len() - max_samples);
+                                state.report.packets_dropped += 1;
+                            }
+                            while state.report.queued_samples + pcm.len() > max_samples {
                                 if let Some(old) = state.pcm.pop_front() {
                                     state.report.queued_samples -= old.len();
                                     state.report.packets_dropped += 1;
@@ -260,6 +300,31 @@ impl Drop for Pipeline {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pcm_extrema_and_opus_fallback_share_the_existing_poll_boundary() {
+        let mut pipeline = super::Pipeline::start_with_budget(Some(40));
+        let sender = pipeline.sender().unwrap();
+        assert!(!sender.submit_pcm(&[0, 1, 2]));
+        assert!(sender.submit_pcm(&[0, 128, 255, 127, 1, 0, 255, 255]));
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while pipeline.snapshot().packets_decoded < 1 && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(
+            pipeline.state.lock().unwrap().pcm.front().unwrap(),
+            &[i16::MIN, i16::MAX, 1, -1]
+        );
+        assert_eq!(pipeline.snapshot().codec, Some("PCM (uncompressed)"));
+        assert!(sender.submit(&[0xf8, 0xff, 0xfe]));
+        while pipeline.snapshot().packets_decoded < 2 && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(pipeline.snapshot().packets_decoded, 2);
+        assert_eq!(pipeline.snapshot().codec, Some("Opus"));
+        assert_eq!(pipeline.snapshot().decode_errors, 0);
+        pipeline.stop();
+        assert!(pipeline.snapshot().worker_finished);
+    }
     use super::*;
     #[test]
     fn repeated_decode_reuses_pcm_storage_and_stop_invalidates_sender_handles() {

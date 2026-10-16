@@ -63,10 +63,16 @@ const NETWORK_TAB: usize = 4201;
 const VIDEO_TAB: usize = 4121;
 const TEN_BIT: usize = 4122;
 const EVENT_LOG: usize = 4123;
+const AUDIO_TAB: usize = 4124;
+const AUDIO_CUSTOM: usize = 4125;
+const AUDIO_MIN: usize = 4126;
+const AUDIO_MAX: usize = 4127;
+const AUDIO_RAW: usize = 4128;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Network,
     Video,
+    Audio,
 }
 const SECTION: usize = 4202;
 const NOTICE: usize = 4203;
@@ -233,7 +239,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         hwnd,
         page,
         "STATIC",
-        "Customize your connection and video playback.",
+        "Customize your connection, video and audio playback.",
         0,
         [4, 88, 816, 24],
         0,
@@ -243,6 +249,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     for (id, label, rect) in [
         (NETWORK_TAB, "Network", [0, 142, 128, 40]),
         (VIDEO_TAB, "Video", [140, 142, 128, 40]),
+        (AUDIO_TAB, "Audio", [280, 142, 128, 40]),
         (BACK, "Back", [550, 142, 110, 40]),
         (SAVE, "Save settings", [676, 142, 144, 40]),
     ] {
@@ -613,6 +620,37 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         page.font,
     );
     check(hwnd, EVENT_LOG, s.event_logging);
+    page.building_tab = Some(Tab::Audio);
+    row_label(hwnd, page, "Playback buffer", "Experimental: buffer limits in milliseconds.\nOff keeps the original core's playback policy.", 242, 0, 48);
+    add(
+        hwnd,
+        page,
+        "BUTTON",
+        "Custom audio buffer (experimental)",
+        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+        [420, 242, 400, 36],
+        AUDIO_CUSTOM,
+        0,
+        page.font,
+    );
+    check(hwnd, AUDIO_CUSTOM, s.experimental_audio_buffer);
+    row(hwnd, page, "Minimum buffer (ms)", "PCM reserve before starting or refilling playback.\nSmaller values can increase audible gaps.", AUDIO_MIN,
+        &s.audio_min_buffer_ms.to_string(), 344, 36, 0, ES_NUMBER as u32);
+    row(hwnd, page, "Maximum buffer (ms)", "Local PCM plus audio queued on the Windows device.\n0 <= minimum <= maximum <= 500; maximum above zero.", AUDIO_MAX,
+        &s.audio_max_buffer_ms.to_string(), 438, 36, 0, ES_NUMBER as u32);
+    row_label(hwnd, page, "Audio format", "Experimental RAW: BUD only; host must also enable RAW.\n48 kHz stereo PCM uses about 1.54 Mbps before overhead.\nThe actual codec is shown in Connection stats.", 532, 0, 60);
+    add(
+        hwnd,
+        page,
+        "BUTTON",
+        "Allow raw PCM audio (experimental, BUD)",
+        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+        [420, 532, 400, 36],
+        AUDIO_RAW,
+        0,
+        page.font,
+    );
+    check(hwnd, AUDIO_RAW, s.experimental_raw_audio);
     page.building_tab = None;
     add(hwnd, page, "STATIC",
         "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection.",
@@ -746,6 +784,7 @@ unsafe fn layout(hwnd: HWND) {
     let cloudflare = SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1;
     let footer = match page.active_tab {
         Tab::Network => 1056 + BUD_EXTRA,
+        Tab::Audio => 650,
         Tab::Video => {
             if cfg!(feature = "vendor-video") {
                 626
@@ -909,6 +948,19 @@ unsafe fn checked(hwnd: HWND, id: usize) -> bool {
     SendMessageW(GetDlgItem(hwnd, id as i32), BM_GETCHECK, 0, 0) == 1
 }
 unsafe fn update_enabled(hwnd: HWND) {
+    for id in [AUDIO_MIN, AUDIO_MAX] {
+        EnableWindow(
+            GetDlgItem(hwnd, id as i32),
+            checked(hwnd, AUDIO_CUSTOM) as i32,
+        );
+    }
+    #[cfg(feature = "experimental-bud")]
+    EnableWindow(
+        GetDlgItem(hwnd, AUDIO_RAW as i32),
+        checked(hwnd, BUD) as i32,
+    );
+    #[cfg(not(feature = "experimental-bud"))]
+    EnableWindow(GetDlgItem(hwnd, AUDIO_RAW as i32), 0);
     let hevc = checked(hwnd, HEVC) as i32;
     EnableWindow(GetDlgItem(hwnd, TEN_BIT as i32), hevc);
     #[cfg(feature = "vendor-video")]
@@ -942,6 +994,14 @@ unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
     let mut s = page.saved.clone();
     s.prefer_hevc = checked(hwnd, HEVC);
     s.experimental_ten_bit = checked(hwnd, TEN_BIT);
+    s.experimental_audio_buffer = checked(hwnd, AUDIO_CUSTOM);
+    s.audio_min_buffer_ms = text(hwnd, AUDIO_MIN)
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Enter an audio minimum in milliseconds"))?;
+    s.audio_max_buffer_ms = text(hwnd, AUDIO_MAX)
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Enter an audio maximum in milliseconds"))?;
+    s.experimental_raw_audio = checked(hwnd, AUDIO_RAW);
     s.event_logging = checked(hwnd, EVENT_LOG);
     #[cfg(feature = "vendor-video")]
     {
@@ -1055,6 +1115,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     BACK as u32,
                     NETWORK_TAB as u32,
                     VIDEO_TAB as u32,
+                    AUDIO_TAB as u32,
                     PROVIDER as u32,
                     GPU as u32,
                 ]
@@ -1065,7 +1126,8 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     let primary = draw.CtlID == SAVE as u32;
                     let selected_tab = (draw.CtlID == NETWORK_TAB as u32
                         && page.active_tab == Tab::Network)
-                        || (draw.CtlID == VIDEO_TAB as u32 && page.active_tab == Tab::Video);
+                        || (draw.CtlID == VIDEO_TAB as u32 && page.active_tab == Tab::Video)
+                        || (draw.CtlID == AUDIO_TAB as u32 && page.active_tab == Tab::Audio);
                     let color = if draw.itemState & ODS_SELECTED != 0 {
                         0x00404040
                     } else if primary || selected_tab {
@@ -1104,6 +1166,8 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                         "Network".into()
                     } else if draw.CtlID == VIDEO_TAB as u32 {
                         "Video".into()
+                    } else if draw.CtlID == AUDIO_TAB as u32 {
+                        "Audio".into()
                     } else if primary {
                         "Save settings".into()
                     } else {
@@ -1143,9 +1207,11 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                 return 0;
             }
             WM_COMMAND => match wp & 0xffff {
-                NETWORK_TAB | VIDEO_TAB if (wp >> 16) as u32 == BN_CLICKED => {
+                NETWORK_TAB | VIDEO_TAB | AUDIO_TAB if (wp >> 16) as u32 == BN_CLICKED => {
                     page.active_tab = if wp & 0xffff == VIDEO_TAB {
                         Tab::Video
+                    } else if wp & 0xffff == AUDIO_TAB {
+                        Tab::Audio
                     } else {
                         Tab::Network
                     };
@@ -1154,6 +1220,8 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                         GetDlgItem(hwnd, SECTION as i32),
                         wide(if page.active_tab == Tab::Video {
                             "VIDEO"
+                        } else if page.active_tab == Tab::Audio {
+                            "AUDIO"
                         } else {
                             "NETWORK"
                         })
@@ -1161,6 +1229,8 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     );
                     SetWindowTextW(GetDlgItem(hwnd, NOTICE as i32), wide(if page.active_tab == Tab::Video {
                         "Video changes apply to your next connection."
+                    } else if page.active_tab == Tab::Audio {
+                        "Experimental audio changes apply on your next connection."
                     } else {
                         "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection."
                     }).as_ptr());
@@ -1184,6 +1254,15 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     return 0;
                 }
                 HEVC if (wp >> 16) as u32 == BN_CLICKED => {
+                    update_enabled(hwnd);
+                    return 0;
+                }
+                AUDIO_CUSTOM if (wp >> 16) as u32 == BN_CLICKED => {
+                    update_enabled(hwnd);
+                    return 0;
+                }
+                #[cfg(feature = "experimental-bud")]
+                BUD if (wp >> 16) as u32 == BN_CLICKED => {
                     update_enabled(hwnd);
                     return 0;
                 }
@@ -1338,6 +1417,17 @@ mod tests {
             assert_no_overlaps(page);
             capture(page, "video");
             assert_combo_label_visible(page, GPU);
+            SendMessageW(page, WM_COMMAND, AUDIO_TAB, 0);
+            assert_ne!(IsWindowVisible(GetDlgItem(page, AUDIO_CUSTOM as i32)), 0);
+            assert_eq!(IsWindowEnabled(GetDlgItem(page, AUDIO_MIN as i32)), 0);
+            check(page, AUDIO_CUSTOM, true);
+            update_enabled(page);
+            assert_ne!(IsWindowEnabled(GetDlgItem(page, AUDIO_MIN as i32)), 0);
+            SetWindowTextW(GetDlgItem(page, AUDIO_MIN as i32), wide("20").as_ptr());
+            SetWindowTextW(GetDlgItem(page, AUDIO_MAX as i32), wide("60").as_ptr());
+            check(page, AUDIO_RAW, true);
+            assert_no_overlaps(page);
+            capture(page, "audio");
             SendMessageW(page, WM_COMMAND, NETWORK_TAB, 0);
             assert_eq!(IsWindowVisible(GetDlgItem(page, GPU as i32)), 0);
             assert!(checked(page, HEVC));
@@ -1369,6 +1459,10 @@ mod tests {
             assert!(manager.view().0.force_relay);
             assert!(manager.view().0.experimental_ten_bit);
             assert!(manager.view().0.event_logging);
+            assert!(manager.view().0.experimental_audio_buffer);
+            assert_eq!(manager.view().0.audio_min_buffer_ms, 20);
+            assert_eq!(manager.view().0.audio_max_buffer_ms, 60);
+            assert!(manager.view().0.experimental_raw_audio);
             #[cfg(feature = "experimental-bud")]
             assert!(manager.view().0.experimental_bud);
             assert_eq!(manager.view().0.stun_urls.len(), 2);

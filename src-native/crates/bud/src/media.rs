@@ -53,9 +53,60 @@ pub fn opus(message: &[u8]) -> Result<&[u8]> {
     Ok(opus)
 }
 
+pub enum Audio<'a> {
+    Opus(&'a [u8]),
+    Pcm(&'a [u8]),
+}
+
+/// The wire's codec tag is authoritative; a RAW permission can still yield Opus.
+pub fn audio(message: &[u8]) -> Result<Audio<'_>> {
+    let header =
+        audio::parse(message).map_err(|e| anyhow::anyhow!("native audio header: {e:?}"))?;
+    ensure!(
+        header.rate == 48_000 && header.channels == 2 && header.mask == 3,
+        "unsupported BUD audio layout"
+    );
+    let payload = message.get(audio::AUDIO_HEADER_LEN..).unwrap_or_default();
+    ensure!(!payload.is_empty(), "empty BUD audio packet");
+    if header.codec == audio::Codec::Opus {
+        Ok(Audio::Opus(payload))
+    } else {
+        ensure!(
+            payload.len() <= 32_000 && payload.len().is_multiple_of(4),
+            "invalid stereo PCM packet"
+        );
+        Ok(Audio::Pcm(payload))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pcm_and_opus_are_distinguished_by_header_and_pcm_is_bounded() {
+        let mut packet = vec![0; audio::AUDIO_HEADER_LEN];
+        audio::encode(
+            &mut packet,
+            &audio::AudioHeader::stereo(1, audio::Codec::Pcm),
+        )
+        .unwrap();
+        packet.extend_from_slice(&[0, 128, 255, 127]);
+        let Audio::Pcm(pcm) = audio(&packet).unwrap() else {
+            panic!("PCM header ignored")
+        };
+        assert_eq!(pcm, &[0, 128, 255, 127]);
+        assert_eq!(pcm.as_ptr(), packet[audio::AUDIO_HEADER_LEN..].as_ptr());
+        packet.push(0);
+        assert!(audio(&packet).is_err());
+        packet.truncate(audio::AUDIO_HEADER_LEN);
+        audio::encode(
+            &mut packet,
+            &audio::AudioHeader::stereo(960, audio::Codec::Opus),
+        )
+        .unwrap();
+        packet.extend_from_slice(&[0xf8, 0xff, 0xfe]);
+        assert!(matches!(audio(&packet), Ok(Audio::Opus(_))));
+    }
     #[test]
     fn borrowed_video_is_the_original_bitstream() {
         let mut packet = vec![0; video::VIDEO_HEADER_LEN];

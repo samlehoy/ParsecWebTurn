@@ -73,6 +73,14 @@ pub fn dispatch(
                     None => 0,
                 };
                 output.output_available = handle != 0;
+                if handle != 0 {
+                    let playback = window
+                        .audio_registry
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(handle)?;
+                    window.stats.set_audio(std::sync::Arc::downgrade(&playback));
+                }
                 output.unavailable_reason = if handle == 0 {
                     Some("wasapi-device-or-format-unavailable")
                 } else {
