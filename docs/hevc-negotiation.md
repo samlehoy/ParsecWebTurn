@@ -1,5 +1,13 @@
 # HEVC negotiation experiment
 
+> Historical investigation below. Correction from the lowlat maintainer and the
+> client branch, 2026-10-16: `0x08` means full color range, not a generation/base
+> flag. Current native declarations are `0x08` (H.264), `0x09` (HEVC Main), or
+> `0x19` (opt-in Main 10 with verified GPU capability). Later stream-0 encoder
+> requests preserve the same negotiated codec/range/depth flags. The old failure
+> to obtain Main 10 does not establish a web-core or host limitation. Live Main
+> 10 negotiation still needs validation. 4:4:4 remains deliberately unsupported.
+
 Investigated 2026-10-11. The embedded Parsec WASM 150-104a is unchanged
 (SHA-256 `d663dd96df477c65479fb93eb88756c7fcafff581cc93be563625cd195a4b4a6`).
 

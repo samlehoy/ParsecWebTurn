@@ -84,7 +84,9 @@ impl Video {
         }
         let chroma_444 = self.chroma_444 && caps.hevc_444;
         flags |= init::FLAG_HEVC;
-        if self.ten_bit && caps.hevc_10 && !chroma_444 { flags |= init::FLAG_10BIT; }
+        if self.ten_bit && caps.hevc_10 && !chroma_444 {
+            flags |= init::FLAG_10BIT;
+        }
         if chroma_444 {
             flags |= init::FLAG_COLOR444;
         }
@@ -206,11 +208,24 @@ mod tests {
     }
     #[test]
     fn main10_requires_verified_main_and_main10_decode() {
-        let video = Video { ten_bit:true,full_range:true,..Video::default() };
+        let video = Video {
+            ten_bit: true,
+            full_range: true,
+            ..Video::default()
+        };
         assert_eq!(video.flags(&EVERYTHING), 0x19);
-        let caps = Caps { hevc_10:false,..EVERYTHING };
+        let caps = Caps {
+            hevc_10: false,
+            ..EVERYTHING
+        };
         assert_eq!(video.flags(&caps), 0x09);
-        assert_eq!(video.flags(&Caps { hevc:false,..EVERYTHING }), 0x08);
+        assert_eq!(
+            video.flags(&Caps {
+                hevc: false,
+                ..EVERYTHING
+            }),
+            0x08
+        );
     }
 
     /// The range is the renderer's to take, so it is declared as asked: a

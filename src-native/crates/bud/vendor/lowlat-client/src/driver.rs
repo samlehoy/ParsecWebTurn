@@ -655,7 +655,7 @@ impl Driver {
     pub(crate) fn send_external(&mut self, session: &mut Session<'_>, bytes: &[u8]) {
         if let Ok(mut message) = control::parse(bytes) {
             if message.opcode == op::ENCODER_CONFIG && message.a0 == 0 {
-                message.a1 = (message.a1 & !0x1b) | (self.init.flags & 0x19);
+                message.a1 = negotiated_encoder_flags(message.a1, self.init.flags);
             }
             self.send_control(session, &message);
         }
@@ -1061,9 +1061,22 @@ impl Driver {
     }
 }
 
+fn negotiated_encoder_flags(external: u32, initial: u32) -> u32 {
+    (external & !0x1b) | (initial & 0x19)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn external_encoder_requests_keep_initial_depth_and_range() {
+        for external in [0, 1, 2, 8, 16, 0x1b] {
+            assert_eq!(negotiated_encoder_flags(external, 0x19), 0x19);
+            assert_eq!(negotiated_encoder_flags(external, 8), 8);
+        }
+        assert_eq!(negotiated_encoder_flags(0x40, 0x19), 0x59);
+    }
 
     #[test]
     fn missing_encode_report_retains_last_value_only_for_current_connection() {
