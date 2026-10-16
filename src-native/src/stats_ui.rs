@@ -181,7 +181,12 @@ fn rows(
             );
         }
         if bud.relay {
-            row("TURN transport", "UDP".into());
+            row(
+                "TURN transport",
+                bud.relay_transport
+                    .map(str::to_uppercase)
+                    .unwrap_or_else(|| "Not reported".into()),
+            );
         }
         row(
             "Host encode time",
@@ -569,7 +574,7 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
     y += 14;
     #[cfg(feature = "experimental-bud")]
     let footer = if page.sample.bud.is_some() {
-        "Traffic counts UDP payload bytes accepted for send or received, including BUD/crypto/TURN control and retransmissions; IP/UDP headers and account HTTPS/WSS traffic are excluded. RTT is the native transport estimate. Host encode time keeps the last available report for this connection. Late fragments indicate reordering or retransmission, not proven packet loss. NACKs request missing fragments. Compressed backlog is before Media Foundation; no GPU timings are inferred."
+        "Traffic counts UDP payload bytes or TURN stream plaintext accepted for send or received, including BUD/crypto/TURN control and retransmissions. Stream framing padding is included; TLS, IP and TCP/UDP headers and account HTTPS/WSS traffic are excluded. RTT is the native transport estimate. Host encode time keeps the last available report. Late fragments indicate reordering or retransmission, not proven packet loss. NACKs request missing fragments. Compressed backlog is before decoding; no GPU timings are inferred."
     } else {
         "Traffic is measured usage, not available bandwidth. RTT is the active ICE path's round-trip time, not ICMP ping. Local dropped frames are not network packet loss. Missing values remain unknown."
     };

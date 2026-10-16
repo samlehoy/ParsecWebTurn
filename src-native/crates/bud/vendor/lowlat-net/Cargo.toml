@@ -8,9 +8,17 @@ license = "MIT"
 repository = "https://github.com/nomi-san/lowlat"
 authors = ["Nguyen Duy"]
 
+[features]
+default = []
+turn-stream = ["dep:mio", "dep:rustls", "dep:webpki-roots", "dep:rustls-native-certs"]
+
 [dependencies]
+mio = { version = "1", features = ["net", "os-poll"], optional = true }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+webpki-roots = { version = "1", optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
 lowlat-common = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
-lowlat-core = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
+lowlat-core = { path = "../lowlat-core" }
 lowlat-crypto = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -33,6 +41,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring"] }
 lowlat-common = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86", features = ["alloc-counter"] }
 
 # The churn test's counts on Windows: open handles, the process's threads and

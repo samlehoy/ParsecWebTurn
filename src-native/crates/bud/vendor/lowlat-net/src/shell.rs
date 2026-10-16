@@ -25,9 +25,9 @@ use std::io;
 use lowlat_core::endpoint::{Endpoint, Media};
 use lowlat_core::session::Session;
 
+use crate::carrier::Io;
 use crate::send;
 use crate::socket::Socket;
-use crate::sys::Io;
 use crate::wake::Wake;
 
 /// Shortest wait. A sub-millisecond timeout is a hot poll wearing a timeout's
@@ -171,12 +171,24 @@ impl<'a, M: Media> Shell<'a, M> {
 
     /// A producer's end of the wake, for a thread that will enqueue work.
     pub fn wake_handle(&self) -> io::Result<crate::wake::WakeHandle> {
-        self.io.wake().handle()
+        self.io.handle()
     }
 
     /// Wake accounting so far.
     pub fn stats(&self) -> Stats {
         self.stats
+    }
+
+    /// On a clean leave, give a pending stream frame a bounded chance to reach
+    /// the socket before closing its allocation. UDP already flushes per pass.
+    /// This is teardown only, never a wait inserted in ordinary media sends.
+    pub fn finish_output(&mut self, timeout: core::time::Duration) -> io::Result<()> {
+        #[cfg(feature = "turn-stream")]
+        if let Io::Stream { stream, .. } = &mut self.io {
+            return stream.finish_output(timeout);
+        }
+        let _ = timeout;
+        Ok(())
     }
 
     /// One pass of the loop.
@@ -242,6 +254,10 @@ impl<'a, M: Media> Shell<'a, M> {
         self.stats.datagrams_in += received as u64;
         self.stats.datagrams_out += sent as u64;
         self.stats.bytes_out = self.outbound.sent_bytes();
+        #[cfg(feature = "turn-stream")]
+        if let Io::Stream { stream, .. } = &self.io {
+            self.stats.bytes_out = stream.sent_bytes();
+        }
         Ok(Turn {
             woke,
             received,
@@ -278,7 +294,14 @@ impl<'a, M: Media> Shell<'a, M> {
             total += got;
             let mut refused = 0u64;
             for (from, local, datagram) in self.io.iter() {
-                self.stats.bytes_in = self.stats.bytes_in.saturating_add(datagram.len() as u64);
+                let length = datagram.len();
+                #[cfg(feature = "turn-stream")]
+                let length = if matches!(&self.io, Io::Stream { .. }) {
+                    (length + 3) & !3
+                } else {
+                    length
+                };
+                self.stats.bytes_in = self.stats.bytes_in.saturating_add(length as u64);
                 // A datagram that fails to parse or authenticate is dropped and
                 // the loop continues. Hostile and corrupt input is the normal
                 // case on a network, not an error path -- but it is counted,
@@ -301,6 +324,27 @@ impl<'a, M: Media> Shell<'a, M> {
 
     /// Stage and send everything the endpoint has ready.
     fn drain(&mut self, now_ms: f64) -> io::Result<usize> {
+        #[cfg(feature = "turn-stream")]
+        if let Io::Stream { stream, .. } = &mut self.io {
+            let mut sent = 0;
+            while !stream.pending() && sent < crate::RECV_BATCH {
+                let Some(result) = self.endpoint.get_output(now_ms, &mut self.scratch) else {
+                    return Ok(sent);
+                };
+                let egress = result
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.as_str()))?;
+                let message = self
+                    .scratch
+                    .get(..egress.len)
+                    .ok_or(io::ErrorKind::InvalidData)?;
+                stream.queue(message, egress.to)?;
+                sent += 1;
+            }
+            if sent == crate::RECV_BATCH {
+                stream.continue_soon();
+            }
+            return Ok(sent);
+        }
         let mut sent = 0;
         loop {
             let room = self.outbound.stage();

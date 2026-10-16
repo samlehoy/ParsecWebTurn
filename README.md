@@ -80,8 +80,13 @@ tabs preserves unsaved edits. Changes apply to the next connection.
 - **Force TURN relay:** use a configured relay even when a direct route exists.
   It cannot be combined with STUN only.
 - **Experimental BUD:** select BUD instead of the default WebRTC transport.
-  BUD supports UDP only, including its relay connection. Keep WebRTC for networks
-  that require TURN over TCP or TLS. There is no silent transport switch.
+  Direct connections use UDP. TURN uses the same configured URLs as WebRTC,
+  preferring UDP, then TLS, then plain TCP (port 80 first among TCP URLs).
+  Failed connection attempts advance to the next configured relay URL; an
+  established stream is not migrated automatically. TLS verifies the original
+  server identity. The relay-to-host leg remains UDP. TCP/TLS support is
+  experimental and can suffer TCP head-of-line blocking. There is no silent
+  switch to WebRTC and no separate BUD relay setting.
 - **Enable event logging:** write `client-events.jsonl` beside `settings.json`
   (also when using `--data-dir`). Logs connection/route changes, connection
   failures, decoder errors/recovery and profile-save failures as JSON Lines with

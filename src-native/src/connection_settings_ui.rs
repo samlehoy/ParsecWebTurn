@@ -573,12 +573,12 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     check(hwnd, FORCE_RELAY, s.force_relay);
     #[cfg(feature = "experimental-bud")]
     {
-        row_label(hwnd, page, "Transport", "Experimental BUD: direct UDP or TURN over UDP.\nWebRTC also supports TURN TCP/TLS. Reconnect after changing.", 938, 0, 40);
+        row_label(hwnd, page, "Transport", "Experimental BUD: direct UDP or TURN over UDP/TLS/TCP.\nUses the TURN URLs above. Reconnect after changing.", 938, 0, 40);
         add(
             hwnd,
             page,
             "BUTTON",
-            "Experimental BUD (UDP only)",
+            "Experimental BUD",
             BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
             [420, 938, 400, 36],
             BUD,

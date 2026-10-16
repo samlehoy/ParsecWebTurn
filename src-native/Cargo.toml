@@ -61,6 +61,9 @@ webrtc = { path = "vendor/webrtc-0.14.0" }
 webrtc-ice = { path = "vendor/webrtc-ice-0.14.0" }
 turn = { path = "vendor/turn-0.11.0" }
 
+[patch."https://github.com/nomi-san/lowlat"]
+lowlat-core = { path = "crates/bud/vendor/lowlat-core" }
+
 [build-dependencies]
 wasmtime = { version = "38", default-features = false, features = ["std", "runtime", "cranelift", "threads"] }
 sha2 = "0.10"

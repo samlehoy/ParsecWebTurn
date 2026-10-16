@@ -23,7 +23,7 @@ struct State {
     output_finished: bool,
     web_mode: Option<Value>,
     wire_id: String,
-    retired_wire: Option<String>,
+    retired_wires: Vec<String>,
     template: Option<Value>,
     writer: Option<SignalingWrite>,
     established: bool,
@@ -171,7 +171,7 @@ impl Attempt {
         };
         let wire = value["payload"]["attempt_id"].as_str().unwrap_or("");
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.retired_wire.as_deref() == Some(wire) {
+        if state.retired_wires.iter().any(|id| id == wire) {
             return Ok(Some(String::new()));
         }
         let current = if state.wire_id.is_empty() {
@@ -335,7 +335,9 @@ fn switch_offer(state: &Mutex<State>, cancel: &AtomicBool, id: &str, data: Value
         previous["payload"]["data"] = json!({});
         next["payload"]["attempt_id"] = json!(id);
         next["payload"]["data"] = data.clone();
-        state.retired_wire = Some(std::mem::replace(&mut state.wire_id, id.into()));
+        ensure!(state.retired_wires.len() < 32, "BUD relay retry limit");
+        let previous_id = std::mem::replace(&mut state.wire_id, id.into());
+        state.retired_wires.push(previous_id);
         state.offer = Some(data);
         state.events.clear();
         state.controls.clear();
@@ -397,14 +399,21 @@ fn complete_offer(
     Ok(true)
 }
 
-// Force TURN starts on UDP relay; otherwise direct discovery is tried first.
-// The worker may retry via UDP relay without changing the selected BUD transport.
+// Force TURN starts on the selected relay carrier; otherwise try direct UDP first.
 async fn route(
     manager: &crate::connection_settings::Manager,
-) -> Result<(Route, crate::connection_settings::Settings)> {
+) -> Result<(
+    Route,
+    Option<VecDeque<Route>>,
+    crate::connection_settings::Settings,
+)> {
     let (settings, servers) = manager.resolve_bud().await?;
     if settings.force_relay {
-        return Ok((udp_relay(servers).await?, settings));
+        let mut routes = turn_relays(servers).await?;
+        let first = routes
+            .pop_front()
+            .context("BUD requires a supported TURN URL")?;
+        return Ok((first, Some(routes), settings));
     }
 
     let mut stun = Vec::new();
@@ -422,32 +431,80 @@ async fn route(
             }
         }
     }
-    Ok((Route::Direct { stun }, settings))
+    Ok((Route::Direct { stun }, None, settings))
 }
 
 async fn relay_route(
     manager: &crate::connection_settings::Manager,
     settings: &crate::connection_settings::Settings,
-) -> Result<Route> {
-    udp_relay(manager.resolve_bud_relay(settings).await?).await
+) -> Result<VecDeque<Route>> {
+    if settings.stun_only || (settings.provider == "custom" && settings.turn_urls.is_empty()) {
+        return Ok(VecDeque::new());
+    }
+    turn_relays(manager.resolve_bud_relay(settings).await?).await
 }
 
-async fn udp_relay(servers: Vec<webrtc::ice_transport::ice_server::RTCIceServer>) -> Result<Route> {
-    for server in servers {
-        for raw in server.urls {
-            let url = webrtc::ice::url::Url::parse_url(&raw)?;
-            if url.scheme == webrtc::ice::url::SchemeType::Turn
-                && url.proto == webrtc::ice::url::ProtoType::Udp
-            {
-                let addr = tokio::net::lookup_host((url.host.as_str(), url.port))
-                    .await?
-                    .find(|a| a.is_ipv4())
-                    .context("BUD UDP TURN has no IPv4 address")?;
-                return Ok(Route::turn_udp(addr, &server.username, &server.credential));
+fn relay_carrier(url: &webrtc::ice::url::Url) -> Option<parsec_native_bud::bud::RelayTransport> {
+    use parsec_native_bud::bud::RelayTransport;
+    use webrtc::ice::url::{ProtoType, SchemeType};
+    match (url.scheme, url.proto) {
+        (SchemeType::Turn, ProtoType::Udp) => Some(RelayTransport::Udp),
+        (SchemeType::Turn, ProtoType::Tcp) => Some(RelayTransport::Tcp),
+        (SchemeType::Turns, ProtoType::Tcp) => Some(RelayTransport::Tls {
+            server_name: url.host.clone(),
+        }),
+        _ => None,
+    }
+}
+
+async fn turn_relays(
+    servers: Vec<webrtc::ice_transport::ice_server::RTCIceServer>,
+) -> Result<VecDeque<Route>> {
+    let mut urls = Vec::new();
+    for server in &servers {
+        for raw in &server.urls {
+            let url = webrtc::ice::url::Url::parse_url(raw)?;
+            if let Some(carrier) = relay_carrier(&url) {
+                let priority = match carrier {
+                    parsec_native_bud::bud::RelayTransport::Udp => 0,
+                    parsec_native_bud::bud::RelayTransport::Tls { .. } => 1,
+                    _ if url.port == 80 => 2,
+                    _ => 3,
+                };
+                urls.push((priority, url, carrier, server));
             }
         }
     }
-    bail!("BUD automatic relay requires a configured UDP TURN server")
+    urls.sort_by_key(|entry| entry.0);
+    // Resolve concurrently so an unavailable DNS entry does not serially hold
+    // up other routes. join_all preserves the explicitly sorted URL priority.
+    let routes: VecDeque<_> = futures_util::future::join_all(urls.into_iter().take(32).map(
+        |(_, url, carrier, server)| async move {
+            let addresses = tokio::time::timeout(
+                Duration::from_secs(3),
+                tokio::net::lookup_host((url.host.as_str(), url.port)),
+            )
+            .await
+            .ok()?
+            .ok()?;
+            let addr = addresses.into_iter().find(|a| a.is_ipv4())?;
+            Some(Route::turn(
+                addr,
+                &server.username,
+                &server.credential,
+                carrier,
+            ))
+        },
+    ))
+    .await
+    .into_iter()
+    .flatten()
+    .collect();
+    ensure!(
+        !routes.is_empty(),
+        "BUD requires a reachable UDP, TLS or TCP TURN URL"
+    );
+    Ok(routes)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -467,7 +524,7 @@ fn run(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let (route, settings) = runtime.block_on(async {
+    let (route, mut relay_routes, settings) = runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(15), route(manager)).await
     })??;
     trace.mark(if settings.force_relay {
@@ -526,9 +583,7 @@ fn run(
     let mut deadline = Instant::now() + Duration::from_secs(30);
     let mut established = false;
     let mut answered_at: Option<Instant> = None;
-    let mut retried = settings.force_relay
-        || settings.stun_only
-        || (settings.provider == "custom" && settings.turn_urls.is_empty());
+    let mut direct_attempt = !settings.force_relay;
     let mut wire_id = id.to_owned();
     let mut last_stats = Instant::now();
     let mut last_trace = Instant::now();
@@ -537,13 +592,9 @@ fn run(
         if !established && Instant::now() >= deadline {
             trace.mark("establishment_deadline");
         }
-        ensure!(
-            established || Instant::now() < deadline,
-            "BUD establishment deadline"
-        );
         let mut guard = shared_session.lock().unwrap_or_else(|e| e.into_inner());
         let session = guard.as_mut().context("BUD session retired")?;
-        let mut ended = false;
+        let mut ended = !established && Instant::now() >= deadline;
         for _ in 0..64 {
             let Ok(text) = incoming.try_recv() else {
                 break;
@@ -687,7 +738,7 @@ fn run(
                     } else {
                         "Unknown"
                     },
-                    turn_protocol: transport.relay.then(|| "udp".into()),
+                    turn_protocol: transport.relay_transport.map(str::to_owned),
                     audio_bytes: shared.ingress.audio_bytes_received,
                     audio_codec: shared.ingress.audio_output.as_ref().and_then(|a| a.codec),
                     audio_decoded_queue_ms: shared
@@ -711,10 +762,22 @@ fn run(
         }
         drop(shared);
         let fallback_due = !established
-            && (ended || answered_at.is_some_and(|t| t.elapsed() >= Duration::from_secs(4)));
-        if fallback_due && !retried {
+            && (ended
+                || (direct_attempt
+                    && answered_at.is_some_and(|t| t.elapsed() >= Duration::from_secs(4))));
+        if fallback_due {
             trace.mark("relay_retry_started");
-            retried = true;
+            if relay_routes.is_none() {
+                relay_routes = Some(runtime.block_on(async {
+                    tokio::time::timeout(Duration::from_secs(15), relay_route(manager, &settings))
+                        .await
+                })??);
+            }
+            let relay = relay_routes
+                .as_mut()
+                .and_then(VecDeque::pop_front)
+                .context("BUD configured routes exhausted")?;
+            direct_attempt = false;
             drop(source);
             let mut old = shared_session
                 .lock()
@@ -724,11 +787,6 @@ fn run(
                 old.close();
             }
             drop(old);
-            trace.mark("relay_credentials_resolution");
-            let relay = runtime.block_on(async {
-                // Match the credential/DNS allowance used by Force relay.
-                tokio::time::timeout(Duration::from_secs(15), relay_route(manager, &settings)).await
-            })??;
             trace.mark("relay_credentials_ready");
             if cancel.load(Ordering::Acquire) {
                 return Ok(());
@@ -800,6 +858,50 @@ fn native_attempt_id() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn turn_urls_prefer_udp_then_tls_then_tcp80_without_rewriting_ports() {
+        use parsec_native_bud::bud::RelayTransport;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let routes = runtime
+            .block_on(turn_relays(vec![
+                webrtc::ice_transport::ice_server::RTCIceServer {
+                    urls: vec![
+                        "turn:127.0.0.1:3478?transport=tcp".into(),
+                        "turn:127.0.0.1:80?transport=tcp".into(),
+                        "turns:localhost:443?transport=tcp".into(),
+                        "stun:127.0.0.1:3478".into(),
+                        "turn:127.0.0.1:3478?transport=udp".into(),
+                    ],
+                    username: "isolated".into(),
+                    credential: "fixture-only".into(),
+                },
+            ]))
+            .unwrap();
+        let relays: Vec<_> = routes
+            .into_iter()
+            .map(|route| match route {
+                Route::Turn(relay) => relay,
+                _ => panic!("TURN URL leaked a direct route"),
+            })
+            .collect();
+        assert_eq!(relays.len(), 4);
+        assert_eq!(
+            relays.iter().map(|r| r.server.port()).collect::<Vec<_>>(),
+            [3478, 443, 80, 3478]
+        );
+        assert_eq!(relays[0].transport, RelayTransport::Udp);
+        assert_eq!(
+            relays[1].transport,
+            RelayTransport::Tls {
+                server_name: "localhost".into()
+            }
+        );
+        assert_eq!(relays[2].transport, RelayTransport::Tcp);
+        assert_eq!(relays[3].transport, RelayTransport::Tcp);
+    }
     fn isolated() -> (Attempt, mpsc::Receiver<String>) {
         let (commands, receiver) = mpsc::sync_channel(2);
         (
@@ -944,7 +1046,7 @@ mod tests {
         // A late close from the retired direct route must not terminate relay.
         {
             let mut state = attempt.state.lock().unwrap();
-            state.retired_wire = Some("isolated".into());
+            state.retired_wires.push("isolated".into());
             state.wire_id = "isolated-turn-1".into();
         }
         assert_eq!(attempt.incoming(close).unwrap(), Some(String::new()));

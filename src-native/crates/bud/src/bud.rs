@@ -2,6 +2,7 @@
 use std::net::SocketAddr;
 
 use anyhow::{Result, anyhow, ensure};
+pub use lowlat_client::config::RelayTransport;
 use lowlat_client::config::{Port, Relay};
 use lowlat_client::driver::Units;
 use lowlat_client::{Client, Config, Peer, Transport};
@@ -12,12 +13,22 @@ use lowlat_crypto::Credentials;
 /// One explicit route per attempt. No implicit transport or provider fallback.
 pub enum Route {
     Direct { stun: Vec<SocketAddr> },
-    TurnUdp(Relay),
+    Turn(Relay),
 }
 
 impl Route {
     pub fn turn_udp(server: SocketAddr, username: &str, password: &str) -> Self {
-        Self::TurnUdp(Relay::new(server, username, password))
+        Self::turn(server, username, password, RelayTransport::Udp)
+    }
+    pub fn turn(
+        server: SocketAddr,
+        username: &str,
+        password: &str,
+        transport: RelayTransport,
+    ) -> Self {
+        let mut relay = Relay::new(server, username, password);
+        relay.transport = transport;
+        Self::Turn(relay)
     }
     fn configure(self) -> Config {
         match self {
@@ -25,7 +36,7 @@ impl Route {
                 servers: stun,
                 ..Config::default()
             },
-            Self::TurnUdp(relay) => Config {
+            Self::Turn(relay) => Config {
                 relay: Some(relay),
                 ..Config::default()
             },
@@ -186,6 +197,13 @@ impl Session {
             udp_sent: t.udp_sent.load(Relaxed),
             connected,
             relay: connected && t.path_relayed.load(Relaxed),
+            relay_transport: (connected && t.path_relayed.load(Relaxed)).then(|| {
+                match t.relay_transport.load(Relaxed) {
+                    1 => "tcp",
+                    2 => "tls",
+                    _ => "udp",
+                }
+            }),
             cipher: connected.then_some(self.cipher).flatten(),
             rtt_ms: (connected && rtt > 0).then_some(f64::from(rtt)),
             encode_ms: (connected && encode > 0).then_some(f64::from(encode) / 1000.0),
@@ -258,6 +276,7 @@ pub struct Snapshot {
     pub udp_sent: u64,
     pub connected: bool,
     pub relay: bool,
+    pub relay_transport: Option<&'static str>,
     pub cipher: Option<&'static str>,
     pub rtt_ms: Option<f64>,
     pub encode_ms: Option<f64>,
@@ -281,8 +300,7 @@ mod tests {
         .configure();
         assert!(direct.relay.is_none());
         assert_eq!(direct.servers, [endpoint]);
-        let relay =
-            Route::TurnUdp(Relay::new(endpoint, "isolated", "not-a-real-secret")).configure();
+        let relay = Route::turn_udp(endpoint, "isolated", "not-a-real-secret").configure();
         assert!(relay.servers.is_empty());
         assert_eq!(relay.relay.unwrap().server, endpoint);
     }

@@ -254,6 +254,8 @@ pub struct Telemetry {
     pub relayed: AtomicU64,
     /// Whether the path goes through the relay.
     pub path_relayed: AtomicBool,
+    /// Established relay carrier: 0 UDP, 1 TCP, 2 TLS.
+    pub relay_transport: AtomicU32,
 }
 
 /// A relayed address in one word, so it is published without a lock: the

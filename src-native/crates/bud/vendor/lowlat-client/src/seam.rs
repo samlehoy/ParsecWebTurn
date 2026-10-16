@@ -66,6 +66,14 @@ impl Client {
         if transport != Transport::Bud {
             return Err(Error::Transport);
         }
+        if !cfg!(feature = "turn-stream")
+            && config
+                .relay
+                .as_ref()
+                .is_some_and(|relay| relay.transport != crate::config::RelayTransport::Udp)
+        {
+            return Err(Error::Transport);
+        }
         if self.attempt.is_some() {
             return Err(Error::Busy);
         }
@@ -198,7 +206,11 @@ impl Client {
 
         let socket = lowlat_net::Socket::open_or_any_port(0).map_err(|_| Error::Io)?;
         let bound = socket.local_addr().map_err(|_| Error::Io)?.port();
-        let wake = Wake::new().map_err(|_| Error::Io)?;
+        let wake = match &attempt.config.relay {
+            Some(relay) => relay.wake(),
+            None => Wake::new(),
+        }
+        .map_err(|_| Error::Io)?;
 
         let (inject, arrivals) = mpsc::channel::<Arrival>();
         for arrival in attempt.pending.drain(..) {

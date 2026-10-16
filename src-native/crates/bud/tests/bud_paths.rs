@@ -1,10 +1,9 @@
 //! Real UDP connectivity gates. Two native clients are connectivity peers,
 //! not a stock host/media fixture: this proves the adapter's route and lifecycle
 //! only. The separately configured coturn test must not use real credentials.
-use lowlat_client::config::Relay;
 use lowlat_client::{Event, Peer};
 use lowlat_core::conn::Kind;
-use parsec_native_bud::bud::{Route, Session};
+use parsec_native_bud::bud::{RelayTransport, Route, Session};
 use std::time::{Duration, Instant};
 
 fn peer(ours: lowlat_crypto::Credentials) -> Peer {
@@ -142,7 +141,25 @@ fn turn_udp_connectivity() {
         .parse()
         .unwrap();
     connect(
-        Route::TurnUdp(Relay::new(server, "pwt-fixture", "isolated-fixture-only")),
+        Route::turn_udp(server, "pwt-fixture", "isolated-fixture-only"),
+        true,
+    );
+}
+
+#[test]
+#[ignore = "requires isolated coturn with TCP listener, PWT_TEST_TURN endpoint"]
+fn turn_tcp_connectivity() {
+    let server = std::env::var("PWT_TEST_TURN")
+        .expect("isolated TURN endpoint")
+        .parse()
+        .unwrap();
+    connect(
+        Route::turn(
+            server,
+            "pwt-fixture",
+            "isolated-fixture-only",
+            RelayTransport::Tcp,
+        ),
         true,
     );
 }

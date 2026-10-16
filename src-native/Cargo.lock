@@ -1537,7 +1537,6 @@ dependencies = [
 [[package]]
 name = "lowlat-core"
 version = "0.0.0"
-source = "git+https://github.com/nomi-san/lowlat?rev=5f8db5689e55de0d396b0520824caa9fc053dd86#5f8db5689e55de0d396b0520824caa9fc053dd86"
 dependencies = [
  "aes-gcm",
  "hmac",
@@ -1588,6 +1587,10 @@ dependencies = [
  "lowlat-common",
  "lowlat-core",
  "lowlat-crypto",
+ "mio",
+ "rustls",
+ "rustls-native-certs",
+ "webpki-roots 1.0.9",
  "windows-sys 0.61.2",
 ]
 
@@ -1682,6 +1685,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee"
 dependencies = [
  "libc",
+ "log",
  "wasi",
  "windows-sys 0.61.2",
 ]
@@ -2417,9 +2421,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "once_cell",
  "ring",

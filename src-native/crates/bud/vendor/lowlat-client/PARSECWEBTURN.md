@@ -56,3 +56,10 @@ omitted from this optional native-only dependency; our WebRTC path is unchanged.
 
 The 10-bit video preference/capability fields and associated tests were removed
 on 2026-10-14 at the application owner's request. Initialization remains 8-bit.
+
+TURN stream integration: native IO/configuration and established-carrier telemetry
+from lowlat PR #2, revision befd5a29c7a331111f11378c0b5623de788e9769.
+No SDK ABI or decoder API is imported. Common/crypto remain at the original pin;
+core is the sibling pinned copy with only TURN stream additions. See
+../../../../../../docs/bud-turn-stream.md for scope and verification.
+
