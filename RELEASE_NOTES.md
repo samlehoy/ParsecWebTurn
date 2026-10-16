@@ -1,41 +1,43 @@
-ParsecWebTurn v0.9.4-dev.1 - Experimental BUD and GPU video paths
+ParsecWebTurn v0.9.4-dev.2 - Color range fixes and event logging
 
-This native Windows development release adds an alternative BUD transport,
-vendor-specific HEVC decoding and optional original-surface presentation.
-Changes below are compared with the stable v0.9.3 release.
+This native Windows development release corrects video color range, adds optional
+operational logging and introduces an opt-in Main 10 HEVC request and GPU playback
+path. Changes below are compared with v0.9.4-dev.1.
 
-**BUD, vendor-specific HEVC decoding and Zero copy are experimental.** They have
-worked on the tested systems, but compatibility and stability depend on the GPU,
-driver, host and network. For stability-first use, choose **WebRTC with H.264**
-and leave the experimental options disabled, or stay on the
+**BUD, vendor-specific HEVC decoding, Zero copy and 10-bit HEVC are experimental.**
+Compatibility and stability depend on the GPU, driver, host and network. For
+stability-first use, choose **WebRTC with H.264** and leave experimental options
+disabled, or stay on the
 [stable v0.9.3 release](https://github.com/vampywiz17/ParsecWebTurn/releases/tag/v0.9.3).
 H.264 remains the default codec and uses Media Foundation on all GPU vendors.
 
 ## What's new and improved
 
-- **Experimental BUD transport:** enable Experimental BUD in Settings to use the native UDP protocol with a regular Parsec host. Direct UDP, automatic fallback to a configured UDP TURN relay and Force TURN are supported. WebRTC remains the default and retains TURN over UDP, TCP and TLS; BUD supports UDP only and does not silently switch to WebRTC.
-- **Experimental vendor-specific HEVC decoding:** when Prefer H.265 / HEVC is enabled, normal 8-bit HEVC playback uses Direct D3D11 on NVIDIA, AMF on AMD and VPL on Intel. These paths keep decoder output on the GPU and feed the existing presentation path directly. The existing GPU Media Foundation fallback/recovery remains available when a vendor path cannot be used.
-- **Experimental Zero copy presentation:** the Video tab can select original NV12 decoder-surface presentation through Direct D3D11 and Windows Presentation API on supported NVIDIA, AMD and Intel GPUs. This removes the application's conversion/output pass and introduces no intermediate decoded-frame copy or CPU pixel readback. Windows 11 and compatible hardware/drivers are required; internal Windows/driver copies and direct scanout are not guaranteed.
-- **More reliable HEVC startup and recovery:** handle short arrival bursts without exhausting presentation surfaces or unnecessarily abandoning the working Intel decoder. Original-surface presentation preserves the picture's aspect ratio and can recover to normal GPU rendering when unavailable.
-- **BUD connection statistics:** show native RTT, decoded FPS, incoming/outgoing traffic, direct or relay route, host encode time when available and BUD delivery counters. Irrelevant WebRTC ICE/DTLS fields are hidden in BUD mode, and the last valid host encode time no longer flickers between reports.
-- **Network and Video settings tabs:** connection servers, credentials, routing and transport settings are separated from GPU, codec and presentation choices. Both tabs share Save settings and retain unsaved edits when switching tabs.
-- **Clearer playback status:** Connection stats uses shorter Zero copy, decoder fallback and playback-error descriptions while retaining detailed diagnostic information separately.
-- **Safer host launch selection:** choosing the unsupported native-client launch option now explains that the web launch option is required instead of crashing the application. The web launch option is also used when BUD is selected in Settings.
-- **Less input and shared-lock overhead:** reuse bounded input-event storage, pass native input arguments without temporary vectors and copy queued control messages outside the shared connection lock. Event ordering, immediate input wakeups and WebRTC reliability remain unchanged.
+- **Correct video black and white levels:** translate limited/full-range metadata correctly between Media Foundation and D3D11, including vendor HEVC output. This fixes lifted blacks and grey-looking whites in normal GPU rendering. Full-range support is declared consistently at startup and in later encoder requests.
+- **Experimental 10-bit HEVC:** an optional Video setting requests Main 10 with WebRTC or BUD when the selected GPU exposes the required P010 decode/conversion capabilities. Later encoder and keyframe requests preserve the selected flags. Main 10 uses the existing GPU Media Foundation path and conversion pass; RGB display output remains 8-bit, and original-surface Zero copy remains 8-bit only. Host and driver support are required: the request does not guarantee a 10-bit stream. Connection stats shows the actual decoded color depth. 4:4:4 remains unsupported.
+- **Optional operational event log:** enable event logging in the Network tab to record connection and route changes, transport failures, decoder recovery/errors and profile-save failures beside settings.json. UTF-8 JSON Lines records have UTC timestamps; background file writes use a bounded queue and approximately 5 MiB rotation with one previous file. Credentials and media payloads are excluded. Logging is disabled by default and applies immediately after saving.
+- **Readable settings and statistics:** fix clipped event-log help in Settings and size the Connection stats explanation to its wrapped text, including the longer BUD description and narrower windows.
+- **Clearer core provenance:** README documentation explains that the embedded proprietary Parsec WASM core remains unmodified and that Rust supplies the native framework rather than a rewrite of that core.
 
 ## Updating
 
-Close the app and extract `ParsecWebTurn-v0.9.4-dev.1-win64.zip`, or replace
+Close the app and extract `ParsecWebTurn-v0.9.4-dev.2-win64.zip`, or replace
 `ParsecWebTurn.exe` in its existing folder. Keep your `settings.json`; saved
 native sign-in, Parsec preferences and Windows-protected server credentials
 remain in place under the same Windows account.
 
-Open **Settings > Network** to select Experimental BUD or configure TURN.
-Open **Settings > Video** to select a GPU, Prefer H.265 / HEVC or Zero copy.
-Save and reconnect after changing these options. The Zero copy checkbox applies
-to HEVC; H.264 keeps the existing Media Foundation path.
+Open **Settings > Network > Enable event logging** to create `client-events.jsonl`
+beside `settings.json`. Saving applies this option immediately. The previous
+rotated file is `client-events.previous.jsonl`.
+
+Open **Settings > Video** to enable Prefer H.265 / HEVC and, optionally,
+10-bit HEVC. Save and reconnect after changing video settings. Check
+**Connection stats > Decoded color depth** for the received output rather than
+assuming the host accepted the request. Main 10 is not an HDR or end-to-end
+10-bit display mode; Zero copy uses normal GPU rendering when the received
+stream is Main 10.
 
 This is a **Windows x64 prerelease**, not a replacement for the stable release.
-If you need TURN over TCP/TLS, keep WebRTC selected. If experimental video has
-problems, disable Prefer H.265 / HEVC and Zero copy and reconnect using H.264.
-For the most conservative choice, use the published stable release instead.
+WebRTC remains the default and supports TURN over UDP, TCP and TLS; experimental
+BUD supports UDP only. If experimental video has problems, disable 10-bit HEVC,
+Prefer H.265 / HEVC and Zero copy, then reconnect using H.264.

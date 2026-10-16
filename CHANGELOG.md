@@ -3,11 +3,19 @@
 User-facing changes are listed below. Native versions marked **dev** are development
 builds, not published stable releases.
 
-## Unreleased
+## 0.9.4-dev.2 - Color range fixes and event logging (2026-10-16)
 
-- Fix limited/full-range translation between Media Foundation and D3D11, including vendor HEVC output. Declare full-range support consistently at connection startup and in subsequent encoder requests.
-- Add opt-in experimental Main 10 HEVC negotiation for WebRTC and BUD, verified GPU P010 capability checks, and GPU-only Media Foundation P010 playback through the existing conversion pass. RGB presentation remains 8-bit; original-surface presentation remains 8-bit only. Live Main 10 host validation is pending; 4:4:4 remains unsupported.
-- Add optional bounded JSON Lines event logging beside settings.json for connection/route changes, transport failures, decoder recovery/errors and profile-save errors, without credentials or media payloads.
+Changes since v0.9.4-dev.1.
+
+**BUD, vendor-specific HEVC decoding, Zero copy and 10-bit HEVC are experimental.**
+For stability-first use, select WebRTC with H.264 and leave experimental options
+disabled, or use the published stable v0.9.3 release.
+
+- **Correct video black and white levels:** translate limited/full-range metadata correctly between Media Foundation and D3D11, including vendor HEVC output. This fixes lifted blacks and grey-looking whites in normal GPU rendering. Full-range support is declared consistently at startup and in later encoder requests.
+- **Experimental 10-bit HEVC:** an optional Video setting requests Main 10 with WebRTC or BUD when the selected GPU exposes the required P010 decode/conversion capabilities. Later encoder and keyframe requests preserve the selected flags. Main 10 uses the existing GPU Media Foundation path and conversion pass; RGB display output remains 8-bit, and original-surface Zero copy remains 8-bit only. Host and driver support are required: the request does not guarantee a 10-bit stream. Connection stats shows the actual decoded color depth. 4:4:4 remains unsupported.
+- **Optional operational event log:** enable event logging in the Network tab to record connection and route changes, transport failures, decoder recovery/errors and profile-save failures beside settings.json. UTF-8 JSON Lines records have UTC timestamps; background file writes use a bounded queue and approximately 5 MiB rotation with one previous file. Credentials and media payloads are excluded. Logging is disabled by default and applies immediately after saving.
+- **Readable settings and statistics:** fix clipped event-log help in Settings and size the Connection stats explanation to its wrapped text, including the longer BUD description and narrower windows.
+- **Clearer core provenance:** README documentation explains that the embedded proprietary Parsec WASM core remains unmodified and that Rust supplies the native framework rather than a rewrite of that core.
 
 ## 0.9.4-dev.1 - Experimental BUD and GPU video paths (2026-10-15)
 
