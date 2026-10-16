@@ -737,7 +737,11 @@ fn run(
             // Do not append a diagnostic suffix to an account protocol ID:
             // local SDK acceptance does not establish service compatibility.
             wire_id = native_attempt_id()?;
-            let mut next = Session::external_video(hevc_available)?;
+            let mut next = crate::bud_media::session(
+                hevc_available,
+                ten_bit,
+                settings.experimental_raw_audio,
+            )?;
             next.wake_consumer(std::thread::current());
             trace.mark("relay_native_offer");
             let creds = next.offer(&wire_id, relay)?;

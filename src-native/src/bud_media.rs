@@ -7,6 +7,20 @@ use parsec_native_bud::{
 };
 use std::sync::Arc;
 
+/// Both the initial attempt and an automatic relay retry use the same capabilities.
+pub(crate) fn session(hevc: bool, ten_bit: bool, raw: bool) -> Result<Session> {
+    let mut session = Session::external_video_depth(hevc, ten_bit)?;
+    session.allow_raw_audio(raw);
+    crate::event_log::record(
+        "INFO",
+        "audio_capabilities_declared",
+        serde_json::json!({
+            "transport":"BUD", "raw_pcm_allowed":raw
+        }),
+    );
+    Ok(session)
+}
+
 pub struct Media {
     video: crate::video_windows::Pipeline,
     audio: Arc<crate::audio_stream::Pipeline>,
@@ -35,8 +49,7 @@ impl Media {
         ten_bit: bool,
         raw_audio: bool,
     ) -> Result<(Self, Session)> {
-        let mut session = Session::external_video_depth(hevc_available, ten_bit)?;
-        session.allow_raw_audio(raw_audio);
+        let session = session(hevc_available, ten_bit, raw_audio)?;
         let audio = Arc::new(crate::audio_stream::Pipeline::start_with_budget(
             window.audio_buffer().map(|(_, max)| max),
         ));
