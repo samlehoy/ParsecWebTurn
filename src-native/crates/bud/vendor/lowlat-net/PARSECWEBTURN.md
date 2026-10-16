@@ -7,6 +7,8 @@ Original copyright and license are retained in LICENSE.
 This copy keeps native socket IO, batching/offload, wakeups, interface discovery
 and the BUD shell unchanged. Unused browser/SCTP and standalone NAT-probe modules
 and their dependencies are omitted. The normal WebRTC client does not use it.
+The unused direct lowlat-crypto dependency is omitted; the client seam retains
+the required cryptography. Unused direct dependencies are checked by a crate lint.
 
 The only data-path addition is byte accounting: Batch increments a plain u64
 only after a successful OS send, by the existing buffer length (or datagram

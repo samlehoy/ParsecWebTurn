@@ -74,6 +74,9 @@ compatibility for that setup, not a measured latency improvement or Main 10 proo
   protocol, cryptography and vendor decoder dependencies serve retained features.
   No new dependency or unneeded SDK/C ABI, host encoder, browser transport or
   standalone vendor comparison tool is introduced by this audit.
+  The unused lowlat-net-to-lowlat-crypto dependency edge was removed; required
+  client cryptography is retained. A crate lint checks for unused direct net
+  dependencies during compilation.
 - Native packaging rejects diagnostic markers and synthetic video in the normal
   executable and checks runtime imports. The original Parsec WASM SHA-256 remains
   `d663dd96df477c65479fb93eb88756c7fcafff581cc93be563625cd195a4b4a6`.
