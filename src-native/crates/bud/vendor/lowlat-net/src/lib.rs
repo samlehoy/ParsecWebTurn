@@ -10,7 +10,9 @@
 //! here containing `unsafe`.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
-#![warn(unused_crate_dependencies)]
+// Check the runtime graph. Test-only CA generation is intentionally unused when
+// the optional stream feature is disabled in a UDP-only test invocation.
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 // Tests may panic freely: a failing assertion is the point, and a fixture that
 // cannot be built is a broken test rather than hostile input.
 #![cfg_attr(
