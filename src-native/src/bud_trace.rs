@@ -10,6 +10,13 @@ pub struct Trace {
 }
 
 impl Trace {
+    /// Static application stage only; never include received text or endpoints.
+    pub fn stage(&self) -> &'static str {
+        self.stage
+    }
+    pub fn set_stage(&mut self, stage: &'static str) {
+        self.stage = stage;
+    }
     pub fn start() -> Self {
         let file = (std::env::var_os("PARSEC_BUD_DIAGNOSTICS").as_deref()
             == Some(std::ffi::OsStr::new("1")))

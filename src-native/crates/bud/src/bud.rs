@@ -10,6 +10,42 @@ pub use lowlat_client::{Event, Outcome};
 use lowlat_core::conn::Kind;
 use lowlat_crypto::Credentials;
 
+/// Sanitized native setup failure. No credentials, addresses or peer text.
+#[derive(Debug)]
+pub struct AnswerFailure(lowlat_client::event::Error);
+impl AnswerFailure {
+    pub fn code(&self) -> &'static str {
+        use lowlat_client::event::Error;
+        match self.0 {
+            Error::Busy => "busy",
+            Error::UnknownAttempt => "unknown_attempt",
+            Error::AlreadyBegun => "already_begun",
+            Error::Transport => "transport",
+            Error::Credentials => "credentials",
+            Error::Crypto => "crypto",
+            Error::Io { .. } => "io",
+            Error::NoSession => "no_session",
+            Error::Unsupported => "unsupported",
+        }
+    }
+    pub fn io_details(&self) -> Option<(&'static str, std::io::ErrorKind, Option<i32>)> {
+        match self.0 {
+            lowlat_client::event::Error::Io {
+                stage,
+                kind,
+                os_error,
+            } => Some((stage.name(), kind, os_error)),
+            _ => None,
+        }
+    }
+}
+impl std::fmt::Display for AnswerFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+impl std::error::Error for AnswerFailure {}
+
 /// One explicit route per attempt. No implicit transport or provider fallback.
 pub enum Route {
     Direct { stun: Vec<SocketAddr> },
@@ -149,9 +185,7 @@ impl Session {
             "AES-128-GCM"
         };
         self.matches(id)?;
-        self.client
-            .begin_p2p(id, &peer)
-            .map_err(|e| anyhow!("BUD answer: {e:?}"))?;
+        self.client.begin_p2p(id, &peer).map_err(AnswerFailure)?;
         self.cipher = Some(cipher);
         Ok(())
     }
@@ -292,6 +326,26 @@ pub struct Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn answer_io_failure_exposes_only_safe_stage_kind_and_numeric_code() {
+        let failure = AnswerFailure(lowlat_client::event::Error::Io {
+            stage: lowlat_client::event::IoStage::RelayCarrier,
+            kind: std::io::ErrorKind::PermissionDenied,
+            os_error: Some(10013),
+        });
+        assert_eq!(failure.code(), "io");
+        assert_eq!(
+            failure.io_details(),
+            Some((
+                "relay_carrier_create",
+                std::io::ErrorKind::PermissionDenied,
+                Some(10013)
+            ))
+        );
+        let credentials = AnswerFailure(lowlat_client::event::Error::Credentials);
+        assert_eq!(credentials.code(), "credentials");
+        assert!(credentials.io_details().is_none());
+    }
     #[test]
     fn routes_do_not_mix_direct_candidates_and_relay() {
         let endpoint = "127.0.0.1:3478".parse().unwrap();

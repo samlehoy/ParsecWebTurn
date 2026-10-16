@@ -107,7 +107,6 @@ impl StreamIo {
             waker: Waker::new(poll.registry(), WAKE)?,
         });
         let mut socket = TcpStream::connect(server)?;
-        socket.set_nodelay(true)?;
         poll.registry()
             .register(&mut socket, SOCKET, Interest::READABLE | Interest::WRITABLE)?;
         let tls = match security {
@@ -198,9 +197,17 @@ impl StreamIo {
                     return Err(error);
                 }
                 if self.connecting && (event.is_writable() || event.is_readable()) {
-                    self.socket.peer_addr()?;
-                    self.local = Some(self.socket.local_addr()?.ip());
-                    self.connecting = false;
+                    // Mio's documented nonblocking-connect sequence permits
+                    // spurious readiness before peer_addr becomes available.
+                    match self.socket.peer_addr() {
+                        Ok(_) => {
+                            self.socket.set_nodelay(true)?;
+                            self.local = Some(self.socket.local_addr()?.ip());
+                            self.connecting = false;
+                        }
+                        Err(error) if connect_pending(&error) => continue,
+                        Err(error) => return Err(error),
+                    }
                 }
                 self.readable |= event.is_readable() || event.is_read_closed();
                 self.writable |= event.is_writable() || event.is_write_closed();
@@ -452,6 +459,23 @@ impl StreamIo {
 }
 
 struct PlainWriter<'a>(&'a mut ClientConnection);
+fn connect_pending(error: &io::Error) -> bool {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::NotConnected | io::ErrorKind::WouldBlock
+    ) {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    if error.raw_os_error() == Some(libc::EINPROGRESS) {
+        return true;
+    }
+    #[cfg(windows)]
+    if error.raw_os_error() == Some(windows_sys::Win32::Networking::WinSock::WSAEINPROGRESS) {
+        return true;
+    }
+    false
+}
 fn core_error(error: lowlat_core::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.as_str())
 }
@@ -471,6 +495,23 @@ impl Write for PlainWriter<'_> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pending_nonblocking_connect_is_not_a_transport_failure() {
+        use super::connect_pending;
+        use std::io::{Error, ErrorKind};
+        assert!(connect_pending(&Error::from(ErrorKind::NotConnected)));
+        assert!(connect_pending(&Error::from(ErrorKind::WouldBlock)));
+        assert!(!connect_pending(&Error::from(ErrorKind::ConnectionRefused)));
+        assert!(!connect_pending(&Error::from(ErrorKind::PermissionDenied)));
+        #[cfg(target_os = "linux")]
+        assert!(connect_pending(&Error::from_raw_os_error(
+            libc::EINPROGRESS
+        )));
+        #[cfg(windows)]
+        assert!(connect_pending(&Error::from_raw_os_error(
+            windows_sys::Win32::Networking::WinSock::WSAEINPROGRESS
+        )));
+    }
     use super::*;
     use rustls::{ServerConfig, ServerConnection, StreamOwned, pki_types::PrivatePkcs8KeyDer};
     use std::net::{TcpListener, TcpStream as Blocking};

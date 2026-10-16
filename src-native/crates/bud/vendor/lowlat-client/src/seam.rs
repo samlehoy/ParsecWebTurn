@@ -204,13 +204,17 @@ impl Client {
         self.telemetry.relayed.store(0, Ordering::Relaxed);
         self.telemetry.path_relayed.store(false, Ordering::Relaxed);
 
-        let socket = lowlat_net::Socket::open_or_any_port(0).map_err(|_| Error::Io)?;
-        let bound = socket.local_addr().map_err(|_| Error::Io)?.port();
+        let socket = lowlat_net::Socket::open_or_any_port(0)
+            .map_err(|e| Error::io(crate::event::IoStage::Socket, &e))?;
+        let bound = socket
+            .local_addr()
+            .map_err(|e| Error::io(crate::event::IoStage::LocalAddress, &e))?
+            .port();
         let wake = match &attempt.config.relay {
             Some(relay) => relay.wake(),
             None => Wake::new(),
         }
-        .map_err(|_| Error::Io)?;
+        .map_err(|e| Error::io(crate::event::IoStage::RelayCarrier, &e))?;
 
         let (inject, arrivals) = mpsc::channel::<Arrival>();
         for arrival in attempt.pending.drain(..) {
@@ -278,7 +282,7 @@ impl Client {
         let thread = Guest::spawn(wake, move |wake, running| {
             crate::shell::run(args, wake, running);
         })
-        .map_err(|_| Error::Io)?;
+        .map_err(|e| Error::io(crate::event::IoStage::Thread, &e))?;
         attempt.inject = Some(inject);
         attempt.ask = Some(ask);
         attempt.requests = Some(requests);

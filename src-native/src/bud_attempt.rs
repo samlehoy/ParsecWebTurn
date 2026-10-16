@@ -102,7 +102,7 @@ impl Attempt {
             trace.record(if result.is_err() { "worker_error" } else { "worker_returned" }, &[("cancelled", u64::from(worker_cancel.load(Ordering::Acquire)))]);
             if result.is_err() {
                 if !worker_cancel.load(Ordering::Acquire) {
-                    crate::event_log::record("ERROR", "connection_failed", json!({"transport":"BUD","stage":"connection_or_media","route":window.stats.read().map(|s|s.route)}));
+                    crate::event_log::record("ERROR", "connection_failed", json!({"transport":"BUD","stage":trace.stage(),"route":window.stats.read().map(|s|s.route)}));
                 }
                 let mut state = worker_state.lock().unwrap_or_else(|e| e.into_inner());
                 if !worker_cancel.load(Ordering::Acquire) {
@@ -507,6 +507,23 @@ async fn turn_relays(
     Ok(routes)
 }
 
+fn log_route_attempt(route: &Route) {
+    use parsec_native_bud::bud::RelayTransport;
+    let carrier = match route {
+        Route::Direct { .. } => None,
+        Route::Turn(relay) => Some(match &relay.transport {
+            RelayTransport::Udp => "udp",
+            RelayTransport::Tcp => "tcp",
+            RelayTransport::Tls { .. } => "tls",
+        }),
+    };
+    crate::event_log::record(
+        "INFO",
+        "bud_route_attempt",
+        json!({"route":if carrier.is_some() {"TURN relay"} else {"Direct"}, "requested_turn_transport":carrier}),
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run(
     id: &str,
@@ -565,6 +582,7 @@ fn run(
     state.lock().unwrap_or_else(|e| e.into_inner()).wire_id = id.into();
     session.wake_consumer(std::thread::current());
     trace.mark("initial_native_offer");
+    log_route_attempt(&route);
     let creds = session.offer(id, route)?;
     let mut source = session.take_media()?;
     let mut signaling = Signaling::new("host", id)?;
@@ -613,7 +631,24 @@ fn run(
                 }
             }
             trace.mark("native_signal_processing");
-            signaling.receive(&text, session)?;
+            if let Err(error) = signaling.receive(&text, session) {
+                let native = error.downcast_ref::<parsec_native_bud::bud::AnswerFailure>();
+                let io = native.and_then(|e| e.io_details());
+                crate::event_log::record(
+                    "ERROR",
+                    "bud_signaling_failed",
+                    json!({
+                    "native_error":native.map(|e|e.code()), "io_stage":io.map(|e|e.0),
+                    "io_kind":io.map(|e|format!("{:?}",e.1)), "os_error":io.and_then(|e|e.2)}),
+                );
+                if io.is_some() {
+                    // A local carrier/thread setup failure is a failed route,
+                    // just like the worker's TransportFailed outcome.
+                    ended = true;
+                    break;
+                }
+                return Err(error);
+            }
             trace.mark("native_signal_processed");
             if let Ok(value) = serde_json::from_str::<Value>(&text) {
                 if value["action"] == "answer_relay"
@@ -632,6 +667,7 @@ fn run(
         }
         let mut events = Vec::new();
         for _ in 0..64 {
+            trace.set_stage("native_event_poll");
             let Some(event) = session.poll()? else {
                 break;
             };
@@ -652,7 +688,9 @@ fn run(
         }
         media.recover(session);
         drop(guard);
+        trace.set_stage("native_media_processing");
         let pumped = media.pump(&mut source)?;
+        trace.set_stage("native_media_processed");
         for event in &events {
             if matches!(event, Event::Candidate { .. } | Event::Ready) {
                 trace.mark(if matches!(event, Event::Ready) {
@@ -671,6 +709,17 @@ fn run(
                 "BUD application queue full"
             );
             match event {
+                Event::IoFailure {
+                    stage,
+                    kind,
+                    os_error,
+                } => {
+                    crate::event_log::record(
+                        "ERROR",
+                        "bud_transport_failed",
+                        json!({"stage":stage.name(), "io_kind":format!("{kind:?}"), "os_error":os_error}),
+                    );
+                }
                 Event::Candidate { .. } | Event::Ready => {}
                 Event::Established { .. } => {
                     trace.mark("transport_established");
@@ -808,6 +857,7 @@ fn run(
             )?;
             next.wake_consumer(std::thread::current());
             trace.mark("relay_native_offer");
+            log_route_attempt(&relay);
             let creds = next.offer(&wire_id, relay)?;
             source = next.take_media()?;
             signaling = Signaling::new("host", &wire_id)?;

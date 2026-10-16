@@ -114,8 +114,13 @@ pub(crate) fn run(args: Attached, mut wake: Wake, running: &Running) {
         packets,
         epoch,
     } = args;
-    if wake.prepare(|| running.stopping()).is_err() {
+    if let Err(error) = wake.prepare(|| running.stopping()) {
         if !running.stopping() {
+            emit.send(Event::IoFailure {
+                stage: crate::event::IoStage::CarrierPrepare,
+                kind: error.kind(),
+                os_error: error.raw_os_error(),
+            });
             emit.send(Event::Ended {
                 outcome: Outcome::TransportFailed,
             });
@@ -266,6 +271,11 @@ pub(crate) fn run(args: Attached, mut wake: Wake, running: &Running) {
             Err(error) => {
                 lowlat_common::log_warn!("client: the transport stopped, err={error}");
                 telemetry.state.store(2, Ordering::Relaxed);
+                emit.send(Event::IoFailure {
+                    stage: crate::event::IoStage::TransportIo,
+                    kind: error.kind(),
+                    os_error: error.raw_os_error(),
+                });
                 emit.send(Event::Ended {
                     outcome: Outcome::TransportFailed,
                 });

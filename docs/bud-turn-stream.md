@@ -39,6 +39,14 @@ nonce renewal with the client's UDP source blocked in stream cases. Synthetic
 media-channel bodies verify delivery, not real decode or latency improvements.
 Live stock-host/provider playback remains an acceptance test.
 
+Operational failures now retain only static setup stages, IO error kinds and
+numeric OS codes, including synchronous carrier creation and asynchronous
+connect/TLS/transport failures. Error strings, endpoints and credentials are
+not copied into the application log. Synchronous carrier failures can advance
+to another configured route just like worker-side transport failures.
+Nonblocking connect follows Mio's documented pending-peer handling; TCP_NODELAY
+is set after connectivity is confirmed, before TLS/application data is sent.
+
 On 2026-10-16 the [Windows/Linux transport validation](https://github.com/vampywiz17/ParsecWebTurn/actions/runs/38945891934)
 passed, including 283 retained protocol tests, application-level direct/UDP/TCP
 connectivity and all three 65-second authenticated coturn renewal cases. The

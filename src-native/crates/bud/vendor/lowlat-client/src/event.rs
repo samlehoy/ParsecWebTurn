@@ -37,6 +37,12 @@ pub struct Peer {
 /// added here must fail to compile there rather than fall through.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
+    /// Sanitized local IO failure, preceding Ended. Never carries error text.
+    IoFailure {
+        stage: IoStage,
+        kind: std::io::ErrorKind,
+        os_error: Option<i32>,
+    },
     /// Original native control message for an application-owned UI.
     ExternalControl { bytes: Vec<u8> },
     /// A local candidate, to be sent to the host as it is found.
@@ -108,11 +114,47 @@ pub enum Error {
     /// The platform would not supply entropy.
     Crypto,
     /// A socket or thread could not be had.
-    Io,
+    Io {
+        stage: IoStage,
+        kind: std::io::ErrorKind,
+        os_error: Option<i32>,
+    },
     /// No active session.
     NoSession,
     /// Unsupported application media capability.
     Unsupported,
+}
+
+/// Safe local setup phases. No peer/server strings are retained in errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IoStage {
+    Socket,
+    LocalAddress,
+    RelayCarrier,
+    Thread,
+    CarrierPrepare,
+    TransportIo,
+}
+impl IoStage {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Socket => "udp_socket",
+            Self::LocalAddress => "local_address",
+            Self::RelayCarrier => "relay_carrier_create",
+            Self::Thread => "session_thread",
+            Self::CarrierPrepare => "relay_connect_or_tls_handshake",
+            Self::TransportIo => "transport_io",
+        }
+    }
+}
+impl Error {
+    pub(crate) fn io(stage: IoStage, error: &std::io::Error) -> Self {
+        Self::Io {
+            stage,
+            kind: error.kind(),
+            os_error: error.raw_os_error(),
+        }
+    }
 }
 
 /// What reaches the loop from outside it.
