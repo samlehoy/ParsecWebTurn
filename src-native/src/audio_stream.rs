@@ -29,6 +29,25 @@ struct State {
     free_packets: Vec<Vec<u8>>,
     stopped: bool,
 }
+fn stage_pcm(state: &mut State, mut pcm: Vec<i16>, max_samples: usize) {
+    if pcm.len() > max_samples {
+        pcm.drain(..pcm.len() - max_samples);
+        state.report.packets_dropped += 1;
+    }
+    while state.report.queued_samples + pcm.len() > max_samples {
+        if let Some(old) = state.pcm.pop_front() {
+            state.report.queued_samples -= old.len();
+            state.report.packets_dropped += 1;
+            if state.free_pcm.len() < RECYCLED_BUFFERS {
+                state.free_pcm.push(old);
+            }
+        } else {
+            break;
+        }
+    }
+    state.report.queued_samples += pcm.len();
+    state.pcm.push_back(pcm);
+}
 #[derive(Clone)]
 pub(crate) struct Sender {
     tx: mpsc::SyncSender<Packet>,
@@ -188,24 +207,15 @@ impl Pipeline {
                                 "Opus"
                             });
                             state.report.packets_decoded += 1;
-                            // Drop oldest decoded audio on backpressure; never grow latency indefinitely.
-                            if pcm.len() > max_samples {
-                                pcm.drain(..pcm.len() - max_samples);
-                                state.report.packets_dropped += 1;
+                            // PCM's wire ceiling exceeds Opus's maximum decoded
+                            // block. Preserve the existing guest buffer boundary.
+                            if packet.raw && pcm.len() > PCM_SAMPLES {
+                                let tail = pcm.split_off(PCM_SAMPLES);
+                                stage_pcm(&mut state, pcm, max_samples);
+                                stage_pcm(&mut state, tail, max_samples);
+                            } else {
+                                stage_pcm(&mut state, pcm, max_samples);
                             }
-                            while state.report.queued_samples + pcm.len() > max_samples {
-                                if let Some(old) = state.pcm.pop_front() {
-                                    state.report.queued_samples -= old.len();
-                                    state.report.packets_dropped += 1;
-                                    if state.free_pcm.len() < RECYCLED_BUFFERS {
-                                        state.free_pcm.push(old);
-                                    }
-                                } else {
-                                    break;
-                                }
-                            }
-                            state.report.queued_samples += pcm.len();
-                            state.pcm.push_back(pcm);
                         }
                         Err(_) => {
                             state.report.decode_errors += 1;
@@ -302,6 +312,24 @@ impl Drop for Pipeline {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn longest_raw_packet_is_split_at_the_existing_guest_pcm_capacity() {
+        let mut pipeline = super::Pipeline::start();
+        assert!(pipeline.sender().unwrap().submit_pcm(&vec![0; 32000]));
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while pipeline.snapshot().packets_decoded == 0 && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let state = pipeline.state.lock().unwrap();
+        assert_eq!(state.report.queued_samples, 16000);
+        assert_eq!(state.pcm.len(), 2);
+        assert!(state
+            .pcm
+            .iter()
+            .all(|pcm| pcm.len() <= super::PCM_SAMPLES && pcm.len().is_multiple_of(2)));
+        drop(state);
+        pipeline.stop();
+    }
     #[test]
     fn custom_decoded_backlog_keeps_latest_pcm_instead_of_accumulating_delay() {
         let mut pipeline = super::Pipeline::start_with_budget(Some(40));
