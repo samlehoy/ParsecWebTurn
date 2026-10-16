@@ -83,8 +83,9 @@ pub struct Turn {
 /// of deadlines it armed. One that waits shows roughly one per deadline.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Stats {
-    /// Actual UDP payload bytes received and accepted for send by the OS.
-    /// Includes protocol/crypto/TURN overhead; excludes IP/UDP headers.
+    /// UDP payload or TURN stream plaintext received/accepted by its writer.
+    /// Includes protocol/crypto/TURN overhead and stream padding; excludes
+    /// TLS and IP/TCP/UDP headers. Acceptance is not proof of delivery.
     pub bytes_in: u64,
     pub bytes_out: u64,
     pub timeout_wakes: u64,

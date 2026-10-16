@@ -184,8 +184,9 @@ impl Session {
         Ok(Some(received.event))
     }
 
-    /// Per-channel counters describe delivered messages. UDP totals count
-    /// socket payload bytes, including protocol/relay overhead, not IP headers.
+    /// Per-channel counters describe delivered messages. Transport totals count
+    /// UDP payload or TURN stream plaintext, including framing/protocol overhead,
+    /// excluding TLS and IP/TCP/UDP headers. Historical field names use udp_*.
     pub fn snapshot(&self) -> Snapshot {
         use std::sync::atomic::Ordering::Relaxed;
         let t = self.client.telemetry();

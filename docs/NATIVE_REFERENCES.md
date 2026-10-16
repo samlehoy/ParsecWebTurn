@@ -32,6 +32,12 @@ see [HEVC negotiation evidence and limitations](hevc-negotiation.md). The native
 components; it does not replace WebRTC sockets/crypto or embed a lowlat host.
 See the vendored provenance documents for the retained subset.
 
+TURN stream additions reviewed on 2026-10-16: [lowlat PR #2](https://github.com/nomi-san/lowlat/pull/2),
+revision `befd5a29c7a331111f11378c0b5623de788e9769`. Only native carrier IO,
+framing and reliable TURN transactions are ported onto the existing pinned
+protocol/client subset. No newer SDK, decoder or host is imported. See
+[BUD TURN TCP/TLS scope and validation](bud-turn-stream.md).
+
 The client-side reuse/critical-section changes inspired by the IO design are
 documented in [native input and network hand-off](native-input-network-handoff.md).
 They do not implement BUD in the WebRTC client. The `pmtu` source explicitly says

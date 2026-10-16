@@ -674,6 +674,12 @@ fn run(
                 Event::Candidate { .. } | Event::Ready => {}
                 Event::Established { .. } => {
                     trace.mark("transport_established");
+                    crate::event_log::record(
+                        "INFO",
+                        "bud_connection_established",
+                        json!({"route":if transport.relay {"TURN relay"} else {"Direct"},
+                            "turn_transport":transport.relay_transport}),
+                    );
                     established = true;
                     shared.established = true;
                     shared.events.push_back(
@@ -696,7 +702,7 @@ fn run(
                     crate::event_log::record(
                         "WARN",
                         "bud_connection_ended",
-                        json!({"reason":reason,"attempt_route":if transport.relay {"TURN relay"} else {"Direct"}}),
+                        json!({"reason":reason,"attempt_route":if direct_attempt {"Direct"} else {"TURN relay"},"turn_transport":transport.relay_transport}),
                     );
                     ended = true;
                 }
