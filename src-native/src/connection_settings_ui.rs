@@ -745,12 +745,12 @@ unsafe fn layout(hwnd: HWND) {
     GetClientRect(hwnd, &mut client);
     let cloudflare = SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1;
     let footer = match page.active_tab {
-        Tab::Network => 938 + BUD_EXTRA,
+        Tab::Network => 1032 + BUD_EXTRA,
         Tab::Video => {
             if cfg!(feature = "vendor-video") {
-                532
+                626
             } else {
-                438
+                532
             }
         }
     };
