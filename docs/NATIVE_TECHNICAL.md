@@ -22,6 +22,10 @@ The previous Tauri/WebView2 client is preserved on `legacy` and in v0.7.0.
   TURN. It reuses native decoding, audio and input. WebRTC stays the default and
   retains TURN over UDP/TCP/TLS; there is no silent transport switch.
 - Opus audio, 48 kHz stereo, through shared-mode Windows WASAPI.
+- Experimental Audio settings provide optional playback buffering and BUD-only
+  raw PCM permission. Received BUD headers select PCM or Opus per packet; the
+  current headerless WebRTC audio contract remains Opus. See the
+  [audio-path audit](native-audio-options.md) for defaults and limitations.
 - Optional experimental Main 10 HEVC uses the existing D3D11-aware Media
   Foundation path with direct P010 processor input and 8-bit RGB presentation.
   Capability flags are consistent between init and stream-0 encoder requests;
@@ -44,7 +48,7 @@ public Parsec SDK. A changed upstream core requires another ABI audit.
 
 ## Run and saved data
 
-Settings has Network and Video tabs with shared save semantics. All control IDs,
+Settings has Network, Video and Audio tabs with shared save semantics. All control IDs,
 JSON keys, saved GPU preferences and Windows-protected secrets are retained.
 Switching tabs hides controls without destroying them or losing unsaved values.
 
@@ -83,7 +87,7 @@ interface if needed. The original overlay controls relative mouse and audio volu
 
 ## Current limits
 
-Not every original menu option is supported. Additional audio formats, physical
+Not every original menu option is supported. Formats beyond stereo 48 kHz PCM/Opus, physical
 gamepad discovery and further menu compatibility remain future work. Immersive
 Mouse, Keyboard and Both modes are integrated while the app has focus. Native
 STUN/TURN configuration is available from Connection settings (Ctrl+,), including
@@ -174,7 +178,7 @@ Traffic uses ICE transport byte deltas (not an available-bandwidth estimate); FP
 uses native decoder frame deltas. Video metadata comes from the existing H.264 SPS
 inspector and native GPU decoder snapshots. BUD uses native protocol traffic,
 RTT, encode-time and delivery counters instead of ICE/DTLS rows. Audio format reflects the actual
-native Opus pipeline, persists during silence, and distinguishes measured traffic
+native audio pipeline, persists during silence, and distinguishes measured traffic
 from the unknown host encoder bitrate. SCTP data channels do not expose RTP packet
 loss; local queue drops are labeled separately. DTLS state is available, but its
 version and cipher are not exposed by the current safe transport API.

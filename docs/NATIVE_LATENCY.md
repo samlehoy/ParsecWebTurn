@@ -24,22 +24,24 @@ pictures would require host/protocol changes and recovery behavior.
   switch to an arbitrary identical card. This selects the stream GPU, not the
   embedded UI's OpenGL adapter or the host encoder. No cross-GPU-copy claim is made.
 - Register the video worker with the documented Windows MMCSS `Playback` task
-  and the WASAPI render worker with `Pro Audio`. Registration is optional:
+  and the audio decode/WASAPI render workers with `Pro Audio`. Registration is optional:
   unavailable MMCSS keeps normal scheduling. RAII guards restore each thread's
   original scheduling on every exit path. No process-wide realtime priority,
   registry edits, system timer-resolution changes or administrator rights.
-- Query `IAudioClient3::GetSharedModeEnginePeriod` for the actual 48 kHz stereo
+- Experimental custom audio buffering queries `IAudioClient3::GetSharedModeEnginePeriod` for the actual 48 kHz stereo
   PCM16 format. Request the shortest supported, fundamental-aligned shared-mode
   period with `InitializeSharedAudioStream(EVENTCALLBACK)`. Unsupported format,
   API or period initialization falls back to a fresh `IAudioClient` and the
   existing event-driven 20 ms buffer request with Windows format conversion.
-  No exclusive audio device is acquired. The guest's minimum/maximum audio
-  buffering settings remain effective; reducing the device period does not
+  No exclusive audio device is acquired. Automatic mode retains the original
+  WASAPI policy and core-provided limits; custom mode applies the user's chosen
+  limits. Reducing the device period does not
   remove the host's packetization or application buffering delay.
-- Audio snapshots record whether low-latency initialization and MMCSS succeeded,
-  the requested accepted engine period and actual device buffer capacity.
+- Audio snapshots record low-period initialization acceptance, requested playback
+  limits, actual device capacity, queued PCM, padding, drops and underruns.
   Video snapshots record MMCSS registration separately from codec/GPU evidence.
   These are configuration/output observations, not measured end-to-end latency.
+  See [experimental audio controls and full-path audit](native-audio-options.md).
 
 ## Already present and retained
 
