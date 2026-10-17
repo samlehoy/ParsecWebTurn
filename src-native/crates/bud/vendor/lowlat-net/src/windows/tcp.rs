@@ -122,17 +122,18 @@ impl Tcp {
             && unsafe {
                 SetFileCompletionNotificationModes(
                     raw as HANDLE,
-                    FILE_SKIP_COMPLETION_PORT_ON_SUCCESS | FILE_SKIP_SET_EVENT_ON_HANDLE,
+                    (FILE_SKIP_COMPLETION_PORT_ON_SUCCESS | FILE_SKIP_SET_EVENT_ON_HANDLE) as u8,
                 )
             } != 0;
         let mut connect: ws::LPFN_CONNECTEX = None;
+        let connect_id = ws::WSAID_CONNECTEX;
         let mut returned = 0u32;
         // SAFETY: documented extension lookup, with exact GUID/function sizes.
         if unsafe {
             ws::WSAIoctl(
                 raw,
                 ws::SIO_GET_EXTENSION_FUNCTION_POINTER,
-                (&raw const ws::WSAID_CONNECTEX).cast(),
+                (&raw const connect_id).cast(),
                 size_of::<windows_sys::core::GUID>() as u32,
                 (&raw mut connect).cast(),
                 size_of::<ws::LPFN_CONNECTEX>() as u32,
@@ -321,10 +322,8 @@ impl Tcp {
         let timeout = if immediate {
             0
         } else {
-            u32::try_from(
-                timeout.as_millis() + u128::from(!timeout.subsec_nanos().is_multiple_of(1_000_000)),
-            )
-            .unwrap_or(u32::MAX - 1)
+            u32::try_from(timeout.as_millis() + u128::from(timeout.subsec_nanos() % 1_000_000 != 0))
+                .unwrap_or(u32::MAX - 1)
         };
         self.completions(timeout, false)?;
         if self.connected {

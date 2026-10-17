@@ -81,8 +81,7 @@ impl Tcp {
         ];
         // Round up without turning a requested immediate continuation into a
         // one-millisecond wait. The owner already bounds its protocol deadlines.
-        let millis =
-            timeout.as_millis() + u128::from(!timeout.subsec_nanos().is_multiple_of(1_000_000));
+        let millis = timeout.as_millis() + u128::from(timeout.subsec_nanos() % 1_000_000 != 0);
         let millis = i32::try_from(millis).unwrap_or(i32::MAX);
         // SAFETY: two initialized descriptors and the matching element count.
         let count = unsafe { libc::poll(fds.as_mut_ptr(), 2, millis) };

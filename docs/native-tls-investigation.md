@@ -63,6 +63,11 @@ surface, proprietary WASM, DTLS or SCTP changes are required by a TLS-only move.
 The ordinary TLS uses can be unified with these adapters, but full behavioral
 equivalence is not yet demonstrated by an implementation or test build.
 
+Decision: retain rustls for the existing DTLS certificate verifier. Native-tls
+does not expose standalone chain verification for an existing DTLS handshake.
+Replacing that use would require a separate OS certificate adapter, not a
+native-tls connector. No DTLS replacement is requested or implemented.
+
 ## Primary references
 
 - [native-tls API](https://docs.rs/native-tls/0.2.18/native_tls/)
