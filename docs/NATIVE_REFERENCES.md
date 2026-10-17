@@ -38,6 +38,12 @@ framing and reliable TURN transactions are ported onto the existing pinned
 protocol/client subset. No newer SDK, decoder or host is imported. See
 [BUD TURN TCP/TLS scope and validation](bud-turn-stream.md).
 
+Additional TURN stream correction reviewed and ported on 2026-10-17:
+[`d5d8d9ed4b1208f00de9fe8f90286919b15a0240`](https://github.com/nomi-san/lowlat/commit/d5d8d9ed4b1208f00de9fe8f90286919b15a0240).
+This keeps pending TLS ciphertext inside carrier backpressure and preserves
+output deadlines. The four corresponding regression tests are retained. No SDK,
+account API, decoder or unrelated upstream change is imported.
+
 The client-side reuse/critical-section changes inspired by the IO design are
 documented in [native input and network hand-off](native-input-network-handoff.md).
 They do not implement BUD in the WebRTC client. The `pmtu` source explicitly says

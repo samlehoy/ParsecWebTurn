@@ -30,3 +30,12 @@ wake dispatch and shell integration from lowlat PR #2 at
 befd5a29c7a331111f11378c0b5623de788e9769. UDP batching/accounting is retained.
 Stream counters measure TURN plaintext frames including padding, excluding TLS
 and network headers. There is no additional SDK, browser transport or decoder.
+
+TLS backpressure/deadline correction from lowlat commit
+`d5d8d9ed4b1208f00de9fe8f90286919b15a0240` is applied on top (2026-10-17).
+Pending output includes rustls ciphertext. No new core datagram is consumed
+until the previous frame drains through both framing and TLS. The original
+frame age survives plaintext acceptance and partial socket progress; poll waits
+are capped by write deadlines, and TLS control records after idle get a fresh
+deadline. The 32 KiB TLS cap is retained. Four upstream regression tests are
+included; ParsecWebTurn byte accounting and pending-connect handling are retained.

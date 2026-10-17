@@ -7,6 +7,19 @@ existing external-media client seam are reused. No SDK/C ABI, additional
 decoder, host, exporter or browser transport is included. Original WASM and
 GPU decoding/presentation are unchanged.
 
+The focused TLS backpressure/deadline fix from
+[lowlat commit d5d8d9e](https://github.com/nomi-san/lowlat/commit/d5d8d9ed4b1208f00de9fe8f90286919b15a0240)
+is applied on top (2026-10-17), together with its four regression tests.
+
+Pending carrier work now includes both the TURN frame and rustls ciphertext;
+the shell does not consume another protocol datagram until both drain. Plaintext
+acceptance and partial socket writes cannot restart the oldest frame's age.
+Poll waits are capped by the existing five-second write deadlines, including
+TLS-only writable work, while control records produced after idle start a fresh
+deadline. The TLS buffer remains capped at 32 KiB. These bounds cover local
+application/TLS queues, not kernel/relay queues, TCP head-of-line blocking or BUD
+retransmissions. No measured latency improvement is claimed.
+
 The Network tab's existing custom URLs / Cloudflare credentials supply both
 transports. BUD orders available URLs as UDP, TLS, TCP port 80, other TCP,
 retaining order within each tier. Ports are never rewritten. Direct discovery
