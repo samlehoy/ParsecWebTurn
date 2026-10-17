@@ -67,6 +67,10 @@ does not expose standalone chain verification for an existing DTLS handshake.
 Replacing that use would require a separate OS certificate adapter, not a
 native-tls connector. No DTLS replacement is requested or implemented.
 
+The user subsequently requested a speed comparison before any TLS migration.
+[Local results](tls-comparison-results.md) do not establish a substantial overall
+low-latency benefit. Production TLS therefore remains rustls as well.
+
 ## Primary references
 
 - [native-tls API](https://docs.rs/native-tls/0.2.18/native_tls/)
