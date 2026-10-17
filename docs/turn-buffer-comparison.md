@@ -1,8 +1,9 @@
 # Tokio TURN stream buffering comparison — 2026-10-17
 
-Decision: retain Tokio and rustls. A targeted buffering change is worth a
-separate integration, but this measurement does not justify replacing WebRTC's
-async runtime with the BUD native poller. The production client is unchanged.
+Decision: retain Tokio and rustls. The measurement supports targeted buffering,
+not replacing WebRTC's async runtime with the BUD native poller. The measurement
+itself left the production client unchanged; the subsequent implementation is
+recorded below.
 
 The supported candidates are a reusable receive buffer for **plain TURN/TCP**
 and coalescing a ChannelData message with its transport padding in one write.
@@ -10,6 +11,54 @@ TLS receive buffering did not demonstrate a useful speedup. Sending multiple
 already-ready messages together has a larger synthetic benefit, but requires
 an explicit bounded producer/queue contract that WebRTC's current Conn send
 interface does not provide; it is not a drop-in optimization.
+
+## Subsequent production implementation
+
+The WebRTC TURN carrier now applies Buffered RX only to plain TCP. It retains
+the baseline direct receive path on TLS. Complete buffered messages are copied
+into Conn's caller-owned output; only an incomplete tail needs compaction.
+The receive capacity includes the largest legal STUN header/body and maximum
+ChannelData padding, so the optimization does not narrow accepted message sizes.
+
+TCP and TLS both write padded ChannelData as one framed write from fixed reused
+storage. Unpadded messages, including STUN and aligned ChannelData, retain direct
+writes without a staging copy. The original send lock covers the complete
+write/flush, including partial progress; supplied padding is normalized to zero.
+This is the Frame TX policy, with direct TLS RX, rather than Ready TX.
+
+No multi-message queue, coalescing delay, timer change, new thread or dependency
+is introduced. ICE gathering/selection, UDP, DTLS/SCTP, BUD, WASM, audio and GPU
+paths are untouched. Regression fixtures cover fragmented/coalesced frames,
+buffer-boundary tails, maximum STUN/ChannelData lengths, every padding length,
+truncated EOF, terminal errors, cancellation of a partial TCP receive, shutdown
+and certificate rejection. The real coturn fixture exercises DTLS/SCTP over
+UDP/TCP/TLS independently of the synthetic benchmark.
+
+## Additional lowlat WebRTC review
+
+Reviewed current main/client head on 2026-10-17:
+[`1d2bb76d3cab31ab73dbd88ca07d2e071683a7bb`](https://github.com/nomi-san/lowlat/tree/1d2bb76d3cab31ab73dbd88ca07d2e071683a7bb),
+alongside the already reviewed `feat/relay-tcp` head `b174dc6`.
+
+- The [browser example transport](https://github.com/nomi-san/lowlat/blob/1d2bb76d3cab31ab73dbd88ca07d2e071683a7bb/examples/web-client/src/transport.ts)
+  uses the browser's RTCPeerConnection, configures a STUN URL, and forwards only
+  host/srflx candidates; it discards relay candidates. It contains no custom
+  TURN/TCP or TLS IO implementation to reuse. Browser WebRTC capability must not
+  be confused with features this example actually configures.
+- The [native web module](https://github.com/nomi-san/lowlat/blob/1d2bb76d3cab31ab73dbd88ca07d2e071683a7bb/crates/net/src/web/mod.rs)
+  serves browser guests on the host side, using sans-IO DTLS/SCTP state machines.
+  Its [dependencies](https://github.com/nomi-san/lowlat/blob/1d2bb76d3cab31ab73dbd88ca07d2e071683a7bb/crates/net/Cargo.toml)
+  are dimpl and dcsctp. This is not the native client's browser/WebRTC transport
+  and does not supply our Tokio TURN/TLS adapter.
+- [Connectivity section 7.4](https://github.com/nomi-san/lowlat/blob/1d2bb76d3cab31ab73dbd88ca07d2e071683a7bb/docs/03-connectivity.md)
+  implements native client relay over UDP/TCP and explicitly does not offer TLS.
+  DTLS and TLS are different layers; having browser DTLS is not TURN/TLS support.
+- Useful general ideas remain: externally driven state machines, bounded queues,
+  explicit backpressure and separate control/audio/video priorities. These do not
+  establish a lower-latency replacement for our tested stack. In particular,
+  changing SCTP priorities, ordering/reliability or adopting a new DTLS/SCTP stack
+  is outside this buffering change and would need independent interoperability
+  tests. No lowlat browser transport or new protocol dependency is imported.
 
 ## Method and reproducibility
 

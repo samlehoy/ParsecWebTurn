@@ -13,6 +13,105 @@ trait Io: AsyncRead + AsyncWrite + Unpin + Send + Sync {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> Io for T {}
 type Stream = Box<dyn Io>;
 
+// Cover the largest legal STUN body as well as ChannelData and its padding.
+// Reads return available bytes; this capacity never imposes a fill delay.
+const RECEIVE_CAPACITY: usize = 64 * 1024 + 20;
+const CHANNEL_CAPACITY: usize = (4 + u16::MAX as usize + 3) & !3;
+
+struct ReceiveBuffer {
+    bytes: Box<[u8]>,
+    start: usize,
+    end: usize,
+}
+
+impl ReceiveBuffer {
+    async fn receive(
+        &mut self,
+        reader: &mut ReadHalf<Stream>,
+        destination: &mut [u8],
+    ) -> io::Result<usize> {
+        loop {
+            if self.end - self.start >= 4 {
+                let (size, padding) = frame_shape(&self.bytes[self.start..])?;
+                if size > destination.len() || size + padding > self.bytes.len() {
+                    return Err(invalid());
+                }
+                if self.end - self.start >= size + padding {
+                    let message = &self.bytes[self.start..self.start + size];
+                    if message[0] >> 6 == 0 && message[4..8] != [0x21, 0x12, 0xa4, 0x42] {
+                        return Err(invalid());
+                    }
+                    // Conn requires caller-owned output; unlike the BUD driver,
+                    // it cannot borrow this frame directly from our buffer.
+                    destination[..size].copy_from_slice(message);
+                    self.start += size + padding;
+                    return Ok(size);
+                }
+            }
+            if self.start == self.end || self.end == self.bytes.len() {
+                self.bytes.copy_within(self.start..self.end, 0);
+                self.end -= self.start;
+                self.start = 0;
+            }
+            let count = reader.read(&mut self.bytes[self.end..]).await?;
+            if count == 0 {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            self.end += count;
+        }
+    }
+}
+
+struct Reader {
+    stream: ReadHalf<Stream>,
+    buffer: Option<ReceiveBuffer>,
+}
+
+impl Reader {
+    async fn receive(&mut self, destination: &mut [u8]) -> io::Result<usize> {
+        if let Some(buffer) = &mut self.buffer {
+            return buffer.receive(&mut self.stream, destination).await;
+        }
+        // rustls already buffers incoming records: retain the direct TLS path.
+        let mut header = [0; 4];
+        self.stream.read_exact(&mut header).await?;
+        let (size, padding) = frame_shape(&header)?;
+        if size > destination.len() {
+            return Err(invalid());
+        }
+        destination[..4].copy_from_slice(&header);
+        self.stream.read_exact(&mut destination[4..size]).await?;
+        if header[0] >> 6 == 0 && destination[4..8] != [0x21, 0x12, 0xa4, 0x42] {
+            return Err(invalid());
+        }
+        let mut pad = [0; 3];
+        self.stream.read_exact(&mut pad[..padding]).await?;
+        Ok(size)
+    }
+}
+
+struct Writer {
+    stream: WriteHalf<Stream>,
+    padded: Box<[u8]>,
+}
+
+impl Writer {
+    async fn send(&mut self, message: &[u8], size: usize, padding: usize) -> io::Result<()> {
+        if padding == 0 {
+            // Aligned ChannelData and STUN need no staging copy.
+            self.stream.write_all(&message[..size]).await?;
+        } else {
+            let wire = self.padded.get_mut(..size + padding).ok_or_else(invalid)?;
+            wire[..size].copy_from_slice(&message[..size]);
+            wire[size..].fill(0);
+            // One framed write prevents a separate tiny TCP write/TLS record
+            // for padding. Partial writes stay serialized under the same lock.
+            self.stream.write_all(wire).await?;
+        }
+        self.stream.flush().await
+    }
+}
+
 /// The upstream TURN client does not own/close its supplied transport.
 /// Bind stream lifetime to the allocation so ICE shutdown closes both.
 pub(crate) struct RelayStream {
@@ -53,8 +152,8 @@ impl Conn for RelayStream {
 }
 
 pub struct TurnStream {
-    reader: Mutex<ReadHalf<Stream>>,
-    writer: Mutex<WriteHalf<Stream>>,
+    reader: Mutex<Reader>,
+    writer: Mutex<Writer>,
     local: SocketAddr,
     remote: SocketAddr,
     closed: watch::Sender<bool>,
@@ -116,17 +215,32 @@ impl TurnStream {
             } else {
                 Box::new(tcp)
             };
-            Ok(Self::from_stream(stream, local, remote))
+            Ok(Self::from_stream(stream, local, remote, !tls))
         })
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TURN connect timed out"))?
     }
 
-    fn from_stream(stream: Stream, local: SocketAddr, remote: SocketAddr) -> Self {
+    fn from_stream(
+        stream: Stream,
+        local: SocketAddr,
+        remote: SocketAddr,
+        buffer_tcp: bool,
+    ) -> Self {
         let (reader, writer) = tokio::io::split(stream);
         Self {
-            reader: Mutex::new(reader),
-            writer: Mutex::new(writer),
+            reader: Mutex::new(Reader {
+                stream: reader,
+                buffer: buffer_tcp.then(|| ReceiveBuffer {
+                    bytes: vec![0; RECEIVE_CAPACITY].into_boxed_slice(),
+                    start: 0,
+                    end: 0,
+                }),
+            }),
+            writer: Mutex::new(Writer {
+                stream: writer,
+                padded: vec![0; CHANNEL_CAPACITY].into_boxed_slice(),
+            }),
             local,
             remote,
             closed: watch::channel(false).0,
@@ -152,18 +266,7 @@ impl Conn for TurnStream {
             _ = closed.changed() => Err(io::Error::new(io::ErrorKind::NotConnected, "TURN stream closed").into()),
             result = async {
                 let mut reader = self.reader.lock().await;
-                let mut header = [0; 4];
-                reader.read_exact(&mut header).await?;
-                let (size, padding) = frame_shape(&header)?;
-                if size > buffer.len() { return Err(invalid()); }
-                buffer[..4].copy_from_slice(&header);
-                reader.read_exact(&mut buffer[4..size]).await?;
-                if header[0] >> 6 == 0 && buffer[4..8] != [0x21, 0x12, 0xa4, 0x42] {
-                    return Err(invalid());
-                }
-                let mut pad = [0; 3];
-                reader.read_exact(&mut pad[..padding]).await?;
-                Ok::<_, io::Error>(size)
+                reader.receive(buffer).await
             } => {
                 // A short read or malformed frame destroys stream alignment.
                 // Make failure terminal rather than interpreting payload as a
@@ -194,9 +297,7 @@ impl Conn for TurnStream {
             _ = closed.changed() => Err(io::Error::new(io::ErrorKind::NotConnected, "TURN stream closed").into()),
             result = async {
                 let mut writer = self.writer.lock().await;
-                writer.write_all(&buffer[..size]).await?;
-                writer.write_all(&[0; 3][..padding]).await?;
-                writer.flush().await?;
+                writer.send(buffer, size, padding).await?;
                 Ok::<_, io::Error>(buffer.len())
             } => {
                 if result.is_err() { self.closed.send_replace(true); }
@@ -217,7 +318,7 @@ impl Conn for TurnStream {
     async fn close(&self) -> util::Result<()> {
         self.closed.send_replace(true);
         let _ = tokio::time::timeout(Duration::from_secs(1), async {
-            self.writer.lock().await.shutdown().await
+            self.writer.lock().await.stream.shutdown().await
         })
         .await;
         Ok(())
