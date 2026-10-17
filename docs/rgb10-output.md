@@ -1,5 +1,25 @@
 # 10-bit SDR RGB output
 
+## Live host compatibility
+
+Main 10 streaming is currently verified only with **NVIDIA host encoding**.
+In the 2026-10-17 live comparison, the monitor was connected to the GPU being
+tested; virtual-display registry settings were not changed. With the same BUD
+client and `0x19` capability declaration, NVIDIA encoding produced 10-bit HEVC
+and 10-bit RGB SDR output on AMD Radeon 780M client decoding. AMD 780M host
+encoding produced 8-bit HEVC instead. The stock host log confirmed `encoder =
+amd` versus `encoder = nvidia`; both logged `input = rgba10`, which describes
+input format and does not prove encoded bit depth.
+
+This does not establish an AMD hardware limitation or a universal Parsec AMD
+restriction. The reason for the tested host path's 8-bit output is not reported
+in the host log. Other host encoders, including Intel, remain unverified for
+live Main 10. The client option remains experimental and available; no encoder
+vendor is blocked. Client decode/presentation capability is separate from host
+encoding, and AMD client decoding is verified in the successful live test.
+
+## Output implementation
+
 Actual P010 decoder output selects `DXGI_FORMAT_R10G10B10A2_UNORM` when
 `CheckVideoProcessorFormat` reports output support and
 `ID3D11VideoProcessorEnumerator1::CheckVideoProcessorFormatConversion` accepts

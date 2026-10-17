@@ -536,7 +536,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         page.font,
     );
     check(hwnd, HEVC, s.prefer_hevc);
-    row_label(hwnd, page, "Color depth", "Request HEVC Main 10 (experimental). Host support required.\n10-bit RGB SDR output when supported. Reconnect to apply.", 438, 0, 40);
+    row_label(hwnd, page, "Color depth", "Verified with NVIDIA host encoding only.\n10-bit RGB SDR output when supported. Reconnect to apply.", 438, 0, 40);
     add(
         hwnd,
         page,

@@ -6,7 +6,10 @@
 > `0x19` (opt-in Main 10 with verified GPU capability). Later stream-0 encoder
 > requests preserve the same negotiated codec/range/depth flags. The old failure
 > to obtain Main 10 does not establish a web-core or host limitation. Live Main
-> 10 negotiation still needs validation. 4:4:4 remains deliberately unsupported.
+> 10 negotiation was verified on 2026-10-17 with NVIDIA host encoding and AMD
+> 780M client decoding/RGB10 output. The same client received 8-bit HEVC from
+> the tested AMD host encoder. Other host encoders are not established as
+> working Main 10 paths. 4:4:4 remains deliberately unsupported.
 
 Investigated 2026-10-11. The embedded Parsec WASM 150-104a is unchanged
 (SHA-256 `d663dd96df477c65479fb93eb88756c7fcafff581cc93be563625cd195a4b4a6`).

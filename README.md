@@ -41,8 +41,10 @@ experimental options disabled, or use the
 
 Not every setting in the embedded Parsec interface has a native implementation.
 Gamepad support still needs live validation. 4:4:4 streaming is not implemented.
-10-bit HEVC is an opt-in experiment requiring host and client GPU support;
-successful stock-host Main 10 negotiation still needs live validation.
+10-bit HEVC is an opt-in experiment requiring host and client GPU support.
+Live Main 10 streaming is currently verified only with NVIDIA host encoding;
+the tested AMD Radeon 780M host sent 8-bit HEVC despite the 10-bit request.
+This is an observed host-path limitation, not a lack of hardware Main 10 support.
 Linux/Android clients and Vulkan/D3D12 renderers are future work.
 
 ## Getting started
@@ -109,7 +111,11 @@ with a trusted certificate; changing only the port is insufficient.
   the host decides the stream actually sent. Connection stats reports the result.
 - **10-bit HEVC (experimental):** with HEVC enabled, request Main 10 only after
   a selected-GPU P010 decode/conversion capability check. Both transports retain
-  the declaration on later encoder/keyframe requests. Main 10 uses the existing
+  the declaration on later encoder/keyframe requests. **Currently verified only
+  with NVIDIA host encoding.** The live test used AMD Radeon 780M client decoding
+  and 10-bit RGB output; the same client received 8-bit HEVC with AMD host encoding.
+  The host encoder restriction is distinct from the client's GPU vendor.
+  Main 10 uses the existing
   D3D11-aware Media Foundation GPU path, with P010 fed directly to the normal
   conversion pass, writing directly into a 10-bit RGB SDR swap chain when the
   GPU supports the conversion and presentation. No extra decoded-frame copy or
@@ -203,6 +209,7 @@ Statuses below describe this branch, not necessarily the latest stable release.
 | H.264, Opus, keyboard/mouse, overlay and saved profiles | Implemented |
 | WebRTC direct and TURN over UDP/TCP/TLS, including forced relay | Implemented |
 | HEVC: NVIDIA Direct D3D11, AMD AMF, Intel VPL | Experimental; live tested on selected GPUs |
+| HEVC Main 10 and 10-bit RGB SDR output | Experimental; live verified with NVIDIA host encoding and AMD 780M client decoding; tested AMD host sends 8-bit |
 | Original-surface HEVC presentation on NVIDIA/AMD/Intel | Experimental; live tested on selected GPUs |
 | Optional BUD direct UDP and TURN over UDP/TCP/TLS, automatic relay fallback | Experimental; direct/UDP/TLS live tested; TCP covered by isolated relay tests |
 | Custom audio buffering and BUD raw PCM permission | Experimental; Opus and automatic buffering remain default |
