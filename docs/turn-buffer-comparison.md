@@ -34,6 +34,13 @@ truncated EOF, terminal errors, cancellation of a partial TCP receive, shutdown
 and certificate rejection. The real coturn fixture exercises DTLS/SCTP over
 UDP/TCP/TLS independently of the synthetic benchmark.
 
+Validation: [CI run 39060522642](https://github.com/vampywiz17/ParsecWebTurn/actions/runs/39060522642)
+passed for implementation commit `a69ca0fa2d8761ffa1622f585a9acca0b1ce41ed`.
+Windows normal and diagnostics tests, Clippy, optimized builds and the original
+WASM smoke check passed. Linux real coturn UDP/TCP/TLS transport tests passed.
+The release-candidate executable also passed a local `--version` startup check.
+This validates correctness and buildability; live-stream latency was not measured.
+
 ## Additional lowlat WebRTC review
 
 Reviewed current main/client head on 2026-10-17:
