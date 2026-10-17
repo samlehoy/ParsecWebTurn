@@ -29,7 +29,7 @@ jobs:
       - name: Verify both providers and protocol versions
         shell: pwsh
         run: |
-          tools/tls-comparison/target/release/pwt-tls-comparison.exe tls-comparison-ci.json
+          & ./tools/tls-comparison/target/release/pwt-tls-comparison.exe tls-comparison-ci.json
           if ($LASTEXITCODE -ne 0) { throw 'TLS comparison failed' }
       - uses: actions/upload-artifact@v4
         with:
