@@ -34,9 +34,12 @@ jobs:
           if ('${{ matrix.os }}' -eq 'windows-latest') { $exe += '.exe' }
           & $exe comparison.json 2
           if ($LASTEXITCODE -ne 0) { throw 'Comparison failed' }
+          & $exe calls.json 1 counted
+          if ($LASTEXITCODE -ne 0) { throw 'Instrumented comparison failed' }
       - uses: actions/upload-artifact@v4
         with:
           name: turn-buffer-comparison-${{ matrix.os }}
           path: |
             tools/turn-buffer-comparison/target/${{ matrix.target }}/release/turn-buffer-comparison.exe
             comparison.json
+            calls.json

@@ -244,6 +244,7 @@ async fn trial(
     tls: bool,
     workload: &str,
     cert: &Certificates,
+    counted: bool,
 ) -> io::Result<Trial> {
     let push = workload == "receive_burst";
     let fragmented = workload == "fragmented_correctness";
@@ -322,9 +323,13 @@ async fn trial(
     socket.set_nodelay(true)?;
     let local = socket.local_addr()?;
     let socket_counts = Arc::new(Counts::default());
-    let socket = Counted {
-        inner: socket,
-        counts: socket_counts.clone(),
+    let socket: Stream = if counted {
+        Box::new(Counted {
+            inner: socket,
+            counts: socket_counts.clone(),
+        })
+    } else {
+        Box::new(socket)
     };
     let mut stream: Stream = if tls {
         let secured = tokio_rustls::TlsConnector::from(cert.client.clone())
@@ -339,7 +344,7 @@ async fn trial(
         );
         Box::new(secured)
     } else {
-        Box::new(socket)
+        socket
     };
     let plain_counts = Arc::new(Counts::default());
     // Sending this barrier is outside measurement; it is not a TURN frame.
@@ -347,10 +352,14 @@ async fn trial(
         stream.write_all(&[0x7f]).await?;
         stream.flush().await?;
     }
-    let stream = Box::new(Counted {
-        inner: stream,
-        counts: plain_counts.clone(),
-    });
+    let stream: Stream = if counted {
+        Box::new(Counted {
+            inner: stream,
+            counts: plain_counts.clone(),
+        })
+    } else {
+        stream
+    };
     let connection = Client::new(policy, stream, local, address);
     socket_counts.reset();
     let mut result = vec![0; 4096];
@@ -380,11 +389,13 @@ async fn trial(
     server
         .join()
         .map_err(|_| io::Error::other("Server panic"))??;
-    assert_eq!(plain.bytes_in as usize, one_direction);
-    assert_eq!(
-        plain.bytes_out as usize,
-        if push { 0 } else { one_direction }
-    );
+    if counted {
+        assert_eq!(plain.bytes_in as usize, one_direction);
+        assert_eq!(
+            plain.bytes_out as usize,
+            if push { 0 } else { one_direction }
+        );
+    }
     Ok(Trial {
         repetition,
         policy: policy.into(),
@@ -407,6 +418,7 @@ fn main() {
     let arguments: Vec<_> = std::env::args().collect();
     let output = arguments.get(1).expect("Output JSON path");
     let repetitions: usize = arguments.get(2).map(|v| v.parse().unwrap()).unwrap_or(6);
+    let counted = arguments.get(3).is_some_and(|v| v == "counted");
     let cert = certificates();
     let mut trials = Vec::new();
     let runtime = runtime();
@@ -423,7 +435,7 @@ fn main() {
                         [(order + repetition) % 3];
                     let result = runtime.block_on(async {
                         tokio::time::timeout(Duration::from_secs(45), async {
-                            trial(repetition, policy, tls, workload, &cert).await
+                            trial(repetition, policy, tls, workload, &cert, counted).await
                         })
                         .await
                     });
@@ -444,7 +456,7 @@ fn main() {
             }
         }
     }
-    let document = serde_json::json!({"schema":1,"os":std::env::consts::OS,"architecture":std::env::consts::ARCH,
+    let document = serde_json::json!({"schema":1,"instrumented":counted,"os":std::env::consts::OS,"architecture":std::env::consts::ARCH,
         "runtime":"Tokio current-thread; server on a separate OS thread", "tls":"rustls TLS1.3; explicit isolated CA; hostname verified; no resumption",
         "baseline":"Production TurnStream source compiled by build.rs; fixture constructor only",
         "candidate":"BUD-style 64KiB receive and bounded 32KiB ready-only transmit, adapted to Conn copy-out semantics",
