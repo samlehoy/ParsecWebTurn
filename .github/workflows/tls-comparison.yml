@@ -1,0 +1,39 @@
+name: Isolated Windows TLS comparison
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev]
+    paths: ['tools/tls-comparison/**', '.github/workflows/tls-comparison.yml']
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/tls-comparison
+      - name: Validate and build isolated benchmark
+        shell: pwsh
+        run: |
+          cargo fmt --manifest-path tools/tls-comparison/Cargo.toml -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
+          cargo clippy --locked --manifest-path tools/tls-comparison/Cargo.toml -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
+          cargo build --locked --release --manifest-path tools/tls-comparison/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
+      - name: Verify both providers and protocol versions
+        shell: pwsh
+        run: |
+          tools/tls-comparison/target/release/pwt-tls-comparison.exe tls-comparison-ci.json
+          if ($LASTEXITCODE -ne 0) { throw 'TLS comparison failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-tls-comparison
+          path: |
+            tools/tls-comparison/target/release/pwt-tls-comparison.exe
+            tls-comparison-ci.json
