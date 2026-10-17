@@ -25,7 +25,7 @@ protocol pass. Real loopback byte checks run with offload allowed and disabled;
 failed sends, empty flushes, receive accounting and direct/coturn propagation
 are tested separately.
 
-Optional turn-stream adds only the native mio/rustls carrier, framing output,
+Optional turn-stream originally added the mio/rustls carrier, framing output,
 wake dispatch and shell integration from lowlat PR #2 at
 befd5a29c7a331111f11378c0b5623de788e9769. UDP batching/accounting is retained.
 Stream counters measure TURN plaintext frames including padding, excluding TLS
@@ -39,3 +39,12 @@ frame age survives plaintext acceptance and partial socket progress; poll waits
 are capped by write deadlines, and TLS control records after idle get a fresh
 deadline. The 32 KiB TLS cap is retained. Four upstream regression tests are
 included; ParsecWebTurn byte accounting and pending-connect handling are retained.
+
+ParsecWebTurn's native stream IO adaptation (2026-10-17) replaces the direct Mio
+dependency with Linux poll/eventfd and Windows ConnectEx/WSARecv/WSASend on the
+existing wake completion port. Rustls, framing, deadlines, ordering and UDP
+remain unchanged. Windows owns one reusable 32 KiB network send buffer until its
+overlapped completion; it is ciphertext for TLS, not a decoded-frame copy. A
+pending overlapped send retains the carrier's pending state and original age.
+Cancellation drains outstanding completions before releasing their storage.
+Tests cover both Windows completion notification modes and cancellation.

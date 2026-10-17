@@ -11,11 +11,8 @@ use std::time::{Duration, Instant};
 
 use crate::turn_stream::{Output, Progress};
 use lowlat_core::turn::stream::Decoder;
-use mio::{Events, Interest, Poll, Token, Waker, net::TcpStream};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, pki_types::ServerName};
 
-const SOCKET: Token = Token(0);
-const WAKE: Token = Token(1);
 const SETUP: Duration = Duration::from_secs(10);
 const PASSES: usize = 64;
 const TLS_BUFFER: usize = 32 * 1024;
@@ -61,7 +58,7 @@ pub enum Security {
 #[derive(Debug)]
 pub(crate) struct Notify {
     armed: AtomicBool,
-    waker: Waker,
+    waker: crate::sys::WakeHandle,
 }
 
 impl Notify {
@@ -69,23 +66,20 @@ impl Notify {
         // Do not skip wake() on an armed flag: the poller may have consumed its
         // edge during setup. Taking the flag still precedes application work.
         self.armed.store(true, Ordering::Release);
-        self.waker.wake()
+        self.waker.notify()
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct StreamIo {
-    socket: TcpStream,
+    socket: crate::sys::Tcp,
     server: SocketAddr,
     local: Option<std::net::IpAddr>,
-    poll: Poll,
-    events: Events,
     notify: Arc<Notify>,
     tls: Option<ClientConnection>,
     connecting: bool,
     readable: bool,
     writable: bool,
-    wants_write: bool,
     continuation: bool,
     plaintext: usize,
     decoder: Decoder<Box<[u8]>>,
@@ -101,14 +95,11 @@ pub(crate) struct StreamIo {
 
 impl StreamIo {
     pub(crate) fn start(server: SocketAddr, security: Security) -> io::Result<Self> {
-        let poll = Poll::new()?;
+        let socket = crate::sys::Tcp::start(server)?;
         let notify = Arc::new(Notify {
             armed: AtomicBool::new(false),
-            waker: Waker::new(poll.registry(), WAKE)?,
+            waker: socket.notify_handle()?,
         });
-        let mut socket = TcpStream::connect(server)?;
-        poll.registry()
-            .register(&mut socket, SOCKET, Interest::READABLE | Interest::WRITABLE)?;
         let tls = match security {
             Security::Tcp => None,
             Security::Tls(settings) => {
@@ -122,14 +113,11 @@ impl StreamIo {
             socket,
             server,
             local: None,
-            poll,
             notify,
             tls,
-            events: Events::with_capacity(8),
             connecting: true,
             readable: false,
             writable: false,
-            wants_write: true,
             continuation: false,
             plaintext: 0,
             decoder: Decoder::new(vec![0; crate::RECV_SLOT + 3].into_boxed_slice())
@@ -164,10 +152,11 @@ impl StreamIo {
                     self.read_tls()?;
                     self.flush()?;
                 }
-                if self
-                    .tls
-                    .as_ref()
-                    .is_none_or(|tls| !tls.is_handshaking() && !tls.wants_write())
+                if !self.socket.pending_write()
+                    && self
+                        .tls
+                        .as_ref()
+                        .is_none_or(|tls| !tls.is_handshaking() && !tls.wants_write())
                 {
                     self.continuation = true;
                     return Ok(());
@@ -186,55 +175,35 @@ impl StreamIo {
     }
 
     fn poll_once(&mut self, timeout: Duration) -> io::Result<()> {
-        self.interest()?;
-        match self.poll.poll(&mut self.events, Some(timeout)) {
+        let write = self.connecting || self.pending();
+        let ready = match self.socket.poll(timeout, write) {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => return Ok(()),
             result => result?,
+        };
+        if self.socket.take_write_progress() {
+            self.write_progress = Instant::now();
         }
-        for event in &self.events {
-            if event.token() == SOCKET {
-                if let Some(error) = self.socket.take_error()? {
-                    return Err(error);
+        if let Some(error) = self.socket.take_error()? {
+            return Err(error);
+        }
+        if self.connecting && (ready.writable || ready.readable) {
+            match self.socket.peer_addr() {
+                Ok(_) => {
+                    self.socket.set_nodelay(true)?;
+                    self.local = Some(self.socket.local_addr()?.ip());
+                    self.connecting = false;
                 }
-                if self.connecting && (event.is_writable() || event.is_readable()) {
-                    // Mio's documented nonblocking-connect sequence permits
-                    // spurious readiness before peer_addr becomes available.
-                    match self.socket.peer_addr() {
-                        Ok(_) => {
-                            self.socket.set_nodelay(true)?;
-                            self.local = Some(self.socket.local_addr()?.ip());
-                            self.connecting = false;
-                        }
-                        Err(error) if connect_pending(&error) => continue,
-                        Err(error) => return Err(error),
-                    }
-                }
-                self.readable |= event.is_readable() || event.is_read_closed();
-                self.writable |= event.is_writable() || event.is_write_closed();
-                if event.is_error() {
-                    return Err(io::ErrorKind::ConnectionAborted.into());
-                }
+                Err(error) if connect_pending(&error) => return Ok(()),
+                Err(error) => return Err(error),
             }
         }
-        Ok(())
-    }
-
-    fn interest(&mut self) -> io::Result<()> {
-        let write = self.connecting || self.pending();
-        if write != self.wants_write {
-            let interest = if write {
-                Interest::READABLE | Interest::WRITABLE
-            } else {
-                Interest::READABLE
-            };
-            self.poll
-                .registry()
-                .reregister(&mut self.socket, SOCKET, interest)?;
-            self.wants_write = write;
+        self.readable |= ready.readable;
+        self.writable |= ready.writable;
+        if ready.error {
+            return Err(io::ErrorKind::ConnectionAborted.into());
         }
         Ok(())
     }
-
     pub(crate) fn wait(&mut self, timeout_ms: f64) -> io::Result<crate::shell::Ready> {
         if let Some(error) = self.terminal.take() {
             return Err(error);
@@ -395,7 +364,9 @@ impl StreamIo {
     }
 
     pub(crate) fn pending(&self) -> bool {
-        self.output.pending() != 0 || self.tls.as_ref().is_some_and(|tls| tls.wants_write())
+        self.output.pending() != 0
+            || self.socket.pending_write()
+            || self.tls.as_ref().is_some_and(|tls| tls.wants_write())
     }
     pub(crate) fn sent_bytes(&self) -> u64 {
         self.output.accepted_bytes()
@@ -442,16 +413,19 @@ impl StreamIo {
             }
             for _ in 0..PASSES {
                 if !tls.wants_write() {
-                    if self.output.pending() == 0 {
+                    if self.output.pending() == 0 && !self.socket.pending_write() {
                         self.pending_at = None;
                     }
                     self.continuation |= self.output.pending() != 0;
+                    self.writable &= !self.socket.pending_write();
                     return Ok(());
                 }
                 match tls.write_tls(&mut self.socket) {
                     Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
                     Ok(_) => {
-                        self.write_progress = Instant::now();
+                        if self.socket.take_write_progress() {
+                            self.write_progress = Instant::now();
+                        }
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                         self.writable = false;
@@ -463,16 +437,16 @@ impl StreamIo {
             }
             self.continuation = true;
         } else {
-            let before = self.output.pending();
             match self.output.write_ready(&mut self.socket)? {
                 Progress::Blocked => self.writable = false,
                 Progress::Yielded => self.continuation = true,
                 Progress::Complete => {}
             }
-            if self.output.pending() < before {
+            self.writable &= !self.socket.pending_write();
+            if self.socket.take_write_progress() {
                 self.write_progress = Instant::now();
             }
-            if self.output.pending() == 0 {
+            if self.output.pending() == 0 && !self.socket.pending_write() {
                 self.pending_at = None;
             }
         }
@@ -772,7 +746,7 @@ mod tests {
             }
         }
         io.queue(MESSAGE, address).unwrap();
-        while io.output.pending() != 0 || io.tls.as_ref().is_some_and(|tls| tls.wants_write()) {
+        while io.pending() {
             assert!(Instant::now() < deadline);
             let _ = io.wait(20.0).unwrap();
         }
@@ -782,6 +756,21 @@ mod tests {
     #[test]
     fn stream_tcp_burst_crosses_fairness_boundaries() {
         roundtrip(false, 130);
+    }
+
+    #[test]
+    fn stream_setup_wakes_do_not_swallow_later_application_wakes() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut io = StreamIo::start(listener.local_addr().unwrap(), Security::Tcp).unwrap();
+        let notify = io.notify();
+        notify.notify().unwrap();
+        io.prepare(|| false).unwrap();
+        assert!(io.take_wake());
+        io.poll_once(Duration::ZERO).unwrap();
+        notify.notify().unwrap();
+        assert!(io.wait(1000.0).unwrap().wake);
+        assert!(io.take_wake());
+        assert!(!io.take_wake());
     }
 
     #[test]

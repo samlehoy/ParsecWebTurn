@@ -5,6 +5,7 @@ builds, not published stable releases.
 
 ## Unreleased
 
+- **Native BUD stream IO:** TCP/TLS uses the existing platform wake and native socket wait (Linux poll, Windows overlapped IOCP), with bounded in-flight network storage and cancellation. TLS remains rustls; direct/UDP and WebRTC behavior are unchanged.
 - **BUD TLS backpressure:** keep a frame pending until both TURN framing and TLS ciphertext have drained to the socket. New protocol output cannot build up behind an earlier TLS record, plaintext acceptance no longer resets the oldest frame's age, and poll waits respect the existing write deadlines. Idle TLS control traffic receives a fresh deadline. The 32 KiB TLS buffer cap and WebRTC behavior are retained.
 
 ## 0.9.4-dev.3 - BUD TCP/TLS relays and audio controls (2026-10-16)

@@ -10,10 +10,9 @@ authors = ["Nguyen Duy"]
 
 [features]
 default = []
-turn-stream = ["dep:mio", "dep:rustls", "dep:webpki-roots", "dep:rustls-native-certs"]
+turn-stream = ["dep:rustls", "dep:webpki-roots", "dep:rustls-native-certs"]
 
 [dependencies]
-mio = { version = "1", features = ["net", "os-poll"], optional = true }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 webpki-roots = { version = "1", optional = true }
 rustls-native-certs = { version = "0.8", optional = true }

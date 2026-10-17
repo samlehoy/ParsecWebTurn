@@ -36,6 +36,8 @@ pub mod addrs;
 mod carrier;
 #[cfg(all(feature = "turn-stream", any(target_os = "linux", windows)))]
 pub mod stream_io;
+#[cfg(all(feature = "turn-stream", any(target_os = "linux", windows)))]
+mod tcp;
 pub mod turn_stream;
 
 #[cfg(target_os = "linux")]

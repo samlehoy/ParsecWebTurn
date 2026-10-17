@@ -1586,7 +1586,6 @@ dependencies = [
  "libc",
  "lowlat-common",
  "lowlat-core",
- "mio",
  "rustls",
  "rustls-native-certs",
  "webpki-roots 1.0.9",

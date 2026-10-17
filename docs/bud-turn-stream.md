@@ -83,7 +83,7 @@ compatibility for that setup, not a measured latency improvement or Main 10 proo
   executable. Optional diagnostic commands, fixtures, rcgen and diagnostic-only
   compiler support remain behind test/diagnostics build configuration.
 - Direct dependencies were checked against their use sites and feature gates:
-  mio/rustls and trust stores implement the live stream carrier; Windows/Linux IO,
+  rustls and trust stores implement TLS; Windows/Linux native IO,
   protocol, cryptography and vendor decoder dependencies serve retained features.
   No new dependency or unneeded SDK/C ABI, host encoder, browser transport or
   standalone vendor comparison tool is introduced by this audit.
@@ -107,3 +107,24 @@ passed, including 283 retained protocol tests, application-level direct/UDP/TCP
 connectivity and all three 65-second authenticated coturn renewal cases. The
 stream cases blocked the client's UDP source port. No measured real-video
 latency or public-provider compatibility is inferred from these synthetic tests.
+
+## Native TCP wait (2026-10-17)
+
+The optional BUD stream carrier now uses the shell's native platform wake:
+Linux polls the TCP fd beside eventfd; Windows associates the overlapped TCP
+socket with that wake's IOCP. ConnectEx, WSARecv and WSASend have stable owned
+operation storage. Synchronous completions can bypass the port when the provider
+supports it; the ordinary completion mode is also tested. Cancellation drains
+posted completions before releasing buffers. No additional I/O thread is added.
+
+Windows copies outgoing network bytes into one reusable 32 KiB buffer because
+an overlapped send must outlive the caller's borrowed slice. TLS ciphertext and
+partial native sends count as pending until drained. Physical send completion,
+not acceptance into that storage, updates write progress. The original frame age
+and all setup/write deadlines are retained. This has no decoded-frame, GPU or
+presentation impact. No throughput or latency improvement is claimed without
+measurement. Mio's direct net dependency is removed, although Tokio still uses
+Mio elsewhere in the application. Rustls remains the TLS provider.
+
+See [native TLS feasibility](native-tls-investigation.md) for the separate
+provider investigation and its buffering, trust and DTLS limits.
