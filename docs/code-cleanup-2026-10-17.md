@@ -12,6 +12,9 @@
   matrix and slice staging, profile selection and submission branches. HEVC
   entries now use their own documented one-byte DXVA type without transmuting
   from a H.264 entry. A bit-layout regression checks equivalent reference flags.
+- The GPU crate's now-unused direct lowlat-core dependency: its only use was the
+  generic codec selector removed above. BUD still retains its required protocol
+  core; the GPU crate keeps the required decode parsers and driver bindings.
 - An explicitly requested but unused Win32_System_Ole feature from the root
   Windows API declaration dependency. Required COM and VARIANT features remain.
 - Production compilation of Audio Pipeline::start, a default-budget convenience

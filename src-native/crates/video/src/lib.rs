@@ -4,7 +4,6 @@ pub mod direct;
 pub mod display;
 mod intel;
 use anyhow::{Context as _, Result, ensure};
-use lowlat_core::video::Codec;
 use lowlat_decode::{Fed, hevc, nal};
 use lowlat_drivers::{
     amf,

@@ -1854,7 +1854,6 @@ name = "parsec-gpu-video"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "lowlat-core",
  "lowlat-decode",
  "lowlat-drivers",
  "self_cell",

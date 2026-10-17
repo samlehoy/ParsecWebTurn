@@ -896,10 +896,11 @@ impl<'a> Backend<'a> {
         let padded = at.next_multiple_of(BITSTREAM_ALIGN).min(buffer.len());
         buffer.get_mut(at..padded).ok_or(Error::TooLarge)?.fill(0);
         let pad = u32::try_from(padded - at).map_err(|_| Error::TooLarge)?;
-        if let Some(last) = slices.checked_sub(1) {
-            if let Some(s) = self.staging.hevc_slices.get_mut(last) {
-                s.SliceBytesInBuffer += pad;
-            }
+        if let Some(s) = slices
+            .checked_sub(1)
+            .and_then(|last| self.staging.hevc_slices.get_mut(last))
+        {
+            s.SliceBytesInBuffer += pad;
         }
         Ok(padded)
     }
