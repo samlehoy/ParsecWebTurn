@@ -34,6 +34,8 @@ struct Trial {
     download_mib_s: f64,
     client_cpu_ms: f64,
     client_cpu_ms_per_mib: f64,
+    upload_cpu_ms_per_mib: f64,
+    download_cpu_ms_per_mib: f64,
 }
 
 enum Client {
@@ -190,6 +192,7 @@ fn trial(
     stream.flush()?;
     stream.read_exact(&mut [0u8; 1])?;
     let upload = started.elapsed().as_secs_f64();
+    let cpu_after_upload = cpu_ms()?;
     let started = Instant::now();
     for _ in 0..BYTES / CHUNK {
         stream.read_exact(&mut chunk)?;
@@ -198,7 +201,8 @@ fn trial(
         }
     }
     let download = started.elapsed().as_secs_f64();
-    let cpu = cpu_ms()? - cpu_start;
+    let cpu_after_download = cpu_ms()?;
+    let cpu = cpu_after_download - cpu_start;
     stream.write_all(&[1])?;
     stream.flush()?;
     let (protocol, cipher) = peer.join().map_err(|_| "server panicked")??;
@@ -221,6 +225,8 @@ fn trial(
         download_mib_s: mib / download,
         client_cpu_ms: cpu,
         client_cpu_ms_per_mib: cpu / (mib * 2.0),
+        upload_cpu_ms_per_mib: (cpu_after_upload - cpu_start) / mib,
+        download_cpu_ms_per_mib: (cpu_after_download - cpu_after_upload) / mib,
     })
 }
 
@@ -312,9 +318,10 @@ fn main() -> Result<()> {
             }
         }
     }
-    let result = serde_json::json!({ "schema":1, "scope":"Windows loopback TLS provider comparison",
+    let result = serde_json::json!({ "schema":2, "scope":"Windows loopback TLS provider comparison",
         "rustls":"0.23.46 / ring", "native_tls":"0.2.18 / Schannel",
         "server":"identical rustls server; AES-128-GCM only; resumption disabled",
+        "build_profile":"client release settings: opt-level=s, thin LTO, one codegen unit, static CRT",
         "repeats":REPEATS, "discarded_warmup_pairs_per_protocol":1,
         "pings_per_trial":PINGS, "ping_bytes":256, "stream_bytes_per_direction":BYTES,
         "stream_chunk_bytes":CHUNK, "cpu_scope":"client thread kernel + user time; excludes server thread",

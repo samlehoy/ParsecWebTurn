@@ -24,6 +24,9 @@ paired trials alternate provider order. Every received payload is verified.
 - Client-thread CPU time covers the throughput phase only, using Windows thread
   kernel/user counters. It excludes the identical server thread. Quantization
   and scheduling still require repeated trials.
+- Upload and download CPU time are also reported separately. The release
+  optimization profile matches the client (size optimization, thin LTO, one
+  codegen unit and the repository's static Windows CRT flags).
 
 Use matched local runs to decide. A repeatable improvement of at least 10% in
 stream CPU cost or throughput, without worse control-message tail latency, is a

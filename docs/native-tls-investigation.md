@@ -15,8 +15,7 @@ latency result. Native TCP readiness and TLS provider selection are separate.
 
 The dtls dependency also uses rustls RootCertStore and WebPki verifiers (config.rs,
 conn/mod.rs, handshaker.rs). Replacing the four TLS stream consumers does not
-eliminate rustls/ring from the runtime graph. Rustls also appears in WebRTC's
-certificate APIs. A graph reduction is not automatically a smaller executable:
+eliminate rustls/ring from the runtime graph. The certificate verifier and root-store types are part of the DTLS implementation. A graph reduction is not automatically a smaller executable:
 Schannel wrapper code is added and unused Rust code may already be stripped.
 Compare matched release builds and packaged ZIPs before stating a size saving.
 Linux native-tls uses OpenSSL; Windows uses Schannel without an OpenSSL DLL.
