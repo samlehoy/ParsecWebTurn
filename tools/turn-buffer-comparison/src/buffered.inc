@@ -55,10 +55,10 @@ impl AsyncWrite for BufferedWriter {
 impl TurnStream {
     pub async fn send_ready(&self, messages: &[Vec<u8>]) -> util::Result<()> {
         let mut closed = self.closed.subscribe();
-        if *closed.borrow() { return Err(io::ErrorKind::NotConnected.into()); }
+        if *closed.borrow() { return Err(io::Error::from(io::ErrorKind::NotConnected).into()); }
         tokio::select! {
             biased;
-            _ = closed.changed() => Err(io::ErrorKind::NotConnected.into()),
+            _ = closed.changed() => Err(io::Error::from(io::ErrorKind::NotConnected).into()),
             result = async {
                 let mut writer = self.writer.lock().await;
                 let BufferedWriter { inner, staging } = &mut *writer;
