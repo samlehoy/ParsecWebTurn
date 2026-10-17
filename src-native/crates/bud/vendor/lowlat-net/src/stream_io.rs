@@ -670,6 +670,13 @@ mod tests {
             let address = listener.local_addr().unwrap();
             let (server, roots) = fixture(false);
             let count = 96;
+            // 96 KiB crosses both staging and receive-buffer boundaries, and
+            // the TLS record/output limits. Include nonzero wire padding.
+            let mut message = vec![0x55; 1023];
+            message[..4].copy_from_slice(&[0x40, 0, 0x03, 0xFB]);
+            let mut wire = message.clone();
+            wire.push(0);
+            let expected = wire.repeat(count);
             let peer = std::thread::spawn(move || {
                 let (socket, _) = listener.accept().unwrap();
                 bounded(&socket);
@@ -681,9 +688,9 @@ mod tests {
                 } else {
                     Box::new(socket)
                 };
-                let mut bytes = vec![0; WIRE.len() * count];
+                let mut bytes = vec![0; expected.len()];
                 socket.read_exact(&mut bytes).unwrap();
-                assert_eq!(bytes, WIRE.repeat(count));
+                assert_eq!(bytes, expected);
                 socket.write_all(&bytes).unwrap();
                 socket.flush().unwrap();
                 let mut final_frame = [0; 8];
@@ -706,13 +713,13 @@ mod tests {
                     if sent == count {
                         return Ok(None);
                     }
-                    room[..MESSAGE.len()].copy_from_slice(MESSAGE);
+                    room[..message.len()].copy_from_slice(&message);
                     sent += 1;
-                    Ok(Some((MESSAGE.len(), address)))
+                    Ok(Some((message.len(), address)))
                 })
                 .unwrap();
                 while io.drain().unwrap() != 0 {
-                    assert_eq!(io.frame().unwrap().2, MESSAGE);
+                    assert_eq!(io.frame().unwrap().2, message);
                     received += 1;
                 }
             }
