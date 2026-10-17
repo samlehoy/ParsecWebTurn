@@ -166,6 +166,8 @@ impl Shared {
                         .is_none_or(|old| {
                             old.decoder != v.decoder
                                 || old.decoder_fallback != v.decoder_fallback
+                                || old.display_rgb_bit_depth != v.display_rgb_bit_depth
+                                || old.display_output_fallback != v.display_output_fallback
                                 || old.failure_stage != v.failure_stage
                         })
                 })
@@ -181,6 +183,7 @@ impl Shared {
                     serde_json::json!({
                         "generation":generation,"decoder":v.decoder,"fallback":v.decoder_fallback.is_some(),
                         "stage":v.failure_stage,"hresult":v.failure_hresult,"decoded_bit_depth":v.decoded_bit_depth,
+                        "display_rgb_bit_depth":v.display_rgb_bit_depth,"display_output_fallback":v.display_output_fallback,
                     }),
                 );
             }

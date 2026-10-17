@@ -472,6 +472,8 @@ fn run(
                     native.fallback.clone()
                 };
                 s.renderer = Some(native.renderer_name());
+                s.display_rgb_bit_depth = None;
+                s.display_output_fallback = None;
                 s.adapter = Some(native.adapter_name());
                 s.zero_copy_status = if zero_failed {
                     zero_fallback.clone()
@@ -1359,7 +1361,7 @@ fn presentation_status(status: windows::core::HRESULT) -> Result<Presentation> {
 struct ProcessorCache {
     enumeration: ID3D11VideoProcessorEnumerator,
     processor: ID3D11VideoProcessor,
-    key: (u32, u32, u32, u32),
+    key: (u32, u32, u32, u32, DXGI_FORMAT, u32),
     inputs: Vec<(ID3D11Texture2D, u32, ID3D11VideoProcessorInputView)>,
     outputs: Vec<(ID3D11Texture2D, ID3D11VideoProcessorOutputView)>,
 }
@@ -1383,13 +1385,46 @@ struct Renderer {
     adapter: String,
     verify_synthetic_pixels: bool,
     synthetic_pixels_verified: bool,
+    #[cfg(any(test, feature = "diagnostics"))]
+    rgb10_ramp_levels: Option<usize>,
     size: (u32, u32),
+    output_format: DXGI_FORMAT,
+    ten_bit_attempted: bool,
+    ten_bit_fallback: Option<String>,
     processor: Option<ProcessorCache>,
     overlay: Option<crate::overlay_windows::Renderer>,
     overlay_failed: bool,
     // Fields drop in declaration order; keep the final flush after all views.
     cleanup: ContextCleanup,
 }
+
+fn rgb10_input_color(color: u32) -> DXGI_COLOR_SPACE_TYPE {
+    match (color & 4 != 0, (color >> 4) & 3 == 2) {
+        (true, true) => DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709,
+        (true, false) => DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
+        (false, true) => DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P601,
+        (false, false) => DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601,
+    }
+}
+
+unsafe fn supports_rgb10(enumeration: &ID3D11VideoProcessorEnumerator, color: u32) -> bool {
+    let output = enumeration
+        .CheckVideoProcessorFormat(DXGI_FORMAT_R10G10B10A2_UNORM)
+        .is_ok_and(|flags| flags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT.0 as u32 != 0);
+    output
+        && enumeration
+            .cast::<ID3D11VideoProcessorEnumerator1>()
+            .is_ok_and(|e| {
+                e.CheckVideoProcessorFormatConversion(
+                    DXGI_FORMAT_P010,
+                    rgb10_input_color(color),
+                    DXGI_FORMAT_R10G10B10A2_UNORM,
+                    DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+                )
+                .is_ok_and(|supported| supported.as_bool())
+            })
+}
+
 impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {
@@ -1455,7 +1490,12 @@ impl Renderer {
             adapter: adapter_name,
             verify_synthetic_pixels: false,
             synthetic_pixels_verified: false,
+            #[cfg(any(test, feature = "diagnostics"))]
+            rgb10_ramp_levels: None,
             size,
+            output_format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            ten_bit_attempted: false,
+            ten_bit_fallback: None,
             processor: None,
             overlay: None,
             overlay_failed: false,
@@ -1507,7 +1547,86 @@ impl Renderer {
         Ok(valid && colors.len() > 8 && overlay_verified)
     }
 
+    // Synthetic ramp only, read before Present discards the backbuffer. This
+    // diagnostic is never enabled for decoded live/account video.
+    #[cfg(any(test, feature = "diagnostics"))]
+    unsafe fn count_rgb10_levels(&self, back: &ID3D11Texture2D) -> Result<usize> {
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        back.GetDesc(&mut desc);
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.BindFlags = 0;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+        desc.MiscFlags = 0;
+        let mut staging = None;
+        api(
+            "video-rgb10-probe-staging",
+            self.device.CreateTexture2D(&desc, None, Some(&mut staging)),
+        )?;
+        let staging = staging.ok_or_else(|| unavailable("video-rgb10-probe-staging-null"))?;
+        let context = &self.cleanup.0;
+        context.CopyResource(&staging, back);
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        api(
+            "video-rgb10-probe-map",
+            context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)),
+        )?;
+        let mut levels = std::collections::BTreeSet::new();
+        if !mapped.pData.is_null() && mapped.RowPitch >= desc.Width * 4 {
+            let row = mapped
+                .pData
+                .cast::<u8>()
+                .add((desc.Height / 2 * mapped.RowPitch) as usize);
+            for x in 0..desc.Width as usize {
+                let packed = std::ptr::read_unaligned(row.add(x * 4).cast::<u32>());
+                levels.insert(packed & 1023);
+            }
+        }
+        context.Unmap(&staging, 0);
+        Ok(levels.len())
+    }
+
     unsafe fn present(
+        &mut self,
+        texture: &ID3D11Texture2D,
+        subresource: u32,
+        source: RECT,
+        color: u32,
+        shared: &Shared,
+        window: &crate::window::Window,
+    ) -> Result<Presentation> {
+        self.ten_bit_attempted = false;
+        let result = self.present_frame(texture, subresource, source, color, shared, window);
+        // Retry only a rejected 10-bit output operation, never a lost device or
+        // decoder error. The decoded P010 surface is retained; no re-decode/copy.
+        match result {
+            Err(error)
+                if self.ten_bit_attempted
+                    && self.ten_bit_fallback.is_none()
+                    && matches!(
+                        error.stage,
+                        "video-swapchain-resize"
+                            | "video-output-colorspace"
+                            | "video-processor-output-view"
+                            | "video-processor-blt"
+                    )
+                    && !matches!(
+                        error.hresult.as_deref(),
+                        Some("0x887A0005" | "0x887A0006" | "0x887A0007")
+                    ) =>
+            {
+                self.ten_bit_fallback = Some(format!(
+                    "{}: {}",
+                    error.stage,
+                    error.hresult.as_deref().unwrap_or("unsupported")
+                ));
+                self.processor = None;
+                self.present_frame(texture, subresource, source, color, shared, window)
+            }
+            other => other,
+        }
+    }
+
+    unsafe fn present_frame(
         &mut self,
         texture: &ID3D11Texture2D,
         subresource: u32,
@@ -1537,22 +1656,7 @@ impl Renderer {
             (rect.right - rect.left).max(1) as u32,
             (rect.bottom - rect.top).max(1) as u32,
         );
-        if size != self.size {
-            // ResizeBuffers requires all cached backbuffer views to be released.
-            self.processor = None;
-            api(
-                "video-swapchain-resize",
-                self.swap.ResizeBuffers(
-                    2,
-                    size.0,
-                    size.1,
-                    DXGI_FORMAT_UNKNOWN,
-                    DXGI_SWAP_CHAIN_FLAG(0),
-                ),
-            )?;
-            self.size = size;
-        }
-        let key = (td.Width, td.Height, size.0, size.1);
+        let key = (td.Width, td.Height, size.0, size.1, td.Format, color);
         if self.processor.as_ref().is_none_or(|p| p.key != key) {
             let desc = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
                 InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
@@ -1574,6 +1678,49 @@ impl Renderer {
                 "video-processor-enumerate",
                 self.video_device.CreateVideoProcessorEnumerator(&desc),
             )?;
+            let mut output_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            if td.Format == DXGI_FORMAT_P010 && self.ten_bit_fallback.is_none() {
+                if supports_rgb10(&enumeration, color) {
+                    self.ten_bit_attempted = true;
+                    output_format = DXGI_FORMAT_R10G10B10A2_UNORM;
+                } else {
+                    self.ten_bit_fallback = Some("P010 to RGB10 SDR conversion unavailable".into());
+                }
+            }
+            if size != self.size || output_format != self.output_format {
+                // Drop every backbuffer view and unbind the GUI render target
+                // before changing size/precision. No intermediate RGB texture.
+                self.processor = None;
+                self.cleanup.0.ClearState();
+                api(
+                    "video-swapchain-resize",
+                    self.swap.ResizeBuffers(
+                        2,
+                        size.0,
+                        size.1,
+                        output_format,
+                        DXGI_SWAP_CHAIN_FLAG(0),
+                    ),
+                )?;
+                self.size = size;
+                self.output_format = output_format;
+            }
+            if output_format == DXGI_FORMAT_R10G10B10A2_UNORM {
+                let swap: IDXGISwapChain3 = api("video-output-colorspace", self.swap.cast())?;
+                if api(
+                    "video-output-colorspace",
+                    swap.CheckColorSpaceSupport(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709),
+                )? & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT.0 as u32
+                    == 0
+                {
+                    return Err(unavailable("video-output-colorspace"));
+                }
+                // Ten-bit SDR. Never label SDR samples PQ/HDR or set HDR metadata.
+                api(
+                    "video-output-colorspace",
+                    swap.SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709),
+                )?;
+            }
             let processor = api(
                 "video-processor-create",
                 self.video_device.CreateVideoProcessor(&enumeration, 0),
@@ -1594,6 +1741,7 @@ impl Renderer {
                 outputs: Vec::new(),
             });
         }
+        self.ten_bit_attempted |= self.output_format == DXGI_FORMAT_R10G10B10A2_UNORM;
         let cached = self.processor.as_mut().unwrap();
         let enumeration = &cached.enumeration;
         let processor = &cached.processor;
@@ -1720,6 +1868,19 @@ impl Renderer {
         );
         ManuallyDrop::drop(&mut stream.pInputSurface);
         api("video-processor-blt", result)?;
+        update(shared, |s| {
+            s.display_rgb_bit_depth =
+                Some(if self.output_format == DXGI_FORMAT_R10G10B10A2_UNORM {
+                    10
+                } else {
+                    8
+                });
+            s.display_output_fallback = if td.Format == DXGI_FORMAT_P010 {
+                self.ten_bit_fallback.clone()
+            } else {
+                None
+            };
+        });
         if !self.overlay_failed
             && !window
                 .software_overlay_enabled
@@ -1756,6 +1917,10 @@ impl Renderer {
         if self.verify_synthetic_pixels && !self.synthetic_pixels_verified {
             self.synthetic_pixels_verified = self.verify_pixels(&back, size)?;
         }
+        #[cfg(any(test, feature = "diagnostics"))]
+        if self.rgb10_ramp_levels.is_some() && self.output_format == DXGI_FORMAT_R10G10B10A2_UNORM {
+            self.rgb10_ramp_levels = Some(self.count_rgb10_levels(&back)?);
+        }
         // Never pace reference-picture decoding against display refresh. A busy
         // swap chain skips only this display submission, not encoded pictures.
         let started = Instant::now();
@@ -1767,6 +1932,135 @@ impl Renderer {
         });
         presentation_status(status)
     }
+}
+
+/// Synthetic surfaces prove precision before Present and 8/10-bit transitions.
+/// Readback here never sees live/account video.
+#[cfg(feature = "diagnostics")]
+pub fn probe_rgb10_output() -> anyhow::Result<serde_json::Value> {
+    let window = crate::window::Window::create_video_probe()?;
+    let result = (|| -> anyhow::Result<serde_json::Value> {
+        let hwnd = window.ensure_video_surface()?;
+        unsafe {
+            let mut renderer = Renderer::create(HWND(hwnd as *mut _), None)
+                .map_err(|e| anyhow::anyhow!("GPU RGB output probe: {e:?}"))?;
+            renderer.rgb10_ramp_levels = Some(0);
+            let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
+            let source = RECT {
+                left: 0,
+                top: 0,
+                right: 1024,
+                bottom: 64,
+            };
+            let mut results = Vec::new();
+            for (index, (ten_bit, limited)) in [
+                (false, false),
+                (true, false),
+                (true, true),
+                (false, false),
+                (true, false),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if index == 4 {
+                    renderer.ten_bit_fallback =
+                        Some("Synthetic unsupported-output fallback".into());
+                    renderer.processor = None;
+                }
+                let format = if ten_bit {
+                    DXGI_FORMAT_P010
+                } else {
+                    DXGI_FORMAT_NV12
+                };
+                let pitch = if ten_bit { 2048 } else { 1024 };
+                let mut data = vec![0u8; pitch * 96];
+                for y in 0..96 {
+                    for x in 0..1024 {
+                        if ten_bit {
+                            let sample = if y >= 64 {
+                                512
+                            } else if limited {
+                                64 + x * 876 / 1023
+                            } else {
+                                x
+                            };
+                            let value = ((sample as u16) << 6).to_le_bytes();
+                            data[y * pitch + x * 2..y * pitch + x * 2 + 2].copy_from_slice(&value);
+                        } else {
+                            data[y * pitch + x] = if y >= 64 { 128 } else { (x / 4) as u8 };
+                        }
+                    }
+                }
+                let desc = D3D11_TEXTURE2D_DESC {
+                    Width: 1024,
+                    Height: 64,
+                    MipLevels: 1,
+                    ArraySize: 1,
+                    Format: format,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    ..Default::default()
+                };
+                let initial = D3D11_SUBRESOURCE_DATA {
+                    pSysMem: data.as_ptr().cast(),
+                    SysMemPitch: pitch as u32,
+                    ..Default::default()
+                };
+                let mut texture = None;
+                renderer
+                    .device
+                    .CreateTexture2D(&desc, Some(&initial), Some(&mut texture))?;
+                renderer
+                    .present(
+                        &texture.unwrap(),
+                        0,
+                        source,
+                        crate::video_color::processor_color(
+                            Some(1),
+                            Some(if limited { 2 } else { 1 }),
+                        ),
+                        &shared,
+                        &window,
+                    )
+                    .map_err(|e| anyhow::anyhow!("RGB output probe: {e:?}"))?;
+                let snapshot = shared
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .report
+                    .clone();
+                let rgb10 = snapshot.display_rgb_bit_depth == Some(10);
+                if ten_bit && index != 4 && rgb10 {
+                    anyhow::ensure!(
+                        renderer.rgb10_ramp_levels.is_some_and(|n| n > 256),
+                        "RGB10 output must retain more than 256 distinct ramp levels"
+                    );
+                }
+                if !ten_bit || index == 4 {
+                    anyhow::ensure!(
+                        snapshot.display_rgb_bit_depth == Some(8),
+                        "8-bit output/fallback failed"
+                    );
+                }
+                results.push(
+                    serde_json::json!({"p010_input":ten_bit,"limited_range":limited,
+                    "forced_fallback":index == 4,"rgb_bit_depth":snapshot.display_rgb_bit_depth,
+                    "fallback":snapshot.display_output_fallback,
+                    "distinct_red_levels":if rgb10 { renderer.rgb10_ramp_levels } else { None }}),
+                );
+            }
+            Ok(
+                serde_json::json!({"scope":"synthetic-rgb10-output","cases":results,
+                "external_requests_enabled":false,"real_account_used":false,
+                "synthetic_readback_only":true,"cpu_readback_live_enabled":false}),
+            )
+        }
+    })();
+    window.close();
+    result
 }
 
 /// No account, network or real content: create and release the actual GPU path.
@@ -2067,6 +2361,23 @@ pub fn probe_main10() -> anyhow::Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rgb10_conversion_query_preserves_matrix_and_nominal_range() {
+        for (matrix, nominal, expected) in [
+            (1, 1, DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709),
+            (1, 2, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709),
+            (2, 1, DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P601),
+            (2, 2, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601),
+        ] {
+            assert_eq!(
+                rgb10_input_color(crate::video_color::processor_color(
+                    Some(matrix),
+                    Some(nominal)
+                )),
+                expected
+            );
+        }
+    }
     #[cfg(feature = "diagnostics")]
     #[test]
     fn decoder_recovers_with_cached_parameters_and_a_headerless_keyframe() {

@@ -279,9 +279,18 @@ fn rows(
     }
     if let Some(depth) = video.and_then(|v| v.decoded_bit_depth) {
         row("Decoded color depth", format!("{depth}-bit"));
-        if depth == 10 {
-            row("Display output", "8-bit RGB (GPU conversion)".into());
-        }
+    }
+    if let Some(depth) = video.and_then(|v| v.display_rgb_bit_depth) {
+        row(
+            "RGB output",
+            format!("{depth}-bit SDR (application output)"),
+        );
+    }
+    if video.is_some_and(|v| v.display_output_fallback.is_some()) {
+        row(
+            "RGB output fallback",
+            "Using compatible 8-bit output".into(),
+        );
     }
     row(
         "Renderer",
@@ -721,6 +730,37 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rgb_output_precision_is_observed_separately_from_decoded_precision() {
+        let mut sample = Sample {
+            video: Some(crate::video_output::Snapshot {
+                decoded_bit_depth: Some(10),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let displayed = rows(&sample, &Values::default(), (None, None, None));
+        assert!(!displayed.iter().any(|(k, _)| k == "RGB output"));
+        let video = sample.video.as_mut().unwrap();
+        video.display_rgb_bit_depth = Some(10);
+        let displayed = rows(&sample, &Values::default(), (None, None, None));
+        assert!(displayed
+            .iter()
+            .any(|(k, v)| k == "RGB output" && v.starts_with("10-bit SDR")));
+        let video = sample.video.as_mut().unwrap();
+        video.display_rgb_bit_depth = Some(8);
+        video.display_output_fallback = Some("Driver rejected RGB10: 0x80070057".into());
+        let displayed = rows(&sample, &Values::default(), (None, None, None));
+        assert!(displayed
+            .iter()
+            .any(|(k, v)| k == "Decoded color depth" && v == "10-bit"));
+        assert!(displayed
+            .iter()
+            .any(|(k, v)| k == "RGB output" && v.starts_with("8-bit SDR")));
+        assert!(displayed.iter().any(|(k, _)| k == "RGB output fallback"));
+        assert!(!displayed.iter().any(|(_, v)| v.contains("0x80070057")));
+    }
+
     #[test]
     fn playback_status_is_readable_without_exposing_internal_error_details() {
         let mut sample = Sample {

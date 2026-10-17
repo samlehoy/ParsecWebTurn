@@ -348,6 +348,15 @@ mod tests {
 
     #[test]
     fn multibatch_overlay_preserves_transparency_clipping_and_replaces_inherited_stages() {
+        check_overlay(DXGI_FORMAT_B8G8R8A8_UNORM);
+    }
+
+    #[test]
+    fn rgb10_overlay_preserves_transparency_clipping_and_replaces_inherited_stages() {
+        check_overlay(DXGI_FORMAT_R10G10B10A2_UNORM);
+    }
+
+    fn check_overlay(format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT) {
         // WARP makes this an actual D3D11 rendering test even on CI machines
         // without video hardware. Readback is limited to this synthetic target.
         unsafe {
@@ -373,7 +382,7 @@ mod tests {
                 Height: 48,
                 MipLevels: 1,
                 ArraySize: 1,
-                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                Format: format,
                 SampleDesc: DXGI_SAMPLE_DESC {
                     Count: 1,
                     Quality: 0,
@@ -490,13 +499,20 @@ mod tests {
                             } else {
                                 [0, 0, 0]
                             };
-                            let pixel = std::slice::from_raw_parts(
-                                mapped
-                                    .pData
-                                    .cast::<u8>()
-                                    .add(y * mapped.RowPitch as usize + x * 4),
-                                3,
-                            );
+                            let address = mapped
+                                .pData
+                                .cast::<u8>()
+                                .add(y * mapped.RowPitch as usize + x * 4);
+                            let pixel = if format == DXGI_FORMAT_R10G10B10A2_UNORM {
+                                let packed = std::ptr::read_unaligned(address.cast::<u32>());
+                                [
+                                    ((packed >> 20 & 1023) * 255 / 1023) as u8,
+                                    ((packed >> 10 & 1023) * 255 / 1023) as u8,
+                                    ((packed & 1023) * 255 / 1023) as u8,
+                                ]
+                            } else {
+                                std::slice::from_raw_parts(address, 3).try_into().unwrap()
+                            };
                             if pixel != expected && mismatch.is_none() {
                                 mismatch = Some((x, y, pixel.to_vec(), expected));
                             }

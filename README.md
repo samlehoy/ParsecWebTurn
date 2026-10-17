@@ -111,8 +111,11 @@ with a trusted certificate; changing only the port is insufficient.
   a selected-GPU P010 decode/conversion capability check. Both transports retain
   the declaration on later encoder/keyframe requests. Main 10 uses the existing
   D3D11-aware Media Foundation GPU path, with P010 fed directly to the normal
-  conversion pass. Display output remains 8-bit RGB; this is not an HDR or
-  end-to-end 10-bit display mode. Original-surface presentation is currently
+  conversion pass, writing directly into a 10-bit RGB SDR swap chain when the
+  GPU supports the conversion and presentation. No extra decoded-frame copy or
+  conversion pass is added; unsupported output falls back to 8-bit RGB. Stats
+  report RGB output depth separately from decoded depth. This does not enable
+  HDR or verify the physical monitor/link's bit depth. Original-surface presentation is currently
   8-bit only. The host may still choose 8-bit; inspect the actual profile and
   decoded color depth in Connection stats, not just the preference.
 - **Zero copy (experimental, HEVC):** present the original NV12 decoder surface

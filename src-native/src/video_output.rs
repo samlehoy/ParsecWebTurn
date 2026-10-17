@@ -10,6 +10,9 @@ pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
     pub decoded_bit_depth: Option<u8>,
+    /// RGB swap-chain precision, not the monitor/link's physical bit depth.
+    pub display_rgb_bit_depth: Option<u8>,
+    pub display_output_fallback: Option<String>,
     pub codec: Option<crate::video_stream::Codec>,
     pub enabled: bool,
     pub decoder_initialized: bool,
