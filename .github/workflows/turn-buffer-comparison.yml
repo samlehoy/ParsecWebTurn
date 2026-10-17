@@ -1,6 +1,9 @@
 name: Isolated TURN buffer comparison
 on:
   workflow_dispatch:
+  push:
+    branches: [dev]
+    paths: ['tools/turn-buffer-comparison/**', '.github/workflows/turn-buffer-comparison.yml']
 permissions:
   contents: read
 jobs:
