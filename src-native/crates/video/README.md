@@ -15,6 +15,11 @@ internal copies and direct scanout are not established.
 and high-depth profiles were omitted. Driver bindings and parser dependencies
 remain pinned; the original license is in LICENSE-lowlat.
 
+The earlier direct H.264 comparison path was removed: this backend is HEVC-only.
+Its unused H.264 parser, parameter staging and codec selection are not allocated
+or compiled here. HEVC retains its existing 18 surfaces, 32 slice slots and
+submission/presentation path. H.264 playback remains in Media Foundation.
+
 Ownership is expressed through self_cell and bounded surface leases. VPL retains
 at most two renderer reads until a GPU fence completes; original presentation
 retains at most two display leases. Busy display updates can be skipped without

@@ -146,7 +146,7 @@ impl Decoder {
         let inner = match mode {
             Mode::IntelVpl => Inner::Intel(intel::Backend::open(device, size)?),
             Mode::DirectD3d11 => Inner::Direct(DirectCell::new(device, |owner| {
-                direct::Backend::new(&owner.device, Codec::H265)
+                direct::Backend::new(&owner.device)
             })),
             Mode::AmdAmf => {
                 let owner = AmfOwner {

@@ -157,7 +157,7 @@ impl Drop for Decoder {
     }
 }
 impl Pipeline {
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn start() -> Self {
         Self::start_with_budget(None)
     }

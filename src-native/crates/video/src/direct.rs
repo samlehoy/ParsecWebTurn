@@ -2,17 +2,11 @@
 //! MIT Copyright (c) 2026 Nguyen Duy; see ../LICENSE-lowlat.
 //! Only 8-bit 4:2:0: original decoder array slice, no split/export/staging/map.
 use core::{ffi::c_void, fmt};
-use lowlat_core::video::Codec;
-use lowlat_decode::h264::dpb::{Parity, Structure};
-use lowlat_decode::h264::sps::{ZIGZAG_4X4, ZIGZAG_8X8};
 use lowlat_decode::hevc::sps::{DIAG_4X4, DIAG_8X8};
-use lowlat_decode::{Fed, h264, hevc};
+use lowlat_decode::{Fed, hevc};
 use lowlat_drivers::{
     d3d11::{Com, Device, Error as RuntimeError},
-    ffi::{
-        d3d11::*,
-        d3d11_guids::{D3D11_DECODER_PROFILE_H264_VLD_NOFGT, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN},
-    },
+    ffi::{d3d11::*, d3d11_guids::D3D11_DECODER_PROFILE_HEVC_VLD_MAIN},
     vcall,
 };
 use std::rc::Rc;
@@ -64,11 +58,10 @@ impl SurfaceLeases {
         self.0[slot].as_ref().is_none_or(|lease| lease.available())
     }
 }
-const SURFACES: usize = h264::dpb::MAX_FRAMES;
-const MAX_SLICES: usize = h264::MAX_SLICES;
+const SURFACES: usize = hevc::dpb::MAX_PICTURES;
+const MAX_SLICES: usize = hevc::MAX_SLICES;
 const START_CODE: [u8; 3] = [0, 0, 1];
 const BITSTREAM_ALIGN: usize = 128;
-const SHORT_H264: u32 = 2;
 const SHORT_HEVC: u32 = 1;
 const NO_ENTRY: u8 = 0xff;
 /// A result code as the system spells it, in hex.
@@ -153,43 +146,15 @@ fn bytes_of<T>(value: &T) -> &[u8] {
     unsafe { core::slice::from_raw_parts((value as *const T).cast::<u8>(), size_of::<T>()) }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Shape {
-    codec: Codec,
-}
-impl Shape {
-    fn base(codec: Codec) -> Self {
-        Self { codec }
-    }
-    fn profile(self) -> &'static GUID {
-        match self.codec {
-            Codec::H264 => &D3D11_DECODER_PROFILE_H264_VLD_NOFGT,
-            Codec::H265 => &D3D11_DECODER_PROFILE_HEVC_VLD_MAIN,
-        }
-    }
-    fn surface(self) -> DXGI_FORMAT {
-        DXGI_FORMAT_NV12
-    }
-    fn short_slices(self) -> u32 {
-        if self.codec == Codec::H264 {
-            SHORT_H264
-        } else {
-            SHORT_HEVC
-        }
-    }
-    fn alignment(self) -> u32 {
-        if self.codec == Codec::H264 { 16 } else { 128 }
-    }
-}
-fn offers(device: &dyn DeviceAccess, shape: Shape) -> bool {
+fn offers(device: &dyn DeviceAccess) -> bool {
     let mut supported: BOOL = 0;
     // SAFETY: the device and the profile/output pointers remain live.
     let hr = unsafe {
         vcall!(
             device.video(),
             CheckVideoDecoderFormat,
-            shape.profile(),
-            shape.surface(),
+            &D3D11_DECODER_PROFILE_HEVC_VLD_MAIN,
+            DXGI_FORMAT_NV12,
             &raw mut supported
         )
     };
@@ -198,19 +163,18 @@ fn offers(device: &dyn DeviceAccess, shape: Shape) -> bool {
 
 fn create_decoder(
     device: &dyn DeviceAccess,
-    shape: Shape,
     width: u32,
     height: u32,
     independent: bool,
 ) -> Result<(Com<ID3D11VideoDecoder>, D3D11_VIDEO_DECODER_CONFIG)> {
-    if !offers(device, shape) {
+    if !offers(device) {
         return Err(Error::NoProfile);
     }
     let desc = D3D11_VIDEO_DECODER_DESC {
-        Guid: *shape.profile(),
+        Guid: D3D11_DECODER_PROFILE_HEVC_VLD_MAIN,
         SampleWidth: width,
         SampleHeight: height,
-        OutputFormat: shape.surface(),
+        OutputFormat: DXGI_FORMAT_NV12,
     };
     let mut count = 0u32;
     // SAFETY: a live video device; the description and output are live.
@@ -238,7 +202,7 @@ fn create_decoder(
         }
         .ok_or(Error::NoProfile)?;
         if hr < 0
-            || config.ConfigBitstreamRaw != shape.short_slices()
+            || config.ConfigBitstreamRaw != SHORT_HEVC
             || (independent && config.ConfigDecoderSpecific & (1 << 14) == 0)
         {
             continue;
@@ -267,9 +231,6 @@ fn create_decoder(
 }
 
 struct Staging {
-    h264_picture: DXVA_PicParams_H264,
-    h264_matrix: DXVA_Qmatrix_H264,
-    h264_slices: [DXVA_Slice_H264_Short; MAX_SLICES],
     // HEVC Main 8-bit picture parameters.
     hevc_picture: DXVA_PicParams_HEVC,
     hevc_matrix: DXVA_Qmatrix_HEVC,
@@ -277,7 +238,6 @@ struct Staging {
 }
 
 struct Built {
-    shape: Shape,
     coded: (u32, u32),
     decoder: Com<ID3D11VideoDecoder>,
     surfaces: Vec<Com<ID3D11Texture2D>>,
@@ -287,9 +247,7 @@ struct Built {
 pub struct Backend<'a> {
     device: &'a dyn DeviceAccess,
     ceiling: (u32, u32),
-    codec: Codec,
     built: Option<Built>,
-    h264: Box<h264::Stream>,
     hevc: Box<hevc::Stream>,
     staging: Box<Staging>,
     ranges: [(usize, usize); MAX_SLICES],
@@ -299,18 +257,13 @@ pub struct Backend<'a> {
     displayable: bool,
 }
 impl<'a> Backend<'a> {
-    pub fn new(device: &'a dyn DeviceAccess, codec: Codec) -> Self {
+    pub fn new(device: &'a dyn DeviceAccess) -> Self {
         Self {
             device,
             ceiling: (4096, 4096),
-            codec,
             built: None,
-            h264: Box::new(h264::Stream::new()),
             hevc: Box::new(hevc::Stream::new()),
             staging: Box::new(Staging {
-                h264_picture: zeroed(),
-                h264_matrix: zeroed(),
-                h264_slices: [zeroed(); MAX_SLICES],
                 hevc_picture: zeroed(),
                 hevc_matrix: zeroed(),
                 hevc_slices: [zeroed(); MAX_SLICES],
@@ -323,42 +276,21 @@ impl<'a> Backend<'a> {
         }
     }
     pub fn displayable(device: &'a dyn DeviceAccess) -> Self {
-        let mut decoder = Self::new(device, Codec::H265);
+        let mut decoder = Self::new(device);
         decoder.displayable = true;
         decoder
     }
     pub fn feed(&mut self, bytes: &[u8], sequence: usize) -> Result<Fed> {
         self.sequence = sequence;
         if let Some(built) = self.built.as_mut().filter(|_| self.displayable) {
-            built.leases.retire(|slot| match self.codec {
-                Codec::H264 => self.h264.dpb.taken(slot),
-                Codec::H265 => self.hevc.dpb.taken(slot),
-            });
+            built.leases.retire(|slot| self.hevc.dpb.taken(slot));
         }
-        match self.codec {
-            Codec::H264 => self.decode_h264(bytes),
-            Codec::H265 => self.decode_hevc(bytes),
-        }
+        self.decode_hevc(bytes)
     }
     pub fn layout(&self) -> anyhow::Result<crate::Layout> {
-        match self.codec {
-            Codec::H264 => {
-                let s = self.h264.active_sps().ok_or(Error::NoProfile)?;
-                let (width, height) = s.visible();
-                let crop = s.crop.unwrap_or([0; 4]);
-                Ok(crate::Layout {
-                    left: crop[0] * 2,
-                    top: crop[2] * 2 * if s.frame_mbs_only { 1 } else { 2 },
-                    width,
-                    height,
-                    full_range: s.vui.video_full_range,
-                })
-            }
-            Codec::H265 => crate::Layout::hevc(self.hevc.active_sps().ok_or(Error::NoProfile)?),
-        }
+        crate::Layout::hevc(self.hevc.active_sps().ok_or(Error::NoProfile)?)
     }
     pub fn drain(&mut self) {
-        self.h264.drain();
         self.hevc.drain();
     }
     pub fn take(
@@ -375,10 +307,7 @@ impl<'a> Backend<'a> {
             usize,
         ) -> anyhow::Result<Option<Rc<dyn SurfaceLease>>>,
     ) -> anyhow::Result<bool> {
-        let slot = match self.codec {
-            Codec::H264 => self.h264.next_output().map(|o| o.slot),
-            Codec::H265 => self.hevc.next_output().map(|o| o.slot),
-        };
+        let slot = self.hevc.next_output().map(|o| o.slot);
         let Some(slot) = slot else { return Ok(false) };
         let result = (|| {
             let built = self.built.as_mut().ok_or(Error::NoProfile)?;
@@ -396,26 +325,23 @@ impl<'a> Backend<'a> {
             Ok::<_, anyhow::Error>(())
         })();
         if self.built.as_ref().is_none_or(|b| !b.leases.pinned(slot)) {
-            match self.codec {
-                Codec::H264 => self.h264.dpb.taken(slot),
-                Codec::H265 => self.hevc.dpb.taken(slot),
-            };
+            self.hevc.dpb.taken(slot);
         }
         result?;
         Ok(true)
     }
-    fn ensure(&mut self, shape: Shape, coded: (u32, u32)) -> Result<bool> {
+    fn ensure(&mut self, coded: (u32, u32)) -> Result<bool> {
         if let Some(built) = &self.built {
-            return Ok(built.shape == shape && built.coded == coded);
+            return Ok(built.coded == coded);
         }
         if coded.0 > self.ceiling.0 || coded.1 > self.ceiling.1 {
             return Err(Error::TooLarge);
         }
         // Use only configurations advertising independent decode textures.
-        let (decoder, _) = create_decoder(self.device, shape, coded.0, coded.1, self.displayable)?;
+        let (decoder, _) = create_decoder(self.device, coded.0, coded.1, self.displayable)?;
         let desc = D3D11_TEXTURE2D_DESC {
-            Width: coded.0.next_multiple_of(shape.alignment()),
-            Height: coded.1.next_multiple_of(shape.alignment()),
+            Width: coded.0.next_multiple_of(128),
+            Height: coded.1.next_multiple_of(128),
             MipLevels: 1,
             ArraySize: if self.displayable { 1 } else { SURFACES as u32 },
             Format: DXGI_FORMAT_NV12,
@@ -447,14 +373,9 @@ impl<'a> Backend<'a> {
                 surfaces.push(self.device.texture(&desc)?);
             }
             let index = if self.displayable { slice } else { 0 };
-            views.push(self.view(
-                shape,
-                &surfaces[index],
-                if self.displayable { 0 } else { slice },
-            )?);
+            views.push(self.view(&surfaces[index], if self.displayable { 0 } else { slice })?);
         }
         self.built = Some(Built {
-            shape,
             coded,
             decoder,
             surfaces,
@@ -465,12 +386,11 @@ impl<'a> Backend<'a> {
     }
     fn view(
         &self,
-        shape: Shape,
         surfaces: &Com<ID3D11Texture2D>,
         slice: usize,
     ) -> Result<Com<ID3D11VideoDecoderOutputView>> {
         let desc = D3D11_VIDEO_DECODER_OUTPUT_VIEW_DESC {
-            DecodeProfile: *shape.profile(),
+            DecodeProfile: D3D11_DECODER_PROFILE_HEVC_VLD_MAIN,
             ViewDimension: D3D11_VDOV_DIMENSION_TEXTURE2D,
             __bindgen_anon_1: D3D11_VIDEO_DECODER_OUTPUT_VIEW_DESC__bindgen_ty_1 {
                 Texture2D: D3D11_TEX2D_VDOV {
@@ -500,192 +420,6 @@ impl<'a> Backend<'a> {
         self.report
     }
 
-    fn decode_h264(&mut self, unit: &[u8]) -> Result<Fed> {
-        match self
-            .h264
-            .read(unit)
-            .map_err(|error| Error::Parse("h264 read", error))?
-        {
-            h264::Read::Nothing => return Ok(self.pending_fed_h264()),
-            h264::Read::FormatChanged => return Ok(Fed::FormatChanged),
-            h264::Read::Picture => {}
-        }
-        let job = self.h264.job().ok_or(Error::Status(-1))?;
-        // The one profile here is eight-bit 4:2:0; the rest of what the
-        // readers admit has none.
-        if job.sps.chroma_format_idc != 1 || job.sps.bit_depth_luma_minus8 != 0 {
-            self.h264.abandon();
-            return Err(Error::NoProfile);
-        }
-        let coded = (job.sps.coded_width(), job.sps.coded_height());
-        if !self.ensure(Shape::base(Codec::H264), coded)? {
-            self.h264.abandon();
-            return Ok(Fed::FormatChanged);
-        }
-        let submitted = self
-            .stage_h264()
-            .and_then(|slices| self.submit(unit, slices));
-        if let Err(e) = submitted {
-            self.h264.abandon();
-            return Err(e);
-        }
-        self.h264
-            .finish()
-            .map_err(|error| Error::Parse("h264 finish", error))?;
-        Ok(self.pending_fed_h264())
-    }
-
-    fn pending_fed_h264(&self) -> Fed {
-        if self.h264.dpb.has_output() {
-            Fed::Picture
-        } else {
-            Fed::NeedMoreData
-        }
-    }
-
-    /// Fill the picture parameters and the matrix from the H.264 job, and
-    /// note where its slices lie; returns the slice count.
-    fn stage_h264(&mut self) -> Result<usize> {
-        let report = self.next_report();
-        let job = self.h264.job().ok_or(Error::Status(-1))?;
-        let sps = &job.sps;
-        let pps = &job.pps;
-        let current = &job.current;
-        let first = job
-            .slices
-            .items
-            .first()
-            .copied()
-            .flatten()
-            .ok_or(Error::Status(-1))?;
-        let intra_only = job
-            .slices
-            .as_slice()
-            .iter()
-            .flatten()
-            .all(|s| s.header.slice_type.is_intra());
-
-        // The references, and which fields of each are referenced.
-        let mut refs = [entry_h264(None, false); 16];
-        let mut orders = [[0i32; 2]; 16];
-        let mut frame_nums = [0u16; 16];
-        let mut used = 0u32;
-        for (i, r) in job.references.as_slice().iter().take(16).enumerate() {
-            let Some(r) = r else {
-                continue;
-            };
-            let (top, bottom) = match r.parity {
-                None => (true, true),
-                Some(Parity::Top) => (true, false),
-                Some(Parity::Bottom) => (false, true),
-            };
-            if let Some(e) = refs.get_mut(i) {
-                *e = entry_h264(Some(r.slot), r.long_term);
-            }
-            if let Some(o) = orders.get_mut(i) {
-                *o = [
-                    if top { r.top_poc } else { 0 },
-                    if bottom { r.bottom_poc } else { 0 },
-                ];
-            }
-            if let Some(n) = frame_nums.get_mut(i) {
-                // The frame number of a short-term reference, the long-term
-                // index of a long-term one.
-                *n = u16::try_from(r.frame_idx).unwrap_or(0);
-            }
-            used |= u32::from(top) << (2 * i) | u32::from(bottom) << (2 * i + 1);
-        }
-        let (top_order, bottom_order) = match current.structure {
-            Structure::Frame => (current.top_poc, current.bottom_poc),
-            Structure::Field(Parity::Top) => (current.top_poc, 0),
-            Structure::Field(Parity::Bottom) => (0, current.bottom_poc),
-        };
-
-        let mut bits: _DXVA_PicParams_H264__bindgen_ty_1__bindgen_ty_1 = zeroed();
-        bits.set_field_pic_flag(u16::from(first.header.field_pic));
-        bits.set_MbaffFrameFlag(u16::from(
-            sps.mb_adaptive_frame_field && !first.header.field_pic,
-        ));
-        bits.set_residual_colour_transform_flag(u16::from(sps.separate_colour_plane));
-        bits.set_sp_for_switch_flag(0);
-        bits.set_chroma_format_idc(u16::from(sps.chroma_format_idc));
-        bits.set_RefPicFlag(u16::from(first.header.nal_ref_idc != 0));
-        bits.set_constrained_intra_pred_flag(u16::from(pps.constrained_intra_pred));
-        bits.set_weighted_pred_flag(u16::from(pps.weighted_pred));
-        bits.set_weighted_bipred_idc(u16::from(pps.weighted_bipred_idc));
-        bits.set_MbsConsecutiveFlag(1);
-        bits.set_frame_mbs_only_flag(u16::from(sps.frame_mbs_only));
-        bits.set_transform_8x8_mode_flag(u16::from(pps.transform_8x8_mode));
-        bits.set_MinLumaBipredSize8x8Flag(u16::from(sps.level_idc >= 31));
-        bits.set_IntraPicFlag(u16::from(intra_only));
-
-        let p = &mut self.staging.h264_picture;
-        *p = zeroed();
-        p.wFrameWidthInMbsMinus1 = sps.pic_width_in_mbs_minus1;
-        p.wFrameHeightInMbsMinus1 = u16::try_from(sps.frame_height_in_mbs().saturating_sub(1))
-            .map_err(|_| Error::TooLarge)?;
-        p.CurrPic = entry_h264(
-            Some(current.slot),
-            current.structure == Structure::Field(Parity::Bottom),
-        );
-        p.num_ref_frames = sps.max_num_ref_frames;
-        p.__bindgen_anon_1 = _DXVA_PicParams_H264__bindgen_ty_1 {
-            __bindgen_anon_1: bits,
-        };
-        p.bit_depth_luma_minus8 = sps.bit_depth_luma_minus8;
-        p.bit_depth_chroma_minus8 = sps.bit_depth_chroma_minus8;
-        // What every decoder since the interface's first revision expects;
-        // one older mode needs another value, and no device here has it.
-        p.Reserved16Bits = 3;
-        p.StatusReportFeedbackNumber = report;
-        p.RefFrameList = refs;
-        p.CurrFieldOrderCnt = [top_order, bottom_order];
-        p.FieldOrderCntList = orders;
-        p.pic_init_qs_minus26 = pps.pic_init_qs_minus26;
-        p.chroma_qp_index_offset = pps.chroma_qp_index_offset;
-        p.second_chroma_qp_index_offset = pps.second_chroma_qp_index_offset;
-        p.ContinuationFlag = 1;
-        p.pic_init_qp_minus26 = pps.pic_init_qp_minus26;
-        p.num_ref_idx_l0_active_minus1 = pps.num_ref_idx_l0_default_active_minus1;
-        p.num_ref_idx_l1_active_minus1 = pps.num_ref_idx_l1_default_active_minus1;
-        p.FrameNumList = frame_nums;
-        p.UsedForReferenceFlags = used;
-        p.NonExistingFrameFlags = 0;
-        p.frame_num = u16::try_from(current.frame_num).unwrap_or(0);
-        p.log2_max_frame_num_minus4 = sps.log2_max_frame_num_minus4;
-        p.pic_order_cnt_type = sps.pic_order_cnt_type;
-        p.log2_max_pic_order_cnt_lsb_minus4 = sps.log2_max_pic_order_cnt_lsb_minus4;
-        p.delta_pic_order_always_zero_flag = u8::from(sps.delta_pic_order_always_zero);
-        p.direct_8x8_inference_flag = u8::from(sps.direct_8x8_inference);
-        p.entropy_coding_mode_flag = u8::from(pps.entropy_coding_mode);
-        p.pic_order_present_flag = u8::from(pps.bottom_field_pic_order_in_frame_present);
-        p.num_slice_groups_minus1 = 0;
-        p.slice_group_map_type = 0;
-        p.deblocking_filter_control_present_flag = u8::from(pps.deblocking_filter_control_present);
-        p.redundant_pic_cnt_present_flag = u8::from(pps.redundant_pic_cnt_present);
-        p.slice_group_change_rate_minus1 = 0;
-
-        let mut list_4x4 = [[0u8; 16]; 6];
-        for (dst, src) in list_4x4.iter_mut().zip(pps.scaling.list_4x4.iter()) {
-            coded_order(dst, src, &ZIGZAG_4X4);
-        }
-        let mut list_8x8 = [[0u8; 64]; 2];
-        for (dst, src) in list_8x8.iter_mut().zip(pps.scaling.list_8x8.iter()) {
-            coded_order(dst, src, &ZIGZAG_8X8);
-        }
-        let m = &mut self.staging.h264_matrix;
-        m.bScalingLists4x4 = list_4x4;
-        m.bScalingLists8x8 = list_8x8;
-
-        let slices = job.slices.len.min(MAX_SLICES);
-        for (i, slice) in job.slices.as_slice().iter().flatten().enumerate() {
-            if let Some(r) = self.ranges.get_mut(i) {
-                *r = (slice.offset, slice.len);
-            }
-        }
-        Ok(slices)
-    }
-
     fn decode_hevc(&mut self, unit: &[u8]) -> Result<Fed> {
         match self
             .hevc
@@ -697,7 +431,6 @@ impl<'a> Backend<'a> {
             hevc::Read::Picture => {}
         }
         let job = self.hevc.job().ok_or(Error::Status(-1))?;
-        let shape = Shape::base(Codec::H265);
         if job.sps.chroma_format_idc != 1
             || job.sps.bit_depth_luma_minus8 != 0
             || job.sps.is_range_extended()
@@ -706,12 +439,12 @@ impl<'a> Backend<'a> {
             return Err(Error::NoProfile);
         }
         let coded = (job.sps.width, job.sps.height);
-        if !self.ensure(shape, coded)? {
+        if !self.ensure(coded)? {
             self.hevc.abandon();
             return Ok(Fed::FormatChanged);
         }
         let submitted = self
-            .stage_hevc(shape)
+            .stage_hevc()
             .and_then(|slices| self.submit(unit, slices));
         if let Err(e) = submitted {
             self.hevc.abandon();
@@ -733,7 +466,7 @@ impl<'a> Backend<'a> {
 
     /// Fill the picture parameters and the matrix from the HEVC job, and
     /// note where its slices lie; returns the slice count.
-    fn stage_hevc(&mut self, _shape: Shape) -> Result<usize> {
+    fn stage_hevc(&mut self) -> Result<usize> {
         let report = self.next_report();
         let job = self.hevc.job().ok_or(Error::Status(-1))?;
         let sps = &job.sps;
@@ -968,11 +701,11 @@ impl<'a> Backend<'a> {
     /// Hand the staged picture to the device: begin on the current slot's
     /// surface, fill and submit the buffers, end.
     fn submit(&mut self, unit: &[u8], slices: usize) -> Result<()> {
-        let slot = match self.codec {
-            Codec::H264 => self.h264.job().map(|j| j.current.slot),
-            Codec::H265 => self.hevc.job().map(|j| j.current.slot),
-        }
-        .ok_or(Error::Status(-1))?;
+        let slot = self
+            .hevc
+            .job()
+            .map(|j| j.current.slot)
+            .ok_or(Error::Status(-1))?;
         let built = self.built.as_ref().ok_or(Error::NoProfile)?;
         if !built.leases.writable(slot) {
             // No sleep and no overwrite while scanout/presentation owns it.
@@ -1038,7 +771,7 @@ impl<'a> Backend<'a> {
         decoder: *mut ID3D11VideoDecoder,
     ) -> Result<([D3D11_VIDEO_DECODER_BUFFER_DESC; 4], u32)> {
         // The bitstream first: it says where each slice lies.
-        let (length, macroblocks) = self.fill_bitstream(unit, slices, decoder)?;
+        let length = self.fill_bitstream(unit, slices, decoder)?;
         let mut descs: [D3D11_VIDEO_DECODER_BUFFER_DESC; 4] = zeroed();
         let mut count = 0usize;
         let mut add = |kind: D3D11_VIDEO_DECODER_BUFFER_TYPE, size: usize, mbs: u32| {
@@ -1049,95 +782,56 @@ impl<'a> Backend<'a> {
                 count += 1;
             }
         };
-        match self.codec {
-            Codec::H264 => {
-                let s = &self.staging;
-                self.put(
-                    decoder,
-                    D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS,
-                    bytes_of(&s.h264_picture),
-                )?;
-                self.put(
-                    decoder,
-                    D3D11_VIDEO_DECODER_BUFFER_INVERSE_QUANTIZATION_MATRIX,
-                    bytes_of(&s.h264_matrix),
-                )?;
-                let control = s.h264_slices.get(..slices).ok_or(Error::TooLarge)?;
-                self.put(
-                    decoder,
-                    D3D11_VIDEO_DECODER_BUFFER_SLICE_CONTROL,
-                    slice_bytes(control),
-                )?;
-                add(
-                    D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS,
-                    size_of::<DXVA_PicParams_H264>(),
-                    0,
-                );
-                add(
-                    D3D11_VIDEO_DECODER_BUFFER_INVERSE_QUANTIZATION_MATRIX,
-                    size_of::<DXVA_Qmatrix_H264>(),
-                    0,
-                );
-                add(
-                    D3D11_VIDEO_DECODER_BUFFER_SLICE_CONTROL,
-                    size_of_val(control),
-                    macroblocks,
-                );
-            }
-            Codec::H265 => {
-                let s = &self.staging;
-                let picture = bytes_of(&s.hevc_picture);
-                self.put(
-                    decoder,
-                    D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS,
-                    picture,
-                )?;
-                add(
-                    D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS,
-                    picture.len(),
-                    0,
-                );
-                let scaling = self.hevc.job().is_some_and(|j| j.sps.scaling_list_enabled);
-                if scaling {
-                    self.put(
-                        decoder,
-                        D3D11_VIDEO_DECODER_BUFFER_INVERSE_QUANTIZATION_MATRIX,
-                        bytes_of(&s.hevc_matrix),
-                    )?;
-                    add(
-                        D3D11_VIDEO_DECODER_BUFFER_INVERSE_QUANTIZATION_MATRIX,
-                        size_of::<DXVA_Qmatrix_HEVC>(),
-                        0,
-                    );
-                }
-                let control = s.hevc_slices.get(..slices).ok_or(Error::TooLarge)?;
-                self.put(
-                    decoder,
-                    D3D11_VIDEO_DECODER_BUFFER_SLICE_CONTROL,
-                    slice_bytes(control),
-                )?;
-                add(
-                    D3D11_VIDEO_DECODER_BUFFER_SLICE_CONTROL,
-                    size_of_val(control),
-                    0,
-                );
-            }
+        let s = &self.staging;
+        let picture = bytes_of(&s.hevc_picture);
+        self.put(
+            decoder,
+            D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS,
+            picture,
+        )?;
+        add(
+            D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS,
+            picture.len(),
+            0,
+        );
+        let scaling = self.hevc.job().is_some_and(|j| j.sps.scaling_list_enabled);
+        if scaling {
+            self.put(
+                decoder,
+                D3D11_VIDEO_DECODER_BUFFER_INVERSE_QUANTIZATION_MATRIX,
+                bytes_of(&s.hevc_matrix),
+            )?;
+            add(
+                D3D11_VIDEO_DECODER_BUFFER_INVERSE_QUANTIZATION_MATRIX,
+                size_of::<DXVA_Qmatrix_HEVC>(),
+                0,
+            );
         }
-        add(D3D11_VIDEO_DECODER_BUFFER_BITSTREAM, length, macroblocks);
+        let control = s.hevc_slices.get(..slices).ok_or(Error::TooLarge)?;
+        self.put(
+            decoder,
+            D3D11_VIDEO_DECODER_BUFFER_SLICE_CONTROL,
+            slice_bytes(control),
+        )?;
+        add(
+            D3D11_VIDEO_DECODER_BUFFER_SLICE_CONTROL,
+            size_of_val(control),
+            0,
+        );
+        add(D3D11_VIDEO_DECODER_BUFFER_BITSTREAM, length, 0);
         Ok((descs, u32::try_from(count).unwrap_or(0)))
     }
 
     /// Write each slice, a start code ahead of it, into the device's
     /// bitstream buffer and record its place in the slice control; the
     /// whole zero-padded to the boundary the device reads in. Returns the
-    /// length written and the picture's macroblocks, which the first codec's
-    /// descriptions carry.
+    /// length written; HEVC buffer descriptions carry no macroblock count.
     fn fill_bitstream(
         &mut self,
         unit: &[u8],
         slices: usize,
         decoder: *mut ID3D11VideoDecoder,
-    ) -> Result<(usize, u32)> {
+    ) -> Result<usize> {
         let context = self.device.video_context();
         let mut size = 0u32;
         let mut data: *mut c_void = core::ptr::null_mut();
@@ -1175,13 +869,7 @@ impl<'a> Backend<'a> {
         .ok_or(Error::NoProfile);
         let length = written?;
         check(released?)?;
-        let macroblocks = match self.codec {
-            Codec::H264 => self.h264.job().map_or(0, |j| {
-                (u32::from(j.sps.pic_width_in_mbs_minus1) + 1) * j.sps.frame_height_in_mbs()
-            }),
-            Codec::H265 => 0,
-        };
-        Ok((length, macroblocks))
+        Ok(length)
     }
 
     fn write_bitstream(&mut self, unit: &[u8], slices: usize, buffer: &mut [u8]) -> Result<usize> {
@@ -1196,24 +884,12 @@ impl<'a> Backend<'a> {
             body.copy_from_slice(data);
             let location = u32::try_from(at).map_err(|_| Error::TooLarge)?;
             let bytes = u32::try_from(end - at).map_err(|_| Error::TooLarge)?;
-            match self.codec {
-                Codec::H264 => {
-                    let s = self.staging.h264_slices.get_mut(i).ok_or(Error::TooLarge)?;
-                    *s = DXVA_Slice_H264_Short {
-                        BSNALunitDataLocation: location,
-                        SliceBytesInBuffer: bytes,
-                        wBadSliceChopping: 0,
-                    };
-                }
-                Codec::H265 => {
-                    let s = self.staging.hevc_slices.get_mut(i).ok_or(Error::TooLarge)?;
-                    *s = DXVA_Slice_HEVC_Short {
-                        BSNALunitDataLocation: location,
-                        SliceBytesInBuffer: bytes,
-                        wBadSliceChopping: 0,
-                    };
-                }
-            }
+            let s = self.staging.hevc_slices.get_mut(i).ok_or(Error::TooLarge)?;
+            *s = DXVA_Slice_HEVC_Short {
+                BSNALunitDataLocation: location,
+                SliceBytesInBuffer: bytes,
+                wBadSliceChopping: 0,
+            };
             at = end;
         }
         // Zeros to the boundary, counted as the last slice's.
@@ -1221,17 +897,8 @@ impl<'a> Backend<'a> {
         buffer.get_mut(at..padded).ok_or(Error::TooLarge)?.fill(0);
         let pad = u32::try_from(padded - at).map_err(|_| Error::TooLarge)?;
         if let Some(last) = slices.checked_sub(1) {
-            match self.codec {
-                Codec::H264 => {
-                    if let Some(s) = self.staging.h264_slices.get_mut(last) {
-                        s.SliceBytesInBuffer += pad;
-                    }
-                }
-                Codec::H265 => {
-                    if let Some(s) = self.staging.hevc_slices.get_mut(last) {
-                        s.SliceBytesInBuffer += pad;
-                    }
-                }
+            if let Some(s) = self.staging.hevc_slices.get_mut(last) {
+                s.SliceBytesInBuffer += pad;
             }
         }
         Ok(padded)
@@ -1277,32 +944,24 @@ impl<'a> Backend<'a> {
         check(hr)
     }
 }
-fn entry_h264(slot: Option<usize>, flag: bool) -> DXVA_PicEntry_H264 {
+fn entry_hevc(slot: Option<usize>, long_term: bool) -> DXVA_PicEntry_HEVC {
     match slot.and_then(|s| u8::try_from(s).ok()) {
         Some(index) => {
-            let mut bits: _DXVA_PicEntry_H264__bindgen_ty_1__bindgen_ty_1 = zeroed();
+            let mut bits: _DXVA_PicEntry_HEVC__bindgen_ty_1__bindgen_ty_1 = zeroed();
             bits.set_Index7Bits(index);
-            bits.set_AssociatedFlag(u8::from(flag));
-            DXVA_PicEntry_H264 {
-                __bindgen_anon_1: _DXVA_PicEntry_H264__bindgen_ty_1 {
+            bits.set_AssociatedFlag(u8::from(long_term));
+            DXVA_PicEntry_HEVC {
+                __bindgen_anon_1: _DXVA_PicEntry_HEVC__bindgen_ty_1 {
                     __bindgen_anon_1: bits,
                 },
             }
         }
-        None => DXVA_PicEntry_H264 {
-            __bindgen_anon_1: _DXVA_PicEntry_H264__bindgen_ty_1 {
+        None => DXVA_PicEntry_HEVC {
+            __bindgen_anon_1: _DXVA_PicEntry_HEVC__bindgen_ty_1 {
                 bPicEntry: NO_ENTRY,
             },
         },
     }
-}
-
-/// The second codec's entries have the same layout as the first's.
-fn entry_hevc(slot: Option<usize>, long_term: bool) -> DXVA_PicEntry_HEVC {
-    let entry = entry_h264(slot, long_term);
-    // SAFETY: both are one byte of the same bit layout; either view of it
-    // is valid.
-    unsafe { core::mem::transmute::<DXVA_PicEntry_H264, DXVA_PicEntry_HEVC>(entry) }
 }
 
 /// A raster list read out in the coded order `scan` names: the `i`th coded
@@ -1325,6 +984,25 @@ fn slice_bytes<T>(slices: &[T]) -> &[u8] {
 mod presentation_ownership_tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn hevc_reference_entry_preserves_the_dxva_index_and_long_term_bits() {
+        for slot in 0..SURFACES {
+            for long_term in [false, true] {
+                let entry = entry_hevc(Some(slot), long_term);
+                // SAFETY: the documented DXVA reference entry is a one-byte union.
+                let packed = unsafe { entry.__bindgen_anon_1.bPicEntry };
+                assert_eq!(packed, slot as u8 | if long_term { 0x80 } else { 0 });
+            }
+        }
+        for slot in [None, Some(usize::MAX)] {
+            // SAFETY: same one-byte union view as above.
+            assert_eq!(
+                unsafe { entry_hevc(slot, false).__bindgen_anon_1.bPicEntry },
+                0xff
+            );
+        }
+    }
     struct Lease(Cell<bool>);
     impl SurfaceLease for Lease {
         fn available(&self) -> bool {

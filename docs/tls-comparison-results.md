@@ -8,7 +8,7 @@ DTLS certificate verifier, WebRTC policy, decoder or proprietary WASM was replac
 
 - AMD Ryzen 7 8845HS, 16 logical processors, Windows 10.0.26300.0.
 - rustls 0.23.46/ring versus native-tls 0.2.18/Windows Schannel.
-- [Isolated source and method](../tools/tls-comparison/README.md), source commit
+- [Isolated source and method](https://github.com/vampywiz17/ParsecWebTurn/tree/f9d433216bb2255f419abeea748540fce78ce016/tools/tls-comparison), source commit
   `f9d433216bb2255f419abeea748540fce78ce016`.
 - Client-matching release profile: opt-level=s, thin LTO, one codegen unit,
   static CRT. No production profile, credentials or installed test certificate.
@@ -20,6 +20,10 @@ DTLS certificate verifier, WebRTC policy, decoder or proprietary WASM was replac
   and 64 MiB in each direction, with payload verification.
 - [Raw results and paired summary](measurements/tls-comparison-2026-10-17.json).
   Earlier exploratory opt-level=3 runs were not used in this final table.
+
+The one-off benchmark crate and its CI workflow were removed after this
+investigation. The historical source link and measurements are retained; the
+application has no native-tls dependency or unused provider-selection option.
 
 The [measurement CI](https://github.com/vampywiz17/ParsecWebTurn/actions/runs/39021460872)
 passed. Its timing is not used as local performance evidence.
