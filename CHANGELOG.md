@@ -5,8 +5,20 @@ builds, not published stable releases.
 
 ## Unreleased
 
-- **Native BUD stream IO:** TCP/TLS uses the existing platform wake and native socket wait (Linux poll, Windows overlapped IOCP), with bounded in-flight network storage and cancellation. TLS remains rustls; direct/UDP and WebRTC behavior are unchanged.
-- **BUD TLS backpressure:** keep a frame pending until both TURN framing and TLS ciphertext have drained to the socket. New protocol output cannot build up behind an earlier TLS record, plaintext acceptance no longer resets the oldest frame's age, and poll waits respect the existing write deadlines. Idle TLS control traffic receives a fresh deadline. The 32 KiB TLS buffer cap and WebRTC behavior are retained.
+## 0.9.4-dev.4 - Relay IO improvements and 10-bit SDR output (2026-10-17)
+
+Changes since v0.9.4-dev.3.
+
+**BUD, vendor-specific HEVC decoding, Zero copy, 10-bit HEVC and the Audio
+options remain experimental.** For stability-first use, select WebRTC with H.264,
+leave experimental options disabled, or use the published stable v0.9.3 release.
+
+- **Native BUD TCP/TLS IO:** relay sockets use the existing platform wake and native socket wait, with overlapped IOCP on Windows, bounded reusable storage and cancellation. Queued TURN frames drain from reused staging storage without a batching delay; received frames are parsed in place. Direct BUD remains UDP, and TLS retains certificate and hostname verification through rustls.
+- **BUD TLS backpressure:** retain pending frames until both TURN framing and encrypted TLS output have drained to the socket. This prevents new protocol output from building up behind earlier TLS records and preserves write deadlines during slow sends.
+- **More efficient WebRTC TURN streams:** reuse a bounded receive buffer for plain TURN/TCP and write ChannelData with its padding as one framed write on TCP/TLS. TLS retains its existing receive path. No batching delay is added; UDP routing, ICE selection and SCTP behavior are unchanged.
+- **Experimental 10-bit RGB SDR output:** actual Main 10/P010 decoder output can now use a 10-bit RGB swap chain when the GPU and driver support conversion and presentation. The existing GPU conversion writes directly into the output buffer, without an additional decoded-frame copy or conversion pass. Unsupported output falls back to 8-bit RGB. This is SDR, not HDR, and does not establish physical display or scanout depth.
+- **Clearer video precision status:** Connection stats and optional event logging distinguish decoded color depth from application RGB output depth and report output fallback. Live Main 10 with 10-bit RGB output is currently verified with NVIDIA host encoding and AMD Radeon 780M client decoding; the tested AMD host path sent 8-bit HEVC. Original-surface Zero copy remains 8-bit only, and 4:4:4 remains unsupported.
+- **Leaner native components and acknowledgements:** remove unused direct H.264 decoder code and its unused GPU protocol-core dependency; H.264 continues to use Media Foundation on all GPU vendors. The README now explicitly credits lowlat inspiration and reused components while clarifying that ParsecWebTurn is an independent project.
 
 ## 0.9.4-dev.3 - BUD TCP/TLS relays and audio controls (2026-10-16)
 
