@@ -163,3 +163,7 @@ backpressure, both TCP/TLS burst delivery and existing TLS/cancellation behavior
 These checks establish reduced application copies/calls for those synthetic
 cases, not a measured real-stream latency improvement. No new dependency,
 standalone benchmark binary or upstream SDK is introduced.
+
+The separate [Tokio TURN buffering comparison](turn-buffer-comparison.md)
+measures whether this buffering policy also helps WebRTC's existing async
+carrier. It retains Tokio/rustls and does not change the production WebRTC path.
