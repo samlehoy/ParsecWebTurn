@@ -1,6 +1,6 @@
 //! Bounded TURN stream output, independent of the socket/TLS readiness driver.
 //!
-//! One frame is retained until completely written. A partial write followed by
+//! One bounded group of frames is retained until completely written. A partial write followed by
 //! WouldBlock is normal; replacing its suffix with a newer datagram corrupts
 //! every subsequent message. Hard IO failures are terminal, never a reason to
 //! resume the same bytes on a replacement connection/allocation.
@@ -9,7 +9,7 @@
 
 use std::io::{self, Write};
 
-use lowlat_core::turn::stream::{MAX_FRAME_LEN, encode};
+use lowlat_core::turn::stream::{MAX_FRAME_LEN, encode, pad};
 
 /// Limits work per writable event even if a writer accepts one byte at a time
 /// or repeatedly interrupts, leaving time for receive processing and deadlines.
@@ -25,7 +25,7 @@ pub enum Progress {
     Yielded,
 }
 
-/// One pending, bounded TURN frame. Allocated once, never per queued message.
+/// One pending, bounded TURN frame group. Allocated once, never per message.
 #[derive(Debug)]
 pub struct Output {
     storage: Box<[u8]>,
@@ -64,6 +64,31 @@ impl Output {
         self.used = encode(message, &mut self.storage)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid TURN frame"))?;
         self.written = 0;
+        Ok(())
+    }
+
+    /// Room for one maximum-sized message. Nothing may be appended once a
+    /// writer has accepted a prefix; that suffix must drain first.
+    pub fn stage(&mut self, maximum: usize) -> Option<&mut [u8]> {
+        if self.failed || self.written != 0 || self.storage.len() - self.used < maximum {
+            return None;
+        }
+        self.storage.get_mut(self.used..self.used + maximum)
+    }
+
+    pub fn commit(&mut self, len: usize) -> io::Result<()> {
+        self.check_live()?;
+        if self.written != 0 {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        let wire = pad(
+            self.storage
+                .get_mut(self.used..)
+                .ok_or(io::ErrorKind::InvalidData)?,
+            len,
+        )
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid staged TURN frame"))?;
+        self.used += wire;
         Ok(())
     }
 
@@ -159,6 +184,55 @@ mod tests {
 
     const MESSAGE: &[u8] = &[0x40, 0, 0, 3, 1, 2, 3];
     const WIRE: &[u8] = &[0x40, 0, 0, 3, 1, 2, 3, 0];
+
+    #[test]
+    fn available_frames_share_one_write_instead_of_one_write_each() {
+        let mut single = Output::new(1024).unwrap();
+        let mut old_writer = Writer::default();
+        for _ in 0..64 {
+            single.queue(MESSAGE).unwrap();
+            assert_eq!(
+                single.write_ready(&mut old_writer).unwrap(),
+                Progress::Complete
+            );
+        }
+        let mut batch = Output::new(1024).unwrap();
+        for _ in 0..64 {
+            batch.stage(8).unwrap()[..MESSAGE.len()].copy_from_slice(MESSAGE);
+            batch.commit(MESSAGE.len()).unwrap();
+        }
+        let mut new_writer = Writer::default();
+        assert_eq!(
+            batch.write_ready(&mut new_writer).unwrap(),
+            Progress::Complete
+        );
+        assert_eq!(new_writer.bytes, old_writer.bytes);
+        assert_eq!(old_writer.calls, 64);
+        assert_eq!(new_writer.calls, 1);
+    }
+
+    #[test]
+    fn a_partial_batch_keeps_every_suffix_and_cannot_be_appended_to() {
+        let mut batch = Output::new(32).unwrap();
+        for _ in 0..4 {
+            batch.stage(8).unwrap()[..MESSAGE.len()].copy_from_slice(MESSAGE);
+            batch.commit(MESSAGE.len()).unwrap();
+        }
+        assert!(batch.stage(8).is_none());
+        let mut writer = Writer {
+            steps: [Ok(11), Err(io::ErrorKind::WouldBlock.into())].into(),
+            ..Default::default()
+        };
+        assert_eq!(batch.write_ready(&mut writer).unwrap(), Progress::Blocked);
+        assert!(batch.stage(8).is_none());
+        assert_eq!(
+            batch.commit(MESSAGE.len()).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert_eq!(batch.write_ready(&mut writer).unwrap(), Progress::Complete);
+        assert_eq!(writer.bytes, WIRE.repeat(4));
+        assert!(batch.stage(8).is_some());
+    }
 
     #[test]
     fn partial_writes_backpressure_and_interrupts_preserve_frame() {

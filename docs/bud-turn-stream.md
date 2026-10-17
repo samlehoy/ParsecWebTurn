@@ -128,3 +128,38 @@ Mio elsewhere in the application. Rustls remains the TLS provider.
 
 See [native TLS feasibility](native-tls-investigation.md) for the separate
 provider investigation and its buffering, trust and DTLS limits.
+
+## In-place receive and output staging (2026-10-17)
+
+Adapted from lowlat `feat/relay-tcp` at `b174dc6ac8d4923f45abe0c3a0a0a41fc0b76c49`.
+The core lends TURN bounds in the caller's buffer; the IO shell keeps a fixed
+64 KiB receive buffer and lends each complete message directly from it. Only an
+incomplete tail near the end is compacted. Reserved channels remain discarded
+without losing stream alignment, and the existing message-size/cookie checks,
+truncated EOF handling and 64-message fairness bound remain. A partial header
+does not force a busy zero-timeout polling loop.
+
+Windows posts a zero-byte overlapped receive for readiness and then reads
+nonblocking directly into that buffer (or rustls' record buffer). Readiness
+completion is not confused with EOF. Both synchronous-completion modes and
+cancellation retain their existing handling. The owned 32 KiB asynchronous send
+buffer is intentionally retained: rustls may reuse the borrowed ciphertext
+slice after Write returns. Cancellation retains all kernel-referenced storage,
+including payload storage, if a provider fails to finish in time.
+
+The endpoint writes ready messages straight into a fixed 32 KiB staging buffer;
+TURN padding is finished there without another frame copy. Staging is flushed
+when ready output runs out, storage fills, or 64 messages have been taken. It
+never waits to fill. Pending native sends or TLS ciphertext still prevent taking
+new endpoint output, and neither staging nor partial progress resets the oldest
+pending work's deadline. TLS roots, hostname validation, setup timeouts, route
+priority, TURN renewal, UDP/WebRTC and decoded GPU surfaces are unchanged.
+
+The old public incremental framing API remains available for compatibility;
+the live TCP/TLS path uses the in-place parser. Tests compare staging with
+one-message writes (identical bytes, 64 writes versus one when immediately
+writable), check borrowed receive addresses, split headers, compaction,
+backpressure, both TCP/TLS burst delivery and existing TLS/cancellation behavior.
+These checks establish reduced application copies/calls for those synthetic
+cases, not a measured real-stream latency improvement. No new dependency,
+standalone benchmark binary or upstream SDK is introduced.

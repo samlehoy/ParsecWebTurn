@@ -32,9 +32,7 @@ struct State {
     recv_posted: bool,
     send_posted: bool,
     recv_flags: u32,
-    input: Box<[u8]>,
-    start: usize,
-    end: usize,
+    read_ready: bool,
     output: Box<[u8]>,
     sent: usize,
     queued: usize,
@@ -111,6 +109,7 @@ impl Tcp {
         if unsafe { ws::bind(raw, (&raw const local).cast(), len) } != 0 {
             return Err(last_error());
         }
+        socket.set_nonblocking(true)?;
         let wake = Wake::new()?;
         // SAFETY: this socket joins this attempt's only completion port.
         if unsafe { CreateIoCompletionPort(raw as HANDLE, wake.port(), KEY_TCP, 1) }.is_null() {
@@ -150,7 +149,6 @@ impl Tcp {
             socket,
             wake,
             state: Box::new(State {
-                input: vec![0; 8192].into_boxed_slice(),
                 output: vec![0; CAPACITY].into_boxed_slice(),
                 ..State::default()
             }),
@@ -212,22 +210,19 @@ impl Tcp {
     }
 
     fn post_recv(&mut self) -> io::Result<()> {
-        if self.state.recv_posted
-            || self.state.start < self.state.end
-            || self.eof
-            || self.read_error.is_some()
+        if self.state.recv_posted || self.state.read_ready || self.eof || self.read_error.is_some()
         {
             return Ok(());
         }
         self.state.recv = OVERLAPPED::default();
         self.state.recv_flags = 0;
         let buffer = ws::WSABUF {
-            len: self.state.input.len() as u32,
-            buf: self.state.input.as_mut_ptr(),
+            len: 0,
+            buf: std::ptr::null_mut(),
         };
         let mut bytes = 0;
-        // SAFETY: Winsock captures the descriptor; its buffer and OVERLAPPED
-        // remain in stable owned storage until the completion is dequeued.
+        // SAFETY: zero-byte readiness receive, with no payload storage lent
+        // to the kernel. OVERLAPPED/flags remain boxed until completion.
         let rc = unsafe {
             ws::WSARecv(
                 self.raw(),
@@ -249,10 +244,9 @@ impl Tcp {
         Ok(())
     }
 
-    fn received(&mut self, count: u32) {
-        self.state.start = 0;
-        self.state.end = count as usize;
-        self.eof = count == 0;
+    fn received(&mut self, _count: u32) {
+        // Zero means readiness here, not EOF. Only actual recv reports EOF.
+        self.state.read_ready = true;
     }
 
     fn sent(&mut self, count: u32) -> io::Result<()> {
@@ -314,7 +308,7 @@ impl Tcp {
             self.post_send()?;
             self.post_recv()?;
         }
-        let immediate = self.state.start < self.state.end
+        let immediate = self.state.read_ready
             || self.eof
             || self.read_error.is_some()
             || (self.connected && write && !self.pending_write())
@@ -331,7 +325,7 @@ impl Tcp {
             self.post_recv()?;
         }
         Ok(crate::tcp::Ready {
-            readable: self.state.start < self.state.end || self.eof || self.read_error.is_some(),
+            readable: self.state.read_ready || self.eof || self.read_error.is_some(),
             writable: self.connected && !self.pending_write(),
             error: false,
         })
@@ -469,32 +463,36 @@ impl Read for Tcp {
         if bytes.is_empty() {
             return Ok(0);
         }
-        if self.state.start < self.state.end {
-            let count = bytes.len().min(self.state.end - self.state.start);
-            bytes
-                .get_mut(..count)
-                .ok_or(io::ErrorKind::InvalidData)?
-                .copy_from_slice(
-                    self.state
-                        .input
-                        .get(self.state.start..self.state.start + count)
-                        .ok_or(io::ErrorKind::InvalidData)?,
-                );
-            self.state.start += count;
-            // Rearm on the next read/poll, after this read's bytes are delivered.
-            return Ok(count);
-        }
-        if let Some(error) = self.read_error.take() {
-            return Err(error);
-        }
         if self.eof {
             return Ok(0);
         }
-        self.post_recv()?;
-        if self.state.start < self.state.end || self.eof || self.read_error.is_some() {
-            return self.read(bytes);
+        if !self.connected {
+            return Err(io::ErrorKind::WouldBlock.into());
         }
-        Err(io::ErrorKind::WouldBlock.into())
+        // No intermediate receive copy: read into the caller or rustls buffer.
+        match self.socket.read(bytes) {
+            Ok(0) => {
+                self.eof = true;
+                self.state.read_ready = false;
+                Ok(0)
+            }
+            Ok(count) => {
+                if count < bytes.len() {
+                    self.state.read_ready = false;
+                    self.post_recv()?;
+                }
+                Ok(count)
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                self.state.read_ready = false;
+                if let Some(error) = self.read_error.take() {
+                    return Err(error);
+                }
+                self.post_recv()?;
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 

@@ -327,24 +327,18 @@ impl<'a, M: Media> Shell<'a, M> {
     fn drain(&mut self, now_ms: f64) -> io::Result<usize> {
         #[cfg(feature = "turn-stream")]
         if let Io::Stream { stream, .. } = &mut self.io {
-            let mut sent = 0;
-            while !stream.pending() && sent < crate::RECV_BATCH {
-                let Some(result) = self.endpoint.get_output(now_ms, &mut self.scratch) else {
-                    return Ok(sent);
-                };
-                let egress = result
-                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.as_str()))?;
-                let message = self
-                    .scratch
-                    .get(..egress.len)
-                    .ok_or(io::ErrorKind::InvalidData)?;
-                stream.queue(message, egress.to)?;
-                sent += 1;
-            }
-            if sent == crate::RECV_BATCH {
-                stream.continue_soon();
-            }
-            return Ok(sent);
+            return stream.send_from(|room| {
+                self.endpoint
+                    .get_output(now_ms, room)
+                    .map(|result| {
+                        result
+                            .map(|egress| (egress.len, egress.to))
+                            .map_err(|error| {
+                                io::Error::new(io::ErrorKind::InvalidData, error.as_str())
+                            })
+                    })
+                    .transpose()
+            });
         }
         let mut sent = 0;
         loop {

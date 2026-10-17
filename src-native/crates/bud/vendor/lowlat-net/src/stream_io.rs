@@ -10,13 +10,15 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use crate::turn_stream::{Output, Progress};
-use lowlat_core::turn::stream::Decoder;
+use lowlat_core::turn::stream::frame as stream_frame;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, pki_types::ServerName};
 
 const SETUP: Duration = Duration::from_secs(10);
 const PASSES: usize = 64;
 const TLS_BUFFER: usize = 32 * 1024;
 const WRITE_STALL: Duration = Duration::from_secs(5);
+const RECEIVE: usize = 64 * 1024;
+const STAGING: usize = 32 * 1024;
 
 /// Explicit trust and server identity. No permissive verifier is exposed.
 #[derive(Debug, Clone)]
@@ -82,10 +84,11 @@ pub(crate) struct StreamIo {
     writable: bool,
     continuation: bool,
     plaintext: usize,
-    decoder: Decoder<Box<[u8]>>,
     input: Box<[u8]>,
     start: usize,
     end: usize,
+    last: Option<(usize, usize)>,
+    skip: usize,
     received: usize,
     output: Output,
     pending_at: Option<Instant>,
@@ -120,13 +123,13 @@ impl StreamIo {
             writable: false,
             continuation: false,
             plaintext: 0,
-            decoder: Decoder::new(vec![0; crate::RECV_SLOT + 3].into_boxed_slice())
-                .map_err(core_error)?,
-            input: vec![0; 8192].into_boxed_slice(),
+            input: vec![0; RECEIVE].into_boxed_slice(),
             start: 0,
             end: 0,
+            last: None,
+            skip: 0,
             received: 0,
-            output: Output::new(crate::RECV_SLOT + 3)?,
+            output: Output::new(STAGING)?,
             pending_at: None,
             write_progress: Instant::now(),
             terminal: None,
@@ -213,7 +216,7 @@ impl StreamIo {
         let timeout = self.output_timeout(Duration::from_secs_f64(timeout_ms / 1000.0), now)?;
         self.received = 0;
         let immediate = self.continuation
-            || self.start < self.end
+            || self.frame_ready()
             || self.plaintext > 0
             || self.readable
             || (self.writable && self.pending());
@@ -287,6 +290,7 @@ impl StreamIo {
     }
 
     pub(crate) fn drain(&mut self) -> io::Result<usize> {
+        self.last = None;
         if self.terminal.is_some() {
             return Ok(0);
         }
@@ -309,34 +313,63 @@ impl StreamIo {
         }
         for _ in 0..PASSES {
             if self.start < self.end {
-                let input = self
-                    .input
-                    .get(self.start..self.end)
-                    .ok_or(io::ErrorKind::InvalidData)?;
-                let (used, frame) = self.decoder.push(input).map_err(core_error)?;
-                self.start += used;
-                if frame.is_some() {
-                    self.received += 1;
-                    return Ok(1);
-                }
-                if self.start < self.end {
+                if self.skip != 0 {
+                    let skipped = self.skip.min(self.end - self.start);
+                    self.start += skipped;
+                    self.skip -= skipped;
                     continue;
                 }
+                if let Some(frame) = stream_frame(
+                    self.input
+                        .get(self.start..self.end)
+                        .ok_or(io::ErrorKind::InvalidData)?,
+                )
+                .map_err(core_error)?
+                {
+                    if frame.reserved {
+                        self.skip = frame.wire;
+                        continue;
+                    }
+                    // Preserve the existing protocol-message capacity, even
+                    // though several complete messages fit in the receive buffer.
+                    if frame.wire > crate::RECV_SLOT + 3 {
+                        return Err(io::ErrorKind::InvalidData.into());
+                    }
+                    if self.end - self.start >= frame.wire {
+                        self.last = Some((self.start, frame.logical));
+                        self.start += frame.wire;
+                        self.received += 1;
+                        return Ok(1);
+                    }
+                }
             }
-            self.start = 0;
-            self.end = 0;
+            if self.start == self.end {
+                self.start = 0;
+                self.end = 0;
+            } else if self.input.len() - self.end < crate::RECV_SLOT + 3 {
+                // Only a partial tail moves, never every complete TURN frame.
+                self.input.copy_within(self.start..self.end, 0);
+                self.end -= self.start;
+                self.start = 0;
+            }
+            let free = self
+                .input
+                .get_mut(self.end..)
+                .ok_or(io::ErrorKind::InvalidData)?;
             let result = match &mut self.tls {
-                Some(tls) => tls.reader().read(&mut self.input),
-                None if self.readable => self.socket.read(&mut self.input),
+                Some(tls) => tls.reader().read(free),
+                None if self.readable => self.socket.read(free),
                 None => return Ok(0),
             };
             match result {
                 Ok(0) => {
-                    self.decoder.finish().map_err(core_error)?;
+                    if self.start != self.end || self.skip != 0 {
+                        return Err(io::ErrorKind::InvalidData.into());
+                    }
                     return Err(io::ErrorKind::UnexpectedEof.into());
                 }
                 Ok(count) => {
-                    self.end = count;
+                    self.end += count;
                     self.plaintext = self.plaintext.saturating_sub(count);
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -358,9 +391,20 @@ impl StreamIo {
     }
 
     pub(crate) fn frame(&self) -> Option<(SocketAddr, Option<std::net::IpAddr>, &[u8])> {
-        self.decoder
-            .last_frame()
+        self.last
+            .and_then(|(at, len)| self.input.get(at..at + len))
             .map(|message| (self.server, self.local, message))
+    }
+
+    fn frame_ready(&self) -> bool {
+        if self.skip != 0 {
+            return self.start < self.end;
+        }
+        match stream_frame(self.input.get(self.start..self.end).unwrap_or_default()) {
+            Ok(Some(frame)) => frame.reserved || self.end - self.start >= frame.wire,
+            Ok(None) => false,
+            Err(_) => true, // Report malformed input promptly through drain().
+        }
     }
 
     pub(crate) fn pending(&self) -> bool {
@@ -371,7 +415,8 @@ impl StreamIo {
     pub(crate) fn sent_bytes(&self) -> u64 {
         self.output.accepted_bytes()
     }
-    pub(crate) fn queue(&mut self, message: &[u8], to: SocketAddr) -> io::Result<()> {
+    #[cfg(test)]
+    fn queue(&mut self, message: &[u8], to: SocketAddr) -> io::Result<()> {
         if to != self.server {
             return Err(io::ErrorKind::InvalidInput.into());
         }
@@ -386,10 +431,49 @@ impl StreamIo {
         self.write_progress = now;
         self.flush()
     }
-    pub(crate) fn continue_soon(&mut self) {
-        self.continuation = true;
-    }
 
+    /// Stage only output available now, then flush immediately. No batching
+    /// timer. Keep this pass bounded so input/receive/deadlines retain service.
+    pub(crate) fn send_from(
+        &mut self,
+        mut next: impl FnMut(&mut [u8]) -> io::Result<Option<(usize, SocketAddr)>>,
+    ) -> io::Result<usize> {
+        if self.pending() {
+            return Ok(0);
+        }
+        let mut staged = 0;
+        while staged < PASSES {
+            let Some(room) = self.output.stage(crate::RECV_SLOT + 3) else {
+                self.flush()?;
+                if self.pending() {
+                    break;
+                }
+                continue;
+            };
+            let Some((len, to)) = next(
+                room.get_mut(..crate::RECV_SLOT)
+                    .ok_or(io::ErrorKind::InvalidData)?,
+            )?
+            else {
+                break;
+            };
+            if to != self.server || len > crate::RECV_SLOT {
+                return Err(io::ErrorKind::InvalidInput.into());
+            }
+            self.output.commit(len)?;
+            if self.pending_at.is_none() {
+                let now = Instant::now();
+                self.pending_at = Some(now);
+                self.write_progress = now;
+            }
+            staged += 1;
+        }
+        self.flush()?;
+        if staged == PASSES {
+            self.continuation = true;
+        }
+        Ok(staged)
+    }
     pub(crate) fn finish_output(&mut self, timeout: Duration) -> io::Result<()> {
         let deadline = Instant::now() + timeout;
         while self.pending() {
@@ -515,6 +599,143 @@ mod tests {
     const WIRE: &[u8] = &[0x40, 0, 0, 3, 1, 2, 3, 0];
     const MESSAGE: &[u8] = &[0x40, 0, 0, 3, 1, 2, 3];
 
+    #[test]
+    fn frames_are_borrowed_in_place_and_partial_headers_do_not_spin() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut io = StreamIo::start(listener.local_addr().unwrap(), Security::Tcp).unwrap();
+        io.prepare(|| false).unwrap();
+        let (_peer, _) = listener.accept().unwrap();
+        let bytes = WIRE.repeat(PASSES + 2);
+        io.input[..bytes.len()].copy_from_slice(&bytes);
+        io.input[bytes.len()..bytes.len() + 3].copy_from_slice(&WIRE[..3]);
+        io.end = bytes.len() + 3;
+        for index in 0..PASSES + 2 {
+            if index == PASSES {
+                assert_eq!(io.drain().unwrap(), 0);
+                io.wait(0.0).unwrap();
+            }
+            assert_eq!(io.drain().unwrap(), 1);
+            let frame = io.frame().unwrap().2;
+            assert_eq!(frame, MESSAGE);
+            assert_eq!(frame.as_ptr(), io.input[index * WIRE.len()..].as_ptr());
+        }
+        io.readable = false;
+        assert_eq!(io.drain().unwrap(), 0);
+        assert!(
+            !io.frame_ready(),
+            "a partial header must wait for socket input"
+        );
+        // Complete the partial tail and keep borrowing from the same storage.
+        io.input[io.end..io.end + 5].copy_from_slice(&WIRE[3..]);
+        io.end += 5;
+        assert!(io.frame_ready());
+        assert_eq!(io.drain().unwrap(), 1);
+        assert_eq!(io.frame().unwrap().2, MESSAGE);
+    }
+
+    #[test]
+    fn in_place_receive_handles_every_split_and_compacts_only_partial_tails() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut io = StreamIo::start(listener.local_addr().unwrap(), Security::Tcp).unwrap();
+        io.prepare(|| false).unwrap();
+        let (_peer, _) = listener.accept().unwrap();
+        for split in 0..WIRE.len() {
+            io.start = 0;
+            io.end = split;
+            io.received = 0;
+            io.readable = false;
+            io.input[..split].copy_from_slice(&WIRE[..split]);
+            assert_eq!(io.drain().unwrap(), 0);
+            assert!(!io.frame_ready());
+            io.input[split..WIRE.len()].copy_from_slice(&WIRE[split..]);
+            io.end = WIRE.len();
+            assert_eq!(io.drain().unwrap(), 1);
+            assert_eq!(io.frame().unwrap().2, MESSAGE);
+        }
+        io.start = RECEIVE - 5;
+        io.end = RECEIVE - 2;
+        io.input[io.start..io.end].copy_from_slice(&WIRE[..3]);
+        assert_eq!(io.drain().unwrap(), 0);
+        assert_eq!((io.start, io.end), (0, 3));
+        io.input[3..WIRE.len()].copy_from_slice(&WIRE[3..]);
+        io.end = WIRE.len();
+        assert_eq!(io.drain().unwrap(), 1);
+        assert_eq!(io.frame().unwrap().2, MESSAGE);
+    }
+
+    #[test]
+    fn staged_bursts_roundtrip_over_tcp_and_tls_without_reordering() {
+        for use_tls in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let (server, roots) = fixture(false);
+            let count = 96;
+            let peer = std::thread::spawn(move || {
+                let (socket, _) = listener.accept().unwrap();
+                bounded(&socket);
+                let mut socket: Box<dyn ReadWrite> = if use_tls {
+                    Box::new(StreamOwned::new(
+                        ServerConnection::new(server).unwrap(),
+                        socket,
+                    ))
+                } else {
+                    Box::new(socket)
+                };
+                let mut bytes = vec![0; WIRE.len() * count];
+                socket.read_exact(&mut bytes).unwrap();
+                assert_eq!(bytes, WIRE.repeat(count));
+                socket.write_all(&bytes).unwrap();
+                socket.flush().unwrap();
+                let mut final_frame = [0; 8];
+                socket.read_exact(&mut final_frame).unwrap();
+            });
+            let security = if use_tls {
+                Security::Tls(Tls::with_roots("relay.test", roots).unwrap())
+            } else {
+                Security::Tcp
+            };
+            let mut io = StreamIo::start(address, security).unwrap();
+            io.prepare(|| false).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut sent = 0;
+            let mut received = 0;
+            while sent < count || received < count {
+                assert!(Instant::now() < deadline);
+                io.wait(10.0).unwrap();
+                io.send_from(|room| {
+                    if sent == count {
+                        return Ok(None);
+                    }
+                    room[..MESSAGE.len()].copy_from_slice(MESSAGE);
+                    sent += 1;
+                    Ok(Some((MESSAGE.len(), address)))
+                })
+                .unwrap();
+                while io.drain().unwrap() != 0 {
+                    assert_eq!(io.frame().unwrap().2, MESSAGE);
+                    received += 1;
+                }
+            }
+            io.send_from(|room| {
+                if sent > count {
+                    return Ok(None);
+                }
+                room[..MESSAGE.len()].copy_from_slice(MESSAGE);
+                sent += 1;
+                Ok(Some((MESSAGE.len(), address)))
+            })
+            .unwrap();
+            while io.pending() {
+                io.wait(10.0).unwrap();
+                assert!(Instant::now() < deadline);
+            }
+            peer.join().unwrap();
+        }
+    }
+
+    trait ReadWrite: Read + Write {}
+    impl<T: Read + Write> ReadWrite for T {}
+
     fn fixture(expired: bool) -> (Arc<ServerConfig>, RootCertStore) {
         let key = rcgen::KeyPair::generate().unwrap();
         let mut params = rcgen::CertificateParams::new(vec!["relay.test".into()]).unwrap();
@@ -606,6 +827,11 @@ mod tests {
         let last_progress = io.write_progress;
         for _ in 0..100 {
             assert!(io.pending());
+            assert_eq!(
+                io.send_from(|_| panic!("TLS ciphertext must block new core output"))
+                    .unwrap(),
+                0
+            );
             assert_eq!(
                 io.queue(MESSAGE, io.server).unwrap_err().kind(),
                 io::ErrorKind::WouldBlock

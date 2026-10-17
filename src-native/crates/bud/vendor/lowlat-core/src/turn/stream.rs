@@ -57,6 +57,50 @@ fn cookie(message: &[u8], frame: Shape) -> Result<()> {
     Ok(())
 }
 
+/// A TURN message's bounds in the caller's receive buffer. Inspired by
+/// lowlat b174dc6's in-place framer; keep this client's reserved-channel and
+/// cookie validation. No body is copied or lent beyond the input's lifetime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frame {
+    pub logical: usize,
+    pub wire: usize,
+    pub reserved: bool,
+}
+
+pub fn frame(head: &[u8]) -> Result<Option<Frame>> {
+    if head.len() < 4 {
+        return Ok(None);
+    }
+    let shape = shape(head)?;
+    if shape.stun {
+        if head.len() < 8 {
+            return Ok(None);
+        }
+        cookie(head, shape)?;
+    }
+    Ok(Some(Frame {
+        logical: shape.logical,
+        wire: shape.wire,
+        reserved: shape.reserved,
+    }))
+}
+
+/// Finish a message written directly into output staging, without copying its
+/// body. `len` excludes padding; capacity must include the wire padding.
+pub fn pad(storage: &mut [u8], len: usize) -> Result<usize> {
+    let message = storage.get(..len).ok_or(Error::BadLength)?;
+    let shape = shape(message)?;
+    if shape.reserved || len != shape.logical {
+        return Err(Error::Malformed);
+    }
+    cookie(message, shape)?;
+    storage
+        .get_mut(len..shape.wire)
+        .ok_or(Error::BufferTooSmall)?
+        .fill(0);
+    Ok(shape.wire)
+}
+
 /// Encode one complete TURN message, adding zero ChannelData padding.
 /// Accepts a logical message or an already padded ChannelData message. STUN
 /// must have exactly its declared length; trailing bytes are never forwarded.
@@ -191,6 +235,33 @@ mod tests {
     use super::*;
     use std::vec;
     use std::vec::Vec;
+
+    #[test]
+    fn in_place_headers_and_padding_agree_with_the_existing_framer() {
+        for message in (0..32).map(channel).chain([stun()]) {
+            let expected = wire(&message);
+            let mut staging = vec![0xCC; expected.len() + 16];
+            staging[..message.len()].copy_from_slice(&message);
+            assert_eq!(pad(&mut staging, message.len()).unwrap(), expected.len());
+            assert_eq!(&staging[..expected.len()], expected);
+            for end in 0..expected.len() + 1 {
+                let parsed = frame(&expected[..end]).unwrap();
+                if let Some(bounds) = parsed {
+                    assert_eq!(bounds.logical, message.len());
+                    assert_eq!(bounds.wire, expected.len());
+                    assert!(!bounds.reserved);
+                } else {
+                    assert!(end < if message[0] == 0x40 { 4 } else { 8 });
+                }
+            }
+        }
+        for high in [0x50, 0x80, 0xFF] {
+            assert!(frame(&[high, 0, 0, 1]).unwrap().unwrap().reserved);
+        }
+        assert!(frame(&[0, 0, 0, 1]).is_err());
+        assert!(frame(&[0, 0, 0, 0, 0, 0, 0, 0]).is_err());
+        assert!(pad(&mut [0x40, 0, 0, 1, 9], 5).is_err());
+    }
 
     fn channel(len: u16) -> Vec<u8> {
         let mut message = vec![0x40, 0x00];

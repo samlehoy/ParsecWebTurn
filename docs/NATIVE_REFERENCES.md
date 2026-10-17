@@ -44,6 +44,13 @@ This keeps pending TLS ciphertext inside carrier backpressure and preserves
 output deadlines. The four corresponding regression tests are retained. No SDK,
 account API, decoder or unrelated upstream change is imported.
 
+Selected native TCP optimizations adapted from `feat/relay-tcp`, revision
+[`b174dc6`](https://github.com/nomi-san/lowlat/tree/b174dc6ac8d4923f45abe0c3a0a0a41fc0b76c49)
+(2026-10-17): in-place TURN receive framing, zero-byte Windows receive readiness,
+and bounded staging of already available output. Our rustls TCP/TLS carrier,
+owned asynchronous send storage, deadlines and fairness limits remain in place.
+No TLS removal, SDK/ABI, browser transport, host encoder or simulator is imported.
+
 The client-side reuse/critical-section changes inspired by the IO design are
 documented in [native input and network hand-off](native-input-network-handoff.md).
 They do not implement BUD in the WebRTC client. The `pmtu` source explicitly says
