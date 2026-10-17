@@ -17,6 +17,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: tools/tls-comparison
+          cache-on-failure: true
       - name: Validate and build isolated benchmark
         shell: pwsh
         run: |
@@ -29,11 +30,12 @@ jobs:
       - name: Verify both providers and protocol versions
         shell: pwsh
         run: |
-          & ./tools/tls-comparison/target/release/pwt-tls-comparison.exe tls-comparison-ci.json
+          & ./tools/tls-comparison/target/x86_64-pc-windows-msvc/release/pwt-tls-comparison.exe tls-comparison-ci.json
           if ($LASTEXITCODE -ne 0) { throw 'TLS comparison failed' }
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: windows-tls-comparison
           path: |
-            tools/tls-comparison/target/release/pwt-tls-comparison.exe
+            tools/tls-comparison/target/x86_64-pc-windows-msvc/release/pwt-tls-comparison.exe
             tls-comparison-ci.json
