@@ -1407,6 +1407,20 @@ fn rgb10_input_color(color: u32) -> DXGI_COLOR_SPACE_TYPE {
     }
 }
 
+fn rgb10_output_rejected(error: &Failure) -> bool {
+    matches!(
+        error.stage,
+        "video-swapchain-resize"
+            | "video-output-colorspace"
+            | "video-processor-output-view"
+            | "video-processor-null-output"
+            | "video-processor-blt"
+    ) && !matches!(
+        error.hresult.as_deref(),
+        Some("0x887A0005" | "0x887A0006" | "0x887A0007")
+    )
+}
+
 unsafe fn supports_rgb10(enumeration: &ID3D11VideoProcessorEnumerator, color: u32) -> bool {
     let output = enumeration
         .CheckVideoProcessorFormat(DXGI_FORMAT_R10G10B10A2_UNORM)
@@ -1602,17 +1616,7 @@ impl Renderer {
             Err(error)
                 if self.ten_bit_attempted
                     && self.ten_bit_fallback.is_none()
-                    && matches!(
-                        error.stage,
-                        "video-swapchain-resize"
-                            | "video-output-colorspace"
-                            | "video-processor-output-view"
-                            | "video-processor-blt"
-                    )
-                    && !matches!(
-                        error.hresult.as_deref(),
-                        Some("0x887A0005" | "0x887A0006" | "0x887A0007")
-                    ) =>
+                    && rgb10_output_rejected(&error) =>
             {
                 self.ten_bit_fallback = Some(format!(
                     "{}: {}",
@@ -2361,6 +2365,30 @@ pub fn probe_main10() -> anyhow::Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rgb10_fallback_never_swallows_device_loss_or_decoder_errors() {
+        let rejected = api::<()>(
+            "video-processor-blt",
+            Err(windows::Win32::Foundation::E_INVALIDARG.into()),
+        )
+        .unwrap_err();
+        assert!(rgb10_output_rejected(&rejected));
+        for status in [
+            DXGI_ERROR_DEVICE_REMOVED,
+            DXGI_ERROR_DEVICE_HUNG,
+            DXGI_ERROR_DEVICE_RESET,
+        ] {
+            let error = api::<()>("video-processor-blt", Err(status.into())).unwrap_err();
+            assert!(!rgb10_output_rejected(&error));
+        }
+        assert!(!rgb10_output_rejected(&unavailable("video-process-output")));
+        assert!(!rgb10_output_rejected(&unavailable(
+            "video-processor-input-view"
+        )));
+        assert!(rgb10_output_rejected(&unavailable(
+            "video-output-colorspace"
+        )));
+    }
     #[test]
     fn rgb10_conversion_query_preserves_matrix_and_nominal_range() {
         for (matrix, nominal, expected) in [
