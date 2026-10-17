@@ -79,7 +79,7 @@ async fn framed_send_normalizes_padding_and_reuses_storage_for_large_messages() 
         for length in [0, 1, 2, 3, 4, 65535, 2, 1] {
             let packet = channel(length, 0x5a);
             packets.push(packet.clone());
-            if packet.len() % 4 != 0 {
+            if !packet.len().is_multiple_of(4) {
                 // Caller-supplied padding must still be normalized to zero.
                 let mut padded = packet;
                 padded.resize((padded.len() + 3) & !3, 0xef);
