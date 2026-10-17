@@ -46,6 +46,23 @@ reported as 8-bit/fallback, not treated as proof of successful RGB10. Live
 decoding never enables this readback. The existing `--main10` probe separately
 checks actual HEVC Main 10 decoding to P010.
 
+Measured on 2026-10-17 using build `8ede7e7` on the local AMD Radeon 780M:
+
+- [Generated ramp](measurements/rgb10-output-2026-10-17.json): RGB10 retained
+  1,022 distinct red levels for full-range P010 and 875 for studio-range P010.
+  NV12 returned to 8-bit RGB, and the forced unsupported-output case retained
+  P010 input with 8-bit RGB output and an explicit fallback reason.
+- [Actual Main 10 fixture](measurements/main10-rgb10-2026-10-17.json): Media
+  Foundation decoded and presented 119 frames as 10-bit P010 / 10-bit RGB with
+  no fallback or failure. This probe performs no pixel readback.
+- [Windows CI](https://github.com/vampywiz17/ParsecWebTurn/actions/runs/39027421355)
+  passed normal/diagnostic tests, strict Clippy, packaging, original-WASM probes
+  and independent WebRTC UDP/TCP/TLS relay tests. Hardware measurements above
+  were local, not hosted-runner hardware or proof of physical 10-bit scanout.
+
+Intel and NVIDIA use this same documented renderer, but these measurements
+establish RGB10 behavior only on the tested AMD configuration.
+
 Documented APIs: [swap-chain formats](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/ns-dxgi1_2-dxgi_swap_chain_desc1),
 [conversion support](https://learn.microsoft.com/en-us/windows/win32/api/d3d11_1/nf-d3d11_1-id3d11videoprocessorenumerator1-checkvideoprocessorformatconversion),
 [SDR color-space selection](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_4/nf-dxgi1_4-idxgiswapchain3-setcolorspace1).
