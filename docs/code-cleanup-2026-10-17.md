@@ -15,13 +15,15 @@
 - The GPU crate's now-unused direct lowlat-core dependency: its only use was the
   generic codec selector removed above. BUD still retains its required protocol
   core; the GPU crate keeps the required decode parsers and driver bindings.
-- An explicitly requested but unused Win32_System_Ole feature from the root
-  Windows API declaration dependency. Required COM and VARIANT features remain.
 - Production compilation of Audio Pipeline::start, a default-budget convenience
   wrapper used only by tests. Live callers still use start_with_budget.
 
 ## Retained and checked
 
+- Win32_System_Ole is required by the generated VARIANT and ICodecAPI::SetValue
+  bindings used for Media Foundation low-latency configuration, even without
+  direct calls into the Ole namespace. The full client compile verifies this
+  dependency; the feature is retained with COM and VARIANT support.
 - Current direct runtime dependencies have use sites: HTTP/WSS and WebRTC/TURN,
   BUD protocol/crypto, native WASM runtime, Opus, protected settings, UI graphics,
   GPU parsers/driver bindings and self_cell ownership. No arbitrary package
