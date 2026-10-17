@@ -174,6 +174,7 @@ fn wire(messages: &[Vec<u8>]) -> Vec<u8> {
 enum Client {
     Baseline(baseline::TurnStream),
     Buffered(buffered::TurnStream),
+    Coalesced(buffered::TurnStream),
     Batched(buffered::TurnStream),
 }
 impl Client {
@@ -181,6 +182,7 @@ impl Client {
         match policy {
             "current" => Self::Baseline(baseline::fixture(stream, local, remote)),
             "buffered_rx" => Self::Buffered(buffered::fixture(stream, local, remote)),
+            "buffered_rx_frame_tx" => Self::Coalesced(buffered::fixture(stream, local, remote)),
             "buffered_rx_ready_tx" => Self::Batched(buffered::fixture(stream, local, remote)),
             _ => unreachable!(),
         }
@@ -188,13 +190,19 @@ impl Client {
     async fn receive(&self, out: &mut [u8]) -> io::Result<usize> {
         match self {
             Self::Baseline(c) => c.recv(out).await,
-            Self::Buffered(c) | Self::Batched(c) => c.recv(out).await,
+            Self::Buffered(c) | Self::Coalesced(c) | Self::Batched(c) => c.recv(out).await,
         }
         .map_err(io::Error::other)
     }
     async fn send(&self, messages: &[Vec<u8>]) -> io::Result<()> {
         match self {
             Self::Batched(c) => c.send_ready(messages).await.map_err(io::Error::other),
+            Self::Coalesced(c) => {
+                for message in messages.chunks(1) {
+                    c.send_ready(message).await.map_err(io::Error::other)?;
+                }
+                Ok(())
+            }
             _ => {
                 for message in messages {
                     match self {
@@ -211,7 +219,7 @@ impl Client {
     async fn close(&self) {
         match self {
             Self::Baseline(c) => c.close().await.unwrap(),
-            Self::Buffered(c) | Self::Batched(c) => c.close().await.unwrap(),
+            Self::Buffered(c) | Self::Coalesced(c) | Self::Batched(c) => c.close().await.unwrap(),
         }
     }
 }
@@ -246,11 +254,12 @@ async fn trial(
     cert: &Certificates,
     counted: bool,
 ) -> io::Result<Trial> {
-    let push = workload == "receive_burst";
+    let push = workload.starts_with("receive_");
     let fragmented = workload == "fragmented_correctness";
     let (size, count, rounds) = match workload {
         "single_echo" => (260, 1, 2000),
         "fragmented_correctness" => (1023, 8, 2),
+        "duplex_aligned" | "receive_aligned" => (1204, 64, 512),
         _ => (1023, 64, 512),
     };
     let messages = frames(size, count);
@@ -427,12 +436,18 @@ fn main() {
             "single_echo",
             "duplex_burst",
             "receive_burst",
+            "duplex_aligned",
+            "receive_aligned",
             "fragmented_correctness",
         ] {
             for repetition in 0..=repetitions {
-                for order in 0..3 {
-                    let policy = ["current", "buffered_rx", "buffered_rx_ready_tx"]
-                        [(order + repetition) % 3];
+                for order in 0..4 {
+                    let policy = [
+                        "current",
+                        "buffered_rx",
+                        "buffered_rx_frame_tx",
+                        "buffered_rx_ready_tx",
+                    ][(order + repetition) % 4];
                     let result = runtime.block_on(async {
                         tokio::time::timeout(Duration::from_secs(45), async {
                             trial(repetition, policy, tls, workload, &cert, counted).await
