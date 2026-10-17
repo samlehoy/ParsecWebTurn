@@ -37,8 +37,8 @@ struct Trial {
 }
 
 enum Client {
-    Rustls(StreamOwned<ClientConnection, TcpStream>),
-    Native(native_tls::TlsStream<TcpStream>),
+    Rustls(Box<StreamOwned<ClientConnection, TcpStream>>),
+    Native(Box<native_tls::TlsStream<TcpStream>>),
 }
 impl Read for Client {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
@@ -153,14 +153,14 @@ fn trial(
     socket_options(&socket)?;
     let started = Instant::now();
     let mut stream = if native {
-        Client::Native(connector.connect(HOST, socket)?)
+        Client::Native(Box::new(connector.connect(HOST, socket)?))
     } else {
         let mut conn = ClientConnection::new(client, ServerName::try_from(HOST)?)?;
         let mut socket = socket;
         while conn.is_handshaking() {
             conn.complete_io(&mut socket)?;
         }
-        Client::Rustls(StreamOwned::new(conn, socket))
+        Client::Rustls(Box::new(StreamOwned::new(conn, socket)))
     };
     let handshake_us = started.elapsed().as_secs_f64() * 1e6;
     let outgoing = [0x27; 256];
