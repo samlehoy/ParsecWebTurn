@@ -221,3 +221,30 @@ includes the report-ID byte even when the descriptor uses no report ID;
 the expected three-byte USB mouse payload therefore corresponds to four bytes
 in HIDP_CAPS.InputReportByteLength. New live results are still needed to decide
 whether the observer causes the repeated queries.
+
+### Phased live result
+
+The second supplied trial rejects the observer hypothesis: there were 19
+report-descriptor requests in the fast phase, 25 in the 4,014-ms quiet phase,
+and 47 in the slow phase before teardown. Counts include replies logged as
+`control_exchange`; the initial waiting phase had two such requests. The
+observer again saw arrival and removal with no enumeration errors.
+
+The first report-descriptor request had a nonzero correlation ID and transfer
+capacity 114. The other 92 had correlation ID zero and transfer capacity zero,
+while all requested 114 bytes and were returned the same 50-byte descriptor
+with matching reply ID, byte count and nonnegative status. This distinguishes
+the initial request from the recurring family; it does not establish that
+zero is an invalid ID or that these are failed USB transactions. No requests
+are suppressed or padded to 114 bytes based on that observation.
+
+The first capability check returned zero-sized Raw Input preparsed data and
+no OS error. This is a missing measurement, not evidence of descriptor rejection.
+The revised observer obtains the matching HID collection's metadata using
+[HidD_GetPreparsedData](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidsdi/nf-hidsdi-hidd_getpreparseddata),
+then frees it using
+[HidD_FreePreparsedData](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidsdi/nf-hidsdi-hidd_freepreparseddata).
+It opens only the synthetic device interface with zero desired access and
+shared read/write, closes it immediately, and never requests input-report
+read/write access or retries with more privileges. No descriptor, network
+reply or interrupt-read behavior is changed for this follow-up.

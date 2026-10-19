@@ -7,7 +7,12 @@ descriptor requests. The current follow-up build adds correlated setup/reply
 metadata and controlled observation phases to investigate those repetitions;
 it does not change descriptors or send interrupt input reports. A separate
 `codex/usb-mouse-enumeration-probe` branch supplies the test builds; the default
-client and dev/main branches do not enable the probe.
+client and dev/main branches do not enable the probe. The first phased run
+ruled out this observer's polling as the cause of the repetitions (25 report
+descriptor requests during the four-second quiet phase). Raw Input returned
+no preparsed data for the mouse, so the current observer uses the documented
+HID metadata API on a zero-access collection handle instead. This capability
+check has not yet been confirmed by a live follow-up.
 
 This isolated build tests generic USB admission through an authenticated BUD
 connection to an **unmodified stock Parsec host**. It does not access the host
@@ -31,7 +36,10 @@ supported Parsec USB API or a production input feature.
    run on the host; client-side enumeration cannot establish host acceptance.
 
 After the first arrival the host observer checks Windows' parsed HID
-capabilities once, then uses three phases: three seconds of 100-ms device
+capabilities once via `HidD_GetPreparsedData` / `HidP_GetCaps`, with a shared
+collection handle opened with **zero desired access**. The handle and the
+allocated preparsed data are released immediately. There is no input-report
+read/write or elevated-permission retry. It then uses three phases: three seconds of 100-ms device
 polling, four seconds with **no device enumeration/metadata calls**, then
 1000-ms polling until removal. The host log marks each phase. The client log
 records setup fields, transfer sizes, response status and correlation IDs,
@@ -44,6 +52,8 @@ afterwards, that supports an observer-induced query rather than a failed
 enumeration retry. If they continue unchanged, the setup/reply fields and
 HID capabilities provide the next evidence. The phase experiment does not by
 itself attribute queries from other processes or prove working mouse input.
+In the first phased trial, the repetitions continued unchanged; do not treat
+the observer-induced explanation as established.
 
 The synthetic identity is `VID_FFFF / PID_F001`, with product name
 `USB mouse enumeration probe`. These are unassigned diagnostic identifiers,

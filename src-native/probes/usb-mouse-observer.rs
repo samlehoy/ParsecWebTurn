@@ -1,4 +1,4 @@
-//! Read-only host-side observation of the enumeration probe. No driver calls,
+//! Read-only host-side observation of the enumeration probe. No private IOCTLs,
 //! input registration, capture, injection or administrator privileges.
 use std::{
     fs::File,
@@ -71,6 +71,21 @@ fn mice(mut caps_log: Option<&mut File>) -> io::Result<u32> {
     #[link(name = "hid")]
     unsafe extern "system" {
         fn HidP_GetCaps(preparsed: *const c_void, caps: *mut Caps) -> i32;
+        fn HidD_GetPreparsedData(device: *mut c_void, data: *mut *mut c_void) -> u8;
+        fn HidD_FreePreparsedData(data: *mut c_void) -> u8;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            sharing: u32,
+            security: *const c_void,
+            disposition: u32,
+            flags: u32,
+            template: *mut c_void,
+        ) -> *mut c_void;
+        fn CloseHandle(handle: *mut c_void) -> i32;
     }
     #[link(name = "user32")]
     unsafe extern "system" {
@@ -128,43 +143,48 @@ fn mice(mut caps_log: Option<&mut File>) -> io::Result<u32> {
             {
                 found += 1;
                 if let Some(log) = caps_log.as_deref_mut() {
-                    // One explicit metadata check after arrival. No CreateFile,
-                    // read handle, input report or undocumented HID structure.
-                    let mut bytes = 0;
-                    let result = GetRawInputDeviceInfoW(
-                        device.handle,
-                        0x20000005,
-                        ptr::null_mut(),
-                        &mut bytes,
-                    );
-                    if result == u32::MAX || bytes == 0 || bytes > 65536 {
+                    // RIM_TYPEMOUSE can return an empty RIDI_PREPARSEDDATA.
+                    // Open only the matching synthetic HID collection with
+                    // ZERO desired access and shared read/write for metadata.
+                    // No ReadFile/WriteFile, report IO or access-right retry.
+                    let handle =
+                        CreateFileW(name.0.as_ptr(), 0, 3, ptr::null(), 3, 0, ptr::null_mut());
+                    if handle == (-1isize) as *mut c_void {
                         writeln!(
                             log,
-                            "{{\"event\":\"hid_caps_error\",\"unix_ms\":{},\"stage\":\"preparsed_size\",\"os_error\":{}}}",
+                            "{{\"event\":\"hid_caps_error\",\"unix_ms\":{},\"stage\":\"metadata_open\",\"os_error\":{}}}",
                             unix_ms(),
                             io::Error::last_os_error().raw_os_error().unwrap_or(0)
                         )?;
                         continue;
                     }
-                    // DWORD alignment is required by GetRawInputDeviceInfoW.
-                    let mut data = vec![0u32; (bytes as usize).div_ceil(4)];
-                    let result = GetRawInputDeviceInfoW(
-                        device.handle,
-                        0x20000005,
-                        data.as_mut_ptr().cast(),
-                        &mut bytes,
-                    );
-                    if result == u32::MAX {
-                        writeln!(
-                            log,
-                            "{{\"event\":\"hid_caps_error\",\"unix_ms\":{},\"stage\":\"preparsed_read\",\"os_error\":{}}}",
-                            unix_ms(),
-                            io::Error::last_os_error().raw_os_error().unwrap_or(0)
-                        )?;
-                        continue;
-                    }
+                    let mut data = ptr::null_mut();
+                    let available =
+                        HidD_GetPreparsedData(handle, &mut data) != 0 && !data.is_null();
+                    let error = if available {
+                        0
+                    } else {
+                        io::Error::last_os_error().raw_os_error().unwrap_or(0)
+                    };
                     let mut caps = Caps::default();
-                    let status = HidP_GetCaps(data.as_ptr().cast(), &mut caps);
+                    let status = if available {
+                        HidP_GetCaps(data, &mut caps)
+                    } else {
+                        0
+                    };
+                    // Release both resources BEFORE any fallible log writes.
+                    if available {
+                        let _ = HidD_FreePreparsedData(data);
+                    }
+                    let _ = CloseHandle(handle);
+                    if !available {
+                        writeln!(
+                            log,
+                            "{{\"event\":\"hid_caps_error\",\"unix_ms\":{},\"stage\":\"hid_preparsed\",\"os_error\":{error}}}",
+                            unix_ms()
+                        )?;
+                        continue;
+                    }
                     writeln!(
                         log,
                         "{{\"event\":\"hid_caps\",\"unix_ms\":{},\"status\":{status},\"usage_page\":{},\"usage\":{},\"input_report_bytes\":{},\"input_button_caps\":{},\"input_value_caps\":{}}}",
