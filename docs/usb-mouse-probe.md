@@ -12,7 +12,10 @@ ruled out this observer's polling as the cause of the repetitions (25 report
 descriptor requests during the four-second quiet phase). Raw Input returned
 no preparsed data for the mouse, so the current observer uses the documented
 HID metadata API on a zero-access collection handle instead. This capability
-check has not yet been confirmed by a live follow-up.
+check has now been confirmed by a live follow-up: HIDP_STATUS_SUCCESS,
+mouse usage (page 1 / usage 2), four Windows input-report bytes, one input
+button-capability group and two value-capability entries. Arrival and removal
+were again observed. Descriptor-query repetition remains unexplained.
 
 This isolated build tests generic USB admission through an authenticated BUD
 connection to an **unmodified stock Parsec host**. It does not access the host
@@ -54,6 +57,12 @@ HID capabilities provide the next evidence. The phase experiment does not by
 itself attribute queries from other processes or prove working mouse input.
 In the first phased trial, the repetitions continued unchanged; do not treat
 the observer-induced explanation as established.
+
+The next preparation is offline only: interrupt-read decoding, a neutral
+three-byte USB report completion, cancellation status and malformed-frame
+bounds are exercised by test fixtures. Those helpers exist only under
+`cfg(test)` and are **not linked into either test executable**. The live
+probe still leaves interrupt reads pending and sends no motion or clicks.
 
 The synthetic identity is `VID_FFFF / PID_F001`, with product name
 `USB mouse enumeration probe`. These are unassigned diagnostic identifiers,

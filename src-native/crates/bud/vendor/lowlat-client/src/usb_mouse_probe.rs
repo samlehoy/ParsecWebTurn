@@ -294,6 +294,10 @@ impl Drop for Probe {
 }
 
 #[cfg(test)]
+#[path = "usb_mouse_interrupt_fixture.rs"]
+mod interrupt_contract;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]

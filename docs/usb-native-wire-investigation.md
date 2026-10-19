@@ -248,3 +248,56 @@ It opens only the synthetic device interface with zero desired access and
 shared read/write, closes it immediately, and never requests input-report
 read/write access or retries with more privileges. No descriptor, network
 reply or interrupt-read behavior is changed for this follow-up.
+
+### HID collection confirmed; same-PC work can continue
+
+The third supplied trial returned `HIDP_STATUS_SUCCESS` (`0x110000`),
+UsagePage 1 / Usage 2, InputReportByteLength 4, one input button-capability
+group and two value-capability entries. The host again observed arrival and
+removal. This confirms successful parsing of the mouse collection; it does
+not prove delivery of input reports, which the live test still never sends.
+There were 27 report-descriptor exchanges during the four-second quiet phase.
+
+The requested 114 bytes are the fixture's advertised 50-byte report descriptor
+plus 64. Independent static examples in the same stock module show a similar
+allowance: at `0x1c9969` a request of 147 is answered with 83, at `0x1c99ed`
+a request of 179 is answered with 115, and at `0x1c9a8b` a request of 118 is
+answered with 54. All differ by 64. This corroborates leaving a correctly
+bounded short descriptor response intact; it does not establish the origin
+of the recurring zero-ID requests or a universal Windows rule.
+
+The local documented HIDCLASS ETW provider was inspected read-only. Its
+manifest exposes rundown/device-information events rather than the control
+transaction attribution needed here. No tracing session was started, no
+analytic channel enabled, and no driver or registry setting changed. Two
+separate PCs remain useful for separating same-machine interactions, but are
+not a prerequisite for preparing the next wire contract offline.
+
+## Offline interrupt-report contract (not a live sender)
+
+Additional field boundaries are independently visible in the stock client
+and host. They are wire observations; no reconstructed proprietary function
+or internal runtime call is used:
+
+- Client dispatch at `0xbb53b` consumes a nested kind-7 read request: endpoint
+  at offset 4, transfer type at 5, request ID at 8 and requested bytes at 16.
+  Interrupt endpoints map to libusb transfer type 3.
+- Client completion at `0xbcdcd`–`0xbce01` constructs nested kind 8: endpoint
+  at 4, transfer type at 5, request ID at 8, USB status at 12, actual byte count
+  at 16 and data beginning at 20. The host consumer at `0xc27a0`–`0xc2818`
+  reads the same endpoint, status, count and data fields. It does not inspect
+  the correlation ID in this consumer, but the fixture preserves it.
+- The status mapping jump table at `0x1c8278`, interpreted with the branch
+  bodies at `0x1c824b`–`0x1c8271`, maps completed transfer (0) to USB status 0
+  and cancellation (3) to `0xc0010000`. These are USB completion statuses,
+  not the signed libusb byte-count status used by control kind 10.
+
+The new `usb_mouse_interrupt_fixture.rs` is included only under `cfg(test)`.
+It checks the fixed mouse's endpoint 0x81 / interrupt type 3, bounded request
+size, preserving ID zero, three-byte USB report sizing (without the Windows
+report-ID placeholder), and cancellation with zero input bytes. It rejects
+wrong endpoints/directions, other transfer types and malformed lengths. There
+is no hook into the live kind-7 handler, no queue, no timer and no report sent
+to the host. A future neutral-report test still requires deliberate runtime
+integration and actual host observation; passing these tests is not evidence
+of working remote input or of resolving descriptor-query repetition.
