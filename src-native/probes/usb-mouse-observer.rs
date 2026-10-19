@@ -3,17 +3,74 @@
 use std::{
     fs::File,
     io::{self, Write},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+fn unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    Waiting,
+    Fast,
+    Quiet,
+    Slow,
+}
+impl Phase {
+    fn at(arrival_age: Option<Duration>) -> Self {
+        match arrival_age {
+            None => Self::Waiting,
+            Some(age) if age < Duration::from_secs(3) => Self::Fast,
+            Some(age) if age < Duration::from_secs(7) => Self::Quiet,
+            Some(_) => Self::Slow,
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            Self::Waiting => "waiting",
+            Self::Fast => "fast_100ms",
+            Self::Quiet => "quiet_no_device_queries",
+            Self::Slow => "slow_1000ms",
+        }
+    }
+}
+
 #[cfg(windows)]
-fn mice() -> io::Result<u32> {
+fn mice(mut caps_log: Option<&mut File>) -> io::Result<u32> {
     use std::{ffi::c_void, ptr};
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct Device {
         handle: *mut c_void,
         kind: u32,
+    }
+    #[repr(C)]
+    #[derive(Default)]
+    struct Caps {
+        usage: u16,
+        page: u16,
+        input_length: u16,
+        output_length: u16,
+        feature_length: u16,
+        reserved: [u16; 17],
+        links: u16,
+        input_buttons: u16,
+        input_values: u16,
+        input_indices: u16,
+        output_buttons: u16,
+        output_values: u16,
+        output_indices: u16,
+        feature_buttons: u16,
+        feature_values: u16,
+        feature_indices: u16,
+    }
+    #[link(name = "hid")]
+    unsafe extern "system" {
+        fn HidP_GetCaps(preparsed: *const c_void, caps: *mut Caps) -> i32;
     }
     #[link(name = "user32")]
     unsafe extern "system" {
@@ -51,30 +108,82 @@ fn mice() -> io::Result<u32> {
         }
         let mut found = 0;
         for device in devices.iter().take(read as usize).filter(|d| d.kind == 0) {
-            let mut name = [0u16; 4096];
-            let mut length = name.len() as u32;
+            #[repr(align(4))]
+            struct Name([u16; 4096]);
+            let mut name = Name([0u16; 4096]);
+            let mut length = name.0.len() as u32;
             let read = GetRawInputDeviceInfoW(
                 device.handle,
                 0x20000007,
-                name.as_mut_ptr().cast(),
+                name.0.as_mut_ptr().cast(),
                 &mut length,
             );
             if read == u32::MAX {
                 return Err(io::Error::last_os_error());
             }
-            let end = name.iter().position(|v| *v == 0).unwrap_or(name.len());
-            if String::from_utf16_lossy(&name[..end])
+            let end = name.0.iter().position(|v| *v == 0).unwrap_or(name.0.len());
+            if String::from_utf16_lossy(&name.0[..end])
                 .to_ascii_uppercase()
                 .contains("VID_FFFF&PID_F001")
             {
                 found += 1;
+                if let Some(log) = caps_log.as_deref_mut() {
+                    // One explicit metadata check after arrival. No CreateFile,
+                    // read handle, input report or undocumented HID structure.
+                    let mut bytes = 0;
+                    let result = GetRawInputDeviceInfoW(
+                        device.handle,
+                        0x20000005,
+                        ptr::null_mut(),
+                        &mut bytes,
+                    );
+                    if result == u32::MAX || bytes == 0 || bytes > 65536 {
+                        writeln!(
+                            log,
+                            "{{\"event\":\"hid_caps_error\",\"unix_ms\":{},\"stage\":\"preparsed_size\",\"os_error\":{}}}",
+                            unix_ms(),
+                            io::Error::last_os_error().raw_os_error().unwrap_or(0)
+                        )?;
+                        continue;
+                    }
+                    // DWORD alignment is required by GetRawInputDeviceInfoW.
+                    let mut data = vec![0u32; (bytes as usize).div_ceil(4)];
+                    let result = GetRawInputDeviceInfoW(
+                        device.handle,
+                        0x20000005,
+                        data.as_mut_ptr().cast(),
+                        &mut bytes,
+                    );
+                    if result == u32::MAX {
+                        writeln!(
+                            log,
+                            "{{\"event\":\"hid_caps_error\",\"unix_ms\":{},\"stage\":\"preparsed_read\",\"os_error\":{}}}",
+                            unix_ms(),
+                            io::Error::last_os_error().raw_os_error().unwrap_or(0)
+                        )?;
+                        continue;
+                    }
+                    let mut caps = Caps::default();
+                    let status = HidP_GetCaps(data.as_ptr().cast(), &mut caps);
+                    writeln!(
+                        log,
+                        "{{\"event\":\"hid_caps\",\"unix_ms\":{},\"status\":{status},\"usage_page\":{},\"usage\":{},\"input_report_bytes\":{},\"input_button_caps\":{},\"input_value_caps\":{}}}",
+                        unix_ms(),
+                        caps.page,
+                        caps.usage,
+                        caps.input_length,
+                        caps.input_buttons,
+                        caps.input_values
+                    )?;
+                    log.flush()?;
+                }
             }
         }
         Ok(found)
     }
 }
 #[cfg(not(windows))]
-fn mice() -> io::Result<u32> {
+fn mice(_caps_log: Option<&mut File>) -> io::Result<u32> {
     Err(io::Error::other("Windows is required"))
 }
 
@@ -84,26 +193,47 @@ fn run() -> io::Result<()> {
         .ok_or_else(|| io::Error::other("Supply a NEW host-observer.jsonl filename"))?;
     let mut log = File::options().write(true).create_new(true).open(path)?;
     let start = Instant::now();
-    let baseline = mice()?;
+    let baseline = mice(None)?;
     writeln!(
         log,
-        "{{\"event\":\"observer_started\",\"baseline_count\":{baseline}}}"
+        "{{\"event\":\"observer_started\",\"unix_ms\":{},\"baseline_count\":{baseline}}}",
+        unix_ms()
     )?;
     println!("Watching the diagnostic mouse for 120 seconds. Connect the probe client now.");
     let mut previous = baseline;
     let mut arrived = false;
     let mut removed = false;
     let mut errors = 0;
+    let mut arrival = None;
+    let mut previous_phase = None;
     while start.elapsed() < Duration::from_secs(120) {
-        match mice() {
+        let phase = Phase::at(arrival.map(|time: Instant| time.elapsed()));
+        if previous_phase != Some(phase) {
+            writeln!(
+                log,
+                "{{\"event\":\"phase_changed\",\"elapsed_ms\":{},\"unix_ms\":{},\"phase\":\"{}\"}}",
+                start.elapsed().as_millis(),
+                unix_ms(),
+                phase.name()
+            )?;
+            log.flush()?;
+            previous_phase = Some(phase);
+        }
+        if phase == Phase::Quiet {
+            // Deliberately call no device enumeration or metadata API here.
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+        match mice(None) {
             Ok(count) => {
                 if count != previous {
                     arrived |= count > baseline;
                     removed |= arrived && count == baseline;
                     writeln!(
                         log,
-                        "{{\"event\":\"mouse_count_changed\",\"elapsed_ms\":{},\"count\":{count}}}",
-                        start.elapsed().as_millis()
+                        "{{\"event\":\"mouse_count_changed\",\"elapsed_ms\":{},\"unix_ms\":{},\"count\":{count}}}",
+                        start.elapsed().as_millis(),
+                        unix_ms()
                     )?;
                     log.flush()?;
                     println!(
@@ -111,6 +241,28 @@ fn run() -> io::Result<()> {
                         start.elapsed().as_millis()
                     );
                     previous = count;
+                    if count > baseline && arrival.is_none() {
+                        arrival = Some(Instant::now());
+                        writeln!(
+                            log,
+                            "{{\"event\":\"caps_check_started\",\"unix_ms\":{}}}",
+                            unix_ms()
+                        )?;
+                        if let Err(error) = mice(Some(&mut log)) {
+                            writeln!(
+                                log,
+                                "{{\"event\":\"hid_caps_error\",\"unix_ms\":{},\"stage\":\"enumeration\",\"os_error\":{}}}",
+                                unix_ms(),
+                                error.raw_os_error().unwrap_or(0)
+                            )?;
+                        }
+                        writeln!(
+                            log,
+                            "{{\"event\":\"caps_check_finished\",\"unix_ms\":{}}}",
+                            unix_ms()
+                        )?;
+                        log.flush()?;
+                    }
                 }
                 if removed {
                     break;
@@ -129,7 +281,11 @@ fn run() -> io::Result<()> {
                 }
             }
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(if phase == Phase::Slow {
+            1000
+        } else {
+            100
+        }));
     }
     writeln!(
         log,
@@ -139,6 +295,19 @@ fn run() -> io::Result<()> {
         "Arrival observed: {arrived}; removal observed: {removed}; observation errors: {errors}"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn observation_has_distinct_fast_quiet_and_slow_phases() {
+        assert_eq!(Phase::at(None), Phase::Waiting);
+        assert_eq!(Phase::at(Some(Duration::from_millis(2999))), Phase::Fast);
+        assert_eq!(Phase::at(Some(Duration::from_secs(3))), Phase::Quiet);
+        assert_eq!(Phase::at(Some(Duration::from_millis(6999))), Phase::Quiet);
+        assert_eq!(Phase::at(Some(Duration::from_secs(7))), Phase::Slow);
+    }
 }
 fn main() {
     if let Err(error) = run() {

@@ -10,6 +10,7 @@ use std::{
     fs::File,
     io::Write,
     sync::atomic::{AtomicBool, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 pub(crate) const BODY: usize = 1932;
@@ -163,8 +164,36 @@ impl Probe {
         // Only fixed event names and integers; no account, peer or USB payloads.
         let _ = writeln!(
             self.log,
-            "{{\"event\":\"{event}\",\"elapsed_ms\":{},\"kind\":{kind},\"code\":{code},\"detail\":{detail}}}",
-            self.elapsed_ms
+            "{{\"event\":\"{event}\",\"elapsed_ms\":{},\"unix_ms\":{},\"kind\":{kind},\"code\":{code},\"detail\":{detail}}}",
+            self.elapsed_ms,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        );
+        let _ = self.log.flush();
+    }
+    fn exchange(&mut self, request: &[u8], response: &[u8; FRAME]) {
+        let reply = &response[21..21 + RECORD];
+        // Setup fields and correlation only; never record arbitrary payloads.
+        let _ = writeln!(
+            self.log,
+            "{{\"event\":\"control_exchange\",\"elapsed_ms\":{},\"unix_ms\":{},\"request_type\":{},\"request\":{},\"value\":{},\"index\":{},\"requested_length\":{},\"transfer_capacity\":{},\"correlation_id\":{},\"reply_correlation_id\":{},\"reply_length\":{},\"status\":{}}}",
+            self.elapsed_ms,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+            request[4],
+            request[5],
+            word(request, 6),
+            word(request, 8),
+            word(request, 1034),
+            word(request, 1040),
+            dword(request, 1042),
+            dword(reply, 1036),
+            dword(reply, 1032),
+            dword(reply, 4) as i32
         );
         let _ = self.log.flush();
     }
@@ -207,6 +236,7 @@ impl Probe {
             2 => Some(configuration()),
             1 => {
                 let (reply, supported) = control(r);
+                self.exchange(r, &reply);
                 self.note(
                     if supported {
                         "control_reply"
@@ -303,6 +333,27 @@ mod tests {
         r[4] = 0xc0;
         r[5] = 0xff;
         assert!(!control(&r).1);
+    }
+
+    #[test]
+    fn complete_report_descriptor_stays_identical_for_repeated_requests() {
+        let mut r = [0; RECORD];
+        r[4] = 0x81;
+        r[5] = 6;
+        r[6..8].copy_from_slice(&0x2200u16.to_le_bytes());
+        // USB wLength and the carrier's transfer capacity are separate fields.
+        r[1034..1036].copy_from_slice(&64u16.to_le_bytes());
+        r[1040..1042].copy_from_slice(&1024u16.to_le_bytes());
+        for id in [1, 2, 0x10203040] {
+            put(&mut r, 1042, id);
+            let (f, supported) = control(&r);
+            assert!(supported);
+            assert_eq!(dword(&f, 21 + 4), 50);
+            assert_eq!(dword(&f, 21 + 1032), 50);
+            assert_eq!(dword(&f, 21 + 1036), id);
+            assert_eq!(&f[29..79], REPORT);
+            assert!(f[79..21 + 1032].iter().all(|byte| *byte == 0));
+        }
     }
 
     #[test]

@@ -1,11 +1,13 @@
 # Enumeration-only USB mouse probe
 
-Status (2026-10-19): local source prototype, **not yet built or run against a
-host**. The standalone responder/tests and host observer passed Rust metadata
-compilation. Full Cargo checking and execution are blocked by the missing MSVC
-linker and Windows SDK on the current workstation. A separate
-`codex/usb-mouse-enumeration-probe` branch supplies a Windows CI build; the
-default client and dev/main branches do not enable the probe.
+Status (2026-10-19): the initial Windows CI build passed four USB tests and
+Clippy. The live test through BUD / TURN TLS observed mouse arrival and removal
+on the stock host, with zero observer errors. It also recorded repeated report
+descriptor requests. The current follow-up build adds correlated setup/reply
+metadata and controlled observation phases to investigate those repetitions;
+it does not change descriptors or send interrupt input reports. A separate
+`codex/usb-mouse-enumeration-probe` branch supplies the test builds; the default
+client and dev/main branches do not enable the probe.
 
 This isolated build tests generic USB admission through an authenticated BUD
 connection to an **unmodified stock Parsec host**. It does not access the host
@@ -27,6 +29,21 @@ supported Parsec USB API or a production input feature.
    process is needed for another probe. Start the host observer again as well.
 5. Keep both `usb-client-*.jsonl` and `usb-host-*.jsonl` logs. The observer must
    run on the host; client-side enumeration cannot establish host acceptance.
+
+After the first arrival the host observer checks Windows' parsed HID
+capabilities once, then uses three phases: three seconds of 100-ms device
+polling, four seconds with **no device enumeration/metadata calls**, then
+1000-ms polling until removal. The host log marks each phase. The client log
+records setup fields, transfer sizes, response status and correlation IDs,
+with wall-clock timestamps on both sides. No USB payload or device path is
+logged. Keep Device Manager and other USB inspection tools closed for this
+trial, because those could trigger their own descriptor queries.
+
+If repetitions pause during the quiet interval and track the slow polling
+afterwards, that supports an observer-induced query rather than a failed
+enumeration retry. If they continue unchanged, the setup/reply fields and
+HID capabilities provide the next evidence. The phase experiment does not by
+itself attribute queries from other processes or prove working mouse input.
 
 The synthetic identity is `VID_FFFF / PID_F001`, with product name
 `USB mouse enumeration probe`. These are unassigned diagnostic identifiers,

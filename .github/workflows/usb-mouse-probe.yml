@@ -27,6 +27,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'USB probe unit tests failed' }
           cargo clippy --locked --manifest-path src-native/crates/bud/Cargo.toml -p lowlat-client --features usb-mouse-probe --all-targets -- -D warnings
           if ($LASTEXITCODE -ne 0) { throw 'USB probe lint failed' }
+          rustc --edition 2024 --test src-native/probes/usb-mouse-observer.rs -o src-native/target/usb-observer-tests.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Observer test build failed' }
+          & ./src-native/target/usb-observer-tests.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Observer phase test failed' }
       - name: Build opt-in client and read-only host observer
         shell: pwsh
         run: |
@@ -34,7 +38,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Probe client build failed' }
           New-Item -ItemType Directory -Path dist/usb-mouse-probe -Force | Out-Null
           Copy-Item src-native/target/x86_64-pc-windows-msvc/release/parsec-web-turn.exe dist/usb-mouse-probe/ParsecWebTurn-USB-Probe.exe
-          rustc --edition 2024 -C opt-level=s -C target-feature=+crt-static src-native/probes/usb-mouse-observer.rs -o dist/usb-mouse-probe/USB-Mouse-Observer.exe
+          rustc --edition 2024 -C opt-level=s -C strip=symbols -C target-feature=+crt-static src-native/probes/usb-mouse-observer.rs -o dist/usb-mouse-probe/USB-Mouse-Observer.exe
           if ($LASTEXITCODE -ne 0) { throw 'Observer build failed' }
           Copy-Item scripts/usb-mouse-probe/*.cmd dist/usb-mouse-probe/
           Copy-Item docs/usb-mouse-probe.md dist/usb-mouse-probe/README.md

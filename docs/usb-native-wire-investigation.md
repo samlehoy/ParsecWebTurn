@@ -179,11 +179,45 @@ configuration reply, bounded correlated enumeration responses and timed
 teardown through the existing authenticated BUD control channel. It deliberately
 does not complete interrupt input reports or send movement/clicks. Its separate
 host observer checks Windows mouse arrival/removal. See
-[probe status and instructions](usb-mouse-probe.md); no live acceptance has yet
-been established. The feature is excluded from default builds.
+[probe status and instructions](usb-mouse-probe.md). The first live trial
+observed mouse arrival/removal through the stock host over BUD / TURN TLS.
+The feature is excluded from default builds.
 
 One additional static detail used by the probe: at RVA `0xbcfee`–`0xbd0d1`,
 the native client places the nonnegative `libusb_control_transfer` byte count
 in both the kind-10 status field (offset 4) and data-length field (offset 1032).
 Negative libusb errors remain negative status with zero data length. Success
 with input data must therefore not always be encoded as status zero.
+
+## Report-descriptor repetition follow-up
+
+The supplied first-trial logs show one configuration request, two interrupt
+read requests, and 91 GET_DESCRIPTOR requests with wValue `0x2200`. After the
+first pair, 89 inter-request intervals average 160.07 ms (155–169 ms). The
+observer sleeps 100 ms after each device-list/name query, so its own metadata
+polling is a plausible source of the repetitions. This is a hypothesis, not a
+proven cause. The single stalled request was string index `0xEE` (`0x03EE`),
+not the HID report descriptor. The mouse was observed from 18,126 to 32,583 ms
+on the observer clock and its removal request was sent at 17,000 ms on the
+client's separately started session clock.
+
+The native host wrapper at `0xc1db0` sends a control transaction once, waits
+for matching correlation ID, then copies the returned data. It has no resend
+loop in that transaction handler. Its driver bridge at `0x1c8cf7`–`0x1c8d3b`
+accepts nonnegative libusb status/count and passes the returned bytes on; it
+does not require status zero. This supports keeping the current byte-count
+status semantics, rather than speculatively changing them.
+
+The follow-up leaves the 50-byte HID report descriptor and three-byte USB
+input report unchanged. It adds setup/reply sizes, type/index, correlation IDs
+and status logging, plus observer fast/quiet/slow phases and a single parsed
+HID capability query using documented Windows APIs:
+
+- [GetRawInputDeviceInfoW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getrawinputdeviceinfow), including `RIDI_PREPARSEDDATA`.
+- [HidP_GetCaps](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidpi/nf-hidpi-hidp_getcaps) and [HIDP_CAPS](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidpi/ns-hidpi-_hidp_caps).
+
+No physical mouse is opened or captured. Windows' input-report byte length
+includes the report-ID byte even when the descriptor uses no report ID;
+the expected three-byte USB mouse payload therefore corresponds to four bytes
+in HIDP_CAPS.InputReportByteLength. New live results are still needed to decide
+whether the observer causes the repeated queries.
