@@ -10,6 +10,7 @@ publish = false
 default = ["vendor-video", "experimental-bud"]
 vendor-video = ["dep:parsec-gpu-video"]
 experimental-bud = ["dep:parsec-native-bud"]
+usb-mouse-probe = ["experimental-bud", "parsec-native-bud/usb-mouse-probe"]
 diagnostics = ["dep:log", "dep:rcgen", "dep:ring", "dep:rustls", "dep:tokio-rustls", "wasmtime/wat", "wasmtime/cranelift"]
 
 [dependencies]

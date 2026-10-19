@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+usb-mouse-probe = ["lowlat-client/usb-mouse-probe"]
+
 [workspace]
 members = ["vendor/lowlat-client", "vendor/lowlat-net", "vendor/lowlat-core"]
 resolver = "2"

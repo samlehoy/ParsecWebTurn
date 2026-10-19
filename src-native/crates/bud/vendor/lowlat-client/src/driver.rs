@@ -291,6 +291,8 @@ fn relay_outcome(relay: &Relay<'_>) -> Option<Outcome> {
 /// One session's driver.
 #[derive(Debug)]
 pub struct Driver {
+    #[cfg(feature = "usb-mouse-probe")]
+    usb_probe: Option<crate::usb_mouse_probe::Probe>,
     init: Init,
     units: Units,
     emit: events::Sender<Event>,
@@ -345,6 +347,8 @@ impl Driver {
         telemetry: Arc<Telemetry>,
     ) -> Self {
         Self {
+            #[cfg(feature = "usb-mouse-probe")]
+            usb_probe: None,
             init,
             units,
             packets,
@@ -451,6 +455,10 @@ impl Driver {
                 self.loss_sampled_ms = now_ms;
                 self.telemetry.state.store(1, Ordering::Relaxed);
                 self.start(endpoint.session());
+                #[cfg(feature = "usb-mouse-probe")]
+                {
+                    self.usb_probe = crate::usb_mouse_probe::Probe::from_environment();
+                }
                 self.report_due_ms = Some(now_ms + REPORT_INTERVAL_MS);
                 self.emit.send(Event::Established { addr });
             }
@@ -462,6 +470,12 @@ impl Driver {
         }
         if !self.established {
             return None;
+        }
+
+        #[cfg(feature = "usb-mouse-probe")]
+        {
+            let frame = self.usb_probe.as_mut().and_then(|p| p.tick(now_ms));
+            self.usb_probe_send(endpoint.session(), frame);
         }
 
         if let Some(outcome) = self.check_health(endpoint, now_ms) {
@@ -525,6 +539,8 @@ impl Driver {
     /// message reaches the host; [`Driver::left`] says when that is over.
     pub fn leave(&mut self, session: &mut Session<'_>, now_ms: f64) {
         if self.leaving.is_none() {
+            #[cfg(feature = "usb-mouse-probe")]
+            self.finish_usb_probe(session);
             self.send_control(
                 session,
                 &Control {
@@ -663,6 +679,27 @@ impl Driver {
         }
     }
 
+    #[cfg(feature = "usb-mouse-probe")]
+    fn usb_probe_send(
+        &mut self,
+        session: &mut Session<'_>,
+        frame: Option<[u8; crate::usb_mouse_probe::FRAME]>,
+    ) {
+        if let Some(frame) = frame {
+            let (header, body) = frame.split_at(13);
+            let success = session.send_message(CONTROL_CHANNEL, header, body).is_ok();
+            if let Some(probe) = &mut self.usb_probe {
+                probe.sent(success);
+            }
+        }
+    }
+
+    #[cfg(feature = "usb-mouse-probe")]
+    pub(crate) fn finish_usb_probe(&mut self, session: &mut Session<'_>) {
+        let frame = self.usb_probe.as_mut().and_then(|p| p.remove());
+        self.usb_probe_send(session, frame);
+    }
+
     fn send_control(&mut self, session: &mut Session<'_>, control: &Control<'_>) {
         let mut header = [0u8; control::CONTROL_HEADER_LEN];
         if control::encode_header(&mut header, control).is_err() {
@@ -752,6 +789,14 @@ impl Driver {
                     );
                 }
                 *count = count.saturating_add(1);
+            }
+            #[cfg(feature = "usb-mouse-probe")]
+            {
+                let frame = self
+                    .usb_probe
+                    .as_mut()
+                    .and_then(|p| p.incoming(inbound.get(..len).unwrap_or_default()));
+                self.usb_probe_send(session, frame);
             }
             {
                 self.emit.send(Event::ExternalControl {

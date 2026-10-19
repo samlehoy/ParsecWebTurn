@@ -11,6 +11,7 @@ authors = ["Nguyen Duy"]
 [features]
 default = []
 external-video = []
+usb-mouse-probe = []
 turn-stream = ["lowlat-net/turn-stream"]
 
 [dependencies]

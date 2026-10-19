@@ -297,6 +297,8 @@ pub(crate) fn run(args: Attached, mut wake: Wake, running: &Running) {
         // way -- before a departure the application asked for is let go
         // without a word.
         if let Some(outcome) = ended {
+            #[cfg(feature = "usb-mouse-probe")]
+            driver.finish_usb_probe(shell.endpoint().session());
             release(&mut shell);
             telemetry.state.store(2, Ordering::Relaxed);
             emit.send(Event::Ended { outcome });
@@ -363,6 +365,12 @@ pub(crate) fn run(args: Attached, mut wake: Wake, running: &Running) {
         if let Some(consumer) = &external_consumer {
             consumer.unpark();
         }
+    }
+    #[cfg(feature = "usb-mouse-probe")]
+    {
+        driver.finish_usb_probe(shell.endpoint().session());
+        let _ = shell.turn(|_| {});
+        let _ = shell.finish_output(std::time::Duration::from_millis(100));
     }
     telemetry.state.store(2, Ordering::Relaxed);
 }
