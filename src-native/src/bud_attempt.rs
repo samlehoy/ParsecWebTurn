@@ -1023,6 +1023,7 @@ mod tests {
                 commands,
                 cancel: Default::default(),
                 thread: std::thread::current(),
+                hid_mouse: false,
             },
             receiver,
         )

@@ -721,7 +721,7 @@ impl Driver {
                 probe.external_mouse(message.opcode, message.a0, message.a1, message.a2);
             }
         }
-        // No ordinary mouse fallback on missing setup, timeout or probe failure.
+        // No ordinary mouse fallback on missing setup, timeout or HID failure.
         // RELEASE still reaches the host for normal keyboard cleanup.
         mouse
     }
@@ -737,6 +737,9 @@ impl Driver {
             let success = session.send_message(CONTROL_CHANNEL, header, body).is_ok();
             if let Some(probe) = &mut self.hid_mouse {
                 probe.sent(success);
+                self.telemetry
+                    .hid_mouse_error
+                    .store(probe.error(), Ordering::Release);
             }
         }
     }

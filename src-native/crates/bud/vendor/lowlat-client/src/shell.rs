@@ -38,6 +38,8 @@ const REPORT_EVERY: u32 = 16;
 
 /// Everything the thread is handed at spawn.
 pub(crate) struct Attached {
+    #[cfg(feature = "usb-hid-mouse")]
+    pub hid_mouse: bool,
     pub external_consumer: Option<std::thread::Thread>,
     pub socket: Socket,
     pub servers: Vec<SocketAddr>,
@@ -93,6 +95,8 @@ fn attach_send<'a>(
 
 pub(crate) fn run(args: Attached, mut wake: Wake, running: &Running) {
     let Attached {
+        #[cfg(feature = "usb-hid-mouse")]
+        hid_mouse,
         external_consumer,
         socket,
         servers,
@@ -228,7 +232,7 @@ pub(crate) fn run(args: Attached, mut wake: Wake, running: &Running) {
     let _ = epoch.set(shell.base());
     let mut driver = Driver::new(init, units, packets, emit.clone(), Arc::clone(&telemetry));
     #[cfg(feature = "usb-hid-mouse")]
-    driver.enable_hid_mouse(config.hid_mouse);
+    driver.enable_hid_mouse(hid_mouse);
     let mut reported: Vec<SocketAddr> = Vec::new();
     let mut offered = false;
     let mut pass: u32 = 0;
