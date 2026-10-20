@@ -36,6 +36,17 @@ const PRODUCT: &str = "USB mouse enumeration probe";
 
 #[path = "usb_mouse_input_probe.rs"]
 mod input_probe;
+#[path = "usb_mouse_live_probe.rs"]
+mod live_probe;
+
+pub(crate) fn live_requested() -> bool {
+    std::env::var("PARSEC_USB_MOUSE_PROBE").as_deref() == Ok("1")
+        && std::env::var("PARSEC_USB_MOUSE_LIVE_PROBE").as_deref() == Ok("1")
+}
+
+pub(crate) fn mouse_opcode(opcode: u8) -> bool {
+    matches!(opcode, 1 | 2 | 3 | 26)
+}
 
 fn put(record: &mut [u8], offset: usize, value: u32) {
     record[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
@@ -69,11 +80,14 @@ fn identity() -> [u8; FRAME] {
     frame(&r)
 }
 fn configuration() -> [u8; FRAME] {
+    configuration_for(CONFIG)
+}
+fn configuration_for(config: &[u8]) -> [u8; FRAME] {
     let mut r = [0; RECORD];
     put(&mut r, 0, 11);
-    r[8..17].copy_from_slice(&CONFIG[..9]);
-    r[17..26].copy_from_slice(&CONFIG[9..18]);
-    r[26..33].copy_from_slice(&CONFIG[27..34]);
+    r[8..17].copy_from_slice(&config[..9]);
+    r[17..26].copy_from_slice(&config[9..18]);
+    r[26..33].copy_from_slice(&config[27..34]);
     put(&mut r, 17 + 180, 1); // one alternate, one interface, one endpoint
     frame(&r)
 }
@@ -89,6 +103,14 @@ fn string(value: &str) -> Vec<u8> {
 /// Only the fixed device's enumeration requests are implemented. Unsupported
 /// requests stall (-9, LIBUSB_ERROR_PIPE), never receive an invented success.
 fn control(r: &[u8]) -> ([u8; FRAME], bool) {
+    control_for(r, None)
+}
+fn control_for(r: &[u8], live_buttons: Option<u8>) -> ([u8; FRAME], bool) {
+    let (device, config, report) = if live_buttons.is_some() {
+        (live_probe::DEVICE, live_probe::CONFIG, live_probe::REPORT)
+    } else {
+        (DEVICE, CONFIG, REPORT)
+    };
     let mut reply = [0; RECORD];
     put(&mut reply, 0, 10);
     put(&mut reply, 1036, dword(r, 1042));
@@ -96,19 +118,25 @@ fn control(r: &[u8]) -> ([u8; FRAME], bool) {
     let value = word(r, 6);
     let index = word(r, 8);
     let data = match (r[4], r[5], value, index) {
-        (0x80, 6, 0x100, 0) => Some(DEVICE.to_vec()),
-        (0x80, 6, 0x200, 0) => Some(CONFIG.to_vec()),
+        (0x80, 6, 0x100, 0) => Some(device.to_vec()),
+        (0x80, 6, 0x200, 0) => Some(config.to_vec()),
         (0x80, 6, 0x300, _) => Some(vec![4, 3, 9, 4]),
         (0x80, 6, 0x301, 0x409) => Some(string(MAKER)),
         (0x80, 6, 0x302, 0x409) => Some(string(PRODUCT)),
-        (0x80, 6, 0x303, 0x409) => Some(string("ENUM-ONLY")),
-        (0x81, 6, 0x2100, 0) => Some(CONFIG[18..27].to_vec()),
-        (0x81, 6, 0x2200, 0) => Some(REPORT.to_vec()),
+        (0x80, 6, 0x303, 0x409) => Some(string(if live_buttons.is_some() {
+            "LIVE-TEST"
+        } else {
+            "ENUM-ONLY"
+        })),
+        (0x81, 6, 0x2100, 0) => Some(config[18..27].to_vec()),
+        (0x81, 6, 0x2200, 0) => Some(report.to_vec()),
         (0x80, 8, 0, 0) => Some(vec![1]),  // GET_CONFIGURATION
         (0x81, 10, 0, 0) => Some(vec![0]), // GET_INTERFACE
         (0x80..=0x82, 0, 0, _) => Some(vec![0, 0]), // GET_STATUS
         (0x00, 9, 1, 0) | (0x01, 11, 0, 0) => Some(vec![]),
-        (0xa1, 1, 0x100, 0) => Some(vec![0; 3]), // released buttons, zero X/Y
+        (0xa1, 1, 0x100, 0) => {
+            Some(live_buttons.map_or_else(|| vec![0; 3], |b| vec![b, 0, 0, 0, 0]))
+        }
         (0xa1, 2, 0, 0) => Some(vec![0]),
         (0xa1, 3, 0, 0) => Some(vec![1]),
         (0x21, 10, _, 0) | (0x21, 11, 0..=1, 0) => Some(vec![]),
@@ -138,6 +166,8 @@ pub(crate) struct Probe {
     elapsed_ms: u32,
     input: Option<input_probe::Input>,
     stopping: bool,
+    live: Option<live_probe::Input>,
+    next_live_log: u32,
 }
 impl Probe {
     pub(crate) fn from_environment() -> Option<Self> {
@@ -161,13 +191,19 @@ impl Probe {
             removed: false,
             received: 0,
             elapsed_ms: 0,
-            input: (std::env::var("PARSEC_USB_MOUSE_INPUT_PROBE").as_deref() == Ok("1"))
-                .then(input_probe::Input::default),
+            input: (!live_requested()
+                && std::env::var("PARSEC_USB_MOUSE_INPUT_PROBE").as_deref() == Ok("1"))
+            .then(input_probe::Input::default),
             stopping: false,
+            live: live_requested().then(live_probe::Input::default),
+            next_live_log: 0,
         };
         probe.note("armed", 0, 0, 0);
         if probe.input.is_some() {
             probe.note("fixed_input_enabled", 8, 0, 0);
+        }
+        if probe.live.is_some() {
+            probe.note("live_hid_enabled_normal_mouse_blocked", 8, 0, 0);
         }
         Some(probe)
     }
@@ -217,7 +253,13 @@ impl Probe {
         if self.stopping {
             return self.remove();
         }
-        if now - start >= 17_000.0 {
+        if now - start
+            >= if self.live.is_some() {
+                90_000.0
+            } else {
+                17_000.0
+            }
+        {
             if let Some(release) = self.release_input() {
                 return Some(release);
             }
@@ -226,7 +268,28 @@ impl Probe {
         if !self.announced && now - start >= 2_000.0 {
             self.announced = true;
             self.note("identity_queued", 15, 0, 0);
-            return Some(identity());
+            let mut packet = identity();
+            if self.live.is_some() {
+                packet[25..43].copy_from_slice(live_probe::DEVICE);
+                packet[21 + 542..21 + 542 + 34].copy_from_slice(live_probe::CONFIG);
+            }
+            return Some(packet);
+        }
+        if self.live.is_some() {
+            let input = self.live.as_mut()?;
+            if input.failed() {
+                self.note("live_hid_backlog_limit", 8, 0, 0);
+                return self.remove();
+            }
+            let report = input.next(self.elapsed_ms);
+            if self.elapsed_ms >= self.next_live_log {
+                let (reports, commands, suppressed) =
+                    (input.reports, input.commands, input.suppressed);
+                self.note("live_hid_reports", 8, reports, commands);
+                self.note("normal_mouse_commands_suppressed", 0, suppressed, 0);
+                self.next_live_log = self.elapsed_ms.saturating_add(1000);
+            }
+            return report;
         }
         if let Some((report, step)) = self.input.as_mut().and_then(|i| i.next(self.elapsed_ms)) {
             self.note("fixed_report_queued", 8, step as u32, 0);
@@ -240,23 +303,37 @@ impl Probe {
             || bytes.len() != FRAME
             || bytes[12] != 32
             || bytes[..4] != 1932u32.to_be_bytes()
-            || bytes[8..12] != ID.to_be_bytes()
+            || bytes[8..12]
+                != (if self.live.is_some() {
+                    live_probe::ID
+                } else {
+                    ID
+                })
+                .to_be_bytes()
             || dword(bytes, 13) != 14
             || dword(bytes, 17) != 1570
         {
             return None;
         }
         self.received += 1;
-        if self.received > 512 {
+        if self.received > if self.live.is_some() { 32768 } else { 512 } {
             return self.remove();
         }
         let r = &bytes[21..21 + RECORD];
         let kind = dword(r, 0);
         self.note("host_request", kind, u32::from(r[5]), u32::from(word(r, 6)));
         match kind {
-            2 => Some(configuration()),
+            2 => Some(if self.live.is_some() {
+                configuration_for(live_probe::CONFIG)
+            } else {
+                configuration()
+            }),
             1 => {
-                let (reply, supported) = control(r);
+                let (reply, supported) = if let Some(live) = &self.live {
+                    control_for(r, Some(live.buttons()))
+                } else {
+                    control(r)
+                };
                 self.exchange(r, &reply);
                 self.note(
                     if supported {
@@ -271,6 +348,13 @@ impl Probe {
                 Some(reply)
             }
             7 => {
+                if let Some(live) = &mut self.live {
+                    if !live.accept(r) {
+                        self.note("interrupt_rejected", 7, dword(r, 8), dword(r, 16));
+                        return self.remove();
+                    }
+                    return None;
+                }
                 if let Some(input) = &mut self.input {
                     if !input.accept(r, self.elapsed_ms) {
                         self.note("interrupt_rejected", 7, 0, 0);
@@ -284,11 +368,28 @@ impl Probe {
         }
     }
     pub(crate) fn release_input(&mut self) -> Option<[u8; FRAME]> {
-        let release = self.input.as_mut().and_then(input_probe::Input::release);
+        let release = if let Some(live) = &mut self.live {
+            live.release()
+        } else {
+            self.input.as_mut().and_then(input_probe::Input::release)
+        };
         if release.is_some() {
             self.note("button_release_queued", 8, 0, 0);
         }
         release
+    }
+    pub(crate) fn external_mouse(&mut self, opcode: u8, a: u32, b: u32, c: u32) {
+        if !self.announced || self.stopping || self.removed {
+            return;
+        }
+        if let Some(live) = &mut self.live {
+            live.command(opcode, a, b, c);
+        }
+    }
+    pub(crate) fn prepare_frame(&self, packet: &mut [u8; FRAME]) {
+        if self.live.is_some() {
+            packet[8..12].copy_from_slice(&live_probe::ID.to_be_bytes());
+        }
     }
     pub(crate) fn remove(&mut self) -> Option<[u8; FRAME]> {
         if !self.announced || self.removed {
@@ -299,6 +400,11 @@ impl Probe {
             return Some(release);
         }
         self.removed = true;
+        if let Some(live) = &self.live {
+            let (reports, commands, suppressed) = (live.reports, live.commands, live.suppressed);
+            self.note("live_hid_final", 8, reports, commands);
+            self.note("normal_mouse_commands_suppressed", 0, suppressed, 0);
+        }
         self.note("remove_queued", 16, self.received, 0);
         let mut r = [0; RECORD];
         put(&mut r, 0, 16);
@@ -342,6 +448,40 @@ mod interrupt_contract;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_usb_mouse_descriptor_contract_is_distinct_and_consistent() {
+        assert_eq!(live_probe::REPORT.len(), 65);
+        assert_eq!(word(live_probe::CONFIG, 25), 65);
+        assert_eq!(word(live_probe::CONFIG, 31), 5);
+        assert_eq!(&live_probe::CONFIG[15..17], &[0, 0]);
+        assert_eq!(word(live_probe::DEVICE, 10), 0xf002);
+        let mut request = [0; RECORD];
+        request[4] = 0x81;
+        request[5] = 6;
+        request[6..8].copy_from_slice(&0x2200u16.to_le_bytes());
+        request[1034..1036].copy_from_slice(&129u16.to_le_bytes());
+        let (reply, supported) = control_for(&request, Some(0));
+        assert!(supported);
+        assert_eq!(dword(&reply, 21 + 1032), 65);
+        assert_eq!(&reply[29..29 + 65], live_probe::REPORT);
+        let (mut at, mut size, mut count, mut bits) = (0, 0, 0, 0);
+        while at < live_probe::REPORT.len() {
+            let tag = live_probe::REPORT[at];
+            let len = match tag & 3 {
+                3 => 4,
+                n => n as usize,
+            };
+            let value = live_probe::REPORT.get(at + 1).copied().unwrap_or(0);
+            match tag {
+                0x75 => size = u32::from(value),
+                0x95 => count = u32::from(value),
+                0x81 => bits += size * count,
+                _ => {}
+            }
+            at += 1 + len;
+        }
+        assert_eq!(bits, 40);
+    }
     #[test]
     fn descriptor_lengths_and_identity_are_consistent() {
         assert_eq!(REPORT.len(), 50);
@@ -415,6 +555,8 @@ mod tests {
                 elapsed_ms: 0,
                 input: None,
                 stopping: false,
+                live: None,
+                next_live_log: 0,
             };
             assert!(probe.tick(0.0).is_none());
             assert!(probe.tick(1999.0).is_none());

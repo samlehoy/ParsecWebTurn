@@ -137,10 +137,8 @@ fn mice(mut caps_log: Option<&mut File>) -> io::Result<u32> {
                 return Err(io::Error::last_os_error());
             }
             let end = name.0.iter().position(|v| *v == 0).unwrap_or(name.0.len());
-            if String::from_utf16_lossy(&name.0[..end])
-                .to_ascii_uppercase()
-                .contains("VID_FFFF&PID_F001")
-            {
+            let identity = String::from_utf16_lossy(&name.0[..end]).to_ascii_uppercase();
+            if identity.contains("VID_FFFF&PID_F001") || identity.contains("VID_FFFF&PID_F002") {
                 found += 1;
                 if let Some(log) = caps_log.as_deref_mut() {
                     // RIM_TYPEMOUSE can return an empty RIDI_PREPARSEDDATA.

@@ -293,6 +293,8 @@ fn relay_outcome(relay: &Relay<'_>) -> Option<Outcome> {
 pub struct Driver {
     #[cfg(feature = "usb-mouse-probe")]
     usb_probe: Option<crate::usb_mouse_probe::Probe>,
+    #[cfg(feature = "usb-mouse-probe")]
+    usb_live_mouse: bool,
     init: Init,
     units: Units,
     emit: events::Sender<Event>,
@@ -349,6 +351,8 @@ impl Driver {
         Self {
             #[cfg(feature = "usb-mouse-probe")]
             usb_probe: None,
+            #[cfg(feature = "usb-mouse-probe")]
+            usb_live_mouse: crate::usb_mouse_probe::live_requested(),
             init,
             units,
             packets,
@@ -672,6 +676,10 @@ impl Driver {
 
     pub(crate) fn send_external(&mut self, session: &mut Session<'_>, bytes: &[u8]) {
         if let Ok(mut message) = control::parse(bytes) {
+            #[cfg(feature = "usb-mouse-probe")]
+            if self.route_usb_mouse(&message) {
+                return;
+            }
             if message.opcode == op::ENCODER_CONFIG && message.a0 == 0 {
                 message.a1 = negotiated_encoder_flags(message.a1, self.init.flags);
             }
@@ -680,12 +688,31 @@ impl Driver {
     }
 
     #[cfg(feature = "usb-mouse-probe")]
+    fn route_usb_mouse(&mut self, message: &Control<'_>) -> bool {
+        if !self.usb_live_mouse {
+            return false;
+        }
+        let mouse = crate::usb_mouse_probe::mouse_opcode(message.opcode);
+        if mouse || message.opcode == op::RELEASE {
+            if let Some(probe) = &mut self.usb_probe {
+                probe.external_mouse(message.opcode, message.a0, message.a1, message.a2);
+            }
+        }
+        // No ordinary mouse fallback on missing setup, timeout or probe failure.
+        // RELEASE still reaches the host for normal keyboard cleanup.
+        mouse
+    }
+
+    #[cfg(feature = "usb-mouse-probe")]
     fn usb_probe_send(
         &mut self,
         session: &mut Session<'_>,
         frame: Option<[u8; crate::usb_mouse_probe::FRAME]>,
     ) {
-        if let Some(frame) = frame {
+        if let Some(mut frame) = frame {
+            if let Some(probe) = &self.usb_probe {
+                probe.prepare_frame(&mut frame);
+            }
             let (header, body) = frame.split_at(13);
             let success = session.send_message(CONTROL_CHANNEL, header, body).is_ok();
             if let Some(probe) = &mut self.usb_probe {
@@ -1117,6 +1144,53 @@ fn negotiated_encoder_flags(external: u32, initial: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "usb-mouse-probe")]
+    #[test]
+    fn usb_mouse_probe_live_route_never_duplicates_or_falls_back() {
+        let (emit, _) = events::queue();
+        let mut driver = Driver::new(
+            crate::config::Config::default().init(&crate::config::Caps::default()),
+            Units::new(),
+            Packets::new(),
+            emit,
+            Arc::new(Telemetry::default()),
+        );
+        for live in [false, true] {
+            driver.usb_live_mouse = live;
+            for opcode in [
+                op::MOUSE_BUTTON,
+                op::MOUSE_WHEEL,
+                op::MOUSE_MOTION,
+                op::MOUSE_MOTION_STREAM,
+            ] {
+                assert_eq!(
+                    driver.route_usb_mouse(&Control {
+                        opcode,
+                        a0: 1,
+                        a1: 1,
+                        a2: 0,
+                        body: &[]
+                    }),
+                    live
+                );
+            }
+            for opcode in [
+                op::KEYBOARD,
+                op::RELEASE,
+                op::GAMEPAD_BUTTON,
+                op::ENCODER_CONFIG,
+            ] {
+                assert!(!driver.route_usb_mouse(&Control {
+                    opcode,
+                    a0: 0,
+                    a1: 0,
+                    a2: 0,
+                    body: &[]
+                }));
+            }
+        }
+    }
 
     #[test]
     fn external_encoder_requests_keep_initial_depth_and_range() {

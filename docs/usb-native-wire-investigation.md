@@ -377,3 +377,56 @@ than maintaining a duplicate implementation. A successful build still does
 not establish delivery on the host; both visual desktop confirmation and new
 client/host logs are required. In particular, interrupt-read activity and the
 host control-request queue must not be treated as the same queue.
+
+### Two-PC live movement and click confirmed (2026-10-20)
+
+The user observed movement and a drawn dot in Paint with
+`usb-client-input-1048-29487.jsonl` / `usb-host-1034-19261.jsonl`.
+All ten fixed input steps (0–9) were queued, including button press and release
+154 ms apart. The host issued twelve interrupt reads, each with capacity three;
+there were no transport refusals or interrupt rejections. Its observer started
+at baseline zero, confirmed arrival, HIDP_STATUS_SUCCESS with mouse usage and
+four Windows input-report bytes, then removal, with zero observer errors.
+Together with the visual result, this confirms actual desktop motion/click
+delivery through the unmodified stock host, not just network enqueueing.
+
+Descriptor requests continued: 111 total, of which 110 have ID/capacity zero
+and the unchanged 114-byte requested length / 50-byte response. Splitting those
+zero-ID requests by client elapsed time gives:
+
+| Phase | Requests | Mean interval within phase |
+| --- | --- | --- |
+| Before first movement (before 4385 ms) | 16 | 127.73 ms |
+| Movement/click sequence (4385–9407 ms) | 38 | 133.65 ms |
+| After final neutral report (9407–17012 ms) | 56 | 134.71 ms |
+
+These intervals do not support cessation of descriptor queries while input
+is flowing. The result excludes absent interrupt-input delivery as a necessary
+condition for the repetition. It remains consistent with the independently
+identified empty-control-queue/stale-setup path; it does not capture the live
+control-driver statuses and therefore is not direct execution proof of that
+path. No descriptor change or zero-ID filtering is justified by this test.
+
+### Isolated interactive forwarding
+
+The live desktop launcher adds a separate PID_F002 five-button relative mouse
+with vertical wheel and horizontal AC Pan, on the same established wire path.
+It adapts the application's existing mouse commands rather than capturing
+physical USB devices or changing the proprietary core. Parsec's button numbering
+(left 1, middle 2, right 3, side 4/5) and 120-unit wheel convention are corroborated
+by the local lowlat research checkout's `include/lowlat.h`; no SDK/injector code
+is imported. The Windows bridge already reverses WM_MOUSEWHEEL for the web ABI,
+and the pinned `mty_window_scroll` export reverses that Y value again before
+application input processing; the existing outgoing wire convention is retained.
+
+Only this explicit mode consumes ordinary outgoing mouse opcodes at the BUD
+driver boundary. The normal mouse route stays blocked even without a USB probe
+or after timeout/failure; non-mouse commands retain the existing route. Native
+focus loss issues release-all, preserving keyboard cleanup and resetting HID
+button/motion state. The older fixed/enumeration modes are retained separately.
+Bounds, teardown behavior, relative-position limitations and test instructions
+are in [the probe guide](usb-mouse-probe.md#live-desktop-mouse-forwarding-2026-10-20).
+Automated tests cover routing isolation, button/wheel mappings, split motion,
+drag-edge ordering, focus release, capacity/queue/backlog bounds and descriptor
+sizes. Actual interactive delivery of the new report layout still needs a new
+two-PC test; the earlier three-byte fixed-sequence success is not proof of it.

@@ -1,6 +1,63 @@
 # Isolated USB mouse probe
 
+## Live desktop mouse forwarding (2026-10-20)
+
+Use `Start-Client-Live-Mouse-Probe.cmd` with the **new host observer** for an
+interactive, 90-second experiment on your own desktop. Enable stock host
+USB/Yubikey passthrough, end earlier probe sessions, start the observer on the
+host, then connect through Experimental BUD. Test movement, click/double-click,
+drag/release, left/right/middle and side buttons, both wheels where available,
+and focus loss/re-entry using a blank Paint canvas and a scrollable document.
+The keyboard and local overlay/settings remain on their existing paths.
+
+This launcher selects a distinct unassigned test identity `VID_FFFF / PID_F002`
+with a 65-byte report descriptor and five-byte interrupt reports: five buttons,
+relative X/Y, vertical wheel, horizontal AC Pan. Windows' HID capability input
+length should be six bytes including its report-ID placeholder. The original
+enumeration/fixed-sequence launchers still select PID_F001 and three-byte reports.
+All launchers explicitly clear the other input-mode environment options.
+
+Ordinary Parsec mouse button, wheel and motion opcodes are consumed **before
+network transmission** while live HID mode is selected. They never also reach
+the host's normal mouse-injection path. Keyboard, gamepad, video and WebRTC
+behavior is unchanged. The unmodified WASM still handles local UI and determines
+which mouse commands belong to the remote session. Release-all also resets the
+HID state while retaining normal keyboard cleanup. Native focus loss explicitly
+requests release and clears queued mouse motion; failure to enqueue that cleanup
+ends the BUD attempt rather than silently leaving it active.
+
+The HID mouse is relative. In normal desktop mode, the first absolute video
+coordinate establishes an anchor and later differences become relative motion;
+there is no absolute cursor snap or position guarantee. Existing native relative
+capture/immersive mode uses its original deltas. Windows pointer acceleration
+still applies. Raw wheel units accumulate to 120 per HID detent. Motion splits
+into signed eight-bit chunks; consecutive samples with the same button state
+coalesce, while button-state transitions retain FIFO order. There are at most
+64 queued samples, eight validated host reads and 8192 accumulated counts per
+axis; reports are paced to at most one per 4 ms. Bounds or send failures stop
+the USB probe. There is no unbounded backlog or automatic ordinary mouse fallback.
+
+The mouse is removed after 90 seconds or on graceful disconnect. **Normal
+Parsec mouse transmission stays blocked for that live-test process**, including
+when USB setup fails or the probe expires; restart with the ordinary/enumeration
+launcher to restore the original behavior. Host/session cleanup is still needed
+if a connection is lost before release/removal can arrive. No physical USB device
+is opened, no global input hook is installed, and the host/core are not patched.
+
+Logs are `usb-client-live-*.jsonl` plus `usb-host-*.jsonl`. The live log records
+aggregate report/command/suppression counts once per second and on removal,
+not actual movement coordinates, button histories, keystrokes or arbitrary USB
+payloads. Counts prove local handling only; confirm actual host behavior visually.
+The observer recognizes both diagnostic PIDs and otherwise remains read-only.
+This is still an isolated test branch, not a production input feature.
+
 ## Fixed desktop input experiment (2026-10-20)
+
+Live result: a two-PC trial confirmed visible movement and a click mark in
+Paint. All ten steps were queued; press/release were 154 ms apart. The host
+confirmed mouse capabilities, arrival and removal without observer errors.
+Descriptor repetition continued before, during and after input. See the
+[measured result and its limits](usb-native-wire-investigation.md#two-pc-live-movement-and-click-confirmed-2026-10-20).
 
 The separate `Start-Client-Input-Probe.cmd` launcher now enables a fixed,
 bounded interrupt-input sequence. `Start-Client-Probe.cmd` still performs only
@@ -153,5 +210,5 @@ rustc --edition 2024 -C opt-level=s -C target-feature=+crt-static src-native/pro
 ```
 
 Copy the resulting `parsec-web-turn.exe` as `ParsecWebTurn-USB-Probe.exe`, the
-observer and the three `scripts/usb-mouse-probe/*.cmd` launchers into a separate
+observer and the four `scripts/usb-mouse-probe/*.cmd` launchers into a separate
 test directory. Do not replace the normal client executable.

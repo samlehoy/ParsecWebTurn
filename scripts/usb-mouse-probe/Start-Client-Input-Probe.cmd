@@ -9,6 +9,7 @@ echo Keep the connection open for 25 seconds. Host USB/Yubikey passthrough must 
 pause
 set "PARSEC_USB_MOUSE_PROBE=1"
 set "PARSEC_USB_MOUSE_INPUT_PROBE=1"
+set "PARSEC_USB_MOUSE_LIVE_PROBE="
 set "PARSEC_USB_PROBE_LOG=%~dp0usb-client-input-%RANDOM%-%RANDOM%.jsonl"
 echo Connect using experimental BUD. Only the first established session is probed.
 echo Client log: %PARSEC_USB_PROBE_LOG%

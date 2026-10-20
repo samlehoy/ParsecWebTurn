@@ -22,7 +22,7 @@ const STEPS: &[(u32, [u8; 3])] = &[
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Read {
-    id: u32,
+    pub(super) id: u32,
 }
 
 pub(super) fn read(record: &[u8]) -> Option<Read> {
