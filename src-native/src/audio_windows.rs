@@ -520,12 +520,17 @@ unsafe fn render(
 /// Quiet local device smoke test: no account/network and no audible test tone.
 #[cfg(feature = "diagnostics")]
 pub fn probe() -> Result<serde_json::Value> {
-    let mut baseline = probe_output(false)?;
-    baseline["experimental"] = probe_output(true)?;
+    let mut baseline = probe_output(false, Layout::STEREO)?;
+    baseline["experimental"] = probe_output(true, Layout::STEREO)?;
+    baseline["multichannel_inputs"] = serde_json::json!([
+        probe_output(false, Layout::new(6, 0x60f)?)?,
+        probe_output(false, Layout::new(8, 0x63f)?)?,
+    ]);
+    baseline["physical_speaker_mapping_verified"] = false.into();
     Ok(baseline)
 }
 #[cfg(feature = "diagnostics")]
-fn probe_output(custom: bool) -> Result<serde_json::Value> {
+fn probe_output(custom: bool, layout: Layout) -> Result<serde_json::Value> {
     let window = crate::window::Window::create_video_probe()?;
     let fixture_root = if custom {
         let root = std::env::temp_dir().join(format!(
@@ -549,14 +554,19 @@ fn probe_output(custom: bool) -> Result<serde_json::Value> {
         None
     };
     let mut snapshot = None;
-    if let Ok(output) = Playback::create(window.clone(), 0, 200) {
-        for _ in 0..10 {
-            output.queue(&[0; 1920]);
-            std::thread::sleep(std::time::Duration::from_millis(20));
+    let mut failure = None;
+    match Playback::create_layout(window.clone(), 0, 200, layout) {
+        Ok(output) => {
+            let silence = vec![0; layout.samples(960)];
+            for _ in 0..10 {
+                output.queue(&silence);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            output.reset();
+            output.stop();
+            snapshot = Some(output.snapshot());
         }
-        output.reset();
-        output.stop();
-        snapshot = Some(output.snapshot());
+        Err(error) => failure = Some(format!("{error:#}")),
     }
     window.close();
     let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
@@ -568,7 +578,7 @@ fn probe_output(custom: bool) -> Result<serde_json::Value> {
         std::fs::remove_dir(root)?;
     }
     Ok(
-        serde_json::json!({"scope":"synthetic-silent-wasapi-output","audio":snapshot,"real_account_used":false,"external_requests_enabled":false,"native_window_released":window.handle().is_null()}),
+        serde_json::json!({"scope":"synthetic-silent-wasapi-output","requested_layout":layout,"audio":snapshot,"initialization_error":failure,"real_account_used":false,"external_requests_enabled":false,"native_window_released":window.handle().is_null()}),
     )
 }
 

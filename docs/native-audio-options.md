@@ -89,6 +89,28 @@ still require live testing with a matching surround endpoint and host source.
 Synthetic tests cover separate Opus channel signals, PCM handoff ownership,
 discard-on-mute behavior, stereo transitions and bounded playback queues.
 
+#### Testing without physical surround speakers
+
+The isolated tests generate independent signals for every channel and verify
+Opus decoding and PCM ownership without any audio device. The existing
+`native-audio-probe` diagnostic additionally queues silent 5.1/7.1 PCM into
+WASAPI and reports initialization and playback errors. Windows may downmix that
+input on a stereo endpoint: successful API playback is not proof of distinct
+physical speakers or of a multichannel host session.
+
+For a complete stock-host test, configure matching virtual speaker endpoints
+on both machines as 5.1 or 7.1, then reconnect using BUD and the experimental
+multichannel option. For example, the documented speaker endpoint of
+[VB-CABLE](https://vb-audio.com/Cable/VBCABLE_ReferenceManual.pdf) supports up to
+eight channels. The host source must output a known signal separately on every
+channel. Record the client's virtual cable output at the same channel count
+and inspect each recorded channel independently, including LFE; check stats
+for the actual received layout and verify mute/unmute and stereo fallback.
+Listening to a stereo mix alone cannot establish channel identity. Driver
+installation, endpoint selection and Windows speaker settings are manual;
+the application never changes them. Physical surround perception remains a
+separate test requiring suitable speakers or a verified spatial-audio renderer.
+
 1. WebRTC SCTP or BUD reassembles audio. Existing transport reliability,
    timers, routing and retransmission policy are unchanged. Buffer controls
    cannot remove transit or ordered-stream recovery delays.

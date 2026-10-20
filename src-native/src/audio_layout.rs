@@ -49,7 +49,7 @@ impl Layout {
                 left += center;
                 right += center;
                 // LFE is omitted from the reference stereo fold-down.
-                for pair in frame[4..].chunks_exact(2) {
+                for pair in frame[4..].as_chunks::<2>().0 {
                     left += f32::from(pair[0]) * std::f32::consts::FRAC_1_SQRT_2;
                     right += f32::from(pair[1]) * std::f32::consts::FRAC_1_SQRT_2;
                 }
