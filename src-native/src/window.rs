@@ -720,7 +720,7 @@ impl Window {
             )
             .is_some()
             {
-                cursor.select_remote();
+                cursor.select();
             } else {
                 SetCursor(std::ptr::null_mut());
             }

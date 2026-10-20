@@ -229,17 +229,6 @@ impl Default for State {
     }
 }
 impl State {
-    #[cfg(feature = "usb-mouse-probe")]
-    pub fn select_remote(&self) {
-        // HID desktop capture must not use the core's local relative-mode
-        // visibility override. The host metadata decides visibility separately.
-        unsafe {
-            SetCursor(self.custom.as_ref().map_or_else(
-                || LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
-                |cursor| cursor.0 as HCURSOR,
-            ));
-        }
-    }
     pub fn apply(&mut self, pending: Pending) {
         if let Some(image) = pending.image {
             self.custom = image.as_ref().and_then(|frame| create(frame).ok());
