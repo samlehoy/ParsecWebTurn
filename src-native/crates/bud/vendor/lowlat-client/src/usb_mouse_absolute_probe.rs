@@ -55,6 +55,7 @@ const GRID: [u16; 3] = [3277, 16384, 29490];
 pub(super) struct Input {
     pending: VecDeque<input_probe::Read>,
     started: Option<u32>,
+    last_sent: Option<u32>,
     step: usize,
 }
 impl Input {
@@ -70,12 +71,18 @@ impl Input {
         true
     }
     pub(super) fn next(&mut self, now: u32) -> Option<([u8; FRAME], usize)> {
-        if self.step >= 9 || now.saturating_sub(self.started?) < 1500 + self.step as u32 * 1000 {
+        if self.step >= 9
+            || now.saturating_sub(self.started?) < 1500 + self.step as u32 * 1000
+            || self
+                .last_sent
+                .is_some_and(|last| now.saturating_sub(last) < 1000)
+        {
             return None;
         }
         let request = self.pending.pop_front()?;
         let step = self.step;
         self.step += 1;
+        self.last_sent = Some(now);
         let mut r = [0; RECORD];
         put(&mut r, 0, 8);
         r[4] = 0x81;
@@ -133,5 +140,10 @@ mod tests {
             assert!(input.accept(&request(id, 5), 0));
         }
         assert!(!input.accept(&request(9, 5), 0));
+        assert!(input.next(1500).is_some());
+        assert!(input.next(9500).is_some());
+        // Late reads never turn the fixed positions into a catch-up burst.
+        assert!(input.next(9501).is_none());
+        assert!(input.next(10500).is_some());
     }
 }
