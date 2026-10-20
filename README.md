@@ -155,7 +155,9 @@ driver transfers; hybrid GPU/display configurations can still introduce them.
   select the actual Opus/PCM decoder and channel mask. Native WASAPI receives the
   original channels; stats distinguish received and playback layouts. Reconnect
   after changing the Windows speaker configuration. WebRTC retains stereo.
-  This integration needs live channel-by-channel validation on surround hardware.
+  **Validation status: synthetic tests only.** Opus/PCM channel handling and
+  silent WASAPI output have been tested. Live multichannel host-to-client
+  operation, channel ordering and audible surround playback remain unverified.
 - **Custom audio buffer:** optional minimum/maximum in milliseconds, initially
   75/150 to match the pinned core's automatic limits. Saved custom values are
   preserved. Off uses the core's actual playback limits and original WASAPI policy;

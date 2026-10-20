@@ -657,7 +657,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         page.font,
     );
     check(hwnd, AUDIO_RAW, s.experimental_raw_audio);
-    row_label(hwnd, page, "Speaker layout", "Experimental: match the Windows output's 5.1 or 7.1 layout.\nBUD only; stereo remains the fallback. Reconnect to apply.", 630, 0, 52);
+    row_label(hwnd, page, "Speaker layout", "Experimental: match the Windows output's 5.1 or 7.1 layout.\nSynthetic tests only; no live host/client validation.\nBUD only; stereo fallback. Reconnect to apply.", 630, 0, 68);
     add(
         hwnd,
         page,

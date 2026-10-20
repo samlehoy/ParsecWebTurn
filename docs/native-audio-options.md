@@ -40,6 +40,12 @@ Reviewed lowlat `feat/win-seams` revision:
 
 ### Multichannel BUD extension (2026-10-20)
 
+**Validation status: synthetic tests only; not validated in a live multichannel
+host-to-client session.** The isolated Opus/PCM tests and silent 5.1/7.1 WASAPI
+output probe have passed. These results do not establish live channel ordering,
+audible surround playback or physical speaker mapping. Live validation is
+deferred; this feature remains experimental and disabled by default.
+
 Parsec documents automatic 5.1/7.1 support in its normal client, without a paid
 plan requirement on the feature page:
 [Multi-Channel Audio](https://support.parsec.app/hc/en-us/articles/46395533300372-Multi-Channel-Audio).
