@@ -1266,7 +1266,7 @@ fn worker(
                 #[cfg(windows)]
                 {
                     timing_task.abort();
-                    runtime.block_on(stop_host_timing(&shared, &channels[0]));
+                    runtime.block_on(stop_host_timing(shared, &channels[0]));
                 }
                 let _ = runtime.block_on(send_disconnect(&channels[0]));
                 break;
@@ -1387,7 +1387,7 @@ fn worker(
             timing_task.abort();
             runtime.block_on(async {
                 let _ = timing_task.await;
-                stop_host_timing(&shared, &channels[0]).await;
+                stop_host_timing(shared, &channels[0]).await;
             });
         }
         drop((offer, channels));
