@@ -68,7 +68,7 @@ Background global hotkeys are not implemented by this core.
 
 ## Settings
 
-The **Network**, **Video** and **Audio** tabs share one **Save settings** action. Switching
+The **Network**, **Video**, **Audio** and **Input** tabs share one **Save settings** action. Switching
 tabs preserves unsaved edits. Changes apply to the next connection.
 
 ### Network

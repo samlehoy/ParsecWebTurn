@@ -63,3 +63,12 @@ long-lived pacing, click/drag/release positions, wheels, focus cleanup, normal
 mouse suppression, viewport mapping and native Settings persistence/tab layout.
 Tests use isolated synthetic profiles. Historical probes remain in Git history
 and the research record, not in the runnable client.
+
+The [Windows CI run](https://github.com/vampywiz17/ParsecWebTurn/actions/runs/39403643625)
+for `b3316a7` passed all six protocol/input tests, three settings/viewport/window
+tests, the native Settings UI test and strict vendored-client Clippy. The Input
+tab screenshot was visually checked. The standalone release build contains only
+`ParsecWebTurn.exe` (18,096,640 bytes), SHA-256
+`cfabf49fb6d6872067e55be0a72161a31a78916cf7ecc0c2d38fdd306b739d8b`.
+The packaged settings-based activation still needs a live host/client trial;
+the earlier launcher-based absolute input has already been live-tested.
