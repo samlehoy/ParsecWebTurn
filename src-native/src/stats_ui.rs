@@ -1053,6 +1053,18 @@ mod tests {
             let page = &*(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Page);
             assert!(page.scroll > 0);
             capture(hwnd, "stats-bottom");
+            bus.host_timing.set_requested(generation, true);
+            bus.host_timing.receive(
+                generation,
+                &crate::frame_timing::tests::packet(0, 0, &[12., 2., 16.7, 4.]),
+            );
+            bus.host_timing.receive(
+                generation,
+                &crate::frame_timing::tests::packet(1, 0, &[8., 0., 20.]),
+            );
+            RedrawWindow(hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_UPDATENOW);
+            SendMessageW(hwnd, WM_VSCROLL, SB_BOTTOM as usize, 0);
+            capture(hwnd, "stats-host-timing-bottom");
             #[cfg(feature = "experimental-bud")]
             {
                 let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Page;
