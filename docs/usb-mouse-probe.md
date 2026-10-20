@@ -7,8 +7,13 @@ Parsec host. The client needs only its normal EXE and settings.json, without
 CMD launchers, environment variables, host observers or dedicated USB logs.
 
 The Input tab also offers an independent experimental USB HID keyboard. Both
-devices reuse `usb_hid.rs` for creation/removal, framing, enumeration, standard
+functions reuse `usb_hid.rs` for creation/removal, framing, enumeration, standard
 control transfers and failure handling. Only descriptors and input state differ.
+Exactly one USB device is announced per session: mouse-only, keyboard-only or
+a combined device with two top-level HID application collections (mouse report
+ID 1, keyboard report ID 2). Both collections share one interrupt endpoint and
+one bounded queue of real host read correlations. The Windows HID class driver
+can expose the two collections separately; see [Microsoft's collection model](https://learn.microsoft.com/en-us/windows-hardware/drivers/hid/top-level-collections).
 Both options are BUD-only, disabled by default, and apply after reconnecting.
 
 For the keyboard, select the same active layout on host and client (including
@@ -19,8 +24,9 @@ events are ignored; the host handles repetition. LED output reports are accepted
 as device state, without changing the client's physical keyboard LEDs. Queues
 are bounded and ordered; focus loss/local menus/disconnect release held keys.
 Normal Parsec keyboard packets are suppressed while the HID keyboard is selected,
-even on setup failure. No keystrokes or typed text are logged. Keyboard host
-acceptance and character behavior await the user's live test; no intermediate
+even on setup failure. No keystrokes or typed text are logged. Keyboard-only
+host acceptance and typing have been confirmed by the user; combined operation
+awaits the corrected build's live test. No intermediate
 enumeration/descriptor/input probe program is introduced.
 
 ## Supported scope
@@ -102,3 +108,24 @@ The Input-tab screenshot was visually checked. Its standalone EXE is
 The new keyboard forwarding still awaits live host acceptance and typing tests,
 with matching active host/client layouts. Existing tests are not proof of that
 new live keyboard behavior.
+
+## Simultaneous mouse/keyboard routing correction
+
+The 2026-10-20 client log confirms that each standalone option activates, but
+enabling both produces `invalid_interrupt_request` for the keyboard and then
+`host_setup_timeout` for the mouse. Read-only inspection of the previously
+identified stock host module confirms a single generic USB manager in this
+dispatch path: the generic branch reuses its one manager without indexing it
+by the outer VID/PID. Two device announcements overwrite the shared descriptor
+state; distinct outer IDs do not create independent host managers. The initial
+integration's two-announcement design was incorrect.
+
+The correction uses one combined HID interface and two standard report IDs.
+Standalone descriptors and identities stay unchanged. The shared device owns
+all pending interrupt requests and completion framing; device input modules
+only produce payloads. The combined scheduler alternates eligible report types
+so continuous pointer movement cannot starve keys. Real correlation IDs are
+consumed once, both held input states are released before removal, and input
+contents remain absent from the event log. A focused regression checks the
+single announcement, descriptor IDs/lengths, request correlation for both
+payload sizes, keyboard LED output and both release reports before teardown.

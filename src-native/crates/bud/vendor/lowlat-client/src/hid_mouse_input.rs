@@ -1,5 +1,5 @@
 //! Absolute desktop mouse reports, bounded independently of session lifetime.
-use super::{FRAME, RECORD, dword, frame, put};
+use super::Report;
 use std::collections::VecDeque;
 pub(super) const ID: u32 = 0xffff_f004;
 pub(super) const DEVICE: &[u8] = &[
@@ -49,23 +49,6 @@ pub(super) const CONFIG: &[u8] = &[
     4,
 ];
 
-#[derive(Debug, Clone, Copy)]
-struct Read {
-    id: u32,
-}
-fn read(record: &[u8]) -> Option<Read> {
-    if record.len() != RECORD
-        || dword(record, 0) != 7
-        || record[4] != 0x81
-        || record[5] != 3
-        || !(7..=1550).contains(&dword(record, 16))
-    {
-        return None;
-    }
-    Some(Read {
-        id: dword(record, 8),
-    })
-}
 #[derive(Debug, Default, Clone, Copy)]
 struct Sample {
     buttons: u8,
@@ -76,7 +59,6 @@ struct Sample {
 }
 #[derive(Debug, Default)]
 pub(super) struct Input {
-    pending: VecDeque<Read>,
     samples: VecDeque<Sample>,
     position: Option<(u16, u16)>,
     sent_position: Option<(u16, u16)>,
@@ -88,22 +70,11 @@ pub(super) struct Input {
     last_sent: Option<u64>,
 }
 impl Input {
-    pub(super) fn ready(&self) -> bool {
-        self.ready && !self.failed
+    pub(super) fn start(&mut self) {
+        self.ready = true;
     }
     pub(super) fn failed(&self) -> bool {
         self.failed
-    }
-    pub(super) fn accept(&mut self, record: &[u8]) -> bool {
-        let Some(request) = read(record) else {
-            return false;
-        };
-        if self.pending.len() >= 8 {
-            return false;
-        }
-        self.pending.push_back(request);
-        self.ready = true;
-        true
     }
     fn enqueue(&mut self, sample: Sample) {
         if let Some(last) = self.samples.back_mut().filter(|last| {
@@ -194,31 +165,12 @@ impl Input {
         }
         self.enqueue(sample);
     }
-    fn packet(
-        request: Read,
-        buttons: u8,
-        point: (u16, u16),
-        vertical: u8,
-        horizontal: u8,
-    ) -> [u8; FRAME] {
-        let mut record = [0; RECORD];
-        put(&mut record, 0, 8);
-        record[4] = 0x81;
-        record[5] = 3;
-        put(&mut record, 8, request.id);
-        put(&mut record, 16, 7);
-        record[20] = buttons;
-        record[21..23].copy_from_slice(&point.0.to_le_bytes());
-        record[23..25].copy_from_slice(&point.1.to_le_bytes());
-        record[25] = vertical;
-        record[26] = horizontal;
-        frame(&record, ID)
+    fn packet(buttons: u8, point: (u16, u16), vertical: u8, horizontal: u8) -> Report {
+        let (x, y) = (point.0.to_le_bytes(), point.1.to_le_bytes());
+        Report::new(&[buttons, x[0], x[1], y[0], y[1], vertical, horizontal])
     }
-    pub(super) fn next(&mut self, now: u64) -> Option<[u8; FRAME]> {
-        if self.failed
-            || self.pending.is_empty()
-            || self.last_sent.is_some_and(|t| now.saturating_sub(t) < 4)
-        {
+    pub(super) fn next(&mut self, now: u64) -> Option<Report> {
+        if self.failed || self.last_sent.is_some_and(|t| now.saturating_sub(t) < 4) {
             return None;
         }
         let sample = self.samples.front_mut()?;
@@ -229,7 +181,6 @@ impl Input {
             n as i8 as u8
         };
         let packet = Self::packet(
-            self.pending.pop_front()?,
             sample.buttons,
             point,
             take(&mut sample.vertical),
@@ -255,40 +206,29 @@ impl Input {
             });
         }
     }
-    pub(super) fn release(&mut self) -> Option<[u8; FRAME]> {
+    pub(super) fn release(&mut self) -> Option<Report> {
         self.reset();
         if self.sent_buttons == 0 {
             return None;
         }
-        let request = self.pending.pop_front()?;
         let point = self.sent_position?;
         self.sent_buttons = 0;
-        Some(Self::packet(request, 0, point, 0, 0))
+        Some(Self::packet(0, point, 0, 0))
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn request(id: u32, capacity: u32) -> [u8; RECORD] {
-        let mut r = [0; RECORD];
-        put(&mut r, 0, 7);
-        r[4] = 0x81;
-        r[5] = 3;
-        put(&mut r, 8, id);
-        put(&mut r, 16, capacity);
-        r
-    }
     fn ready() -> Input {
         let mut i = Input::default();
-        assert!(i.accept(&request(0, 7)));
+        i.start();
         assert!(i.next(0).is_none());
         i
     }
     fn report(i: &mut Input, t: u64) -> [u8; 7] {
-        assert!(i.accept(&request(t as u32, 7)));
-        let f = i.next(t).unwrap();
-        assert_eq!(dword(&f, 37), 7);
-        f[41..48].try_into().unwrap()
+        let r = i.next(t).unwrap();
+        assert_eq!(r.len, 7);
+        r.bytes[..7].try_into().unwrap()
     }
     fn xy(r: [u8; 7]) -> (u16, u16) {
         (
@@ -330,19 +270,14 @@ mod tests {
         assert_eq!(report(&mut i, 16)[0], 2);
         i.command(3, 2, 900, 1000);
         let release = i.release().unwrap();
-        assert_eq!(release[41], 0);
-        assert_eq!(xy(release[41..48].try_into().unwrap()), (700, 800));
+        assert_eq!(release.bytes[0], 0);
+        assert_eq!(xy(release.bytes[..7].try_into().unwrap()), (700, 800));
         i.command(1, 1, 1, 0);
         assert_eq!(i.buttons, 0);
     }
     #[test]
     fn hid_mouse_bounds_and_long_lived_pacing() {
         let mut i = ready();
-        assert!(!i.accept(&request(4, 5)));
-        for n in 0..7 {
-            assert!(i.accept(&request(n, 7)));
-        }
-        assert!(!i.accept(&request(9, 7)));
         i.command(3, 2, 1, 1);
         let now = u64::from(u32::MAX) + 100;
         assert!(i.next(now).is_some());

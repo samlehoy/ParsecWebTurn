@@ -1,5 +1,5 @@
 //! Physical HID usages. Character interpretation belongs to the host layout.
-use super::{FRAME, RECORD, dword, frame, put};
+use super::Report;
 use std::collections::VecDeque;
 
 pub(super) const ID: u32 = 0xffff_f005;
@@ -53,7 +53,6 @@ pub(super) const CONFIG: &[u8] = &[
 
 #[derive(Debug, Default)]
 pub(super) struct Input {
-    pending: VecDeque<u32>,
     reports: VecDeque<[u8; BYTES]>,
     keys: [u8; BYTES],
     sent: [u8; BYTES],
@@ -70,22 +69,11 @@ impl Input {
     pub(super) fn failed(&self) -> bool {
         self.failed
     }
-    pub(super) fn accept(&mut self, r: &[u8]) -> bool {
-        if r.len() != RECORD
-            || dword(r, 0) != 7
-            || r[4] != 0x81
-            || r[5] != 3
-            || !(BYTES as u32..=1550).contains(&dword(r, 16))
-            || self.pending.len() >= 8
-        {
-            return false;
-        }
-        self.pending.push_back(dword(r, 8));
+    pub(super) fn start(&mut self) {
         if !self.ready {
             self.reports.push_back([0; BYTES]);
         }
         self.ready = true;
-        true
     }
     pub(super) fn report(&self) -> [u8; BYTES] {
         self.keys
@@ -123,21 +111,8 @@ impl Input {
         }
         self.reports.push_back(self.keys);
     }
-    fn packet(id: u32, keys: [u8; BYTES]) -> [u8; FRAME] {
-        let mut r = [0; RECORD];
-        put(&mut r, 0, 8);
-        r[4] = 0x81;
-        r[5] = 3;
-        put(&mut r, 8, id);
-        put(&mut r, 16, BYTES as u32);
-        r[20..20 + BYTES].copy_from_slice(&keys);
-        frame(&r, ID)
-    }
-    pub(super) fn next(&mut self, now: u64) -> Option<[u8; FRAME]> {
-        if self.failed
-            || self.pending.is_empty()
-            || self.last_sent.is_some_and(|t| now.saturating_sub(t) < 4)
-        {
+    pub(super) fn next(&mut self, now: u64) -> Option<Report> {
+        if self.failed || self.last_sent.is_some_and(|t| now.saturating_sub(t) < 4) {
             return None;
         }
         let keys = if let Some(keys) = self.reports.pop_front() {
@@ -153,7 +128,7 @@ impl Input {
         };
         self.sent = keys;
         self.last_sent = Some(now);
-        Some(Self::packet(self.pending.pop_front()?, keys))
+        Some(Report::new(&keys))
     }
     pub(super) fn reset(&mut self) {
         self.keys = [0; BYTES];
@@ -162,14 +137,13 @@ impl Input {
             self.reports.push_back(self.keys);
         }
     }
-    pub(super) fn release(&mut self) -> Option<[u8; FRAME]> {
+    pub(super) fn release(&mut self) -> Option<Report> {
         self.reset();
         if self.sent == [0; BYTES] {
             return None;
         }
-        let id = self.pending.pop_front()?;
         self.sent = [0; BYTES];
         self.reports.clear();
-        Some(Self::packet(id, self.sent))
+        Some(Report::new(&self.sent))
     }
 }

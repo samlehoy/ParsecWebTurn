@@ -14,9 +14,7 @@ const MAKER: &str = "ParsecWebTurn";
 pub(crate) enum Kind {
     Mouse,
     Keyboard,
-}
-impl Kind {
-    pub(crate) const ALL: [Self; 2] = [Self::Mouse, Self::Keyboard];
+    Both,
 }
 struct Layout {
     id: u32,
@@ -25,6 +23,7 @@ struct Layout {
     report: &'static [u8],
     product: &'static str,
     serial: &'static str,
+    input_bytes: usize,
 }
 impl Kind {
     fn layout(self) -> Layout {
@@ -36,6 +35,7 @@ impl Kind {
                 report: input::REPORT,
                 product: "Experimental USB HID mouse",
                 serial: "ABS-LIVE",
+                input_bytes: 7,
             },
             Self::Keyboard => Layout {
                 id: keyboard::ID,
@@ -44,7 +44,130 @@ impl Kind {
                 report: keyboard::REPORT,
                 product: "Experimental USB HID keyboard",
                 serial: "KEYBOARD",
+                input_bytes: keyboard::BYTES,
             },
+            Self::Both => Layout {
+                id: 0xffff_f006,
+                device: &BOTH_DEVICE,
+                config: &BOTH_CONFIG,
+                report: &BOTH_REPORT,
+                product: "Experimental USB HID mouse and keyboard",
+                serial: "INPUT-COMBINED",
+                input_bytes: keyboard::BYTES + 1,
+            },
+        }
+    }
+}
+const fn copy_descriptor<const N: usize>(source: &[u8]) -> [u8; N] {
+    let mut r = [0; N];
+    let mut i = 0;
+    while i < N {
+        r[i] = source[i];
+        i += 1;
+    }
+    r
+}
+const BOTH_DEVICE: [u8; 18] = {
+    let mut r = copy_descriptor::<18>(keyboard::DEVICE);
+    r[10] = 6;
+    r
+};
+const BOTH_REPORT: [u8; input::REPORT.len() + keyboard::REPORT.len() + 4] = {
+    let mut r = [0; input::REPORT.len() + keyboard::REPORT.len() + 4];
+    let mut dst = 0;
+    let mut part = 0;
+    while part < 2 {
+        let source = if part == 0 {
+            input::REPORT
+        } else {
+            keyboard::REPORT
+        };
+        let mut i = 0;
+        while i < source.len() {
+            if i == 6 {
+                r[dst] = 0x85;
+                r[dst + 1] = (part + 1) as u8;
+                dst += 2;
+            }
+            r[dst] = source[i];
+            dst += 1;
+            i += 1;
+        }
+        part += 1;
+    }
+    r
+};
+const BOTH_CONFIG: [u8; 34] = {
+    let mut r = copy_descriptor::<34>(keyboard::CONFIG);
+    r[25] = BOTH_REPORT.len() as u8;
+    r
+};
+#[derive(Debug, Clone, Copy)]
+struct Report {
+    bytes: [u8; 30],
+    len: usize,
+}
+impl Report {
+    fn new(bytes: &[u8]) -> Self {
+        let mut r = Self {
+            bytes: [0; 30],
+            len: bytes.len(),
+        };
+        r.bytes[..bytes.len()].copy_from_slice(bytes);
+        r
+    }
+    fn numbered(mut self, id: u8) -> Self {
+        self.bytes.copy_within(..self.len, 1);
+        self.bytes[0] = id;
+        self.len += 1;
+        self
+    }
+}
+#[derive(Debug, Default)]
+struct Pair {
+    mouse: input::Input,
+    keyboard: keyboard::Input,
+    keyboard_next: bool,
+}
+impl Pair {
+    fn next(&mut self, now: u64) -> Option<Report> {
+        let report = if self.keyboard_next {
+            self.keyboard
+                .next(now)
+                .map(|r| r.numbered(2))
+                .or_else(|| self.mouse.next(now).map(|r| r.numbered(1)))
+        } else {
+            self.mouse
+                .next(now)
+                .map(|r| r.numbered(1))
+                .or_else(|| self.keyboard.next(now).map(|r| r.numbered(2)))
+        };
+        if let Some(r) = &report {
+            self.keyboard_next = r.bytes[0] == 1;
+        }
+        report
+    }
+    fn release(&mut self) -> Option<Report> {
+        self.mouse.reset();
+        self.keyboard.reset();
+        self.mouse
+            .release()
+            .map(|r| r.numbered(1))
+            .or_else(|| self.keyboard.release().map(|r| r.numbered(2)))
+    }
+    fn start(&mut self) {
+        self.mouse.start();
+        self.keyboard.start();
+    }
+    fn failed(&self) -> bool {
+        self.mouse.failed() || self.keyboard.failed()
+    }
+    fn command(&mut self, op: u8, a: u32, b: u32, c: u32) {
+        if mouse_opcode(op) || op == 24 {
+            self.mouse.command(op, a, b, c);
+        }
+        if op == 0 || op == 24 {
+            self.keyboard.command(op, a, b, c);
         }
     }
 }
@@ -52,6 +175,7 @@ impl Kind {
 enum Input {
     Mouse(input::Input),
     Keyboard(keyboard::Input),
+    Both(Box<Pair>),
 }
 impl Default for Input {
     fn default() -> Self {
@@ -65,6 +189,7 @@ macro_rules! forward {
             match self {
                 Self::Mouse(v) => v.$name($($arg),*),
                 Self::Keyboard(v) => v.$name($($arg),*),
+                Self::Both(v) => v.$name($($arg),*),
             }
         }
     )*};
@@ -74,14 +199,14 @@ impl Input {
         match self {
             Self::Mouse(_) => Kind::Mouse,
             Self::Keyboard(_) => Kind::Keyboard,
+            Self::Both(_) => Kind::Both,
         }
     }
     forward! {
-        ready() -> bool;
+        start() -> ();
         failed() -> bool;
-        accept(r: &[u8]) -> bool;
-        next(now: u64) -> Option<[u8; FRAME]>;
-        release() -> Option<[u8; FRAME]>;
+        next(now: u64) -> Option<Report>;
+        release() -> Option<Report>;
         command(op: u8, a: u32, b: u32, c: u32) -> ();
     }
 }
@@ -146,20 +271,38 @@ fn control(r: &[u8], layout: &Layout, input: &mut Input) -> [u8; FRAME] {
     let value = word(r, 6);
     let index = word(r, 8);
     let request = (r[4], r[5], value, index);
-    let keyboard_reply = if let Input::Keyboard(k) = input {
+    let numbered = input.kind() == Kind::Both;
+    let report_id: u16 = if numbered { 2 } else { 0 };
+    let k = match input {
+        Input::Keyboard(k) => Some(k),
+        Input::Both(p) => Some(&mut p.keyboard),
+        Input::Mouse(_) => None,
+    };
+    let keyboard_reply = if let Some(k) = k {
         match request {
-            (0xa1, 1, 0x100, 0) => Some(Some(k.report().to_vec())),
-            (0xa1, 1, 0x200, 0) => Some(Some(vec![k.leds])),
-            (0x21, 9, 0x200, 0) => {
-                if length == 1 {
-                    k.leds = r[10] & 0x1f;
-                    Some(Some(vec![r[10]]))
+            (0xa1, 1, v, 0) if v == 0x100 | report_id => {
+                let mut bytes = k.report().to_vec();
+                if numbered {
+                    bytes.insert(0, 2);
+                }
+                Some(Some(bytes))
+            }
+            (0xa1, 1, v, 0) if v == 0x200 | report_id => Some(Some(if numbered {
+                vec![2, k.leds]
+            } else {
+                vec![k.leds]
+            })),
+            (0x21, 9, v, 0) if v == 0x200 | report_id => {
+                let prefix = usize::from(numbered);
+                if length == 1 + prefix && (!numbered || r[10] == 2) {
+                    k.leds = r[10 + prefix] & 0x1f;
+                    Some(Some(r[10..10 + length].to_vec()))
                 } else {
                     Some(None)
                 }
             }
-            (0xa1, 2, 0, 0) => Some(Some(vec![k.idle])),
-            (0x21, 10, _, 0) if value & 255 == 0 && length == 0 => {
+            (0xa1, 2, v, 0) if v == report_id || v == 0 => Some(Some(vec![k.idle])),
+            (0x21, 10, _, 0) if (value & 255 == report_id || value & 255 == 0) && length == 0 => {
                 k.idle = (value >> 8) as u8;
                 Some(Some(vec![]))
             }
@@ -210,6 +353,9 @@ pub(crate) struct Device {
     error: u32,
     elapsed: u64,
     input: Input,
+    pending: std::collections::VecDeque<u32>,
+    ready: bool,
+    last_report: Option<u64>,
 }
 impl Device {
     pub(crate) fn new(kind: Kind) -> Self {
@@ -217,6 +363,7 @@ impl Device {
             input: match kind {
                 Kind::Mouse => Input::Mouse(input::Input::default()),
                 Kind::Keyboard => Input::Keyboard(keyboard::Input::default()),
+                Kind::Both => Input::Both(Box::default()),
             },
             ..Self::default()
         }
@@ -230,7 +377,7 @@ impl Device {
         if self.input.failed() {
             self.fail(3);
         }
-        if self.announced && !self.input.ready() && self.elapsed >= 12000 {
+        if self.announced && !self.ready && self.elapsed >= 12000 {
             self.fail(1);
         }
         if self.error != 0 {
@@ -240,7 +387,16 @@ impl Device {
             self.announced = true;
             return Some(identity(&self.input.kind().layout()));
         }
-        self.input.next(self.elapsed)
+        if self.pending.is_empty()
+            || self
+                .last_report
+                .is_some_and(|t| self.elapsed.saturating_sub(t) < 4)
+        {
+            return None;
+        }
+        let report = self.input.next(self.elapsed)?;
+        self.last_report = Some(self.elapsed);
+        self.complete(report)
     }
     pub(crate) fn incoming(&mut self, bytes: &[u8]) -> Option<[u8; FRAME]> {
         if !self.announced
@@ -262,9 +418,19 @@ impl Device {
             }
             1 => Some(control(r, &self.input.kind().layout(), &mut self.input)),
             7 => {
-                if !self.input.accept(r) {
+                if r[4] != 0x81
+                    || r[5] != 3
+                    || !(self.input.kind().layout().input_bytes as u32..=1550)
+                        .contains(&dword(r, 16))
+                    || self.pending.len() >= 8
+                {
                     self.fail(2);
                     return self.remove();
+                }
+                self.pending.push_back(dword(r, 8));
+                if !self.ready {
+                    self.input.start();
+                    self.ready = true;
                 }
                 None
             }
@@ -283,7 +449,7 @@ impl Device {
         self.error
     }
     pub(crate) fn active(&mut self) -> bool {
-        self.announced && !self.removed && self.error == 0 && self.input.ready()
+        self.announced && !self.removed && self.error == 0 && self.ready
     }
     pub(crate) fn external_input(&mut self, opcode: u8, a: u32, b: u32, c: u32) {
         if self.active() {
@@ -291,7 +457,23 @@ impl Device {
         }
     }
     pub(crate) fn release_input(&mut self) -> Option<[u8; FRAME]> {
-        self.input.release()
+        if self.pending.is_empty() {
+            self.input.command(24, 0, 0, 0);
+            return None;
+        }
+        let report = self.input.release()?;
+        self.complete(report)
+    }
+    fn complete(&mut self, report: Report) -> Option<[u8; FRAME]> {
+        let id = self.pending.pop_front()?;
+        let mut r = [0; RECORD];
+        put(&mut r, 0, 8);
+        r[4] = 0x81;
+        r[5] = 3;
+        put(&mut r, 8, id);
+        put(&mut r, 16, report.len as u32);
+        r[20..20 + report.len].copy_from_slice(&report.bytes[..report.len]);
+        Some(frame(&r, self.input.kind().layout().id))
     }
     pub(crate) fn remove(&mut self) -> Option<[u8; FRAME]> {
         if !self.announced || self.removed {
@@ -314,6 +496,82 @@ impl Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hid_pair_uses_one_device_and_correlates_both_report_types_and_release() {
+        let mut d = Device::new(Kind::Both);
+        assert!(d.tick(0.0).is_none());
+        let identity = d.tick(2000.0).unwrap();
+        let layout = Kind::Both.layout();
+        assert_eq!(&identity[8..12], &layout.id.to_be_bytes());
+        assert_eq!(layout.config[25] as usize, layout.report.len());
+        assert_eq!(
+            layout.report.windows(2).filter(|w| *w == [0x85, 1]).count(),
+            1
+        );
+        assert_eq!(
+            layout.report.windows(2).filter(|w| *w == [0x85, 2]).count(),
+            1
+        );
+        assert!(
+            d.tick(2000.0).is_none(),
+            "must not announce a second device"
+        );
+        for id in 101..=108 {
+            let mut r = [0; RECORD];
+            put(&mut r, 0, 7);
+            r[4] = 0x81;
+            r[5] = 3;
+            put(&mut r, 8, id);
+            put(&mut r, 16, 32);
+            assert!(d.incoming(&frame(&r, layout.id)).is_none());
+        }
+        let initial = d.tick(2000.0).unwrap();
+        assert_eq!(
+            (dword(&initial, 29), dword(&initial, 37), initial[41]),
+            (101, 30, 2)
+        );
+        d.external_input(3, 2, 100, 200);
+        d.external_input(1, 1, 1, 0);
+        d.external_input(0, 225, 0, 1);
+        d.external_input(0, 4, 0, 1);
+        for (time, id, report_id, len) in [
+            (2004.0, 102, 1, 8),
+            (2008.0, 103, 2, 30),
+            (2012.0, 104, 1, 8),
+            (2016.0, 105, 2, 30),
+        ] {
+            let f = d.tick(time).unwrap();
+            assert_eq!(&f[8..12], &layout.id.to_be_bytes());
+            assert_eq!((dword(&f, 29), f[41], dword(&f, 37)), (id, report_id, len));
+            if id == 105 {
+                assert_eq!(&f[42..44], &[2, 16]);
+            }
+        }
+        // Standard output report includes the keyboard's report ID.
+        let mut r = [0; RECORD];
+        put(&mut r, 0, 1);
+        r[4] = 0x21;
+        r[5] = 9;
+        r[6..8].copy_from_slice(&0x202u16.to_le_bytes());
+        r[10] = 2;
+        r[11] = 3;
+        r[1034..1036].copy_from_slice(&2u16.to_le_bytes());
+        put(&mut r, 1042, 77);
+        let ack = d.incoming(&frame(&r, layout.id)).unwrap();
+        assert_eq!((dword(&ack, 25), dword(&ack, 21 + 1036)), (2, 77));
+        for (id, report_id) in [(106, 1), (107, 2)] {
+            let f = d.release_input().unwrap();
+            assert_eq!((dword(&f, 29), f[41]), (id, report_id));
+            if report_id == 1 {
+                assert_eq!(f[42], 0);
+            } else {
+                assert!(f[42..71].iter().all(|b| *b == 0));
+            }
+        }
+        let removal = d.remove().unwrap();
+        assert_eq!(dword(&removal, 21), 16);
+        assert!(!d.active());
+    }
     #[test]
     fn hid_mouse_enumeration_preserves_zero_ids_and_stalls_unknown_requests() {
         let mut m = Device::default();

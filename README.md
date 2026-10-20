@@ -183,7 +183,9 @@ See [audio-path audit and implementation](docs/native-audio-options.md).
   keyboard layout on host and client (for example Hungarian on both). The client
   does not change the host layout. Normal Parsec keyboard forwarding is suppressed
   while selected. Focus loss, local menus and disconnect release held keys.
-  The first keyboard build awaits live host/client validation.
+  Keyboard-only input has been live-tested. Selecting both uses one USB device
+  with separate mouse/keyboard HID report IDs; this combined mode awaits a new
+  live test after correcting the initial two-device routing conflict.
 - Only the usual EXE and settings.json are needed. No launcher or observer is
   required. While selected, ordinary Parsec mouse messages stay suppressed,
   including if HID setup fails; disable it and reconnect to restore normal input.
