@@ -5,6 +5,8 @@ use std::{
     io::{self, Write},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+#[path = "usb-absolute-observation.rs"]
+mod absolute_observation;
 
 fn unix_ms() -> u128 {
     SystemTime::now()
@@ -68,11 +70,47 @@ fn mice(mut caps_log: Option<&mut File>) -> io::Result<u32> {
         feature_values: u16,
         feature_indices: u16,
     }
+    #[repr(C)]
+    #[derive(Default)]
+    struct ValueCaps {
+        page: u16,
+        report_id: u8,
+        alias: u8,
+        bit_field: u16,
+        collection: u16,
+        link_usage: u16,
+        link_page: u16,
+        range: u8,
+        string_range: u8,
+        designator_range: u8,
+        absolute: u8,
+        has_null: u8,
+        reserved: u8,
+        bit_size: u16,
+        report_count: u16,
+        reserved2: [u16; 5],
+        units_exp: u32,
+        units: u32,
+        logical_min: i32,
+        logical_max: i32,
+        physical_min: i32,
+        physical_max: i32,
+        usage_data: [u16; 8],
+    }
     #[link(name = "hid")]
     unsafe extern "system" {
         fn HidP_GetCaps(preparsed: *const c_void, caps: *mut Caps) -> i32;
         fn HidD_GetPreparsedData(device: *mut c_void, data: *mut *mut c_void) -> u8;
         fn HidD_FreePreparsedData(data: *mut c_void) -> u8;
+        fn HidP_GetSpecificValueCaps(
+            report_type: i32,
+            page: u16,
+            collection: u16,
+            usage: u16,
+            caps: *mut ValueCaps,
+            count: *mut u16,
+            data: *const c_void,
+        ) -> i32;
     }
     #[link(name = "kernel32")]
     unsafe extern "system" {
@@ -138,7 +176,10 @@ fn mice(mut caps_log: Option<&mut File>) -> io::Result<u32> {
             }
             let end = name.0.iter().position(|v| *v == 0).unwrap_or(name.0.len());
             let identity = String::from_utf16_lossy(&name.0[..end]).to_ascii_uppercase();
-            if identity.contains("VID_FFFF&PID_F001") || identity.contains("VID_FFFF&PID_F002") {
+            if identity.contains("VID_FFFF&PID_F001")
+                || identity.contains("VID_FFFF&PID_F002")
+                || identity.contains("VID_FFFF&PID_F003")
+            {
                 found += 1;
                 if let Some(log) = caps_log.as_deref_mut() {
                     // RIM_TYPEMOUSE can return an empty RIDI_PREPARSEDDATA.
@@ -170,6 +211,26 @@ fn mice(mut caps_log: Option<&mut File>) -> io::Result<u32> {
                     } else {
                         0
                     };
+                    if available && identity.contains("PID_F003") {
+                        debug_assert_eq!(size_of::<ValueCaps>(), 72);
+                        for usage in [0x30, 0x31] {
+                            let mut value = ValueCaps::default();
+                            let mut count = 1;
+                            let value_status = HidP_GetSpecificValueCaps(
+                                0, 1, 0, usage, &mut value, &mut count, data,
+                            );
+                            // Free native resources before any fallible writes.
+                            let _ = writeln!(
+                                log,
+                                "{{\"event\":\"absolute_axis_caps\",\"unix_ms\":{},\"usage\":{usage},\"status\":{value_status},\"count\":{count},\"absolute\":{},\"bit_size\":{},\"logical_min\":{},\"logical_max\":{}}}",
+                                unix_ms(),
+                                value.absolute != 0,
+                                value.bit_size,
+                                value.logical_min,
+                                value.logical_max
+                            );
+                        }
+                    }
                     // Release both resources BEFORE any fallible log writes.
                     if available {
                         let _ = HidD_FreePreparsedData(data);
@@ -209,7 +270,14 @@ fn run() -> io::Result<()> {
     let path = std::env::args_os()
         .nth(1)
         .ok_or_else(|| io::Error::other("Supply a NEW host-observer.jsonl filename"))?;
-    let mut log = File::options().write(true).create_new(true).open(path)?;
+    let mut log = File::options().write(true).create_new(true).open(&path)?;
+    let mapping = if std::env::args().any(|a| a == "--absolute-mapping") {
+        Some(absolute_observation::Observation::start(
+            std::path::Path::new(&path),
+        )?)
+    } else {
+        None
+    };
     let start = Instant::now();
     let baseline = mice(None)?;
     writeln!(
@@ -247,6 +315,9 @@ fn run() -> io::Result<()> {
                 if count != previous {
                     arrived |= count > baseline;
                     removed |= arrived && count == baseline;
+                    if let Some(mapping) = &mapping {
+                        mapping.active(arrived && !removed);
+                    }
                     writeln!(
                         log,
                         "{{\"event\":\"mouse_count_changed\",\"elapsed_ms\":{},\"unix_ms\":{},\"count\":{count}}}",

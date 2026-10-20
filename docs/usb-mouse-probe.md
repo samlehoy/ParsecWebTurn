@@ -1,5 +1,57 @@
 # Isolated USB mouse probe
 
+## Absolute HID mapping experiment (2026-10-20)
+
+The relative-HID cursor diagnostic established that the current stock-host
+cursor messages are not a continuous position source in the tested session.
+No supported continuous-position subscription has been established. This
+next experiment checks standard absolute HID input independently, before
+attempting live routing or claiming that the visible cursor mismatch is fixed.
+
+1. End earlier probe sessions. Keep host USB/Yubikey passthrough enabled.
+2. On the host run **`Start-Host-Absolute-Mapping-Observer.cmd`** from this build.
+3. On the client run **`Start-Client-Absolute-Mapping-Probe.cmd`**, connect using
+   experimental BUD, and leave connected for at least 20 seconds. Do not move
+   either physical mouse during the sequence; open a plain desktop/Paint first.
+4. Send `usb-client-absolute-*.jsonl`, `usb-host-absolute-*.jsonl`, and the host's
+   additional `usb-host-absolute-*.mapping.jsonl` file.
+
+This enumerates a distinct `VID_FFFF / PID_F003` non-boot Mouse/Pointer with
+five released buttons and two **absolute 16-bit axes, logical 0..32767**.
+Each five-byte report is `[buttons=0, X_le16, Y_le16]`. Nine fixed reports visit
+the 3x3 grid at 10%, 50%, 90%, left-to-right and then top-to-bottom. They start
+1.5 seconds after the first valid interrupt read, at one-second intervals.
+No button press, wheel, live movement or normal Parsec mouse command is sent.
+The device is removed after the existing 17-second bounded experiment. Ordinary
+remote mouse transmission stays blocked for this process even after expiry;
+restart with another launcher to restore the corresponding input mode.
+
+The host observer reads the matching device's parsed X/Y capabilities, reporting
+absolute/relative, bit width and logical range. Its optional mapping sampler
+uses documented GetCursorPos/GetSystemMetrics, with a DPI-awareness result,
+to compare the real Windows pointer against those nine known positions under
+both **primary-screen** and **virtual-desktop** mappings. The mapping file saves
+grid-step matches, position-change booleans and desktop bounds, not actual cursor
+coordinates, trajectories, screen images or account/device identifiers. It does
+not hook input, inject events, change display settings or require elevation.
+
+The user tests a secondary/virtual display, so this distinction is essential:
+the physical host pointer may move on another display and never appear in the
+stream. That is a measurable mapping result, not by itself a failure to create
+an absolute HID mouse. No primary-monitor or virtual-desktop mapping is assumed
+to be guaranteed by the HID descriptor. Windows recognition and the actual
+position changes must both be confirmed in a live trial. Host cursor clamping,
+other users' physical input and display changes can invalidate a sample.
+
+The existing enumeration, relative input and live-relative launchers remain
+separate and explicitly clear the new mode. No WASM/host patch, video processing,
+new SDK, live network listener or dependency is added.
+
+References: [USB HID 1.11](https://www.usb.org/sites/default/files/hid1_11.pdf),
+[GetCursorPos](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getcursorpos),
+[GetSystemMetrics](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getsystemmetrics),
+[HidP_GetSpecificValueCaps](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidpi/nf-hidpi-hidp_getspecificvaluecaps).
+
 ## Live desktop mouse forwarding (2026-10-20)
 
 Live two-PC result: movement, button release, scrolling and continuous drawing

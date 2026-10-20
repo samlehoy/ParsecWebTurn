@@ -4,6 +4,7 @@ cd /d "%~dp0"
 set "PARSEC_USB_MOUSE_PROBE=1"
 set "PARSEC_USB_MOUSE_INPUT_PROBE="
 set "PARSEC_USB_MOUSE_LIVE_PROBE="
+set "PARSEC_USB_MOUSE_ABSOLUTE_PROBE="
 set "PARSEC_USB_PROBE_LOG=%~dp0usb-client-%RANDOM%-%RANDOM%.jsonl"
 echo Connect to your own host using experimental BUD.
 echo Only the first established BUD session is probed in this process.

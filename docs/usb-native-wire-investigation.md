@@ -483,3 +483,48 @@ of outgoing motion during synthetic host updates, rather than assuming that
 every OS-generated move is physical input. No decoded video surface or graphics
 backend is changed. The new behavior still needs confirmation in the two-PC
 desktop trial; following the latest host report also inherits its latency.
+
+### Live cursor diagnostic result (2026-10-20)
+
+Inputs: `usb-client-live-21026-22861.cursor.jsonl`,
+`usb-client-live-21026-22861.jsonl`, `usb-host-21000-2410.jsonl`.
+The user also saw Paint's small brush marker moving, which may be an
+application-drawn marker in the video rather than the client's native cursor.
+Its appearance alone does not identify which cursor was visible.
+
+- The cursor trace counted 72 wire events, 72 delivered events, 66 position
+  changes at both boundaries, and 72 posted/applied UI notifications.
+- Every one of the 85 sampled states with HID Raw Input acquired matched both
+  the latest reported host position and its one-pixel clip. There were 72
+  successful clip calls and no clip failures. This establishes sampled client
+  behavior, not continuous agreement with the host's actual pointer.
+- At elapsed 70,537 through 88,627 ms the wire count stayed at 66 while raw
+  motion packets rose from 6296 to 8342. At the latter sample, the most recent
+  wire cursor event was already 19,337 ms old. There is therefore no continuous
+  cursor-position feed at this observed control-message boundary during motion.
+- All 72 cursor messages carried an image. This does not prove that shape
+  changes were their only trigger, since the client requests uncached images.
+- USB totals: 8392 reports, 9010 handled mouse commands and 9026 suppressed
+  ordinary mouse commands. The host confirmed arrival, valid HID capabilities,
+  removal and zero observer errors. No automatic ordinary mouse fallback ran.
+
+The BUD driver forwards each successfully parsed control frame unchanged to
+`ExternalControl` before its session-only handler; it has no cursor filter or
+cursor coalescing there. The new trace begins at the adapter's event boundary.
+These results locate the practical limitation upstream of cursor delivery and
+Windows positioning; they do not prove why the stock host reports infrequently,
+nor exclude a lower transport/protocol issue solely from these logs.
+
+The previous implementation assumed that cursor metadata was a sufficient live
+position source. This trial disproves that assumption for this session. Moving
+the visible pointer from local deltas between reports would be prediction, not
+the requested actual host position: host acceleration, clipping and other input
+can differ. No such heuristic, host patch, decoded-frame readback, or blind HID
+timing change is introduced. A reliable actual-position source or a separately
+evaluated input design is needed before claiming the cursor mismatch is fixed.
+
+Parsec's own historical [browser architecture explanation](https://parsec.app/blog/game-streaming-tech-in-the-browser-with-parsec-5b70d0f359bc)
+describes cursor-state messages and deliberately local cursor motion. It does
+not promise a continuous authoritative position subscription. This supports
+rechecking that assumption, but is not a specification of the current host's
+precise notification policy.

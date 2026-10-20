@@ -354,7 +354,8 @@ impl Driver {
             #[cfg(feature = "usb-mouse-probe")]
             usb_probe: None,
             #[cfg(feature = "usb-mouse-probe")]
-            usb_live_mouse: crate::usb_mouse_probe::live_requested(),
+            usb_live_mouse: crate::usb_mouse_probe::live_requested()
+                || crate::usb_mouse_probe::absolute_requested(),
             init,
             units,
             packets,
