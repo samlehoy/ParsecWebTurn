@@ -243,8 +243,9 @@ Statuses below describe this branch, not necessarily the latest stable release.
 | Original-surface HEVC presentation on NVIDIA/AMD/Intel | Experimental; live tested on selected GPUs |
 | Optional BUD direct UDP and TURN over UDP/TCP/TLS, automatic relay fallback | Experimental; direct/UDP/TLS live tested; TCP covered by isolated relay tests |
 | Custom audio buffering and BUD raw PCM permission | Experimental; Opus and automatic buffering remain default |
+| USB HID mouse and keyboard through the stock host's USB/Yubikey passthrough (BUD) | Experimental; desktop input, relative camera control and simultaneous mouse/keyboard live tested; matching keyboard layouts required |
 | Transport-aware connection and playback statistics | Implemented |
-| Network/Video/Audio settings tabs | Implemented |
+| Network/Video/Audio/Input settings tabs | Implemented |
 | Gamepad verification and further native menu integration | Pending |
 | Vulkan rendering and Linux client | Planned |
 | D3D12, Android and Android TV | Exploring |
