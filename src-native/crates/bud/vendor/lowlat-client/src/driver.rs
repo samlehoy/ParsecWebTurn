@@ -696,6 +696,8 @@ impl Driver {
 
     #[cfg(feature = "usb-mouse-probe")]
     pub(crate) fn finish_usb_probe(&mut self, session: &mut Session<'_>) {
+        let release = self.usb_probe.as_mut().and_then(|p| p.release_input());
+        self.usb_probe_send(session, release);
         let frame = self.usb_probe.as_mut().and_then(|p| p.remove());
         self.usb_probe_send(session, frame);
     }

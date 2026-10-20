@@ -301,3 +301,79 @@ is no hook into the live kind-7 handler, no queue, no timer and no report sent
 to the host. A future neutral-report test still requires deliberate runtime
 integration and actual host observation; passing these tests is not evidence
 of working remote input or of resolving descriptor-query repetition.
+
+## Two-PC result and host control-loop investigation (2026-10-20)
+
+The two-PC logs `usb-client-28796-24258.jsonl` and
+`usb-host-28790-2762.jsonl` confirm that self-connection is not required for
+the recurring requests. There are 117 report-descriptor exchanges: the first
+has capacity 114 and a nonzero correlation ID; the remaining 116 have capacity
+and ID zero. All request 114 bytes and receive the same 50-byte descriptor,
+status 50 and matching ID. Intervals between the zero-ID requests average
+126.34 ms (112–161 ms). The earlier observer quiet phase already excluded
+that observer's device queries as a necessary cause.
+
+The host observer starts with baseline_count 1, then records 0 → 1 → 0 with
+errors 0. Its arrival/removal booleans compare against the initial baseline,
+so they are false in this run and no capability query/phase progression is
+triggered. These booleans must not override the recorded count transitions.
+This run does not provide a fresh parsed-capability measurement.
+
+Read-only inspection of the same hash-pinned stock module identifies a
+specific stale-request path that explains the wire pattern without changing
+the descriptor. The following are observations about branch conditions and
+field lifetimes, not copied function implementations or runtime hooks:
+
+| Location | Observed behavior |
+| --- | --- |
+| `0x1c2680`–`0x1c26c0` | Wait wrapper uses `WaitForSingleObject`; signaled maps to `0x10000000`, timeout (`0x102`) to `0x10000002`. |
+| `0x1c8b80`–`0x1c8b92` | Worker waits 100 ms and tests only bit `0x10000000`. Both mapped results pass; timeout does not skip the read. |
+| `0x1c2360`–`0x1c24dd` | Control read uses IOCTL `0x2af00c` and `GetOverlappedResult(TRUE)`. On success it updates setup, request ID and returned data count. On `GetLastError()==0x103` it returns `0x10000001` without updating those caller outputs. |
+| `0x1c8b98`–`0x1c8bf3` | Worker clears request ID and data count before the read, but not its eight-byte setup storage. It again tests only bit `0x10000000`, so the no-more-items return also passes. |
+| `0x1c8c13`–`0x1c8cf4` | Worker builds and forwards the control request from that setup storage with the cleared count/ID. The setup can therefore be from the preceding transaction. |
+| `0xc1db0`–`0xc1f9e` | Network wrapper sends once and waits for a matching reply ID. It does not independently retransmit this control request. |
+| `0x1c8d12`–`0x1c8d77` | Nonnegative reply status and actual data count are forwarded to the driver completion path. Status 50 is not treated as an error. |
+| `0x1c24f0`–`0x1c2519`, `0x1c2662` | Driver-completion wrapper rejects request ID zero before issuing the completion IOCTL. Answering a recurring zero-ID request therefore does not imply a real driver transaction was completed. |
+
+The PE import table independently confirms the Windows calls at IAT RVAs
+`0x2438d0` (WaitForSingleObject), `0x2437a8` (GetOverlappedResult),
+`0x243778` (GetLastError) and `0x243918` (DeviceIoControl).
+[Microsoft documents timeout as `0x102`](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)
+and [ERROR_NO_MORE_ITEMS as 259 / `0x103`](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-).
+These Win32 values must not be confused with the module's mapped statuses.
+
+This yields a strong, specific explanation: a 100-ms empty-queue iteration
+can forward the previous USB setup again, with ID and capacity zero; network
+reply time adds to that interval. This also explains why the serial-string
+request and SET_IDLE each have an initial real-ID request followed by a zero-ID
+copy before the report-descriptor request becomes the last setup in storage.
+The observed delay alone does not prove network RTT or this execution path.
+
+Checks performed: the four mapped-status bit predicates and all 121 logged
+control reply IDs were checked offline; all 116 recurring report requests
+match the predicted zero-ID/zero-capacity shape. No live driver return values
+were captured. Consequently this is a statically demonstrated possible path
+and a strongly supported explanation of the logs, not dynamic proof that each
+request took that path. Request ID zero must not be declared invalid for every
+USB message family on this basis.
+
+No descriptor padding, dropped requests, changed replies, input reports,
+host patch, debugger hook or production runtime change was introduced.
+The existing 50-byte descriptor remains intact. The next dynamic confirmation,
+if needed, is to observe the host's empty-queue result through supported
+diagnostics; it must not require patching the stock module. A live neutral
+interrupt-report test would be a separate experiment, not a proven fix for
+this host-loop behavior.
+
+### Optional fixed desktop input experiment
+
+The same isolated branch now implements that separate experiment in
+`usb_mouse_input_probe.rs`, gated by `PARSEC_USB_MOUSE_INPUT_PROBE=1` in addition
+to the original feature/runtime/log requirements. Its tested framing completes
+validated kind-7 reads with a fixed neutral/move/press/release sequence; it does
+not capture or relay physical input. See [instructions and limits](usb-mouse-probe.md).
+The earlier offline-only fixture now tests the actual optional encoder rather
+than maintaining a duplicate implementation. A successful build still does
+not establish delivery on the host; both visual desktop confirmation and new
+client/host logs are required. In particular, interrupt-read activity and the
+host control-request queue must not be treated as the same queue.

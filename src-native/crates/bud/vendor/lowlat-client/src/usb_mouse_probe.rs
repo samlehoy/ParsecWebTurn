@@ -1,5 +1,5 @@
-//! ParsecWebTurn-owned, enumeration-only interoperability diagnostic.
-//! Never compiled by default. No physical USB access, input capture or motion.
+//! ParsecWebTurn-owned interoperability diagnostic. Never compiled by default.
+//! Fixed desktop input sequence requires an additional explicit runtime opt-in.
 //! Private wire observations: docs/usb-native-wire-investigation.md.
 #![allow(
     clippy::indexing_slicing,
@@ -33,6 +33,9 @@ const CONFIG: &[u8] = &[
 ];
 const MAKER: &str = "ParsecWebTurn research";
 const PRODUCT: &str = "USB mouse enumeration probe";
+
+#[path = "usb_mouse_input_probe.rs"]
+mod input_probe;
 
 fn put(record: &mut [u8], offset: usize, value: u32) {
     record[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
@@ -133,6 +136,8 @@ pub(crate) struct Probe {
     removed: bool,
     received: u32,
     elapsed_ms: u32,
+    input: Option<input_probe::Input>,
+    stopping: bool,
 }
 impl Probe {
     pub(crate) fn from_environment() -> Option<Self> {
@@ -156,8 +161,14 @@ impl Probe {
             removed: false,
             received: 0,
             elapsed_ms: 0,
+            input: (std::env::var("PARSEC_USB_MOUSE_INPUT_PROBE").as_deref() == Ok("1"))
+                .then(input_probe::Input::default),
+            stopping: false,
         };
         probe.note("armed", 0, 0, 0);
+        if probe.input.is_some() {
+            probe.note("fixed_input_enabled", 8, 0, 0);
+        }
         Some(probe)
     }
     fn note(&mut self, event: &str, kind: u32, code: u32, detail: u32) {
@@ -203,13 +214,23 @@ impl Probe {
         if self.removed {
             return None;
         }
+        if self.stopping {
+            return self.remove();
+        }
         if now - start >= 17_000.0 {
+            if let Some(release) = self.release_input() {
+                return Some(release);
+            }
             return self.remove();
         }
         if !self.announced && now - start >= 2_000.0 {
             self.announced = true;
             self.note("identity_queued", 15, 0, 0);
             return Some(identity());
+        }
+        if let Some((report, step)) = self.input.as_mut().and_then(|i| i.next(self.elapsed_ms)) {
+            self.note("fixed_report_queued", 8, step as u32, 0);
+            return Some(report);
         }
         None
     }
@@ -226,7 +247,7 @@ impl Probe {
             return None;
         }
         self.received += 1;
-        if self.received > 128 {
+        if self.received > 512 {
             return self.remove();
         }
         let r = &bytes[21..21 + RECORD];
@@ -249,15 +270,33 @@ impl Probe {
                 );
                 Some(reply)
             }
-            // Interrupt reads intentionally remain pending: this diagnostic
-            // never completes input reports, moves the cursor or clicks.
-            7 => None,
+            7 => {
+                if let Some(input) = &mut self.input {
+                    if !input.accept(r, self.elapsed_ms) {
+                        self.note("interrupt_rejected", 7, 0, 0);
+                        return self.remove();
+                    }
+                    self.note("interrupt_read_pending", 7, dword(r, 8), dword(r, 16));
+                }
+                None
+            }
             _ => self.remove(),
         }
+    }
+    pub(crate) fn release_input(&mut self) -> Option<[u8; FRAME]> {
+        let release = self.input.as_mut().and_then(input_probe::Input::release);
+        if release.is_some() {
+            self.note("button_release_queued", 8, 0, 0);
+        }
+        release
     }
     pub(crate) fn remove(&mut self) -> Option<[u8; FRAME]> {
         if !self.announced || self.removed {
             return None;
+        }
+        self.stopping = true;
+        if let Some(release) = self.release_input() {
+            return Some(release);
         }
         self.removed = true;
         self.note("remove_queued", 16, self.received, 0);
@@ -266,6 +305,9 @@ impl Probe {
         Some(frame(&r))
     }
     pub(crate) fn sent(&mut self, success: bool) {
+        if !success {
+            self.stopping = true;
+        }
         self.note(
             if success {
                 "transport_accepted"
@@ -371,6 +413,8 @@ mod tests {
                 removed: false,
                 received: 0,
                 elapsed_ms: 0,
+                input: None,
+                stopping: false,
             };
             assert!(probe.tick(0.0).is_none());
             assert!(probe.tick(1999.0).is_none());

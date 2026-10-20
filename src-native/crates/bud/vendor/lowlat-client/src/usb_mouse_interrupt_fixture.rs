@@ -1,52 +1,10 @@
-//! Offline contract fixture only. Not linked into either executable and never
-//! called by a live session. Layout evidence is recorded in the USB research doc.
-use super::{FRAME, RECORD, dword, frame, put};
+//! Wire-contract tests for the opt-in input experiment; never send network data.
+use super::input_probe::{completion, read};
+use super::{RECORD, dword, put};
 
 const ENDPOINT: u8 = 0x81;
 const INTERRUPT: u8 = 3;
-const REPORT_BYTES: usize = 3;
 const CANCELLED: u32 = 0xc001_0000;
-
-#[derive(Debug, PartialEq, Eq)]
-struct Read {
-    id: u32,
-    capacity: u32,
-}
-
-fn read(record: &[u8]) -> Option<Read> {
-    if record.len() != RECORD
-        || dword(record, 0) != 7
-        || record[4] != ENDPOINT
-        || record[5] != INTERRUPT
-    {
-        return None;
-    }
-    let capacity = dword(record, 16);
-    if !(3..=1550).contains(&capacity) {
-        return None;
-    }
-    Some(Read {
-        id: dword(record, 8),
-        capacity,
-    })
-}
-
-fn completion(request: &Read, cancelled: bool) -> [u8; FRAME] {
-    let mut record = [0; RECORD];
-    put(&mut record, 0, 8);
-    record[4] = ENDPOINT;
-    record[5] = INTERRUPT;
-    put(&mut record, 8, request.id);
-    if cancelled {
-        put(&mut record, 12, CANCELLED);
-    } else {
-        put(&mut record, 16, REPORT_BYTES as u32);
-        // Three zero bytes = released buttons, zero relative X and Y.
-        // The extra Windows HID report-ID byte is NOT on the USB wire.
-        record[20..23].copy_from_slice(&[0, 0, 0]);
-    }
-    frame(&record)
-}
 
 fn request(id: u32, capacity: u32) -> [u8; RECORD] {
     let mut record = [0; RECORD];
@@ -63,8 +21,7 @@ fn usb_mouse_probe_neutral_interrupt_preserves_id_and_usb_report_size() {
     for id in [0, 1, 0xabcdef12] {
         for capacity in [3, 64, 1550] {
             let incoming = read(&request(id, capacity)).unwrap();
-            assert_eq!(incoming, Read { id, capacity });
-            let wire = completion(&incoming, false);
+            let wire = completion(&incoming, Some([0; 3]));
             assert_eq!(wire.len(), 1945);
             assert_eq!(wire[12], 32);
             assert_eq!(dword(&wire, 21), 8);
@@ -80,7 +37,7 @@ fn usb_mouse_probe_neutral_interrupt_preserves_id_and_usb_report_size() {
 
 #[test]
 fn usb_mouse_probe_cancellation_has_no_input_payload() {
-    let wire = completion(&read(&request(42, 64)).unwrap(), true);
+    let wire = completion(&read(&request(42, 64)).unwrap(), None);
     assert_eq!(dword(&wire, 29), 42);
     assert_eq!(dword(&wire, 33), CANCELLED);
     assert_eq!(dword(&wire, 37), 0);

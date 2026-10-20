@@ -1,4 +1,63 @@
-# Enumeration-only USB mouse probe
+# Isolated USB mouse probe
+
+## Fixed desktop input experiment (2026-10-20)
+
+The separate `Start-Client-Input-Probe.cmd` launcher now enables a fixed,
+bounded interrupt-input sequence. `Start-Client-Probe.cmd` still performs only
+enumeration and explicitly disables the additional input opt-in. Both require
+the optional `usb-mouse-probe` build feature and mandatory dedicated JSONL log.
+Neither is enabled in ordinary builds or on dev/main.
+
+On the host enable USB/Yubikey passthrough, close earlier probe sessions and
+observers, open a blank **Paint canvas**, and place the cursor well inside it.
+Start one fresh `Start-Host-Observer.cmd`, then run the input launcher on the
+other PC. Connect through Experimental BUD and do not move/click your physical
+mouse during the roughly seven-second sequence. Remain connected 25 seconds.
+Use the Windows desktop only, outside games or sensitive application windows.
+
+Times below start at the first valid host interrupt-read request:
+
+| Time | Fixed USB report |
+| --- | --- |
+| 0 s | Released buttons, zero motion |
+| 2 / 2.25 / 2.5 s | Relative X +12, buttons released |
+| 3 / 3.25 / 3.5 s | Relative X -12, buttons released |
+| 5 s | Left button down, zero motion |
+| At least 120 ms later | All buttons released, zero motion |
+| 7 s | Final neutral report; subsequent reads stay pending |
+
+Windows pointer acceleration can affect visible movement; returning exactly
+to the initial pixel is not a success criterion. The click should leave a dot
+on the canvas. The fixed reports contain three USB bytes, with no extra Windows
+HID report-ID placeholder. No physical-device capture, input forwarding, new
+driver, dependency, WASM modification or host patch is introduced.
+
+Only actual, validated kind-7 requests on endpoint 0x81 / interrupt type 3 are
+completed. The pending queue is limited to eight entries, request capacity to
+3–1550 bytes, the whole probe to 512 incoming records and seventeen seconds
+from BUD establishment. At least 120 ms separates actual reports, even after a
+late tick. A button press requires two pending reads so one is reserved for
+release; otherwise the click is skipped. Graceful termination queues a release
+if necessary before removal. Connection loss cannot guarantee remote release
+or removal; local send acceptance is never claimed as host execution.
+
+The client log adds `fixed_input_enabled`, `interrupt_read_pending` (ID and
+capacity), and `fixed_report_queued` (step index 0–9), plus best-effort
+`button_release_queued` on early exit. Existing `control_exchange` records
+remain unchanged, including zero-ID requests. No arbitrary USB payload is logged.
+Compare descriptor-request intervals before, during and after the input
+sequence. Changes are evidence to investigate, not proof of cause: the empty
+**control-request** queue identified in the host analysis is distinct from
+pending **interrupt input** reads. Delivering input need not stop stale control
+requests. The host observer proves arrival/removal and parsed capabilities;
+movement/click delivery must also be confirmed visually in Paint.
+
+Return both the fresh `usb-client-input-*.jsonl` and `usb-host-*.jsonl`, and say
+whether movement and the canvas click were visible. The earlier offline wire
+tests now exercise the same framing functions as this optional live experiment;
+additional tests cover timing, bounded pending reads and reserved release.
+
+## Earlier enumeration follow-up
 
 Status (2026-10-19): the initial Windows CI build passed four USB tests and
 Clippy. The live test through BUD / TURN TLS observed mouse arrival and removal
