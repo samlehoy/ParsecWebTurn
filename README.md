@@ -149,6 +149,13 @@ driver transfers; hybrid GPU/display configurations can still introduce them.
 
 ### Audio (experimental)
 
+- **Multichannel audio (BUD):** disabled by default. Request the Windows default
+  output's supported 5.1 or 7.1 speaker layout, with stereo for other endpoints.
+  The host's capture layout must match; it may send stereo instead. BUD headers
+  select the actual Opus/PCM decoder and channel mask. Native WASAPI receives the
+  original channels; stats distinguish received and playback layouts. Reconnect
+  after changing the Windows speaker configuration. WebRTC retains stereo.
+  This integration needs live channel-by-channel validation on surround hardware.
 - **Custom audio buffer:** optional minimum/maximum in milliseconds, initially
   75/150 to match the pinned core's automatic limits. Saved custom values are
   preserved. Off uses the core's actual playback limits and original WASAPI policy;

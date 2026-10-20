@@ -61,6 +61,7 @@ pub struct Settings {
     pub audio_min_buffer_ms: u32,
     pub audio_max_buffer_ms: u32,
     pub experimental_raw_audio: bool,
+    pub experimental_surround_audio: bool,
     #[cfg(feature = "vendor-video")]
     pub experimental_zero_copy: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -99,6 +100,7 @@ impl Default for Settings {
             audio_min_buffer_ms: 75,
             audio_max_buffer_ms: 150,
             experimental_raw_audio: false,
+            experimental_surround_audio: false,
             #[cfg(feature = "vendor-video")]
             experimental_zero_copy: false,
             video_gpu: None,

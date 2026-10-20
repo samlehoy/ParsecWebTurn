@@ -179,6 +179,8 @@ pub struct Config {
     pub video: Video,
     /// Whether uncompressed sound is acceptable.
     pub raw_audio: bool,
+    /// Validated application playback layout; stereo is the compatibility default.
+    pub audio_layout: Option<(u8, u32)>,
     /// Offer no media key, so the host answers without one and both ends key
     /// the legacy cipher from its certificate digest.
     pub legacy_cipher: bool,
@@ -218,8 +220,8 @@ impl Config {
             media_container: 0,
             // A literal from every client generation; no host reads it.
             refresh_rate: 60,
-            channels: 2,
-            channel_mask: 3,
+            channels: u32::from(self.audio_layout.map_or(2, |layout| layout.0)),
+            channel_mask: self.audio_layout.map_or(3, |layout| layout.1),
             caches_cursor: true,
             raw_audio: self.raw_audio,
             video_protocol_version: 1,

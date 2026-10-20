@@ -56,22 +56,36 @@ pub enum Audio<'a> {
 
 /// The wire's codec tag is authoritative; a RAW permission can still yield Opus.
 pub fn audio(message: &[u8]) -> Result<Audio<'_>> {
+    let (audio, channels, mask) = audio_layout(message)?;
+    ensure!(channels == 2 && mask == 3, "unsupported BUD audio layout");
+    Ok(audio)
+}
+
+/// Preserve the wire layout for the application's native decoder/output.
+pub fn audio_layout(message: &[u8]) -> Result<(Audio<'_>, u8, u32)> {
     let header =
         audio::parse(message).map_err(|e| anyhow::anyhow!("native audio header: {e:?}"))?;
     ensure!(
-        header.rate == 48_000 && header.channels == 2 && header.mask == 3,
+        header.rate == 48_000
+            && matches!(
+                (header.channels, header.mask),
+                (2, 0 | 3) | (6, 0x3f | 0x60f) | (8, 0x63f)
+            ),
         "unsupported BUD audio layout"
     );
     let payload = message.get(audio::AUDIO_HEADER_LEN..).unwrap_or_default();
     ensure!(!payload.is_empty(), "empty BUD audio packet");
     if header.codec == audio::Codec::Opus {
-        Ok(Audio::Opus(payload))
+        Ok((Audio::Opus(payload), header.channels, header.mask))
     } else {
         ensure!(
-            payload.len() <= 32_000 && payload.len().is_multiple_of(4),
-            "invalid stereo PCM packet"
+            payload.len() <= 32_000
+                && payload
+                    .len()
+                    .is_multiple_of(usize::from(header.channels) * 2),
+            "invalid interleaved PCM packet"
         );
-        Ok(Audio::Pcm(payload))
+        Ok((Audio::Pcm(payload), header.channels, header.mask))
     }
 }
 

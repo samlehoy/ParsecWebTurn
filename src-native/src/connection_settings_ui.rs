@@ -71,6 +71,7 @@ const AUDIO_CUSTOM: usize = 4125;
 const AUDIO_MIN: usize = 4126;
 const AUDIO_MAX: usize = 4127;
 const AUDIO_RAW: usize = 4128;
+const AUDIO_SURROUND: usize = 4132;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Network,
@@ -656,6 +657,19 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         page.font,
     );
     check(hwnd, AUDIO_RAW, s.experimental_raw_audio);
+    row_label(hwnd, page, "Speaker layout", "Experimental: match the Windows output's 5.1 or 7.1 layout.\nBUD only; stereo remains the fallback. Reconnect to apply.", 630, 0, 52);
+    add(
+        hwnd,
+        page,
+        "BUTTON",
+        "Multichannel audio (experimental, BUD)",
+        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+        [420, 630, 400, 36],
+        AUDIO_SURROUND,
+        0,
+        page.font,
+    );
+    check(hwnd, AUDIO_SURROUND, s.experimental_surround_audio);
     page.building_tab = Some(Tab::Input);
     row_label(hwnd,page,"Mouse","Experimental USB HID mouse over BUD.\nEnable USB/Yubikey passthrough on the host.\nSupports a single physical or virtual display.",242,0,64);
     add(
@@ -820,7 +834,7 @@ unsafe fn layout(hwnd: HWND) {
     let cloudflare = SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1;
     let footer = match page.active_tab {
         Tab::Network => 1056 + BUD_EXTRA,
-        Tab::Audio => 650,
+        Tab::Audio => 750,
         Tab::Input => 570,
         Tab::Video => {
             if cfg!(feature = "vendor-video") {
@@ -1014,6 +1028,13 @@ unsafe fn update_enabled(hwnd: HWND) {
     );
     #[cfg(not(feature = "experimental-bud"))]
     EnableWindow(GetDlgItem(hwnd, AUDIO_RAW as i32), 0);
+    #[cfg(feature = "experimental-bud")]
+    EnableWindow(
+        GetDlgItem(hwnd, AUDIO_SURROUND as i32),
+        checked(hwnd, BUD) as i32,
+    );
+    #[cfg(not(feature = "experimental-bud"))]
+    EnableWindow(GetDlgItem(hwnd, AUDIO_SURROUND as i32), 0);
     let hevc = checked(hwnd, HEVC) as i32;
     EnableWindow(GetDlgItem(hwnd, TEN_BIT as i32), hevc);
     #[cfg(feature = "vendor-video")]
@@ -1055,6 +1076,7 @@ unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
         .parse()
         .map_err(|_| anyhow::anyhow!("Enter an audio maximum in milliseconds"))?;
     s.experimental_raw_audio = checked(hwnd, AUDIO_RAW);
+    s.experimental_surround_audio = checked(hwnd, AUDIO_SURROUND);
     s.event_logging = checked(hwnd, EVENT_LOG);
     #[cfg(feature = "vendor-video")]
     {

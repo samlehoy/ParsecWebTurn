@@ -1,5 +1,6 @@
 //! RFC 6716 reference decoder. The pinned Parsec channel carries raw Opus,
 //! 48 kHz stereo; containers/RTP headers must not be invented around it.
+use crate::audio_layout::Layout;
 use anyhow::{bail, Result};
 use serde::Serialize;
 use std::{
@@ -12,6 +13,8 @@ const PCM_SAMPLES: usize = 5760 * 2; // RFC maximum 120 ms, stereo
 const RECYCLED_BUFFERS: usize = 32;
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
+    pub layout: Option<Layout>,
+    pub queued_frames: usize,
     pub codec: Option<&'static str>,
     pub poll_calls: u64,
     pub packets_decoded: u64,
@@ -28,6 +31,12 @@ struct State {
     free_pcm: Vec<Vec<i16>>,
     free_packets: Vec<Vec<u8>>,
     stopped: bool,
+    pending: Option<Handoff>,
+}
+pub struct Handoff {
+    pointer: u32,
+    pub layout: Layout,
+    pub pcm: Vec<i16>,
 }
 fn stage_pcm(state: &mut State, mut pcm: Vec<i16>, max_samples: usize) {
     if pcm.len() > max_samples {
@@ -52,6 +61,7 @@ fn stage_pcm(state: &mut State, mut pcm: Vec<i16>, max_samples: usize) {
 pub(crate) struct Sender {
     tx: mpsc::SyncSender<Packet>,
     state: Arc<Mutex<State>>,
+    allowed: Layout,
 }
 impl Sender {
     pub fn submit(&self, bytes: &[u8]) -> bool {
@@ -64,6 +74,23 @@ impl Sender {
         self.submit_format(bytes, true)
     }
     fn submit_format(&self, bytes: &[u8], raw: bool) -> bool {
+        self.submit_layout(bytes, raw, Layout::STEREO)
+    }
+    pub fn submit_layout(&self, bytes: &[u8], raw: bool, layout: Layout) -> bool {
+        if (layout != Layout::STEREO && layout != self.allowed)
+            || (raw && (bytes.len() > 32_000 || !bytes.len().is_multiple_of(layout.samples(1) * 2)))
+        {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.report.packets_dropped += 1;
+            if state.report.packets_dropped.is_power_of_two() {
+                crate::event_log::record(
+                    "ERROR",
+                    "audio_packet_rejected",
+                    serde_json::json!({"stage":"layout_or_pcm_framing","channels":layout.channels,"channel_mask":layout.mask}),
+                );
+            }
+            return false;
+        }
         let mut packet = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.stopped || bytes.is_empty() || bytes.len() > 65_536 {
@@ -74,7 +101,11 @@ impl Sender {
         };
         packet.clear();
         packet.extend_from_slice(bytes);
-        match self.tx.try_send(Packet { bytes: packet, raw }) {
+        match self.tx.try_send(Packet {
+            bytes: packet,
+            raw,
+            layout,
+        }) {
             Ok(()) => true,
             Err(error) => {
                 let packet = match error {
@@ -95,12 +126,58 @@ impl Sender {
 struct Packet {
     bytes: Vec<u8>,
     raw: bool,
+    layout: Layout,
 }
 pub struct Pipeline {
     tx: Option<mpsc::SyncSender<Packet>>,
     state: Arc<Mutex<State>>,
     poll_lock: Mutex<()>,
     worker: Option<JoinHandle<()>>,
+    allowed: Layout,
+}
+struct MultistreamDecoder(*mut libopus_sys::OpusMSDecoder);
+impl MultistreamDecoder {
+    fn new(layout: Layout) -> Result<Self> {
+        let (streams, coupled, mapping) = layout.opus();
+        let mut error = 0;
+        let pointer = unsafe {
+            libopus_sys::opus_multistream_decoder_create(
+                48_000,
+                i32::from(layout.channels),
+                streams,
+                coupled,
+                mapping.as_ptr(),
+                &mut error,
+            )
+        };
+        if pointer.is_null() || error != 0 {
+            bail!("multichannel Opus initialization failed");
+        }
+        Ok(Self(pointer))
+    }
+    fn decode_into(&mut self, packet: &[u8], pcm: &mut Vec<i16>, layout: Layout) -> Result<()> {
+        pcm.resize(layout.samples(5760), 0);
+        let frames = unsafe {
+            libopus_sys::opus_multistream_decode(
+                self.0,
+                packet.as_ptr(),
+                packet.len() as i32,
+                pcm.as_mut_ptr(),
+                5760,
+                0,
+            )
+        };
+        if !(1..=5760).contains(&frames) {
+            bail!("multichannel Opus packet rejected");
+        }
+        pcm.truncate(layout.samples(frames as usize));
+        Ok(())
+    }
+}
+impl Drop for MultistreamDecoder {
+    fn drop(&mut self) {
+        unsafe { libopus_sys::opus_multistream_decoder_destroy(self.0) };
+    }
 }
 struct Decoder(*mut libopus_sys::OpusDecoder);
 impl Decoder {
@@ -157,11 +234,17 @@ impl Drop for Decoder {
     }
 }
 impl Pipeline {
+    pub fn allowed_layout(&self) -> Layout {
+        self.allowed
+    }
     #[cfg(test)]
     pub fn start() -> Self {
         Self::start_with_budget(None)
     }
     pub fn start_with_budget(maximum_ms: Option<u32>) -> Self {
+        Self::start_with_layout(maximum_ms, Layout::STEREO)
+    }
+    pub fn start_with_layout(maximum_ms: Option<u32>, allowed: Layout) -> Self {
         let max_samples = maximum_ms
             .map(|ms| ms.clamp(1, 500) as usize * 96)
             .unwrap_or(MAX_SAMPLES);
@@ -173,6 +256,8 @@ impl Pipeline {
             let _scheduling = crate::media_scheduling::Registration::audio();
             if let Ok(mut decoder) = Decoder::new() {
                 let mut previous_raw = false;
+                let mut previous_layout = Layout::STEREO;
+                let mut multistream: Option<(Layout, MultistreamDecoder)> = None;
                 loop {
                     if shared.lock().unwrap_or_else(|e| e.into_inner()).stopped {
                         break;
@@ -199,7 +284,24 @@ impl Pipeline {
                                 .map(|b| i16::from_le_bytes([b[0], b[1]])),
                         );
                         Ok(())
-                    } else if previous_raw {
+                    } else if packet.layout != Layout::STEREO {
+                        if previous_raw
+                            || previous_layout != packet.layout
+                            || multistream
+                                .as_ref()
+                                .is_none_or(|(layout, _)| *layout != packet.layout)
+                        {
+                            multistream = MultistreamDecoder::new(packet.layout)
+                                .ok()
+                                .map(|decoder| (packet.layout, decoder));
+                        }
+                        multistream
+                            .as_mut()
+                            .ok_or_else(|| anyhow::anyhow!("multichannel Opus unavailable"))
+                            .and_then(|(_, decoder)| {
+                                decoder.decode_into(&packet.bytes, &mut pcm, packet.layout)
+                            })
+                    } else if previous_raw || previous_layout != Layout::STEREO {
                         decoder
                             .reset()
                             .and_then(|()| decoder.decode_into(&packet.bytes, &mut pcm))
@@ -207,6 +309,7 @@ impl Pipeline {
                         decoder.decode_into(&packet.bytes, &mut pcm)
                     };
                     previous_raw = packet.raw;
+                    previous_layout = packet.layout;
                     let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                     if !state.stopped && state.free_packets.len() < RECYCLED_BUFFERS {
                         state.free_packets.push(packet.bytes);
@@ -216,6 +319,11 @@ impl Pipeline {
                     }
                     match decoded {
                         Ok(()) => {
+                            if state.report.layout != Some(packet.layout) {
+                                state.pcm.clear();
+                                state.report.queued_samples = 0;
+                                state.report.layout = Some(packet.layout);
+                            }
                             state.report.codec = Some(if packet.raw {
                                 "PCM (uncompressed)"
                             } else {
@@ -224,16 +332,25 @@ impl Pipeline {
                             state.report.packets_decoded += 1;
                             // PCM's wire ceiling exceeds Opus's maximum decoded
                             // block. Preserve the existing guest buffer boundary.
-                            if packet.raw && pcm.len() > PCM_SAMPLES {
-                                let tail = pcm.split_off(PCM_SAMPLES);
-                                stage_pcm(&mut state, pcm, max_samples);
-                                stage_pcm(&mut state, tail, max_samples);
+                            let limit = packet.layout.samples(5760);
+                            let budget = max_samples / 2 * usize::from(packet.layout.channels);
+                            if packet.raw && pcm.len() > limit {
+                                let tail = pcm.split_off(limit);
+                                stage_pcm(&mut state, pcm, budget);
+                                stage_pcm(&mut state, tail, budget);
                             } else {
-                                stage_pcm(&mut state, pcm, max_samples);
+                                stage_pcm(&mut state, pcm, budget);
                             }
                         }
                         Err(_) => {
                             state.report.decode_errors += 1;
+                            if state.report.decode_errors.is_power_of_two() {
+                                crate::event_log::record(
+                                    "ERROR",
+                                    "audio_decode_failed",
+                                    serde_json::json!({"channels":packet.layout.channels,"channel_mask":packet.layout.mask,"raw":packet.raw}),
+                                );
+                            }
                             if state.free_pcm.len() < RECYCLED_BUFFERS {
                                 state.free_pcm.push(pcm);
                             }
@@ -258,6 +375,7 @@ impl Pipeline {
             state,
             poll_lock: Mutex::new(()),
             worker: Some(worker),
+            allowed,
         }
     }
     #[cfg(test)]
@@ -268,6 +386,7 @@ impl Pipeline {
         self.tx.as_ref().map(|tx| Sender {
             tx: tx.clone(),
             state: self.state.clone(),
+            allowed: self.allowed,
         })
     }
     pub fn poll(
@@ -280,32 +399,73 @@ impl Pipeline {
         let _poll = self.poll_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.report.poll_calls += 1;
+        // A core poll with no intervening queue means the previous block was
+        // muted/discarded. Never replay it when sound is enabled again.
+        if let Some(block) = state.pending.take() {
+            if state.free_pcm.len() < RECYCLED_BUFFERS {
+                state.free_pcm.push(block.pcm);
+            }
+        }
         let Some(pcm) = state.pcm.front() else {
             return Ok(0);
         };
-        if pcm.len() > capacity {
+        let layout = state.report.layout.unwrap_or(Layout::STEREO);
+        let frames = pcm.len() / usize::from(layout.channels);
+        if frames * 2 > capacity {
             bail!("guest audio buffer too small");
         }
-        memory.range(pointer, pcm.len() * 2)?;
+        memory.range(pointer, frames * 4)?;
         let samples = pcm.len();
         let pcm = state.pcm.pop_front().unwrap();
         state.report.queued_samples -= samples;
         drop(state);
         // Bounds were checked before dequeue; shared memory can only grow.
-        memory.write_i16_le(pointer, &pcm)?;
+        if layout == Layout::STEREO {
+            memory.write_i16_le(pointer, &pcm)?;
+        } else {
+            memory.write_i16_le(pointer, &layout.stereo_mix(&pcm))?;
+        }
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.report.pcm_frames_polled += samples as u64 / 2;
-        if !state.stopped && state.free_pcm.len() < RECYCLED_BUFFERS {
+        state.report.pcm_frames_polled += frames as u64;
+        if layout != Layout::STEREO && !state.stopped {
+            state.pending = Some(Handoff {
+                pointer,
+                layout,
+                pcm,
+            });
+        } else if !state.stopped && state.free_pcm.len() < RECYCLED_BUFFERS {
             state.free_pcm.push(pcm);
         }
-        Ok(samples / 2)
+        Ok(frames)
+    }
+    pub fn take_handoff(&self, pointer: u32, frames: usize) -> Option<Handoff> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state
+            .pending
+            .as_ref()
+            .is_some_and(|b| b.pointer == pointer && b.pcm.len() == b.layout.samples(frames))
+        {
+            state.pending.take()
+        } else {
+            None
+        }
+    }
+    pub fn recycle_handoff(&self, block: Handoff) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.stopped && state.free_pcm.len() < RECYCLED_BUFFERS {
+            state.free_pcm.push(block.pcm);
+        }
     }
     pub fn snapshot(&self) -> Snapshot {
-        self.state
+        let mut report = self
+            .state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .report
-            .clone()
+            .clone();
+        report.queued_frames =
+            report.queued_samples / usize::from(report.layout.unwrap_or(Layout::STEREO).channels);
+        report
     }
     pub fn stop(&mut self) {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).stopped = true;
@@ -318,6 +478,7 @@ impl Pipeline {
         state.free_pcm.clear();
         state.free_packets.clear();
         state.report.queued_samples = 0;
+        state.pending = None;
     }
 }
 impl Drop for Pipeline {
@@ -327,6 +488,131 @@ impl Drop for Pipeline {
 }
 #[cfg(test)]
 mod tests {
+    use super::*;
+    fn shared_memory() -> crate::memory::GuestMemory {
+        let mut config = wasmtime::Config::new();
+        config.wasm_threads(true);
+        let engine = wasmtime::Engine::new(&config).unwrap();
+        crate::memory::GuestMemory(
+            wasmtime::SharedMemory::new(&engine, wasmtime::MemoryType::shared(2, 2)).unwrap(),
+        )
+    }
+    #[test]
+    fn surround_handoff_preserves_channels_and_never_replays_muted_audio() {
+        for layout in [
+            Layout::new(6, 0x60f).unwrap(),
+            Layout::new(8, 0x63f).unwrap(),
+        ] {
+            let memory = shared_memory();
+            let mut pipeline = Pipeline::start_with_layout(Some(40), layout);
+            let input: Vec<i16> = (0..layout.channels).map(|v| i16::from(v) * 1000).collect();
+            let packet: Vec<u8> = input.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let sender = pipeline.sender().unwrap();
+            assert!(sender.submit_layout(&packet, true, layout));
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while pipeline.snapshot().packets_decoded == 0 && std::time::Instant::now() < until {
+                std::thread::yield_now();
+            }
+            assert_eq!(pipeline.snapshot().queued_frames, 1);
+            assert_eq!(pipeline.poll(&memory, 32, 2).unwrap(), 1);
+            assert!(pipeline.take_handoff(34, 1).is_none());
+            assert!(pipeline.take_handoff(32, 2).is_none());
+            let block = pipeline.take_handoff(32, 1).unwrap();
+            assert_eq!(block.pcm, input);
+            assert_eq!(block.layout, layout);
+            assert!(pipeline.take_handoff(32, 1).is_none());
+            pipeline.recycle_handoff(block);
+            assert!(sender.submit_layout(&packet, true, layout));
+            while pipeline.snapshot().packets_decoded < 2 && std::time::Instant::now() < until {
+                std::thread::yield_now();
+            }
+            assert_eq!(pipeline.poll(&memory, 32, 2).unwrap(), 1);
+            assert_eq!(pipeline.poll(&memory, 32, 2).unwrap(), 0);
+            assert!(pipeline.take_handoff(32, 1).is_none());
+            // The host may legitimately fall back to stereo.
+            assert!(sender.submit_pcm(&[0; 4]));
+            while pipeline.snapshot().packets_decoded < 3 && std::time::Instant::now() < until {
+                std::thread::yield_now();
+            }
+            assert_eq!(pipeline.snapshot().layout, Some(Layout::STEREO));
+            assert_eq!(pipeline.poll(&memory, 32, 2).unwrap(), 1);
+            assert!(pipeline.take_handoff(32, 1).is_none());
+            pipeline.stop();
+        }
+    }
+    #[test]
+    fn multistream_decode_preserves_distinct_channel_signals() {
+        for layout in [
+            Layout::new(6, 0x3f).unwrap(),
+            Layout::new(8, 0x63f).unwrap(),
+        ] {
+            let (streams, coupled, mapping) = layout.opus();
+            let mut error = 0;
+            let encoder = unsafe {
+                libopus_sys::opus_multistream_encoder_create(
+                    48_000,
+                    i32::from(layout.channels),
+                    streams,
+                    coupled,
+                    mapping.as_ptr(),
+                    libopus_sys::OPUS_APPLICATION_AUDIO as i32,
+                    &mut error,
+                )
+            };
+            assert!(!encoder.is_null());
+            assert_eq!(error, 0);
+            let mut decoder = MultistreamDecoder::new(layout).unwrap();
+            let mut decoded = Vec::new();
+            let mut packet = vec![0; 16_384];
+            for active in 0..usize::from(layout.channels) {
+                let input: Vec<i16> = (0..960)
+                    .flat_map(|frame| {
+                        (0..usize::from(layout.channels)).map(move |channel| {
+                            if channel == active {
+                                ((frame as f32 * 0.08).sin() * 8000.) as i16
+                            } else {
+                                0
+                            }
+                        })
+                    })
+                    .collect();
+                // Let the codec's previous block and lookahead pass first.
+                for _ in 0..4 {
+                    let len = unsafe {
+                        libopus_sys::opus_multistream_encode(
+                            encoder,
+                            input.as_ptr(),
+                            960,
+                            packet.as_mut_ptr(),
+                            packet.len() as i32,
+                        )
+                    };
+                    assert!(len > 0);
+                    decoder
+                        .decode_into(&packet[..len as usize], &mut decoded, layout)
+                        .unwrap();
+                }
+                let energy: Vec<i64> = (0..usize::from(layout.channels))
+                    .map(|ch| {
+                        decoded
+                            .chunks_exact(usize::from(layout.channels))
+                            .map(|f| i64::from(f[ch]).abs())
+                            .sum()
+                    })
+                    .collect();
+                assert!(energy[active] > 100_000);
+                for (channel, &value) in energy.iter().enumerate() {
+                    if channel != active {
+                        assert!(
+                            value < energy[active] / 4,
+                            "unexpected cross-channel audio: {energy:?}"
+                        );
+                    }
+                }
+            }
+            unsafe { libopus_sys::opus_multistream_encoder_destroy(encoder) };
+        }
+    }
     #[test]
     fn longest_raw_packet_is_split_at_the_existing_guest_pcm_capacity() {
         let mut pipeline = super::Pipeline::start();

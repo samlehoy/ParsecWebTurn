@@ -372,7 +372,6 @@ fn rows(
     for (name, value) in [
         ("Codec", s.audio_codec.unwrap_or("Opus")),
         ("Sample rate", "48,000 Hz"),
-        ("Channels", "2 (stereo)"),
     ] {
         row(
             name,
@@ -383,8 +382,29 @@ fn rows(
             },
         );
     }
+    row(
+        "Channels",
+        if s.audio_ready {
+            s.audio_layout.map_or_else(
+                || "2 (stereo)".into(),
+                |layout| match layout.channels {
+                    6 => "6 (5.1)".into(),
+                    8 => "8 (7.1)".into(),
+                    _ => "2 (stereo)".into(),
+                },
+            )
+        } else {
+            "Not reported".into()
+        },
+    );
     row("Measured audio traffic", number(v.audio, "kbps"));
     if let Some(audio) = &s.audio_playback {
+        if let Some(layout) = audio
+            .layout
+            .filter(|layout| Some(*layout) != s.audio_layout)
+        {
+            row("Playback channels", layout.channels.to_string());
+        }
         row(
             "Playback buffer",
             number(

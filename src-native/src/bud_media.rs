@@ -8,14 +8,20 @@ use parsec_native_bud::{
 use std::sync::Arc;
 
 /// Both the initial attempt and an automatic relay retry use the same capabilities.
-pub(crate) fn session(hevc: bool, ten_bit: bool, raw: bool) -> Result<Session> {
+pub(crate) fn session(
+    hevc: bool,
+    ten_bit: bool,
+    raw: bool,
+    layout: crate::audio_layout::Layout,
+) -> Result<Session> {
     let mut session = Session::external_video_depth(hevc, ten_bit)?;
     session.allow_raw_audio(raw);
+    session.set_audio_layout(layout.channels, layout.mask)?;
     crate::event_log::record(
         "INFO",
         "audio_capabilities_declared",
         serde_json::json!({
-            "transport":"BUD", "raw_pcm_allowed":raw
+            "transport":"BUD", "raw_pcm_allowed":raw, "channels":layout.channels, "channel_mask":layout.mask
         }),
     );
     Ok(session)
@@ -49,10 +55,17 @@ impl Media {
         hevc_available: bool,
         ten_bit: bool,
         raw_audio: bool,
+        surround: bool,
     ) -> Result<(Self, Session)> {
-        let session = session(hevc_available, ten_bit, raw_audio)?;
-        let audio = Arc::new(crate::audio_stream::Pipeline::start_with_budget(
+        let layout = if surround {
+            crate::audio_windows::device_layout().unwrap_or(crate::audio_layout::Layout::STEREO)
+        } else {
+            crate::audio_layout::Layout::STEREO
+        };
+        let session = session(hevc_available, ten_bit, raw_audio, layout)?;
+        let audio = Arc::new(crate::audio_stream::Pipeline::start_with_layout(
             window.audio_buffer().map(|(_, max)| max),
+            layout,
         ));
         let audio_sender = audio
             .sender()
@@ -152,9 +165,21 @@ impl Media {
         for _ in 0..8 {
             let Some((accepted, size)) = source.with_audio(|message| {
                 Ok((
-                    match media::audio(message)? {
-                        media::Audio::Opus(bytes) => self.audio_sender.submit(bytes),
-                        media::Audio::Pcm(bytes) => self.audio_sender.submit_pcm(bytes),
+                    match media::audio_layout(message)? {
+                        (media::Audio::Opus(bytes), channels, mask) => {
+                            self.audio_sender.submit_layout(
+                                bytes,
+                                false,
+                                crate::audio_layout::Layout::new(channels, mask)?,
+                            )
+                        }
+                        (media::Audio::Pcm(bytes), channels, mask) => {
+                            self.audio_sender.submit_layout(
+                                bytes,
+                                true,
+                                crate::audio_layout::Layout::new(channels, mask)?,
+                            )
+                        }
                     },
                     message.len(),
                 ))
@@ -190,6 +215,9 @@ impl Media {
 
     pub fn audio_pipeline(&self) -> Arc<crate::audio_stream::Pipeline> {
         self.audio.clone()
+    }
+    pub fn audio_layout(&self) -> crate::audio_layout::Layout {
+        self.audio.allowed_layout()
     }
 
     pub fn ingress(&self) -> crate::media_ingress::Ingress {

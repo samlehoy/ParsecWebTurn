@@ -1015,7 +1015,8 @@ fn worker(
                     if let Some(audio) = &s.audio_stream {
                         let report = audio.snapshot();
                         sample.audio_codec = report.codec;
-                        sample.audio_decoded_queue_ms = Some(report.queued_samples as f64 / 96.0);
+                        sample.audio_layout = report.layout;
+                        sample.audio_decoded_queue_ms = Some(report.queued_frames as f64 / 48.0);
                     }
                     (s.video_output.clone(), s.video_stream.clone())
                 };

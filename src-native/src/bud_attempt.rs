@@ -274,6 +274,9 @@ impl Attempt {
         let audio = self.audio.lock().unwrap_or_else(|e| e.into_inner()).clone();
         audio.map_or(Ok(0), |audio| audio.poll(memory, pointer, capacity))
     }
+    pub fn audio_pipeline(&self) -> Option<Arc<crate::audio_stream::Pipeline>> {
+        self.audio.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
     pub fn pop_event(&self) -> Option<Value> {
         self.state
             .lock()
@@ -594,6 +597,7 @@ fn run(
             hevc_available,
             ten_bit,
             settings.experimental_raw_audio,
+            settings.experimental_surround_audio,
         )?;
         {
             hid_generation = window.hid_input_generation();
@@ -864,11 +868,12 @@ fn run(
                     turn_protocol: transport.relay_transport.map(str::to_owned),
                     audio_bytes: shared.ingress.audio_bytes_received,
                     audio_codec: shared.ingress.audio_output.as_ref().and_then(|a| a.codec),
+                    audio_layout: shared.ingress.audio_output.as_ref().and_then(|a| a.layout),
                     audio_decoded_queue_ms: shared
                         .ingress
                         .audio_output
                         .as_ref()
-                        .map(|a| a.queued_samples as f64 / 96.0),
+                        .map(|a| a.queued_frames as f64 / 48.0),
                     video: shared.ingress.video_output.clone(),
                     codec: shared.ingress.video_stream.codec,
                     profile: shared.ingress.video_stream.sps_profile_idc,
@@ -922,6 +927,7 @@ fn run(
                 hevc_available,
                 ten_bit,
                 settings.experimental_raw_audio,
+                media.audio_layout(),
             )?;
             next.enable_hid_input(hid_mouse, hid_keyboard);
             next.wake_consumer(std::thread::current());

@@ -1,4 +1,5 @@
 //! Shared-mode, event-driven WASAPI PCM output. COM objects stay on the worker.
+use crate::audio_layout::Layout;
 use anyhow::{bail, Result};
 use serde::Serialize;
 use std::{
@@ -16,6 +17,7 @@ use windows::{
 };
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
+    pub layout: Option<Layout>,
     pub minimum_ms: u32,
     pub maximum_ms: u32,
     pub custom_buffer: bool,
@@ -36,6 +38,7 @@ pub struct Registry {
     next: u32,
     outputs: BTreeMap<u32, Arc<Playback>>,
     completed: VecDeque<Snapshot>,
+    rejected_layouts: BTreeMap<u32, Layout>,
 }
 impl Registry {
     #[cfg(feature = "diagnostics")]
@@ -70,9 +73,25 @@ impl Registry {
             .ok_or_else(|| anyhow::anyhow!("invalid audio context"))
     }
     pub fn remove(&mut self, handle: u32) -> Result<Arc<Playback>> {
+        self.rejected_layouts.remove(&handle);
         self.outputs
             .remove(&handle)
             .ok_or_else(|| anyhow::anyhow!("invalid audio context"))
+    }
+    pub fn rejected(&self, handle: u32, layout: Layout) -> bool {
+        self.rejected_layouts.get(&handle) == Some(&layout)
+    }
+    pub fn reject(&mut self, handle: u32, layout: Layout) {
+        self.rejected_layouts.insert(handle, layout);
+    }
+    pub fn replace(&mut self, handle: u32, output: Playback) -> Result<Arc<Playback>> {
+        let slot = self
+            .outputs
+            .get_mut(&handle)
+            .ok_or_else(|| anyhow::anyhow!("invalid audio context"))?;
+        let old = std::mem::replace(slot, Arc::new(output));
+        self.rejected_layouts.remove(&handle);
+        Ok(old)
     }
 }
 #[derive(Default)]
@@ -83,6 +102,7 @@ struct State {
     reset: bool,
 }
 pub struct Playback {
+    pub layout: Layout,
     shared: Arc<Mutex<State>>,
     worker: Mutex<Option<JoinHandle<()>>>,
     max_frames: usize,
@@ -94,6 +114,14 @@ impl Playback {
         min_buffer: u32,
         max_buffer: u32,
     ) -> Result<Self> {
+        Self::create_layout(window, min_buffer, max_buffer, Layout::STEREO)
+    }
+    pub fn create_layout(
+        window: Arc<crate::window::Window>,
+        min_buffer: u32,
+        max_buffer: u32,
+        layout: Layout,
+    ) -> Result<Self> {
         let custom = window.audio_buffer();
         let (min_buffer, max_buffer) = custom.unwrap_or((min_buffer, max_buffer));
         if min_buffer > max_buffer || max_buffer == 0 || max_buffer > 500 {
@@ -104,6 +132,7 @@ impl Playback {
         let min_frames = min_buffer as usize * 48;
         let shared = Arc::new(Mutex::new(State {
             report: Snapshot {
+                layout: Some(layout),
                 minimum_ms: min_buffer,
                 maximum_ms: max_buffer,
                 custom_buffer: custom.is_some(),
@@ -115,7 +144,8 @@ impl Playback {
             "INFO",
             "audio_output_configured",
             serde_json::json!({
-                "minimum_ms":min_buffer,"maximum_ms":max_buffer,"custom":custom.is_some()
+                "minimum_ms":min_buffer,"maximum_ms":max_buffer,"custom":custom.is_some(),
+                "channels":layout.channels,"channel_mask":layout.mask
             }),
         );
         let state = shared.clone();
@@ -124,7 +154,7 @@ impl Playback {
             .active_contexts
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let worker = std::thread::spawn(move || {
-            let result = unsafe { render(&state, &window, min_frames, &tx) };
+            let result = unsafe { render(&state, &window, min_frames, &tx, layout) };
             if let Err(error) = result {
                 state
                     .lock()
@@ -143,6 +173,7 @@ impl Playback {
                 .fetch_sub(1, std::sync::atomic::Ordering::Release);
         });
         let output = Self {
+            layout,
             shared,
             worker: Mutex::new(Some(worker)),
             max_frames,
@@ -156,10 +187,14 @@ impl Playback {
     }
     pub fn queue(&self, pcm: &[i16]) {
         let mut s = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-        let frames = pcm.len() / 2;
+        if !pcm.len().is_multiple_of(usize::from(self.layout.channels)) {
+            return;
+        }
+        let channels = usize::from(self.layout.channels);
+        let frames = pcm.len() / channels;
         if s.stopped
             || s.report.failure_hresult.is_some()
-            || (!self.custom_buffer && s.pcm.len() / 2 + frames > self.max_frames)
+            || (!self.custom_buffer && s.pcm.len() / channels + frames > self.max_frames)
         {
             s.report.frames_dropped += frames as u64;
             return;
@@ -169,21 +204,21 @@ impl Playback {
             let room = self
                 .max_frames
                 .saturating_sub(s.report.device_padding as usize);
-            let excess = (s.pcm.len() / 2 + frames).saturating_sub(room);
-            let old = excess.min(s.pcm.len() / 2);
-            s.pcm.drain(..old * 2);
+            let excess = (s.pcm.len() / channels + frames).saturating_sub(room);
+            let old = excess.min(s.pcm.len() / channels);
+            s.pcm.drain(..old * channels);
             let incoming = excess.saturating_sub(old).min(frames);
             s.report.frames_dropped += (old + incoming) as u64;
-            s.pcm.extend(&pcm[incoming * 2..]);
+            s.pcm.extend(&pcm[incoming * channels..]);
         } else {
             s.pcm.extend(pcm);
         }
         s.report.frames_queued += frames as u64;
-        s.report.queued_frames = s.pcm.len() / 2;
+        s.report.queued_frames = s.pcm.len() / channels;
     }
     pub fn queued_frames(&self) -> u32 {
         let s = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-        (s.pcm.len() / 2 + s.report.device_padding as usize) as u32
+        (s.pcm.len() / usize::from(self.layout.channels) + s.report.device_padding as usize) as u32
     }
     pub fn reset(&self) {
         let mut s = self.shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -238,11 +273,72 @@ impl Drop for Started {
         }
     }
 }
+
+fn wave_format(layout: Layout) -> WAVEFORMATEXTENSIBLE {
+    WAVEFORMATEXTENSIBLE {
+        Format: WAVEFORMATEX {
+            wFormatTag: 0xfffe,
+            nChannels: u16::from(layout.channels),
+            nSamplesPerSec: 48_000,
+            nAvgBytesPerSec: 48_000 * u32::from(layout.channels) * 2,
+            nBlockAlign: u16::from(layout.channels) * 2,
+            wBitsPerSample: 16,
+            cbSize: 22,
+        },
+        Samples: WAVEFORMATEXTENSIBLE_0 {
+            wValidBitsPerSample: 16,
+        },
+        dwChannelMask: layout.mask,
+        SubFormat: windows::core::GUID::from_u128(0x00000001_0000_0010_8000_00aa00389b71),
+    }
+}
+
+/// Read the default render endpoint, never infer surround from a device name.
+/// Unsupported layouts or formats retain the existing stereo declaration.
+pub fn device_layout() -> Result<Layout> {
+    unsafe {
+        CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
+        let _com = Apartment;
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+        let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
+        let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
+        let mix = client.GetMixFormat()?;
+        let header = mix.read_unaligned();
+        let layout = if header.wFormatTag == 0xfffe && header.cbSize >= 22 {
+            let mask = std::ptr::addr_of!((*mix.cast::<WAVEFORMATEXTENSIBLE>()).dwChannelMask)
+                .read_unaligned();
+            Layout::new(u8::try_from(header.nChannels).unwrap_or(0), mask).ok()
+        } else {
+            None
+        };
+        CoTaskMemFree(Some(mix.cast()));
+        let Some(layout) = layout.filter(|v| *v != Layout::STEREO) else {
+            return Ok(Layout::STEREO);
+        };
+        let format = wave_format(layout);
+        // Validate the real output's shared-mode conversion. The endpoint mix
+        // is often float, which need not exactly match our 16-bit PCM client.
+        // This temporary client is never started and writes no audio.
+        let supported = client
+            .Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                200_000,
+                0,
+                &format.Format,
+                None,
+            )
+            .is_ok();
+        Ok(if supported { layout } else { Layout::STEREO })
+    }
+}
 unsafe fn render(
     shared: &Mutex<State>,
     window: &crate::window::Window,
     min_frames: usize,
     ready: &mpsc::SyncSender<bool>,
+    layout: Layout,
 ) -> windows::core::Result<()> {
     CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
     let _com = Apartment;
@@ -250,7 +346,7 @@ unsafe fn render(
     let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
     let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
     let mut client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
-    let format = WAVEFORMATEX {
+    let stereo = WAVEFORMATEX {
         wFormatTag: WAVE_FORMAT_PCM as u16,
         nChannels: 2,
         nSamplesPerSec: 48_000,
@@ -259,6 +355,13 @@ unsafe fn render(
         wBitsPerSample: 16,
         cbSize: 0,
     };
+    let extended = wave_format(layout);
+    let format = if layout == Layout::STEREO {
+        &stereo
+    } else {
+        &extended.Format
+    };
+    let channels = usize::from(layout.channels);
     let custom = shared
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -270,7 +373,7 @@ unsafe fn render(
             let modern: IAudioClient3 = client.cast()?;
             let (mut default, mut fundamental, mut minimum, mut maximum) = (0, 0, 0, 0);
             modern.GetSharedModeEnginePeriod(
-                &format,
+                format,
                 &mut default,
                 &mut fundamental,
                 &mut minimum,
@@ -279,7 +382,7 @@ unsafe fn render(
             modern.InitializeSharedAudioStream(
                 AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                 minimum,
-                &format,
+                format,
                 None,
             )?;
             Ok(true)
@@ -299,7 +402,7 @@ unsafe fn render(
                 | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
             200_000,
             0,
-            &format,
+            format,
             None,
         )?;
     }
@@ -353,13 +456,13 @@ unsafe fn render(
         if available == 0 {
             continue;
         }
-        if buffering && s.pcm.len() / 2 >= min_frames.max(1) {
+        if buffering && s.pcm.len() / channels >= min_frames.max(1) {
             buffering = false;
         }
         let count = if buffering {
             0
         } else {
-            available.min((s.pcm.len() / 2) as u32)
+            available.min((s.pcm.len() / channels) as u32)
         };
         if custom {
             if count == 0 {
@@ -373,7 +476,8 @@ unsafe fn render(
                 continue;
             }
             let pointer = render.GetBuffer(count)?;
-            let buffer = std::slice::from_raw_parts_mut(pointer.cast::<i16>(), count as usize * 2);
+            let buffer =
+                std::slice::from_raw_parts_mut(pointer.cast::<i16>(), count as usize * channels);
             for sample in buffer {
                 *sample = s.pcm.pop_front().unwrap();
             }
@@ -383,15 +487,16 @@ unsafe fn render(
                 started = true;
             }
             s.report.frames_written += count as u64;
-            s.report.queued_frames = s.pcm.len() / 2;
+            s.report.queued_frames = s.pcm.len() / channels;
             s.report.device_padding = padding + count;
             continue;
         }
         let pointer = render.GetBuffer(available)?;
         // SAFETY: WASAPI grants exactly available interleaved 16-bit stereo frames.
-        let buffer = std::slice::from_raw_parts_mut(pointer.cast::<i16>(), available as usize * 2);
+        let buffer =
+            std::slice::from_raw_parts_mut(pointer.cast::<i16>(), available as usize * channels);
         buffer.fill(0);
-        for sample in buffer.iter_mut().take(count as usize * 2) {
+        for sample in buffer.iter_mut().take(count as usize * channels) {
             *sample = s.pcm.pop_front().unwrap();
         }
         render.ReleaseBuffer(
@@ -403,7 +508,7 @@ unsafe fn render(
             },
         )?;
         s.report.frames_written += count as u64;
-        s.report.queued_frames = s.pcm.len() / 2;
+        s.report.queued_frames = s.pcm.len() / channels;
         if count < available && !buffering {
             s.report.underruns += 1;
             buffering = true;
@@ -474,6 +579,7 @@ mod tests {
     #[test]
     fn experimental_budget_keeps_newest_stereo_with_device_padding() {
         let output = Playback {
+            layout: Layout::STEREO,
             shared: Arc::new(Mutex::new(State::default())),
             worker: Mutex::new(None),
             max_frames: 4,
@@ -493,6 +599,7 @@ mod tests {
     #[test]
     fn original_queue_limit_rejects_whole_new_block_without_trimming_old_pcm() {
         let output = Playback {
+            layout: Layout::STEREO,
             shared: Arc::new(Mutex::new(State::default())),
             worker: Mutex::new(None),
             max_frames: 3,

@@ -27,6 +27,7 @@ pub struct Sample {
     pub audio_bytes: u64,
     pub audio_ready: bool,
     pub audio_codec: Option<&'static str>,
+    pub audio_layout: Option<crate::audio_layout::Layout>,
     pub audio_decoded_queue_ms: Option<f64>,
     #[cfg(windows)]
     pub audio_playback: Option<crate::audio_windows::Snapshot>,
@@ -56,6 +57,7 @@ impl Default for Sample {
             audio_bytes: 0,
             audio_ready: false,
             audio_codec: None,
+            audio_layout: None,
             audio_decoded_queue_ms: None,
             #[cfg(windows)]
             audio_playback: None,
@@ -118,6 +120,7 @@ impl Shared {
                         .and_then(|old| old.audio_playback.as_ref())
                         .is_none_or(|old| {
                             old.underruns != audio.underruns
+                                || old.layout != audio.layout
                                 || old.frames_dropped != audio.frames_dropped
                                 || old.failure_hresult != audio.failure_hresult
                         })
@@ -133,6 +136,7 @@ impl Shared {
                     "audio_playback_state",
                     serde_json::json!({
                         "codec":sample.audio_codec,"queued_frames":audio.queued_frames,
+                        "channels":audio.layout.map(|v| v.channels),"channel_mask":audio.layout.map(|v| v.mask),
                         "device_padding":audio.device_padding,"device_capacity":audio.device_capacity_frames,
                         "minimum_ms":audio.minimum_ms,"maximum_ms":audio.maximum_ms,
                         "custom":audio.custom_buffer,"low_latency_device":audio.low_latency_device,

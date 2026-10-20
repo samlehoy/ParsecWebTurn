@@ -7,6 +7,10 @@ Common/crypto remain pinned to that revision; local net/core copies carry the
 isolated TURN stream additions described below.
 This is a ParsecWebTurn-specific subset, not the upstream SDK's complete API.
 
+The application may supply a validated audio channel count/mask in the existing
+initialization contract. Stereo remains the default. This adds no SDK decoder,
+audio device, network scheduler or session-layer dependency.
+
 Application-verified Main 10 capability is retained for external GPU decoding.
 The stream-0 encoder-config bridge preserves the negotiated HEVC/range/depth
 flags instead of allowing the embedded UI to erase them; it does not enable

@@ -15,6 +15,7 @@ const PARSEC_CORE_VERSION: &str = "150-104a";
 #[cfg(any(test, feature = "diagnostics"))]
 mod attempt_probe;
 mod audio;
+mod audio_layout;
 mod audio_stream;
 #[cfg(windows)]
 mod audio_windows;

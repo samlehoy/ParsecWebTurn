@@ -88,6 +88,7 @@ pub struct Session {
     prefer_hevc: bool,
     ten_bit: bool,
     raw_audio: bool,
+    audio_layout: Option<(u8, u32)>,
     hid_input: (bool, bool),
     cipher: Option<&'static str>,
 }
@@ -119,6 +120,7 @@ impl Session {
             prefer_hevc: hevc_available,
             ten_bit: hevc_available && ten_bit,
             raw_audio: false,
+            audio_layout: None,
             hid_input: (false, false),
             cipher: None,
         })
@@ -147,6 +149,14 @@ impl Session {
     }
     pub fn allow_raw_audio(&mut self, enabled: bool) {
         self.raw_audio = enabled;
+    }
+    pub fn set_audio_layout(&mut self, channels: u8, mask: u32) -> Result<()> {
+        ensure!(
+            matches!((channels, mask), (2, 3) | (6, 0x3f | 0x60f) | (8, 0x63f)),
+            "unsupported BUD playback layout"
+        );
+        self.audio_layout = Some((channels, mask));
+        Ok(())
     }
 
     pub fn take_media(&mut self) -> Result<MediaSource> {
@@ -185,6 +195,7 @@ impl Session {
         config.video.ten_bit = self.ten_bit;
         config.video.full_range = true;
         config.raw_audio = self.raw_audio;
+        config.audio_layout = self.audio_layout;
         config.hid_mouse = self.hid_input.0;
         config.hid_keyboard = self.hid_input.1;
         let ours = self
