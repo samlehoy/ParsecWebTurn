@@ -91,3 +91,14 @@ tab screenshot was visually checked. The standalone release build contains only
 `cfabf49fb6d6872067e55be0a72161a31a78916cf7ecc0c2d38fdd306b739d8b`.
 The packaged settings-based activation still needs a live host/client trial;
 the earlier launcher-based absolute input has already been live-tested.
+
+The [combined mouse/keyboard build](https://github.com/vampywiz17/ParsecWebTurn/actions/runs/39413531882)
+from `40d9bc9` passed the same ten existing mouse/shared-lifecycle, viewport,
+settings and native UI regression checks plus strict Clippy. No separate
+keyboard enumeration/input probe or new diagnostic executable was added.
+The Input-tab screenshot was visually checked. Its standalone EXE is
+18,104,832 bytes (8,192 bytes above the mouse-only build), SHA-256
+`52652ea304460048605f2ba9c695bf8cf11f044b9da1ae5cae429bc648ba14f4`.
+The new keyboard forwarding still awaits live host acceptance and typing tests,
+with matching active host/client layouts. Existing tests are not proof of that
+new live keyboard behavior.
