@@ -751,7 +751,7 @@ impl Window {
     fn refresh_hid_cursor(&self) {
         if !self.hid_cursor_posted.swap(true, Ordering::AcqRel) {
             unsafe {
-                if PostMessageW(self.handle(), WM_APP + 16, 0, 0) == 0 {
+                if PostMessageW(self.handle(), crate::hid_cursor::REFRESH, 0, 0) == 0 {
                     self.hid_cursor_posted.store(false, Ordering::Release);
                 }
             }
@@ -842,24 +842,6 @@ impl Window {
                 }
                 if ClipCursor(&rect) != 0 {
                     self.mouse_clipped.store(true, Ordering::Release);
-                    #[cfg(feature = "usb-mouse-probe")]
-                    if self.hid_raw_mouse.load(Ordering::Acquire)
-                        && crate::hid_cursor::visible_position(
-                            *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner()),
-                        )
-                        .is_some()
-                    {
-                        // Do not depend on ClipCursor eagerly moving an
-                        // already stationary pointer on every Windows build.
-                        // Absolute echoes are ignored while HID Raw Input owns motion.
-                        let mut actual = POINT::default();
-                        if GetCursorPos(&mut actual) == 0
-                            || actual.x != rect.left
-                            || actual.y != rect.top
-                        {
-                            SetCursorPos(rect.left, rect.top);
-                        }
-                    }
                     return true;
                 }
             }
@@ -1237,7 +1219,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 1;
             }
             #[cfg(feature = "usb-mouse-probe")]
-            m if m == WM_APP + 16 => {
+            m if m == crate::hid_cursor::REFRESH => {
                 s.hid_cursor_posted.store(false, Ordering::Release);
                 s.apply_input_capture();
                 return 0;

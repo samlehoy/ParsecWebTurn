@@ -1,6 +1,8 @@
 //! Test-build-only cursor policy. Host position controls display; hardware Raw
 //! Input controls motion. No video composition, framebuffer readback or copying.
 use std::sync::Arc;
+// Keep outside the main window's updater/settings/control message range.
+pub const REFRESH: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 40;
 
 pub struct Lifetime {
     window: Arc<crate::window::Window>,
