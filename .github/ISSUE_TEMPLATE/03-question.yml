@@ -1,0 +1,20 @@
+name: Question / help
+description: Ask a usage question or request clarification.
+title: "[Question]: "
+labels: [question]
+body:
+  - type: checkboxes
+    id: existing-answers
+    attributes:
+      label: Before asking
+      description: Check the [README](https://github.com/vampywiz17/ParsecWebTurn#readme) and [existing issues](https://github.com/vampywiz17/ParsecWebTurn/issues?q=is%3Aissue) for an answer.
+      options:
+        - label: I looked for an existing answer.
+          required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What are you trying to do, and where are you stuck? Include the app version or a screenshot if relevant. Never share credentials or settings.json.
+    validations:
+      required: true
