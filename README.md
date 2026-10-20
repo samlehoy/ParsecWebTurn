@@ -17,9 +17,9 @@ features described below; check a release's notes for what its binary includes.
 The earlier Tauri/WebView2 client is preserved on the
 [legacy branch](https://github.com/vampywiz17/ParsecWebTurn/tree/legacy).
 
-**Development release:** BUD, vendor-specific HEVC decoding, Zero copy, 10-bit HEVC
-and custom Audio options are experimental. For stability-first use, select WebRTC with H.264 and leave the
-experimental options disabled, or use the
+**Development release:** BUD, vendor-specific HEVC decoding, Zero copy, 10-bit HEVC,
+custom Audio options and USB HID input are experimental. For stability-first use,
+select WebRTC with H.264 and leave experimental options disabled, or use the
 [latest stable release](https://github.com/vampywiz17/ParsecWebTurn/releases/latest).
 
 ## Current features
@@ -27,6 +27,8 @@ experimental options disabled, or use the
 - Sign in, choose a computer and connect to a regular Parsec host.
 - H.264 and optional H.265 / HEVC Main, 8-bit 4:2:0 video.
 - Opus sound, keyboard/mouse input, immersive capture and relative mouse mode.
+- Optional experimental BUD USB HID mouse and keyboard through the stock host's
+  USB/Yubikey passthrough, with a dedicated Input settings tab.
 - The familiar Parsec overlay, drawn in software for compatibility while the
   streamed video stays on the GPU.
 - WebRTC with direct connections and custom STUN/TURN, including Cloudflare and
@@ -176,8 +178,9 @@ See [audio-path audit and implementation](docs/native-audio-options.md).
   tab, save and reconnect. Enable USB/Yubikey passthrough on the stock host.
 - Supports pointer movement, five buttons, dragging and vertical/horizontal
   scrolling on one physical or virtual display. Relative camera movement follows
-  the host cursor mode and uses native Raw Input. This new path needs live game
-  testing. Multi-monitor mapping is not supported. Local menus remain accessible.
+  the host cursor mode and uses native Raw Input. Desktop input and camera
+  control have been live-tested; game compatibility varies. Multi-monitor
+  mapping is not supported. Local menus remain accessible.
 - **USB HID keyboard:** a separate experimental BUD option, also disabled by
   default. Uses the same USB transport/device lifecycle as the mouse. Physical
   key presses, releases and modifiers are forwarded; select the same active
@@ -193,6 +196,8 @@ See [audio-path audit and implementation](docs/native-audio-options.md).
 - Optional event logging records setup failures and state changes in the existing
   client-events.jsonl beside settings.json, without mouse movement, coordinates
   or click history, keystrokes or typed text. Video decoding and rendering are unchanged.
+
+See [USB HID input behavior and scope](docs/usb-hid-input.md).
 
 ## Connection stats
 

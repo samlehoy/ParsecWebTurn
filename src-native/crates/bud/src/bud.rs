@@ -1,7 +1,7 @@
 //! BUD lifecycle below account signaling, separate from the web WASM contract.
 use std::net::SocketAddr;
 
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{Result, anyhow, ensure};
 pub use lowlat_client::config::RelayTransport;
 use lowlat_client::config::{Port, Relay};
 use lowlat_client::driver::Units;
@@ -407,13 +407,17 @@ mod tests {
         assert_eq!(ours.fingerprint.len(), 64);
         assert_eq!(ours.aes256.len(), 254);
         assert!(session.ready("stale").is_err());
-        assert!(session
-            .offer("duplicate", Route::Direct { stun: vec![] })
-            .is_err());
+        assert!(
+            session
+                .offer("duplicate", Route::Direct { stun: vec![] })
+                .is_err()
+        );
         session.close();
         assert!(session.ready("isolated-test").is_err());
-        assert!(session
-            .offer("second", Route::Direct { stun: vec![] })
-            .is_ok());
+        assert!(
+            session
+                .offer("second", Route::Direct { stun: vec![] })
+                .is_ok()
+        );
     }
 }

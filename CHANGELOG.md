@@ -5,6 +5,22 @@ builds, not published stable releases.
 
 ## Unreleased
 
+## 0.9.4-dev.5 - Experimental USB HID input (2026-10-20)
+
+Changes since v0.9.4-dev.4.
+
+**USB HID input, BUD, vendor-specific HEVC decoding, Zero copy, 10-bit HEVC
+and the Audio options remain experimental.** For stability-first use, select
+WebRTC with H.264, leave experimental options disabled, or use the published
+stable v0.9.3 release. HID input requires BUD and USB/Yubikey passthrough on
+the stock host; compatibility depends on the host and application.
+
+- **Experimental USB HID mouse:** use the stock host's USB/Yubikey passthrough with BUD for absolute desktop positioning, native relative camera movement, five buttons, dragging and vertical/horizontal scrolling. Relative capture follows the host cursor state and hides the local pointer. One physical or virtual display is supported.
+- **Experimental USB HID keyboard:** forward physical key presses, releases and modifiers through the same host USB path. Matching active layouts, including Hungarian on both computers, are supported; the host layout is not changed automatically. Simultaneous keys use a bitmap without a six-key array limit.
+- **Simultaneous HID input:** mouse and keyboard share one USB device lifecycle and bounded transport queues, with separate reports and fair scheduling. Buttons keep the same owner across desktop/camera mode changes. Ordinary Parsec forwarding is disabled independently for each selected HID input, preventing duplicate input.
+- **New Input settings tab:** select HID mouse and keyboard independently, save the preferences and reconnect. Both options require BUD and are disabled by default. Local menus remain usable; focus loss and disconnect release held input and capture. Only the usual EXE and settings.json are needed, without a host modification or additional launcher.
+- **HID operational logging:** the existing optional client-events.jsonl records activation, state changes and setup/transfer/queue failures, without continuous mouse movement, coordinates, clicks, key history, typed text or USB payloads.
+
 ## 0.9.4-dev.4 - Relay IO improvements and 10-bit SDR output (2026-10-17)
 
 Changes since v0.9.4-dev.3.

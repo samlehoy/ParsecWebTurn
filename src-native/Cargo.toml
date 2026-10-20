@@ -1,6 +1,6 @@
 [package]
 name = "parsec-web-turn"
-version = "0.9.4-dev.4"
+version = "0.9.4-dev.5"
 edition = "2021"
 rust-version = "1.90"
 publish = false

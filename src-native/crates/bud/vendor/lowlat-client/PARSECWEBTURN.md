@@ -45,8 +45,8 @@ application timings are supplied; these zeros are not displayed as measured data
 
 Remaining upstream config/pool tests and the application's encrypted direct and
 isolated UDP TURN tests validate this subset. Stock-host playback was confirmed
-by the user over direct and relay paths; new automatic direct-to-relay retry
-still needs acceptance on a network where direct access is unavailable.
+by the user over direct and relay paths, including automatic direct-to-relay
+retry where direct access was unavailable.
 WebRTC sessions do not use this subset. Removed offline Intel investigations
 are not part of the live BUD decoder path.
 
@@ -61,3 +61,12 @@ No SDK ABI or decoder API is imported. Common/crypto remain at the original pin;
 core is the sibling pinned copy with TURN stream additions and unused host-only
 modules omitted, as recorded in its PARSECWEBTURN.md. See
 ../../../../../../docs/bud-turn-stream.md for scope and verification.
+
+ParsecWebTurn's optional USB HID input is local adapter code, not an imported
+lowlat SDK input implementation. One device lifecycle and bounded interrupt
+queue serve mouse-only, keyboard-only or combined collections. The application
+retains local UI routing; selected HID inputs suppress their normal Parsec
+counterparts. Protocol/control, descriptor, relative/absolute mouse and physical
+keyboard state are isolated from media and crypto. No new dependency, host
+patch, probe launcher or per-input-event logging is introduced. See
+../../../../../../docs/usb-hid-input.md for behavior, scope and validation.
