@@ -528,3 +528,39 @@ describes cursor-state messages and deliberately local cursor motion. It does
 not promise a continuous authoritative position subscription. This supports
 rechecking that assumption, but is not a specification of the current host's
 precise notification policy.
+
+### Absolute HID live mapping confirmed (2026-10-20)
+
+Inputs: `usb-client-absolute-27270-28278.jsonl`,
+`usb-host-absolute-27254-7304.jsonl`, and its `.mapping.jsonl` companion.
+
+- The stock host requested interrupt reads and the client queued all nine
+  click-free absolute grid reports, steps 0 through 8, about one second apart.
+  All reported sends were accepted; no transport refusal or interrupt rejection
+  appears. Removal was queued at 17,007 ms.
+- Windows reported both Generic Desktop X/Y value capabilities as absolute,
+  16-bit, logical minimum 0 and maximum 32767. Both queries and mouse collection
+  parsing returned HIDP_STATUS_SUCCESS (1114112). The input report size was six
+  Windows bytes, including the report-ID placeholder, matching five USB bytes.
+- GetCursorPos samples confirmed every grid point in the intended order, within
+  the observer's three-pixel per-axis tolerance. There were exactly nine observed
+  position transitions; all 135 grid-matching samples agreed between the primary
+  and virtual-desktop models. The final point remained stable for about five
+  seconds. Fourteen preceding samples matched neither fixed target.
+- Arrival and removal were observed with zero observer errors. DPI-awareness
+  initialization succeeded.
+
+This proves actual absolute HID positioning through the unmodified stock host
+in this session, beyond enumeration or local send acceptance. It does not yet
+prove live client-pointer mapping, dragging, local menu transitions or relative
+game input with this descriptor: the fixture sends no buttons or live motion.
+
+The user clarified that this was a **single virtual monitor**, not a secondary
+monitor in a multi-monitor desktop. The observed Windows session exposed primary
+size 1920x1080 and desktop bounds (0,0,1920,1080). This trial therefore confirms
+absolute HID positioning on that single virtual display. The two mapping models
+coincide here; multi-monitor/offset-display behavior is untested and outside the
+current requested scope. Further live input work targets a single physical or
+virtual display.
+Client/host wall-clock differences are not treated as transport latency; this
+trial has neither synchronized clock validation nor a round-trip measurement.

@@ -49,6 +49,9 @@ pub(crate) fn absolute_requested() -> bool {
     std::env::var("PARSEC_USB_MOUSE_PROBE").as_deref() == Ok("1")
         && std::env::var("PARSEC_USB_MOUSE_ABSOLUTE_PROBE").as_deref() == Ok("1")
 }
+pub(crate) fn live_absolute_requested() -> bool {
+    live_requested() && std::env::var("PARSEC_USB_MOUSE_LIVE_ABSOLUTE_PROBE").as_deref() == Ok("1")
+}
 
 pub(crate) fn mouse_opcode(opcode: u8) -> bool {
     matches!(opcode, 1 | 2 | 3 | 26)
@@ -112,10 +115,21 @@ fn control(r: &[u8]) -> ([u8; FRAME], bool) {
     control_for(r, None)
 }
 fn control_for(r: &[u8], live_buttons: Option<u8>) -> ([u8; FRAME], bool) {
-    control_layout(r, live_buttons, false)
+    control_layout(r, live_buttons, false, false)
 }
-fn control_layout(r: &[u8], live_buttons: Option<u8>, absolute: bool) -> ([u8; FRAME], bool) {
-    let (device, config, report) = if absolute {
+fn control_layout(
+    r: &[u8],
+    live_buttons: Option<u8>,
+    absolute: bool,
+    live_absolute: bool,
+) -> ([u8; FRAME], bool) {
+    let (device, config, report) = if live_absolute {
+        (
+            live_probe::ABS_DEVICE,
+            live_probe::ABS_CONFIG,
+            live_probe::ABS_REPORT,
+        )
+    } else if absolute {
         (
             absolute_probe::DEVICE,
             absolute_probe::CONFIG,
@@ -138,7 +152,9 @@ fn control_layout(r: &[u8], live_buttons: Option<u8>, absolute: bool) -> ([u8; F
         (0x80, 6, 0x300, _) => Some(vec![4, 3, 9, 4]),
         (0x80, 6, 0x301, 0x409) => Some(string(MAKER)),
         (0x80, 6, 0x302, 0x409) => Some(string(PRODUCT)),
-        (0x80, 6, 0x303, 0x409) => Some(string(if absolute {
+        (0x80, 6, 0x303, 0x409) => Some(string(if live_absolute {
+            "ABS-LIVE"
+        } else if absolute {
             "ABS-GRID"
         } else if live_buttons.is_some() {
             "LIVE-TEST"
@@ -152,7 +168,7 @@ fn control_layout(r: &[u8], live_buttons: Option<u8>, absolute: bool) -> ([u8; F
         (0x80..=0x82, 0, 0, _) => Some(vec![0, 0]), // GET_STATUS
         (0x00, 9, 1, 0) | (0x01, 11, 0, 0) => Some(vec![]),
         // No fabricated current absolute position before a real input report.
-        (0xa1, 1, 0x100, 0) if !absolute => {
+        (0xa1, 1, 0x100, 0) if !absolute && !live_absolute => {
             Some(live_buttons.map_or_else(|| vec![0; 3], |b| vec![b, 0, 0, 0, 0]))
         }
         (0xa1, 2, 0, 0) => Some(vec![0]),
@@ -215,7 +231,13 @@ impl Probe {
                 && std::env::var("PARSEC_USB_MOUSE_INPUT_PROBE").as_deref() == Ok("1"))
             .then(input_probe::Input::default),
             stopping: false,
-            live: (live_requested() && !absolute_requested()).then(live_probe::Input::default),
+            live: (live_requested() && !absolute_requested()).then(|| {
+                if live_absolute_requested() {
+                    live_probe::Input::absolute()
+                } else {
+                    live_probe::Input::default()
+                }
+            }),
             absolute: absolute_requested().then(absolute_probe::Input::default),
             next_live_log: 0,
         };
@@ -225,6 +247,13 @@ impl Probe {
         }
         if probe.live.is_some() {
             probe.note("live_hid_enabled_normal_mouse_blocked", 8, 0, 0);
+        }
+        if probe
+            .live
+            .as_ref()
+            .is_some_and(live_probe::Input::is_absolute)
+        {
+            probe.note("live_absolute_hid_enabled", 8, 7, 0);
         }
         if probe.absolute.is_some() {
             probe.note("absolute_grid_enabled_normal_mouse_blocked", 8, 9, 0);
@@ -293,9 +322,17 @@ impl Probe {
             self.announced = true;
             self.note("identity_queued", 15, 0, 0);
             let mut packet = identity();
-            if self.live.is_some() {
-                packet[25..43].copy_from_slice(live_probe::DEVICE);
-                packet[21 + 542..21 + 542 + 34].copy_from_slice(live_probe::CONFIG);
+            if let Some(live) = &self.live {
+                packet[25..43].copy_from_slice(if live.is_absolute() {
+                    live_probe::ABS_DEVICE
+                } else {
+                    live_probe::DEVICE
+                });
+                packet[21 + 542..21 + 542 + 34].copy_from_slice(if live.is_absolute() {
+                    live_probe::ABS_CONFIG
+                } else {
+                    live_probe::CONFIG
+                });
             } else if self.absolute.is_some() {
                 packet[25..43].copy_from_slice(absolute_probe::DEVICE);
                 packet[21 + 542..21 + 542 + 34].copy_from_slice(absolute_probe::CONFIG);
@@ -312,8 +349,17 @@ impl Probe {
             if self.elapsed_ms >= self.next_live_log {
                 let (reports, commands, suppressed) =
                     (input.reports, input.commands, input.suppressed);
+                let relative_suppressed = input.relative_suppressed;
                 self.note("live_hid_reports", 8, reports, commands);
                 self.note("normal_mouse_commands_suppressed", 0, suppressed, 0);
+                if relative_suppressed != 0 {
+                    self.note(
+                        "absolute_relative_motion_suppressed",
+                        3,
+                        relative_suppressed,
+                        0,
+                    );
+                }
                 self.next_live_log = self.elapsed_ms.saturating_add(1000);
             }
             return report;
@@ -335,8 +381,12 @@ impl Probe {
             || bytes[12] != 32
             || bytes[..4] != 1932u32.to_be_bytes()
             || bytes[8..12]
-                != (if self.live.is_some() {
-                    live_probe::ID
+                != (if let Some(live) = &self.live {
+                    if live.is_absolute() {
+                        live_probe::ABS_ID
+                    } else {
+                        live_probe::ID
+                    }
                 } else if self.absolute.is_some() {
                     absolute_probe::ID
                 } else {
@@ -356,8 +406,12 @@ impl Probe {
         let kind = dword(r, 0);
         self.note("host_request", kind, u32::from(r[5]), u32::from(word(r, 6)));
         match kind {
-            2 => Some(if self.live.is_some() {
-                configuration_for(live_probe::CONFIG)
+            2 => Some(if let Some(live) = &self.live {
+                configuration_for(if live.is_absolute() {
+                    live_probe::ABS_CONFIG
+                } else {
+                    live_probe::CONFIG
+                })
             } else if self.absolute.is_some() {
                 configuration_for(absolute_probe::CONFIG)
             } else {
@@ -365,9 +419,9 @@ impl Probe {
             }),
             1 => {
                 let (reply, supported) = if self.absolute.is_some() {
-                    control_layout(r, None, true)
+                    control_layout(r, None, true, false)
                 } else if let Some(live) = &self.live {
-                    control_for(r, Some(live.buttons()))
+                    control_layout(r, Some(live.buttons()), false, live.is_absolute())
                 } else {
                     control(r)
                 };
@@ -437,8 +491,15 @@ impl Probe {
             && self.live.as_ref().is_some_and(live_probe::Input::ready)
     }
     pub(crate) fn prepare_frame(&self, packet: &mut [u8; FRAME]) {
-        if self.live.is_some() {
-            packet[8..12].copy_from_slice(&live_probe::ID.to_be_bytes());
+        if let Some(live) = &self.live {
+            packet[8..12].copy_from_slice(
+                &if live.is_absolute() {
+                    live_probe::ABS_ID
+                } else {
+                    live_probe::ID
+                }
+                .to_be_bytes(),
+            );
         } else if self.absolute.is_some() {
             packet[8..12].copy_from_slice(&absolute_probe::ID.to_be_bytes());
         }
@@ -501,6 +562,49 @@ mod interrupt_contract;
 mod tests {
     use super::*;
     #[test]
+    fn usb_mouse_probe_live_absolute_descriptor_has_seven_bytes_and_absolute_axes() {
+        assert_eq!(word(live_probe::ABS_DEVICE, 10), 0xf004);
+        assert_eq!(word(live_probe::ABS_CONFIG, 31), 7);
+        assert_eq!(
+            usize::from(word(live_probe::ABS_CONFIG, 25)),
+            live_probe::ABS_REPORT.len()
+        );
+        let mut request = [0; RECORD];
+        request[4] = 0x81;
+        request[5] = 6;
+        request[6..8].copy_from_slice(&0x2200u16.to_le_bytes());
+        request[1034..1036].copy_from_slice(&128u16.to_le_bytes());
+        let (wire, supported) = control_layout(&request, Some(0), false, true);
+        assert!(supported);
+        assert_eq!(
+            &wire[29..29 + live_probe::ABS_REPORT.len()],
+            live_probe::ABS_REPORT
+        );
+        let (mut at, mut size, mut count, mut bits, mut absolute_bits) = (0, 0, 0, 0, 0);
+        while at < live_probe::ABS_REPORT.len() {
+            let tag = live_probe::ABS_REPORT[at];
+            let len = match tag & 3 {
+                3 => 4,
+                n => n as usize,
+            };
+            let value = live_probe::ABS_REPORT.get(at + 1).copied().unwrap_or(0);
+            match tag {
+                0x75 => size = u32::from(value),
+                0x95 => count = u32::from(value),
+                0x81 => {
+                    bits += size * count;
+                    if value == 2 && size == 16 {
+                        absolute_bits += size * count;
+                    }
+                }
+                _ => {}
+            }
+            at += 1 + len;
+        }
+        assert_eq!(bits, 56);
+        assert_eq!(absolute_bits, 32);
+    }
+    #[test]
     fn usb_mouse_probe_absolute_descriptor_and_reply_are_consistent() {
         assert_eq!(word(absolute_probe::DEVICE, 10), 0xf003);
         assert_eq!(word(absolute_probe::CONFIG, 31), 5);
@@ -513,7 +617,7 @@ mod tests {
         request[5] = 6;
         request[6..8].copy_from_slice(&0x2200u16.to_le_bytes());
         request[1034..1036].copy_from_slice(&128u16.to_le_bytes());
-        let (wire, supported) = control_layout(&request, None, true);
+        let (wire, supported) = control_layout(&request, None, true, false);
         assert!(supported);
         assert_eq!(
             dword(&wire, 21 + 1032) as usize,

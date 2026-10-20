@@ -1,5 +1,54 @@
 # Isolated USB mouse probe
 
+## Live absolute desktop HID mouse (2026-10-20)
+
+Use **`Start-Client-Live-Absolute-Mouse-Probe.cmd`** with experimental BUD and
+the **new host observer binary** (`Start-Host-Observer.cmd`). Copy your existing
+settings.json to the extracted client directory. Enable host USB/Yubikey
+passthrough, end prior probe sessions, and test on one physical or virtual host
+display. The nine-point fixture already proved actual absolute positioning on
+one virtual 1920x1080 display; live interaction still needs remote validation.
+
+The new PID_F004 descriptor has five buttons, absolute 16-bit X/Y (0..32767),
+and signed relative vertical/horizontal wheels. Seven USB bytes become eight
+Windows HID input bytes including the report-ID placeholder. No report is sent
+at enumeration until the first real mapped position is known. A button/wheel
+without a valid position is ignored rather than clicking or scrolling at zero.
+Mouse-button and wheel events update the core's local pointer location first;
+the unmodified core continues to decide whether an event belongs to local UI
+or the remote session. Only its remote absolute-motion output is normalized
+through the existing video viewport and consumed by the BUD USB interceptor.
+The internal normalized tag never reaches the host as a Parsec mouse command.
+
+The native pointer remains local and moves normally; there is no confinement
+to a stale host position and no host-position return warp while active. This
+explicit desktop experiment keeps native relative acquisition off, including
+when the host requests relative input. This does **not** implement relative game
+mouselook. The older relative-HID experiment remains a separate launcher.
+Activation requires the current BUD session and a valid HID read; selecting
+WebRTC does not enable the absolute UI mode or alter its mouse transport.
+
+Press/release edges retain FIFO order and their own target positions. Only
+compatible motion samples coalesce; a queued wheel stays at its target. The
+existing 64-sample, eight-read and four-ms pacing limits remain. Focus loss,
+local menus/settings and hidden video release held remote buttons and discard
+stale queued motion; the next interaction needs fresh coordinates. Teardown
+releases at the last *sent* position, never an invented origin or a discarded
+queued target. The 90-second limit and prohibition on normal mouse fallback
+remain in force. Restart the client after expiry for another test.
+
+Check Paint pointer/brush alignment across the video (including letterboxing),
+click/double-click, continuous drawing and dragging/release; then both scroll
+axes and side buttons where available. Open/close local Settings/overlay and
+switch focus while holding a button to verify release and local navigation.
+Send `usb-client-live-absolute-*.jsonl` and `usb-host-*.jsonl`. These logs contain
+aggregate counters, descriptor metadata and lifecycle events, not coordinates,
+button histories or credentials. The old host-position cursor trace is disabled
+for this mode because equality with stale host metadata is not its display rule.
+
+There is no video-path change, GPU/CPU frame copy, host/WASM patch, additional
+SDK or dependency. This feature remains isolated to the USB test branch/build.
+
 ## Absolute HID mapping experiment (2026-10-20)
 
 The relative-HID cursor diagnostic established that the current stock-host
@@ -35,13 +84,12 @@ grid-step matches, position-change booleans and desktop bounds, not actual curso
 coordinates, trajectories, screen images or account/device identifiers. It does
 not hook input, inject events, change display settings or require elevation.
 
-The user tests a secondary/virtual display, so this distinction is essential:
-the physical host pointer may move on another display and never appear in the
-stream. That is a measurable mapping result, not by itself a failure to create
-an absolute HID mouse. No primary-monitor or virtual-desktop mapping is assumed
-to be guaranteed by the HID descriptor. Windows recognition and the actual
-position changes must both be confirmed in a live trial. Host cursor clamping,
-other users' physical input and display changes can invalidate a sample.
+The completed trial used a **single virtual monitor**, and confirmed all nine
+actual cursor positions on it. Current live input work targets one physical or
+virtual display; multiple monitors are outside the requested scope. The mapping
+observer retains both models for measurement, without claiming that the HID
+descriptor guarantees either mapping on other configurations. Host cursor
+clamping, other users' physical input and display changes can invalidate a sample.
 
 The existing enumeration, relative input and live-relative launchers remain
 separate and explicitly clear the new mode. No WASM/host patch, video processing,

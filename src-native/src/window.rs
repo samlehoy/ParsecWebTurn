@@ -74,6 +74,10 @@ pub struct Window {
     #[cfg(feature = "usb-mouse-probe")]
     hid_cursor_active: AtomicBool,
     #[cfg(feature = "usb-mouse-probe")]
+    hid_absolute_active: AtomicBool,
+    #[cfg(feature = "usb-mouse-probe")]
+    hid_absolute_acquired: AtomicBool,
+    #[cfg(feature = "usb-mouse-probe")]
     hid_raw_mouse: AtomicBool,
     #[cfg(feature = "usb-mouse-probe")]
     hid_cursor_posted: AtomicBool,
@@ -207,6 +211,10 @@ impl Window {
             relative_mouse: AtomicBool::new(false),
             #[cfg(feature = "usb-mouse-probe")]
             hid_cursor_active: AtomicBool::new(false),
+            #[cfg(feature = "usb-mouse-probe")]
+            hid_absolute_active: AtomicBool::new(false),
+            #[cfg(feature = "usb-mouse-probe")]
+            hid_absolute_acquired: AtomicBool::new(false),
             #[cfg(feature = "usb-mouse-probe")]
             hid_raw_mouse: AtomicBool::new(false),
             #[cfg(feature = "usb-mouse-probe")]
@@ -452,6 +460,8 @@ impl Window {
         *generation = generation.wrapping_add(1);
         #[cfg(feature = "usb-mouse-probe")]
         self.hid_cursor_active.store(false, Ordering::Release);
+        #[cfg(feature = "usb-mouse-probe")]
+        self.hid_absolute_active.store(false, Ordering::Release);
         self.set_video_ready(false);
         *generation
     }
@@ -536,6 +546,8 @@ impl Window {
     }
 
     unsafe fn mouse_button(&self, down: bool, button: i32, x: i32, y: i32) {
+        #[cfg(feature = "usb-mouse-probe")]
+        self.sync_absolute_pointer(x, y, false);
         let bit = 1usize << button;
         if down {
             self.pressed_buttons.fetch_or(bit, Ordering::AcqRel);
@@ -546,6 +558,15 @@ impl Window {
             ReleaseCapture();
         }
         self.push(Event::Button(down, button, x, y));
+    }
+    #[cfg(feature = "usb-mouse-probe")]
+    unsafe fn sync_absolute_pointer(&self, x: i32, y: i32, screen: bool) {
+        if self.hid_absolute_active.load(Ordering::Acquire) {
+            let mut point = POINT { x, y };
+            if !screen || ScreenToClient(self.handle(), &mut point) != 0 {
+                self.push(Event::Motion(point.x, point.y));
+            }
+        }
     }
     fn release_buttons(&self) {
         let pressed = self.pressed_buttons.swap(0, Ordering::AcqRel);
@@ -569,6 +590,17 @@ impl Window {
         self.request_relative_mouse(enabled, false);
     }
     fn request_relative_mouse(&self, enabled: bool, authoritative: bool) {
+        #[cfg(feature = "usb-mouse-probe")]
+        let enabled = if self.hid_absolute_active.load(Ordering::Acquire) {
+            // Desktop-only absolute experiment. Keep the original core informed
+            // of the actual local mode without modifying its cursor events.
+            if enabled {
+                self.push(Event::RelativeMode(false));
+            }
+            false
+        } else {
+            enabled
+        };
         let state = *self.input_state.lock().unwrap_or_else(|e| e.into_inner());
         let suspended = !self.has_focus.load(Ordering::Acquire)
             || unsafe { IsIconic(self.handle()) != 0 || GetForegroundWindow() != self.handle() }
@@ -635,6 +667,11 @@ impl Window {
         }
     }
     unsafe fn restore_host_cursor(&self) {
+        #[cfg(feature = "usb-mouse-probe")]
+        if self.hid_absolute_active.load(Ordering::Acquire) {
+            self.warp_pending.store(false, Ordering::Release);
+            return;
+        }
         if !self.warp_pending.swap(false, Ordering::AcqRel)
             || !self.input_allowed()
             || self
@@ -781,13 +818,32 @@ impl Window {
     }
     #[cfg(feature = "usb-mouse-probe")]
     pub fn set_usb_cursor_active(&self, expected: u64, active: bool) {
+        self.set_usb_cursor_mode(
+            expected,
+            active,
+            crate::hid_cursor::live_absolute_requested(),
+        );
+    }
+    #[cfg(feature = "usb-mouse-probe")]
+    fn set_usb_cursor_mode(&self, expected: u64, active: bool, absolute: bool) {
         let generation = self
             .video_generation
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if *generation == expected
-            && self.hid_cursor_active.swap(active, Ordering::AcqRel) != active
-        {
+        if *generation != expected {
+            return;
+        }
+        let absolute = active && absolute;
+        let absolute_changed =
+            self.hid_absolute_active.swap(absolute, Ordering::AcqRel) != absolute;
+        let follow = active && !absolute;
+        let changed = self.hid_cursor_active.swap(follow, Ordering::AcqRel) != follow;
+        drop(generation);
+        if absolute_changed && absolute {
+            self.request_relative_mouse(false, true);
+            self.push(Event::RelativeMode(false));
+        }
+        if absolute_changed || changed {
             self.refresh_hid_cursor();
         }
     }
@@ -807,6 +863,10 @@ impl Window {
     }
     #[cfg(feature = "usb-mouse-probe")]
     unsafe fn apply_hid_capture(&self, allowed: bool) {
+        let absolute = allowed && self.hid_absolute_active.load(Ordering::Acquire);
+        if self.hid_absolute_acquired.swap(absolute, Ordering::AcqRel) && !absolute {
+            self.push(Event::HidMouseRelease);
+        }
         let wanted = allowed
             && self.hid_cursor_active.load(Ordering::Acquire)
             && self
@@ -912,6 +972,8 @@ impl Window {
         false
     }
     unsafe fn apply_relative_mouse(&self, enabled: bool) {
+        #[cfg(feature = "usb-mouse-probe")]
+        let enabled = enabled && !self.hid_absolute_active.load(Ordering::Acquire);
         let enabled = enabled && self.input_allowed();
         let previous = self.relative_mouse.load(Ordering::Acquire);
         if enabled == previous {
@@ -1619,10 +1681,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
             WM_MOUSEWHEEL => {
+                #[cfg(feature = "usb-mouse-probe")]
+                s.sync_absolute_pointer(x, y, true);
                 s.push(Event::Scroll(0, -((wp >> 16) as i16 as i32)));
                 return 0;
             }
             WM_MOUSEHWHEEL => {
+                #[cfg(feature = "usb-mouse-probe")]
+                s.sync_absolute_pointer(x, y, true);
                 s.push(Event::Scroll((wp >> 16) as i16 as i32, 0));
                 return 0;
             }
@@ -1884,6 +1950,74 @@ mod tests {
             window.set_usb_cursor_active(new, true);
             window.set_usb_cursor_active(generation, false);
             assert!(window.hid_cursor_active.load(Ordering::Acquire));
+            window.set_usb_cursor_mode(new, false, false);
+            *window.video_report.lock().unwrap() = Some(crate::video_output::Snapshot {
+                width: Some(1920),
+                height: Some(1080),
+                frames_presented: 1,
+                ..Default::default()
+            });
+            window.set_video_ready_for(new, true);
+            window.set_usb_cursor_mode(new, true, true);
+            wait(|| {
+                window.hid_absolute_acquired.load(Ordering::Acquire) && !window.raw_mouse_active()
+            });
+            assert!(!window.raw_mouse_active());
+            assert!(!window.hid_cursor_active.load(Ordering::Acquire));
+            window.events.drain();
+            window.set_host_cursor(100, 100, true, true);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert!(
+                !window.raw_mouse_active(),
+                "absolute desktop mode must retain local position input"
+            );
+            assert!(window
+                .events
+                .drain()
+                .iter()
+                .any(|e| matches!(e, Event::RelativeMode(false))));
+            unsafe {
+                SendMessageW(window.handle(), WM_LBUTTONDOWN, 1, (200 << 16) | 200);
+            }
+            let events = window.events.drain();
+            let point = events
+                .iter()
+                .position(|e| matches!(e, Event::Motion(200, 200)))
+                .unwrap();
+            let button = events
+                .iter()
+                .position(|e| matches!(e, Event::Button(true, 0, 200, 200)))
+                .unwrap();
+            assert!(
+                point < button,
+                "click must establish its absolute position first"
+            );
+            unsafe {
+                SendMessageW(window.handle(), WM_LBUTTONUP, 0, (200 << 16) | 200);
+            }
+            window.events.drain();
+            window.set_input_state(crate::core_input::State {
+                detached: true,
+                ..Default::default()
+            });
+            wait(|| !window.hid_absolute_acquired.load(Ordering::Acquire));
+            assert!(window
+                .events
+                .drain()
+                .iter()
+                .any(|e| matches!(e, Event::HidMouseRelease)));
+            unsafe {
+                SendMessageW(window.handle(), WM_MOUSEMOVE, 0, (250 << 16) | 250);
+            }
+            assert!(window
+                .events
+                .drain()
+                .iter()
+                .any(|e| matches!(e, Event::Motion(250, 250))));
+            window.set_input_state(Default::default());
+            wait(|| window.hid_absolute_acquired.load(Ordering::Acquire));
+            window.set_usb_cursor_mode(new, false, true);
+            wait(|| !window.hid_absolute_acquired.load(Ordering::Acquire));
         }));
         if result.is_err() {
             unsafe {

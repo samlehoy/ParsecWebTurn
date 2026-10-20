@@ -12,6 +12,43 @@ use std::{
 // Keep outside the main window's updater/settings/control message range.
 pub const REFRESH: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 40;
 
+pub fn live_absolute_requested() -> bool {
+    std::env::var("PARSEC_USB_MOUSE_PROBE").as_deref() == Ok("1")
+        && std::env::var("PARSEC_USB_MOUSE_LIVE_PROBE").as_deref() == Ok("1")
+        && std::env::var("PARSEC_USB_MOUSE_LIVE_ABSOLUTE_PROBE").as_deref() == Ok("1")
+}
+
+/// Internal BUD-probe command only. The USB interceptor consumes mode=2;
+/// this is never a new command to the proprietary host or the WASM core.
+pub fn absolute_motion(
+    frame: &[u8],
+    viewport: Option<crate::viewport::Viewport>,
+) -> anyhow::Result<Option<bytes::Bytes>> {
+    if frame.len() != 13 || frame[12] != 3 || frame[..4] != [0; 4] {
+        return Ok(None);
+    }
+    let viewport = viewport.ok_or(crate::control::AbsoluteMouseUnavailable)?;
+    anyhow::ensure!(
+        viewport.rect().is_some(),
+        "absolute HID requires a valid video viewport"
+    );
+    let axis = |offset: usize, size: u32| {
+        let point = i32::from_be_bytes(frame[offset..offset + 4].try_into().unwrap());
+        let span = i64::from(size.saturating_sub(1));
+        if span == 0 {
+            0
+        } else {
+            ((i64::from(point).clamp(0, span) * 32767 + span / 2) / span) as i32
+        }
+    };
+    Ok(Some(crate::control::header(
+        3,
+        2,
+        axis(4, viewport.source.0),
+        axis(8, viewport.source.1),
+    )))
+}
+
 pub struct Lifetime {
     window: Arc<crate::window::Window>,
     generation: u64,
@@ -23,6 +60,7 @@ impl Lifetime {
     pub fn new(window: Arc<crate::window::Window>, generation: u64) -> Self {
         let trace = if std::env::var("PARSEC_USB_MOUSE_LIVE_PROBE").as_deref() == Ok("1")
             && std::env::var("PARSEC_USB_MOUSE_PROBE").as_deref() == Ok("1")
+            && !live_absolute_requested()
         {
             std::env::var_os("PARSEC_USB_PROBE_LOG").and_then(|path| {
                 let path = std::path::PathBuf::from(path).with_extension("cursor.jsonl");
@@ -149,6 +187,33 @@ pub fn visible_position(cursor: Option<(i32, i32, bool)>) -> Option<(i32, i32)> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hid_cursor_absolute_normalization_uses_video_geometry_and_preserves_other_commands() {
+        let viewport = crate::viewport::Viewport {
+            source: (1920, 1080),
+            client: (1024, 768),
+        };
+        for (x, y, expected) in [(0, 96, (0, 0)), (1024, 672, (32767, 32767))] {
+            let packet = crate::control::input_with_viewport(
+                &serde_json::json!({"type":4,"relative":false,"x":x,"y":y}),
+                Some(viewport),
+            )
+            .unwrap();
+            assert_eq!(
+                absolute_motion(&packet, Some(viewport)).unwrap().unwrap(),
+                crate::control::header(3, 2, expected.0, expected.1)
+            );
+        }
+        assert!(absolute_motion(&crate::control::header(1, 1, 1, 0), None)
+            .unwrap()
+            .is_none());
+        assert!(
+            absolute_motion(&crate::control::header(3, 1, 100, 200), None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(absolute_motion(&crate::control::header(3, 0, 100, 200), None).is_err());
+    }
     #[test]
     fn hid_cursor_counts_wire_changes_without_logging_coordinates() {
         let metrics = Metrics::default();

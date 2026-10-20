@@ -19,11 +19,60 @@ pub(super) const CONFIG: &[u8] = &[
     9, 2, 34, 0, 1, 1, 0, 0x80, 50, 9, 4, 0, 0, 1, 3, 0, 0, 0, 9, 0x21, 0x11, 1, 0, 1, 0x22, 65, 0,
     7, 5, 0x81, 3, 5, 0, 4,
 ];
+pub(super) const ABS_ID: u32 = 0xffff_f004;
+pub(super) const ABS_DEVICE: &[u8] = &[
+    18, 1, 0, 2, 0, 0, 0, 64, 0xff, 0xff, 4, 0xf0, 0, 1, 1, 2, 3, 1,
+];
+// Same buttons and wheels as relative mode, with absolute 16-bit X/Y.
+pub(super) const ABS_REPORT: &[u8] = &[
+    0x05, 1, 0x09, 2, 0xa1, 1, 0x09, 1, 0xa1, 0, 0x05, 9, 0x19, 1, 0x29, 5, 0x15, 0, 0x25, 1, 0x95,
+    5, 0x75, 1, 0x81, 2, 0x95, 1, 0x75, 3, 0x81, 3, 0x05, 1, 0x09, 0x30, 0x09, 0x31, 0x15, 0, 0x26,
+    0xff, 0x7f, 0x75, 16, 0x95, 2, 0x81, 2, 0x15, 0x81, 0x25, 0x7f, 0x75, 8, 0x95, 1, 0x09, 0x38,
+    0x81, 6, 0x05, 0x0c, 0x0a, 0x38, 0x02, 0x81, 6, 0xc0, 0xc0,
+];
+pub(super) const ABS_CONFIG: &[u8] = &[
+    9,
+    2,
+    34,
+    0,
+    1,
+    1,
+    0,
+    0x80,
+    50,
+    9,
+    4,
+    0,
+    0,
+    1,
+    3,
+    0,
+    0,
+    0,
+    9,
+    0x21,
+    0x11,
+    1,
+    0,
+    1,
+    0x22,
+    ABS_REPORT.len() as u8,
+    0,
+    7,
+    5,
+    0x81,
+    3,
+    7,
+    0,
+    4,
+];
 const QUEUE_LIMIT: usize = 64;
 const MOTION_LIMIT: i64 = 8192;
 
 #[derive(Debug, Default, Clone, Copy)]
 struct Sample {
+    edge: bool,
+    position: Option<(u16, u16)>,
     buttons: u8,
     x: i64,
     y: i64,
@@ -32,12 +81,19 @@ struct Sample {
 }
 impl Sample {
     fn empty(self) -> bool {
-        self.x == 0 && self.y == 0 && self.vertical == 0 && self.horizontal == 0
+        self.position.is_none()
+            && self.x == 0
+            && self.y == 0
+            && self.vertical == 0
+            && self.horizontal == 0
     }
 }
 
 #[derive(Debug, Default)]
 pub(super) struct Input {
+    absolute: bool,
+    position: Option<(u16, u16)>,
+    sent_position: Option<(u16, u16)>,
     pending: VecDeque<input_probe::Read>,
     samples: VecDeque<Sample>,
     buttons: u8,
@@ -50,9 +106,19 @@ pub(super) struct Input {
     pub reports: u32,
     pub commands: u32,
     pub suppressed: u32,
+    pub relative_suppressed: u32,
 }
 
 impl Input {
+    pub(super) fn absolute() -> Self {
+        Self {
+            absolute: true,
+            ..Default::default()
+        }
+    }
+    pub(super) fn is_absolute(&self) -> bool {
+        self.absolute
+    }
     pub(super) fn ready(&self) -> bool {
         self.ready && !self.faulted
     }
@@ -64,23 +130,30 @@ impl Input {
         let Some(read) = input_probe::read(r) else {
             return false;
         };
-        if dword(r, 16) < 5 || self.pending.len() == 8 {
+        if dword(r, 16) < if self.absolute { 7 } else { 5 } || self.pending.len() == 8 {
             return false;
         }
         self.pending.push_back(read);
         if !self.ready {
             self.ready = true;
-            self.samples.push_back(Sample::default());
+            if !self.absolute {
+                self.samples.push_back(Sample::default());
+            }
         }
         true
     }
 
     fn enqueue(&mut self, sample: Sample) {
-        if let Some(last) = self
-            .samples
-            .back_mut()
-            .filter(|s| s.buttons == sample.buttons)
-        {
+        if let Some(last) = self.samples.back_mut().filter(|s| {
+            s.buttons == sample.buttons
+                && (!self.absolute
+                    || (!s.edge
+                        && ((s.vertical == 0 && s.horizontal == 0)
+                            || s.position == sample.position)))
+        }) {
+            if sample.position.is_some() {
+                last.position = sample.position;
+            }
             last.x = last.x.saturating_add(sample.x);
             last.y = last.y.saturating_add(sample.y);
             last.vertical = last.vertical.saturating_add(sample.vertical);
@@ -112,8 +185,22 @@ impl Input {
             buttons: self.buttons,
             ..Sample::default()
         };
+        if self.absolute {
+            if opcode == 3 {
+                if a != 2 || b > 32767 || c > 32767 {
+                    self.relative_suppressed = self.relative_suppressed.saturating_add(1);
+                    return;
+                }
+                self.position = Some((b as u16, c as u16));
+            }
+            let Some(position) = self.position else {
+                return;
+            };
+            sample.position = Some(position);
+        }
         match opcode {
             1 => {
+                sample.edge = self.absolute;
                 // Parsec: left=1, middle=2, right=3, X1=4, X2=5.
                 // HID: left=bit0, right=bit1, middle=bit2, X1/2=bit3/4.
                 let bit = match a {
@@ -141,10 +228,11 @@ impl Input {
                 sample.vertical = self.wheel_remainder.1 / 120;
                 self.wheel_remainder.0 %= 120;
                 self.wheel_remainder.1 %= 120;
-                if sample.empty() {
+                if sample.vertical == 0 && sample.horizontal == 0 {
                     return;
                 }
             }
+            3 if self.absolute && a == 2 => {}
             3 if a == 1 => {
                 self.anchor = None;
                 sample.x = i64::from(b as i32);
@@ -174,21 +262,25 @@ impl Input {
     pub(super) fn reset(&mut self) {
         self.buttons = 0;
         self.anchor = None;
+        self.position = None;
         self.wheel_remainder = (0, 0);
         self.samples.clear();
-        if self.ready {
-            self.samples.push_back(Sample::default());
+        if self.ready && (!self.absolute || self.sent_position.is_some()) {
+            self.samples.push_back(Sample {
+                position: self.sent_position,
+                ..Sample::default()
+            });
         }
     }
 
-    fn packet(request: &input_probe::Read, report: [u8; 5]) -> [u8; FRAME] {
+    fn packet(request: &input_probe::Read, report: &[u8]) -> [u8; FRAME] {
         let mut r = [0; RECORD];
         put(&mut r, 0, 8);
         r[4] = 0x81;
         r[5] = 3;
         put(&mut r, 8, request.id);
-        put(&mut r, 16, 5);
-        r[20..25].copy_from_slice(&report);
+        put(&mut r, 16, report.len() as u32);
+        r[20..20 + report.len()].copy_from_slice(report);
         frame(&r)
     }
 
@@ -207,20 +299,30 @@ impl Input {
             *value -= part;
             part as i8 as u8
         };
-        let report = [
-            sample.buttons,
-            take(&mut sample.x),
-            take(&mut sample.y),
-            take(&mut sample.vertical),
-            take(&mut sample.horizontal),
-        ];
+        let mut report = [0; 7];
+        report[0] = sample.buttons;
+        let length = if self.absolute {
+            let point = sample.position.take().or(self.sent_position)?;
+            self.sent_position = Some(point);
+            report[1..3].copy_from_slice(&point.0.to_le_bytes());
+            report[3..5].copy_from_slice(&point.1.to_le_bytes());
+            report[5] = take(&mut sample.vertical);
+            report[6] = take(&mut sample.horizontal);
+            7
+        } else {
+            report[1] = take(&mut sample.x);
+            report[2] = take(&mut sample.y);
+            report[3] = take(&mut sample.vertical);
+            report[4] = take(&mut sample.horizontal);
+            5
+        };
         self.sent_buttons = sample.buttons;
         if sample.empty() {
             self.samples.pop_front();
         }
         self.last_sent = Some(now);
         self.reports = self.reports.saturating_add(1);
-        Some(Self::packet(&self.pending.pop_front()?, report))
+        Some(Self::packet(&self.pending.pop_front()?, &report[..length]))
     }
 
     pub(super) fn release(&mut self) -> Option<[u8; FRAME]> {
@@ -230,7 +332,16 @@ impl Input {
         }
         let request = self.pending.pop_front()?;
         self.sent_buttons = 0;
-        Some(Self::packet(&request, [0; 5]))
+        let mut report = [0; 7];
+        let length = if self.absolute {
+            let point = self.sent_position?;
+            report[1..3].copy_from_slice(&point.0.to_le_bytes());
+            report[3..5].copy_from_slice(&point.1.to_le_bytes());
+            7
+        } else {
+            5
+        };
+        Some(Self::packet(&request, &report[..length]))
     }
 
     pub(super) fn failed(&self) -> bool {
@@ -262,6 +373,82 @@ mod tests {
         assert_eq!(dword(&p, 29), now);
         assert_eq!(dword(&p, 37), 5);
         p[41..46].try_into().unwrap()
+    }
+    fn absolute_report(input: &mut Input, now: u32) -> [u8; 7] {
+        let mut r = request(now);
+        put(&mut r, 16, 7);
+        assert!(input.accept(&r));
+        let wire = input.next(now).unwrap();
+        assert_eq!(dword(&wire, 37), 7);
+        wire[41..48].try_into().unwrap()
+    }
+    fn absolute_ready() -> Input {
+        let mut input = Input::absolute();
+        assert!(
+            !input.accept(&request(1)),
+            "five-byte reads cannot hold this seven-byte layout"
+        );
+        let mut r = request(1);
+        put(&mut r, 16, 7);
+        assert!(input.accept(&r));
+        assert!(
+            input.next(0).is_none(),
+            "do not snap to origin at enumeration"
+        );
+        input
+    }
+    fn xy(report: [u8; 7]) -> (u16, u16) {
+        (
+            u16::from_le_bytes([report[1], report[2]]),
+            u16::from_le_bytes([report[3], report[4]]),
+        )
+    }
+    #[test]
+    fn usb_mouse_probe_live_absolute_preserves_click_position_drag_and_release() {
+        let mut input = absolute_ready();
+        input.command(1, 1, 1, 0); // no known target: ignore safely
+        assert_eq!(input.buttons(), 0);
+        input.command(3, 2, 1000, 2000);
+        input.command(1, 1, 1, 0);
+        input.command(3, 2, 30000, 32767);
+        input.command(1, 1, 0, 0);
+        assert_eq!(xy(absolute_report(&mut input, 4)), (1000, 2000));
+        let press = absolute_report(&mut input, 8);
+        assert_eq!(press[0], 1);
+        assert_eq!(xy(press), (1000, 2000));
+        let drag = absolute_report(&mut input, 12);
+        assert_eq!(drag[0], 1);
+        assert_eq!(xy(drag), (30000, 32767));
+        let release = absolute_report(&mut input, 16);
+        assert_eq!(release[0], 0);
+        assert_eq!(xy(release), (30000, 32767));
+        input.command(3, 1, 100, 100);
+        assert_eq!(input.relative_suppressed, 1);
+        assert!(input.next(20).is_none());
+    }
+    #[test]
+    fn usb_mouse_probe_live_absolute_wheels_stay_at_their_target_and_focus_discards_backlog() {
+        let mut input = absolute_ready();
+        input.command(3, 2, 500, 600);
+        let _ = absolute_report(&mut input, 4);
+        input.command(2, 120, (-120i32) as u32, 0);
+        input.command(3, 2, 700, 800);
+        let wheel = absolute_report(&mut input, 8);
+        assert_eq!(xy(wheel), (500, 600));
+        assert_eq!(&wheel[5..], [255, 1]);
+        assert_eq!(xy(absolute_report(&mut input, 12)), (700, 800));
+        input.command(1, 3, 1, 0);
+        assert_eq!(absolute_report(&mut input, 16)[0], 2);
+        input.command(3, 2, 900, 1000);
+        let release = input.release().unwrap();
+        assert_eq!(release[41], 0);
+        assert_eq!(xy(release[41..48].try_into().unwrap()), (700, 800));
+        input.command(1, 1, 1, 0);
+        assert_eq!(
+            input.buttons(),
+            0,
+            "focus return requires fresh coordinates"
+        );
     }
     #[test]
     fn usb_mouse_probe_live_preserves_drag_edges_and_splits_motion() {

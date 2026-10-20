@@ -179,6 +179,7 @@ fn mice(mut caps_log: Option<&mut File>) -> io::Result<u32> {
             if identity.contains("VID_FFFF&PID_F001")
                 || identity.contains("VID_FFFF&PID_F002")
                 || identity.contains("VID_FFFF&PID_F003")
+                || identity.contains("VID_FFFF&PID_F004")
             {
                 found += 1;
                 if let Some(log) = caps_log.as_deref_mut() {
@@ -211,7 +212,8 @@ fn mice(mut caps_log: Option<&mut File>) -> io::Result<u32> {
                     } else {
                         0
                     };
-                    if available && identity.contains("PID_F003") {
+                    if available && (identity.contains("PID_F003") || identity.contains("PID_F004"))
+                    {
                         debug_assert_eq!(size_of::<ValueCaps>(), 72);
                         for usage in [0x30, 0x31] {
                             let mut value = ValueCaps::default();
