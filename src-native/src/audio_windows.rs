@@ -577,6 +577,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn surround_queue_budget_counts_frames_and_keeps_channels_together() {
+        let layout = Layout::new(6, 0x60f).unwrap();
+        let output = Playback {
+            layout,
+            shared: Arc::new(Mutex::new(State::default())),
+            worker: Mutex::new(None),
+            max_frames: 3,
+            custom_buffer: true,
+        };
+        output.shared.lock().unwrap().report.device_padding = 1;
+        output.queue(&[1; 12]);
+        output.queue(&[2; 6]);
+        let state = output.shared.lock().unwrap();
+        assert_eq!(state.pcm, [1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2]);
+        assert_eq!(state.report.frames_dropped, 1);
+        drop(state);
+        assert_eq!(output.queued_frames(), 3);
+    }
+
+    #[test]
     fn experimental_budget_keeps_newest_stereo_with_device_padding() {
         let output = Playback {
             layout: Layout::STEREO,

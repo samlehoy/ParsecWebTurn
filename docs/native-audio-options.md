@@ -2,7 +2,7 @@
 
 The Bluetooth delay reported on 2026-10-16 disappeared with wired output.
 These options are independent experiments, not a fix or measured reduction for
-that Bluetooth delay. Both default off. The proprietary WASM stays unmodified.
+that Bluetooth delay. All custom Audio options default off. The proprietary WASM stays unmodified.
 
 ## Evidence and protocol boundaries
 
@@ -37,6 +37,57 @@ Reviewed lowlat `feat/win-seams` revision:
   enabling its dormant setting never changes WebRTC startup or channel policy.
 
 ## Full local path and decisions
+
+### Multichannel BUD extension (2026-10-20)
+
+Parsec documents automatic 5.1/7.1 support in its normal client, without a paid
+plan requirement on the feature page:
+[Multi-Channel Audio](https://support.parsec.app/hc/en-us/articles/46395533300372-Multi-Channel-Audio).
+The host and client speaker layouts must agree; otherwise the host sends stereo.
+
+The optional **Multichannel audio (experimental, BUD)** setting reads the default
+Windows render endpoint's WAVEFORMATEXTENSIBLE channel count and speaker mask.
+Only 5.1 back (`0x3f`), 5.1 side (`0x60f`), and 7.1 (`0x63f`) are accepted. A
+temporary shared-mode client validates 48 kHz/16-bit PCM initialization without
+starting or writing audio. Query/initialization failures request stereo. Both
+initial and relay retry attempts declare the same selected layout. No host
+configuration is changed automatically.
+
+Every BUD packet remains authoritative: rate, channel count/mask and codec are
+validated before decoding. The selected layout and stereo fallback are allowed;
+other layouts are rejected. The existing bundled libopus supplies multistream
+decoding; no dependency is added. Windows-order mappings are protocol facts
+checked against the installed host's multistream configuration: 5.1 uses four
+streams/two coupled pairs with `[0,1,4,5,2,3]`; 7.1 uses five/three with
+`[0,1,6,7,2,3,4,5]`. Decoder history and staged PCM are retired on layout changes.
+All budgets and stats count frames, independent of channel count.
+
+The pinned WASM's audio loop is fixed to stereo. Its PCM poll still receives a
+valid stereo reference mix. For surround only, a bounded native handoff retains
+the original interleaved channels alongside that polled block. The corresponding
+MTY_AudioQueue import must match the exact guest pointer and frame count before
+it can consume that block once. The next poll retires an unqueued block, so core
+mute/discard decisions cannot replay old sound on unmute. Native reset, destroy,
+disconnect and cancellation retain the normal lifetimes. No source patches,
+guest structure-offset writes, synthetic silence tokens, alternate session SDK
+or GPU changes are introduced.
+
+WASAPI receives the original channels through a WAVEFORMATEXTENSIBLE PCM stream.
+A format change replaces only that audio context under its existing handle;
+failed surround initialization keeps the stereo reference playback and records
+a bounded failure for that layout. The same failing layout is not retried for
+every packet. Core mute and buffer controls remain in charge. Stereo PCM keeps
+the existing path; surround adds the reference fold-down/guest transfer needed
+by this unchanged ABI, with no extra deliberate buffering. This is not a claim
+of lower CPU cost or latency than stereo.
+
+Connection stats reports received channels and, if different, playback channels.
+The event log contains layouts and failures, never audio content. WebRTC retains
+its headerless stereo contract, including startup, TURN and SCTP behavior.
+Actual device channel ordering, audible mute/unmute and host stereo fallback
+still require live testing with a matching surround endpoint and host source.
+Synthetic tests cover separate Opus channel signals, PCM handoff ownership,
+discard-on-mute behavior, stereo transitions and bounded playback queues.
 
 1. WebRTC SCTP or BUD reassembles audio. Existing transport reliability,
    timers, routing and retransmission policy are unchanged. Buffer controls

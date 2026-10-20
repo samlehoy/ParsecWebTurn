@@ -1515,6 +1515,7 @@ mod tests {
             SetWindowTextW(GetDlgItem(page, AUDIO_MIN as i32), wide("20").as_ptr());
             SetWindowTextW(GetDlgItem(page, AUDIO_MAX as i32), wide("60").as_ptr());
             check(page, AUDIO_RAW, true);
+            check(page, AUDIO_SURROUND, true);
             assert_no_overlaps(page);
             capture(page, "audio");
             SendMessageW(page, WM_COMMAND, INPUT_TAB, 0);
@@ -1570,6 +1571,7 @@ mod tests {
             assert_eq!(manager.view().0.audio_min_buffer_ms, 20);
             assert_eq!(manager.view().0.audio_max_buffer_ms, 60);
             assert!(manager.view().0.experimental_raw_audio);
+            assert!(manager.view().0.experimental_surround_audio);
             #[cfg(feature = "experimental-bud")]
             assert!(manager.view().0.experimental_bud);
             #[cfg(feature = "experimental-bud")]

@@ -67,6 +67,7 @@ impl Sender {
     pub fn submit(&self, bytes: &[u8]) -> bool {
         self.submit_format(bytes, false)
     }
+    #[cfg(test)]
     pub fn submit_pcm(&self, bytes: &[u8]) -> bool {
         if bytes.is_empty() || bytes.len() > 32_000 || !bytes.len().is_multiple_of(4) {
             return false;
@@ -681,7 +682,6 @@ mod tests {
         pipeline.stop();
         assert!(pipeline.snapshot().worker_finished);
     }
-    use super::*;
     #[test]
     fn repeated_decode_reuses_pcm_storage_and_stop_invalidates_sender_handles() {
         let mut decoder = Decoder::new().unwrap();
