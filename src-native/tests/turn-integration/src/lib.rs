@@ -1,9 +1,9 @@
 //! Separate CI fixture; never linked into the shipped client.
 #[cfg(test)]
-#[path = "../../../src-native/src/signaling.rs"]
+#[path = "../../../src/signaling.rs"]
 mod signaling;
 #[cfg(test)]
-#[path = "../../../src-native/tests/turn_stream.rs"]
+#[path = "../../turn_stream.rs"]
 mod stream;
 
 #[cfg(test)]

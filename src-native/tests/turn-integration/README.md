@@ -2,7 +2,8 @@
 
 This separate crate tests the same patched ICE/WebRTC crates as the Windows app
 without linking the Parsec core, UI, codecs or production settings. It is never
-shipped. `bash tests/turn-integration/run.sh` runs on an isolated Ubuntu CI runner
+shipped. From the repository root, `bash src-native/tests/turn-integration/run.sh`
+runs on an isolated Ubuntu CI runner
 with coturn, OpenSSL and Rust installed. The script installs a one-day fixture CA
 in that runner's trust store; do not run it on a personal machine unnecessarily.
 

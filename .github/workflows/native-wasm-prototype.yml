@@ -11,7 +11,6 @@ on:
     branches: [dev, main]
     paths:
       - 'src-native/**'
-      - 'tests/turn-integration/**'
       - '.github/workflows/native-wasm-prototype.yml'
       - 'scripts/*native.ps1'
       - 'VERSION'
@@ -20,7 +19,6 @@ on:
     branches: [dev, main]
     paths:
       - 'src-native/**'
-      - 'tests/turn-integration/**'
       - '.cargo/config.toml'
       - 'scripts/*native.ps1'
       - '.github/workflows/native-wasm-prototype.yml'
@@ -36,11 +34,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tests/turn-integration
+          workspaces: src-native/tests/turn-integration
       - name: Install isolated TURN fixture
         run: sudo apt-get update -qq && sudo apt-get install -y coturn
       - name: Verify UDP, TCP, TLS, certificate rejection and SCTP relay
-        run: bash tests/turn-integration/run.sh
+        run: bash src-native/tests/turn-integration/run.sh
   windows:
     runs-on: windows-latest
     steps:

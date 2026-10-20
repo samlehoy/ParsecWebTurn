@@ -15,7 +15,7 @@ turnserver --listening-ip=127.0.0.1 --relay-ip=127.0.0.1 --listening-port=43478 
   --userdb="$fixture/turn.db" --pidfile="$fixture/turn.pid" --log-file=stdout > "$fixture/turn.log" 2>&1 &
 turn_pid=$!
 sleep 2
-if ! cargo test --locked --manifest-path tests/turn-integration/Cargo.toml --target x86_64-unknown-linux-gnu -- --nocapture; then
+if ! cargo test --locked --manifest-path src-native/tests/turn-integration/Cargo.toml --target x86_64-unknown-linux-gnu -- --nocapture; then
   cat "$fixture/turn.log"
   exit 1
 fi
