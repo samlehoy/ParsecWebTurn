@@ -238,8 +238,10 @@ impl Client {
             Vec::new()
         };
         let args = crate::shell::Attached {
-            #[cfg(feature = "usb-hid-mouse")]
+            #[cfg(feature = "usb-hid-input")]
             hid_mouse: attempt.config.hid_mouse,
+            #[cfg(feature = "usb-hid-input")]
+            hid_keyboard: attempt.config.hid_keyboard,
             external_consumer: self.external_consumer.clone(),
             socket,
             servers: attempt

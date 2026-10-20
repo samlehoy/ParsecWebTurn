@@ -199,10 +199,14 @@ pub struct Lag {
 /// What the loop publishes about itself, for the seam to read from any thread.
 #[derive(Debug, Default)]
 pub struct Telemetry {
-    #[cfg(feature = "usb-hid-mouse")]
+    #[cfg(feature = "usb-hid-input")]
     pub hid_mouse_active: AtomicBool,
-    #[cfg(feature = "usb-hid-mouse")]
+    #[cfg(feature = "usb-hid-input")]
     pub hid_mouse_error: AtomicU32,
+    #[cfg(feature = "usb-hid-input")]
+    pub hid_keyboard_active: AtomicBool,
+    #[cfg(feature = "usb-hid-input")]
+    pub hid_keyboard_error: AtomicU32,
     /// UDP payload bytes, including protocol/crypto/relay traffic.
     pub udp_received: AtomicU64,
     pub udp_sent: AtomicU64,
@@ -295,10 +299,14 @@ fn relay_outcome(relay: &Relay<'_>) -> Option<Outcome> {
 /// One session's driver.
 #[derive(Debug)]
 pub struct Driver {
-    #[cfg(feature = "usb-hid-mouse")]
-    hid_mouse: Option<crate::usb_hid_mouse::Mouse>,
-    #[cfg(feature = "usb-hid-mouse")]
+    #[cfg(feature = "usb-hid-input")]
+    hid_mouse: Option<crate::usb_hid::Device>,
+    #[cfg(feature = "usb-hid-input")]
     hid_mouse_enabled: bool,
+    #[cfg(feature = "usb-hid-input")]
+    hid_keyboard: Option<crate::usb_hid::Device>,
+    #[cfg(feature = "usb-hid-input")]
+    hid_keyboard_enabled: bool,
     init: Init,
     units: Units,
     emit: events::Sender<Event>,
@@ -353,10 +361,14 @@ impl Driver {
         telemetry: Arc<Telemetry>,
     ) -> Self {
         Self {
-            #[cfg(feature = "usb-hid-mouse")]
+            #[cfg(feature = "usb-hid-input")]
             hid_mouse: None,
-            #[cfg(feature = "usb-hid-mouse")]
+            #[cfg(feature = "usb-hid-input")]
             hid_mouse_enabled: false,
+            #[cfg(feature = "usb-hid-input")]
+            hid_keyboard: None,
+            #[cfg(feature = "usb-hid-input")]
+            hid_keyboard_enabled: false,
             init,
             units,
             packets,
@@ -463,11 +475,12 @@ impl Driver {
                 self.loss_sampled_ms = now_ms;
                 self.telemetry.state.store(1, Ordering::Relaxed);
                 self.start(endpoint.session());
-                #[cfg(feature = "usb-hid-mouse")]
+                #[cfg(feature = "usb-hid-input")]
                 {
-                    self.hid_mouse = self
-                        .hid_mouse_enabled
-                        .then(crate::usb_hid_mouse::Mouse::default);
+                    self.hid_mouse = self.hid_mouse_enabled.then(crate::usb_hid::Device::default);
+                    self.hid_keyboard = self
+                        .hid_keyboard_enabled
+                        .then(|| crate::usb_hid::Device::new(crate::usb_hid::Kind::Keyboard));
                 }
                 self.report_due_ms = Some(now_ms + REPORT_INTERVAL_MS);
                 self.emit.send(Event::Established { addr });
@@ -482,22 +495,25 @@ impl Driver {
             return None;
         }
 
-        #[cfg(feature = "usb-hid-mouse")]
-        {
-            self.telemetry.hid_mouse_error.store(
-                self.hid_mouse
-                    .as_ref()
-                    .map_or(0, crate::usb_hid_mouse::Mouse::error),
-                Ordering::Release,
-            );
-            let frame = self.hid_mouse.as_mut().and_then(|p| p.tick(now_ms));
-            self.hid_mouse_send(endpoint.session(), frame);
-            self.telemetry.hid_mouse_active.store(
-                self.hid_mouse
-                    .as_ref()
-                    .is_some_and(crate::usb_hid_mouse::Mouse::active),
-                Ordering::Release,
-            );
+        #[cfg(feature = "usb-hid-input")]
+        for kind in crate::usb_hid::Kind::ALL {
+            let frame = self.hid_device(kind).and_then(|d| d.tick(now_ms));
+            self.hid_send(endpoint.session(), kind, frame);
+            let (active, error) = self
+                .hid_device(kind)
+                .map_or((false, 0), |d| (d.active(), d.error()));
+            let (a, e) = match kind {
+                crate::usb_hid::Kind::Mouse => (
+                    &self.telemetry.hid_mouse_active,
+                    &self.telemetry.hid_mouse_error,
+                ),
+                crate::usb_hid::Kind::Keyboard => (
+                    &self.telemetry.hid_keyboard_active,
+                    &self.telemetry.hid_keyboard_error,
+                ),
+            };
+            a.store(active, Ordering::Release);
+            e.store(error, Ordering::Release);
         }
 
         if let Some(outcome) = self.check_health(endpoint, now_ms) {
@@ -561,8 +577,8 @@ impl Driver {
     /// message reaches the host; [`Driver::left`] says when that is over.
     pub fn leave(&mut self, session: &mut Session<'_>, now_ms: f64) {
         if self.leaving.is_none() {
-            #[cfg(feature = "usb-hid-mouse")]
-            self.finish_hid_mouse(session);
+            #[cfg(feature = "usb-hid-input")]
+            self.finish_hid_input(session);
             self.send_control(
                 session,
                 &Control {
@@ -694,8 +710,8 @@ impl Driver {
 
     pub(crate) fn send_external(&mut self, session: &mut Session<'_>, bytes: &[u8]) {
         if let Ok(mut message) = control::parse(bytes) {
-            #[cfg(feature = "usb-hid-mouse")]
-            if self.route_usb_mouse(&message) {
+            #[cfg(feature = "usb-hid-input")]
+            if self.route_hid_input(&message) {
                 return;
             }
             if message.opcode == op::ENCODER_CONFIG && message.a0 == 0 {
@@ -705,54 +721,76 @@ impl Driver {
         }
     }
 
-    #[cfg(feature = "usb-hid-mouse")]
-    pub(crate) fn enable_hid_mouse(&mut self, enabled: bool) {
-        self.hid_mouse_enabled = enabled;
+    #[cfg(feature = "usb-hid-input")]
+    pub(crate) fn enable_hid_input(&mut self, mouse: bool, keyboard: bool) {
+        self.hid_mouse_enabled = mouse;
+        self.hid_keyboard_enabled = keyboard;
     }
-
-    #[cfg(feature = "usb-hid-mouse")]
-    fn route_usb_mouse(&mut self, message: &Control<'_>) -> bool {
-        if !self.hid_mouse_enabled {
-            return false;
+    #[cfg(feature = "usb-hid-input")]
+    fn hid_device(&mut self, kind: crate::usb_hid::Kind) -> Option<&mut crate::usb_hid::Device> {
+        match kind {
+            crate::usb_hid::Kind::Mouse => self.hid_mouse.as_mut(),
+            crate::usb_hid::Kind::Keyboard => self.hid_keyboard.as_mut(),
         }
-        let mouse = crate::usb_hid_mouse::mouse_opcode(message.opcode);
-        if mouse || message.opcode == op::RELEASE {
-            if let Some(probe) = &mut self.hid_mouse {
-                probe.external_mouse(message.opcode, message.a0, message.a1, message.a2);
+    }
+    #[cfg(feature = "usb-hid-input")]
+    fn route_hid_input(&mut self, message: &Control<'_>) -> bool {
+        let mouse = crate::usb_hid::mouse_opcode(message.opcode) && self.hid_mouse_enabled;
+        let keyboard = message.opcode == op::KEYBOARD && self.hid_keyboard_enabled;
+        for (kind, selected, handled) in [
+            (crate::usb_hid::Kind::Mouse, self.hid_mouse_enabled, mouse),
+            (
+                crate::usb_hid::Kind::Keyboard,
+                self.hid_keyboard_enabled,
+                keyboard,
+            ),
+        ] {
+            if selected && (handled || message.opcode == op::RELEASE) {
+                if let Some(device) = self.hid_device(kind) {
+                    device.external_input(message.opcode, message.a0, message.a1, message.a2);
+                }
             }
         }
-        // No ordinary mouse fallback on missing setup, timeout or HID failure.
-        // RELEASE still reaches the host for normal keyboard cleanup.
-        mouse
+        // RELEASE also cleans normal input; selected devices never fall back.
+        mouse || keyboard
     }
-
-    #[cfg(feature = "usb-hid-mouse")]
-    fn hid_mouse_send(
+    #[cfg(feature = "usb-hid-input")]
+    fn hid_send(
         &mut self,
         session: &mut Session<'_>,
-        frame: Option<[u8; crate::usb_hid_mouse::FRAME]>,
+        kind: crate::usb_hid::Kind,
+        frame: Option<[u8; crate::usb_hid::FRAME]>,
     ) {
         if let Some(frame) = frame {
             let (header, body) = frame.split_at(13);
             let success = session.send_message(CONTROL_CHANNEL, header, body).is_ok();
-            if let Some(probe) = &mut self.hid_mouse {
-                probe.sent(success);
-                self.telemetry
-                    .hid_mouse_error
-                    .store(probe.error(), Ordering::Release);
-            }
+            let error = if let Some(device) = self.hid_device(kind) {
+                device.sent(success);
+                device.error()
+            } else {
+                0
+            };
+            let e = match kind {
+                crate::usb_hid::Kind::Mouse => &self.telemetry.hid_mouse_error,
+                crate::usb_hid::Kind::Keyboard => &self.telemetry.hid_keyboard_error,
+            };
+            e.store(error, Ordering::Release);
         }
     }
-
-    #[cfg(feature = "usb-hid-mouse")]
-    pub(crate) fn finish_hid_mouse(&mut self, session: &mut Session<'_>) {
+    #[cfg(feature = "usb-hid-input")]
+    pub(crate) fn finish_hid_input(&mut self, session: &mut Session<'_>) {
         self.telemetry
             .hid_mouse_active
             .store(false, Ordering::Release);
-        let release = self.hid_mouse.as_mut().and_then(|p| p.release_input());
-        self.hid_mouse_send(session, release);
-        let frame = self.hid_mouse.as_mut().and_then(|p| p.remove());
-        self.hid_mouse_send(session, frame);
+        self.telemetry
+            .hid_keyboard_active
+            .store(false, Ordering::Release);
+        for kind in crate::usb_hid::Kind::ALL {
+            let release = self.hid_device(kind).and_then(|d| d.release_input());
+            self.hid_send(session, kind, release);
+            let remove = self.hid_device(kind).and_then(|d| d.remove());
+            self.hid_send(session, kind, remove);
+        }
     }
 
     fn send_control(&mut self, session: &mut Session<'_>, control: &Control<'_>) {
@@ -845,13 +883,12 @@ impl Driver {
                 }
                 *count = count.saturating_add(1);
             }
-            #[cfg(feature = "usb-hid-mouse")]
-            {
+            #[cfg(feature = "usb-hid-input")]
+            for kind in crate::usb_hid::Kind::ALL {
                 let frame = self
-                    .hid_mouse
-                    .as_mut()
-                    .and_then(|p| p.incoming(inbound.get(..len).unwrap_or_default()));
-                self.hid_mouse_send(session, frame);
+                    .hid_device(kind)
+                    .and_then(|d| d.incoming(inbound.get(..len).unwrap_or_default()));
+                self.hid_send(session, kind, frame);
             }
             {
                 self.emit.send(Event::ExternalControl {
@@ -1171,9 +1208,9 @@ fn negotiated_encoder_flags(external: u32, initial: u32) -> u32 {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "usb-hid-mouse")]
+    #[cfg(feature = "usb-hid-input")]
     #[test]
-    fn usb_hid_mouse_live_route_never_duplicates_or_falls_back() {
+    fn usb_hid_live_route_never_duplicates_or_falls_back() {
         let (emit, _) = events::queue();
         let mut driver = Driver::new(
             crate::config::Config::default().init(&crate::config::Caps::default()),
@@ -1191,7 +1228,7 @@ mod tests {
                 op::MOUSE_MOTION_STREAM,
             ] {
                 assert_eq!(
-                    driver.route_usb_mouse(&Control {
+                    driver.route_hid_input(&Control {
                         opcode,
                         a0: 1,
                         a1: 1,
@@ -1207,7 +1244,7 @@ mod tests {
                 op::GAMEPAD_BUTTON,
                 op::ENCODER_CONFIG,
             ] {
-                assert!(!driver.route_usb_mouse(&Control {
+                assert!(!driver.route_hid_input(&Control {
                     opcode,
                     a0: 0,
                     a1: 0,

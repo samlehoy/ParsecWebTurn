@@ -14,7 +14,7 @@ resolver = "2"
 anyhow = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["net", "time"] }
-lowlat-client = { path = "vendor/lowlat-client", features = ["external-video", "turn-stream", "usb-hid-mouse"] }
+lowlat-client = { path = "vendor/lowlat-client", features = ["external-video", "turn-stream", "usb-hid-input"] }
 lowlat-core = { path = "vendor/lowlat-core" }
 lowlat-crypto = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
 

@@ -41,7 +41,8 @@ impl Lifetime {
 }
 impl Drop for Lifetime {
     fn drop(&mut self) {
-        self.window.set_hid_mouse_active(self.generation, false);
+        self.window
+            .set_hid_input_active(self.generation, false, false);
     }
 }
 #[cfg(test)]

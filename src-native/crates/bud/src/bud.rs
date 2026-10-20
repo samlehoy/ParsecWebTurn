@@ -88,7 +88,7 @@ pub struct Session {
     prefer_hevc: bool,
     ten_bit: bool,
     raw_audio: bool,
-    hid_mouse: bool,
+    hid_input: (bool, bool),
     cipher: Option<&'static str>,
 }
 
@@ -119,7 +119,7 @@ impl Session {
             prefer_hevc: hevc_available,
             ten_bit: hevc_available && ten_bit,
             raw_audio: false,
-            hid_mouse: false,
+            hid_input: (false, false),
             cipher: None,
         })
     }
@@ -127,21 +127,23 @@ impl Session {
     pub fn request_keyframe(&self) -> bool {
         self.client.request_external_keyframe()
     }
-    pub fn hid_mouse_active(&self) -> bool {
-        let telemetry = self.client.telemetry();
-        telemetry.state.load(std::sync::atomic::Ordering::Acquire) == 1
-            && telemetry
-                .hid_mouse_active
-                .load(std::sync::atomic::Ordering::Acquire)
+    pub fn hid_input_state(&self) -> [(bool, u32); 2] {
+        use std::sync::atomic::Ordering::Acquire;
+        let t = self.client.telemetry();
+        let connected = t.state.load(Acquire) == 1;
+        [
+            (
+                connected && t.hid_mouse_active.load(Acquire),
+                t.hid_mouse_error.load(Acquire),
+            ),
+            (
+                connected && t.hid_keyboard_active.load(Acquire),
+                t.hid_keyboard_error.load(Acquire),
+            ),
+        ]
     }
-    pub fn enable_hid_mouse(&mut self, enabled: bool) {
-        self.hid_mouse = enabled;
-    }
-    pub fn hid_mouse_error(&self) -> u32 {
-        self.client
-            .telemetry()
-            .hid_mouse_error
-            .load(std::sync::atomic::Ordering::Acquire)
+    pub fn enable_hid_input(&mut self, mouse: bool, keyboard: bool) {
+        self.hid_input = (mouse, keyboard);
     }
     pub fn allow_raw_audio(&mut self, enabled: bool) {
         self.raw_audio = enabled;
@@ -183,7 +185,8 @@ impl Session {
         config.video.ten_bit = self.ten_bit;
         config.video.full_range = true;
         config.raw_audio = self.raw_audio;
-        config.hid_mouse = self.hid_mouse;
+        config.hid_mouse = self.hid_input.0;
+        config.hid_keyboard = self.hid_input.1;
         let ours = self
             .client
             .new_attempt(id, config, Transport::Bud)

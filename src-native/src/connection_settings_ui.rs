@@ -66,6 +66,7 @@ const EVENT_LOG: usize = 4123;
 const AUDIO_TAB: usize = 4124;
 const INPUT_TAB: usize = 4129;
 const HID_MOUSE: usize = 4130;
+const HID_KEYBOARD: usize = 4131;
 const AUDIO_CUSTOM: usize = 4125;
 const AUDIO_MIN: usize = 4126;
 const AUDIO_MAX: usize = 4127;
@@ -670,7 +671,21 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     );
     #[cfg(feature = "experimental-bud")]
     check(hwnd, HID_MOUSE, s.experimental_hid_mouse);
-    row_label(hwnd,page,"Compatibility","Desktop pointer, buttons, dragging and scrolling.\nRelative mouse aiming in games is not supported.\nThe keyboard keeps its normal Parsec input mode.",354,0,64);
+    row_label(hwnd,page,"Keyboard","Experimental physical keyboard over BUD.\nUse the same keyboard layout on host and client.\nFor example: Hungarian on both computers.",354,0,64);
+    add(
+        hwnd,
+        page,
+        "BUTTON",
+        "USB HID keyboard (experimental, BUD)",
+        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+        [420, 354, 400, 36],
+        HID_KEYBOARD,
+        0,
+        page.font,
+    );
+    #[cfg(feature = "experimental-bud")]
+    check(hwnd, HID_KEYBOARD, s.experimental_hid_keyboard);
+    row_label(hwnd,page,"Compatibility","Mouse: desktop movement, buttons and scrolling.\nRelative mouse aiming in games is not supported.\nKeyboard layout is not switched automatically.",466,0,64);
 
     page.building_tab = None;
     add(hwnd, page, "STATIC",
@@ -806,7 +821,7 @@ unsafe fn layout(hwnd: HWND) {
     let footer = match page.active_tab {
         Tab::Network => 1056 + BUD_EXTRA,
         Tab::Audio => 650,
-        Tab::Input => 458,
+        Tab::Input => 570,
         Tab::Video => {
             if cfg!(feature = "vendor-video") {
                 626
@@ -972,6 +987,14 @@ unsafe fn checked(hwnd: HWND, id: usize) -> bool {
 unsafe fn update_enabled(hwnd: HWND) {
     #[cfg(feature = "experimental-bud")]
     EnableWindow(
+        GetDlgItem(hwnd, HID_KEYBOARD as i32),
+        checked(hwnd, BUD) as i32,
+    );
+    #[cfg(not(feature = "experimental-bud"))]
+    EnableWindow(GetDlgItem(hwnd, HID_KEYBOARD as i32), 0);
+
+    #[cfg(feature = "experimental-bud")]
+    EnableWindow(
         GetDlgItem(hwnd, HID_MOUSE as i32),
         checked(hwnd, BUD) as i32,
     );
@@ -1041,6 +1064,7 @@ unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
     {
         s.experimental_bud = checked(hwnd, BUD);
         s.experimental_hid_mouse = checked(hwnd, HID_MOUSE);
+        s.experimental_hid_keyboard = checked(hwnd, HID_KEYBOARD);
     }
     let selected = SendMessageW(GetDlgItem(hwnd, GPU as i32), CB_GETCURSEL, 0, 0);
     s.video_gpu = usize::try_from(selected)

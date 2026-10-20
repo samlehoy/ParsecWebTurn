@@ -212,7 +212,7 @@ impl Input {
         record[23..25].copy_from_slice(&point.1.to_le_bytes());
         record[25] = vertical;
         record[26] = horizontal;
-        frame(&record)
+        frame(&record, ID)
     }
     pub(super) fn next(&mut self, now: u64) -> Option<[u8; FRAME]> {
         if self.failed

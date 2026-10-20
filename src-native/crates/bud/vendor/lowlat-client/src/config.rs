@@ -170,8 +170,10 @@ impl fmt::Debug for Relay {
 /// A client's settings.
 #[derive(Debug, Clone, Default)]
 pub struct Config {
-    #[cfg(feature = "usb-hid-mouse")]
+    #[cfg(feature = "usb-hid-input")]
     pub hid_mouse: bool,
+    #[cfg(feature = "usb-hid-input")]
+    pub hid_keyboard: bool,
     /// The picture: the size asked of the host, and what the application
     /// would prefer of the codec and the colour.
     pub video: Video,

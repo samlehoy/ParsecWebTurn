@@ -38,8 +38,10 @@ const REPORT_EVERY: u32 = 16;
 
 /// Everything the thread is handed at spawn.
 pub(crate) struct Attached {
-    #[cfg(feature = "usb-hid-mouse")]
+    #[cfg(feature = "usb-hid-input")]
     pub hid_mouse: bool,
+    #[cfg(feature = "usb-hid-input")]
+    pub hid_keyboard: bool,
     pub external_consumer: Option<std::thread::Thread>,
     pub socket: Socket,
     pub servers: Vec<SocketAddr>,
@@ -95,8 +97,10 @@ fn attach_send<'a>(
 
 pub(crate) fn run(args: Attached, mut wake: Wake, running: &Running) {
     let Attached {
-        #[cfg(feature = "usb-hid-mouse")]
+        #[cfg(feature = "usb-hid-input")]
         hid_mouse,
+        #[cfg(feature = "usb-hid-input")]
+        hid_keyboard,
         external_consumer,
         socket,
         servers,
@@ -231,8 +235,8 @@ pub(crate) fn run(args: Attached, mut wake: Wake, running: &Running) {
     let mut shell = Shell::new(socket, wake, endpoint);
     let _ = epoch.set(shell.base());
     let mut driver = Driver::new(init, units, packets, emit.clone(), Arc::clone(&telemetry));
-    #[cfg(feature = "usb-hid-mouse")]
-    driver.enable_hid_mouse(hid_mouse);
+    #[cfg(feature = "usb-hid-input")]
+    driver.enable_hid_input(hid_mouse, hid_keyboard);
     let mut reported: Vec<SocketAddr> = Vec::new();
     let mut offered = false;
     let mut pass: u32 = 0;
@@ -303,8 +307,8 @@ pub(crate) fn run(args: Attached, mut wake: Wake, running: &Running) {
         // way -- before a departure the application asked for is let go
         // without a word.
         if let Some(outcome) = ended {
-            #[cfg(feature = "usb-hid-mouse")]
-            driver.finish_hid_mouse(shell.endpoint().session());
+            #[cfg(feature = "usb-hid-input")]
+            driver.finish_hid_input(shell.endpoint().session());
             release(&mut shell);
             telemetry.state.store(2, Ordering::Relaxed);
             emit.send(Event::Ended { outcome });
@@ -372,9 +376,9 @@ pub(crate) fn run(args: Attached, mut wake: Wake, running: &Running) {
             consumer.unpark();
         }
     }
-    #[cfg(feature = "usb-hid-mouse")]
+    #[cfg(feature = "usb-hid-input")]
     {
-        driver.finish_hid_mouse(shell.endpoint().session());
+        driver.finish_hid_input(shell.endpoint().session());
         let _ = shell.turn(|_| {});
         let _ = shell.finish_output(std::time::Duration::from_millis(100));
     }

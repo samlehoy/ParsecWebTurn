@@ -52,6 +52,8 @@ pub struct Settings {
     pub experimental_bud: bool,
     #[cfg(feature = "experimental-bud")]
     pub experimental_hid_mouse: bool,
+    #[cfg(feature = "experimental-bud")]
+    pub experimental_hid_keyboard: bool,
     pub prefer_hevc: bool,
     pub experimental_ten_bit: bool,
     pub event_logging: bool,
@@ -88,6 +90,8 @@ impl Default for Settings {
             experimental_bud: false,
             #[cfg(feature = "experimental-bud")]
             experimental_hid_mouse: false,
+            #[cfg(feature = "experimental-bud")]
+            experimental_hid_keyboard: false,
             prefer_hevc: false,
             experimental_ten_bit: false,
             event_logging: false,
@@ -121,6 +125,10 @@ impl Settings {
         self.experimental_bud && self.experimental_hid_mouse
     }
 
+    #[cfg(feature = "experimental-bud")]
+    pub fn hid_keyboard_enabled(&self) -> bool {
+        self.experimental_bud && self.experimental_hid_keyboard
+    }
     #[cfg(any(test, windows, not(feature = "diagnostics")))]
     fn fresh() -> Self {
         Self {

@@ -25,7 +25,7 @@ pub enum Event {
     Scroll(i32, i32),
     Fullscreen(bool),
     #[cfg(feature = "experimental-bud")]
-    HidMouseRelease,
+    HidInputRelease,
 }
 
 pub struct Window {
@@ -74,7 +74,9 @@ pub struct Window {
     #[cfg(feature = "experimental-bud")]
     hid_mouse_active: AtomicBool,
     #[cfg(feature = "experimental-bud")]
-    hid_mouse_acquired: AtomicBool,
+    hid_keyboard_active: AtomicBool,
+    #[cfg(feature = "experimental-bud")]
+    hid_input_acquired: AtomicBool,
     relative_pending: AtomicUsize,
     relative_requested: AtomicBool,
     relative_anchor: Mutex<Option<(i32, i32)>>,
@@ -204,7 +206,9 @@ impl Window {
             #[cfg(feature = "experimental-bud")]
             hid_mouse_active: AtomicBool::new(false),
             #[cfg(feature = "experimental-bud")]
-            hid_mouse_acquired: AtomicBool::new(false),
+            hid_keyboard_active: AtomicBool::new(false),
+            #[cfg(feature = "experimental-bud")]
+            hid_input_acquired: AtomicBool::new(false),
             relative_pending: AtomicUsize::new(0),
             relative_requested: AtomicBool::new(false),
             relative_anchor: Mutex::new(None),
@@ -444,6 +448,8 @@ impl Window {
         *generation = generation.wrapping_add(1);
         #[cfg(feature = "experimental-bud")]
         self.hid_mouse_active.store(false, Ordering::Release);
+        #[cfg(feature = "experimental-bud")]
+        self.hid_keyboard_active.store(false, Ordering::Release);
         self.set_video_ready(false);
         *generation
     }
@@ -465,6 +471,8 @@ impl Window {
             *generation = generation.wrapping_add(1);
             #[cfg(feature = "experimental-bud")]
             self.hid_mouse_active.store(false, Ordering::Release);
+            #[cfg(feature = "experimental-bud")]
+            self.hid_keyboard_active.store(false, Ordering::Release);
             self.set_video_ready(false);
         }
     }
@@ -766,14 +774,14 @@ impl Window {
         false
     }
     #[cfg(feature = "experimental-bud")]
-    pub fn hid_mouse_generation(&self) -> u64 {
+    pub fn hid_input_generation(&self) -> u64 {
         *self
             .video_generation
             .lock()
             .unwrap_or_else(|e| e.into_inner())
     }
     #[cfg(feature = "experimental-bud")]
-    pub fn set_hid_mouse_active(&self, expected: u64, active: bool) {
+    pub fn set_hid_input_active(&self, expected: u64, mouse: bool, keyboard: bool) {
         let generation = self
             .video_generation
             .lock()
@@ -781,10 +789,13 @@ impl Window {
         if *generation != expected {
             return;
         }
-        let changed = self.hid_mouse_active.swap(active, Ordering::AcqRel) != active;
+        let mouse_changed = self.hid_mouse_active.swap(mouse, Ordering::AcqRel) != mouse;
+        let keyboard_changed =
+            self.hid_keyboard_active.swap(keyboard, Ordering::AcqRel) != keyboard;
+        let changed = mouse_changed || keyboard_changed;
         drop(generation);
         if changed {
-            if active {
+            if mouse_changed && mouse {
                 self.request_relative_mouse(false, true);
                 self.push(Event::RelativeMode(false));
             }
@@ -795,9 +806,11 @@ impl Window {
     }
     #[cfg(feature = "experimental-bud")]
     unsafe fn apply_hid_capture(&self, allowed: bool) {
-        let acquired = allowed && self.hid_mouse_active.load(Ordering::Acquire);
-        if self.hid_mouse_acquired.swap(acquired, Ordering::AcqRel) && !acquired {
-            self.push(Event::HidMouseRelease);
+        let acquired = allowed
+            && (self.hid_mouse_active.load(Ordering::Acquire)
+                || self.hid_keyboard_active.load(Ordering::Acquire));
+        if self.hid_input_acquired.swap(acquired, Ordering::AcqRel) && !acquired {
+            self.push(Event::HidInputRelease);
         }
     }
     unsafe fn apply_relative_mouse(&self, enabled: bool) {
@@ -1646,8 +1659,8 @@ mod tests {
             });
             window.set_video_ready_for(generation, true);
 
-            window.set_hid_mouse_active(generation, true);
-            wait(|| window.hid_mouse_acquired.load(Ordering::Acquire));
+            window.set_hid_input_active(generation, true, false);
+            wait(|| window.hid_input_acquired.load(Ordering::Acquire));
             window.set_relative_mouse(true);
             wait(|| !window.relative_mouse.load(Ordering::Acquire));
             window.events.drain();
@@ -1675,12 +1688,12 @@ mod tests {
                 detached: true,
                 ..Default::default()
             });
-            wait(|| !window.hid_mouse_acquired.load(Ordering::Acquire));
+            wait(|| !window.hid_input_acquired.load(Ordering::Acquire));
             assert!(window
                 .events
                 .drain()
                 .iter()
-                .any(|e| matches!(e, Event::HidMouseRelease)));
+                .any(|e| matches!(e, Event::HidInputRelease)));
             unsafe {
                 SendMessageW(window.handle(), WM_MOUSEMOVE, 0, (250 << 16) | 250);
             }
@@ -1690,11 +1703,11 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, Event::Motion(250, 250))));
             window.set_input_state(Default::default());
-            wait(|| window.hid_mouse_acquired.load(Ordering::Acquire));
-            window.set_hid_mouse_active(generation, false);
-            wait(|| !window.hid_mouse_acquired.load(Ordering::Acquire));
+            wait(|| window.hid_input_acquired.load(Ordering::Acquire));
+            window.set_hid_input_active(generation, false, false);
+            wait(|| !window.hid_input_acquired.load(Ordering::Acquire));
 
-            window.set_hid_mouse_active(generation.wrapping_sub(1), true);
+            window.set_hid_input_active(generation.wrapping_sub(1), true, false);
             assert!(!window.hid_mouse_active.load(Ordering::Acquire));
         }));
         window.close();

@@ -275,8 +275,8 @@ fn dispatch_input_event(
     event: Event,
 ) -> Result<()> {
     #[cfg(feature = "experimental-bud")]
-    if matches!(&event, Event::Focus(false) | Event::HidMouseRelease) {
-        // Explicit focus release also resets the USB mouse's absolute position
+    if matches!(&event, Event::Focus(false) | Event::HidInputRelease) {
+        // Explicit focus release also resets the USB devices' held input
         // and queued movement. The core's own focus/UI path still runs below.
         let backend = store
             .data()
@@ -284,7 +284,7 @@ fn dispatch_input_event(
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if let Some(attempt) = &backend.bud_attempt {
-            if attempt.hid_mouse_enabled()
+            if attempt.hid_input_enabled()
                 && attempt.send(&crate::control::header(24, 0, 0, 0)).is_err()
             {
                 // Failed cleanup ends the connection instead of keeping a held button.
@@ -294,7 +294,7 @@ fn dispatch_input_event(
     }
     let (name, values, count) = match event {
         #[cfg(feature = "experimental-bud")]
-        Event::HidMouseRelease => return Ok(()),
+        Event::HidInputRelease => return Ok(()),
         Event::Fullscreen(active) => (
             "mty_window_update_fullscreen",
             [app, active as i32, 0, 0, 0],

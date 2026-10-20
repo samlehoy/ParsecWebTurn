@@ -1,10 +1,27 @@
-# Experimental absolute USB HID mouse
+# Experimental USB HID input
 
 The successful live absolute probe is now an optional Settings → Input feature
 on the isolated USB branch. It is disabled by default and requires BUD. Save
 and reconnect after changing it. Enable USB/Yubikey passthrough on the stock
 Parsec host. The client needs only its normal EXE and settings.json, without
 CMD launchers, environment variables, host observers or dedicated USB logs.
+
+The Input tab also offers an independent experimental USB HID keyboard. Both
+devices reuse `usb_hid.rs` for creation/removal, framing, enumeration, standard
+control transfers and failure handling. Only descriptors and input state differ.
+Both options are BUD-only, disabled by default, and apply after reconnecting.
+
+For the keyboard, select the same active layout on host and client (including
+Hungarian–Hungarian). Physical usage codes are forwarded without guessing text
+or changing the host's layout. Modifiers and simultaneous keys are represented
+in a bitmap input report, without a six-key array limit. Duplicate typematic
+events are ignored; the host handles repetition. LED output reports are accepted
+as device state, without changing the client's physical keyboard LEDs. Queues
+are bounded and ordered; focus loss/local menus/disconnect release held keys.
+Normal Parsec keyboard packets are suppressed while the HID keyboard is selected,
+even on setup failure. No keystrokes or typed text are logged. Keyboard host
+acceptance and character behavior await the user's live test; no intermediate
+enumeration/descriptor/input probe program is introduced.
 
 ## Supported scope
 
@@ -20,7 +37,8 @@ Remote absolute positions are normalized through the existing video viewport
 and consumed by the BUD USB adapter. The internal normalized command never
 reaches the host as a normal Parsec mouse command. Normal remote mouse commands
 are suppressed whenever HID is selected, including setup failure. Keyboard
-input retains its existing path. WebRTC does not enable the HID adapter.
+input retains its existing path unless the separate HID keyboard option is
+selected. WebRTC does not enable either HID device.
 
 No report is fabricated at the origin during enumeration. Buttons and wheels
 require a known position. Press/release edges keep their positions and order;
@@ -39,9 +57,10 @@ for unsupported optional descriptor requests are not logged as failures.
 
 - `src-native/src/hid_input.rs`: viewport normalization and lifetime cleanup.
 - `src-native/src/window.rs`: desktop input/focus and local menu integration.
-- `src-native/crates/bud/vendor/lowlat-client/src/usb_hid_mouse.rs`: fixed USB
-  descriptors, control replies and device lifecycle.
+- `src-native/crates/bud/vendor/lowlat-client/src/usb_hid.rs`: shared USB
+  control replies and device lifecycle.
 - `hid_mouse_input.rs` in the same directory: bounded input reports.
+- `hid_keyboard_input.rs`: keyboard descriptor, key state/queue and LED/idle state.
 
 The former enumeration, fixed-input, relative and host-cursor-follow experiments,
 their observers, launchers and diagnostic file writers have been removed.
@@ -65,7 +84,7 @@ Tests use isolated synthetic profiles. Historical probes remain in Git history
 and the research record, not in the runnable client.
 
 The [Windows CI run](https://github.com/vampywiz17/ParsecWebTurn/actions/runs/39403643625)
-for `b3316a7` passed all six protocol/input tests, three settings/viewport/window
+for the earlier mouse-only `b3316a7` passed all six protocol/input tests, three settings/viewport/window
 tests, the native Settings UI test and strict vendored-client Clippy. The Input
 tab screenshot was visually checked. The standalone release build contains only
 `ParsecWebTurn.exe` (18,096,640 bytes), SHA-256
