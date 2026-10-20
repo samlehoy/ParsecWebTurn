@@ -117,23 +117,22 @@ itself attribute queries from other processes or prove working mouse input.
 In the first phased trial, the repetitions continued unchanged; do not treat
 the observer-induced explanation as established.
 
-The next preparation is offline only: interrupt-read decoding, a neutral
-three-byte USB report completion, cancellation status and malformed-frame
-bounds are exercised by test fixtures. Those helpers exist only under
-`cfg(test)` and are **not linked into either test executable**. The live
-probe still leaves interrupt reads pending and sends no motion or clicks.
+The original interrupt-read preparation was offline only. The input launcher
+now uses the tested encoder for the fixed live sequence described above;
+the enumeration launcher still leaves interrupt reads pending.
 
 The synthetic identity is `VID_FFFF / PID_F001`, with product name
 `USB mouse enumeration probe`. These are unassigned diagnostic identifiers,
 not a claim to an allocated vendor ID or an impersonation of another device.
-No physical USB device is captured. No movement, clicks, game interaction or
-interrupt input reports are sent. An interrupted connection can prevent the
+No physical USB device is captured. The enumeration launcher sends no input;
+the input launcher sends only the fixed desktop sequence. An interrupted connection can prevent the
 removal message being delivered; host/session cleanup is then required and
 must be checked with the observer/Device Manager. Do not replace or uninstall
 the Parsec USB adapter or other existing devices.
 
 The responder implements fixed descriptors and recognized enumeration requests;
-unknown requests stall or terminate the probe. Interrupt reads remain pending.
+unknown requests stall or terminate the probe. With the enumeration launcher,
+interrupt reads remain pending.
 It is deliberately incomplete as a general USB implementation. A host request
 or a locally accepted transport send alone is **not** proof of enumeration.
 An arrival and subsequent removal observed as a Windows mouse is the first
@@ -141,7 +140,7 @@ success criterion; lack of arrival does not by itself prove a host allowlist.
 
 The feature is absent from default builds. It has no new dependency, does not
 use the regular 256-byte input queue and does not change WASM, media, decoding
-or WebRTC. The optional BUD diagnostic uses fixed 1945-byte frames, a 128-request
+or WebRTC. The optional BUD diagnostic uses fixed 1945-byte frames, a 512-request
 limit and a 15-second active window, with no retries or automatic rearming.
 
 Build on a Windows machine with the MSVC C++ Build Tools and Windows SDK:
@@ -154,5 +153,5 @@ rustc --edition 2024 -C opt-level=s -C target-feature=+crt-static src-native/pro
 ```
 
 Copy the resulting `parsec-web-turn.exe` as `ParsecWebTurn-USB-Probe.exe`, the
-observer and the two `scripts/usb-mouse-probe/*.cmd` launchers into a separate
+observer and the three `scripts/usb-mouse-probe/*.cmd` launchers into a separate
 test directory. Do not replace the normal client executable.
