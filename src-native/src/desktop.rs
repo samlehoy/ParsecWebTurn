@@ -274,12 +274,9 @@ fn dispatch_input_event(
     app: i32,
     event: Event,
 ) -> Result<()> {
-    #[cfg(feature = "usb-mouse-probe")]
-    if matches!(&event, Event::Focus(false) | Event::HidMouseRelease)
-        && std::env::var("PARSEC_USB_MOUSE_PROBE").as_deref() == Ok("1")
-        && std::env::var("PARSEC_USB_MOUSE_LIVE_PROBE").as_deref() == Ok("1")
-    {
-        // Explicit focus release also resets the USB mouse's relative anchor
+    #[cfg(feature = "experimental-bud")]
+    if matches!(&event, Event::Focus(false) | Event::HidMouseRelease) {
+        // Explicit focus release also resets the USB mouse's absolute position
         // and queued movement. The core's own focus/UI path still runs below.
         let backend = store
             .data()
@@ -287,14 +284,16 @@ fn dispatch_input_event(
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if let Some(attempt) = &backend.bud_attempt {
-            if attempt.send(&crate::control::header(24, 0, 0, 0)).is_err() {
-                // Failed cleanup ends the test instead of keeping a held button.
+            if attempt.hid_mouse_enabled()
+                && attempt.send(&crate::control::header(24, 0, 0, 0)).is_err()
+            {
+                // Failed cleanup ends the connection instead of keeping a held button.
                 attempt.fail();
             }
         }
     }
     let (name, values, count) = match event {
-        #[cfg(feature = "usb-mouse-probe")]
+        #[cfg(feature = "experimental-bud")]
         Event::HidMouseRelease => return Ok(()),
         Event::Fullscreen(active) => (
             "mty_window_update_fullscreen",

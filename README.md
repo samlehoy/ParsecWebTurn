@@ -169,6 +169,22 @@ driver transfers; hybrid GPU/display configurations can still introduce them.
 
 See [audio-path audit and implementation](docs/native-audio-options.md).
 
+### Input (experimental)
+
+- **USB HID mouse:** optional absolute desktop mouse over **BUD**, disabled by
+  default. Enable BUD on the Network tab, then select the mouse on the Input
+  tab, save and reconnect. Enable USB/Yubikey passthrough on the stock host.
+- Supports pointer movement, five buttons, dragging and vertical/horizontal
+  scrolling on one physical or virtual display. Relative game aiming and
+  multi-monitor mapping are not supported. Keyboard input keeps its normal
+  Parsec path. Local menus remain accessible.
+- Only the usual EXE and settings.json are needed. No launcher or observer is
+  required. While selected, ordinary Parsec mouse messages stay suppressed,
+  including if HID setup fails; disable it and reconnect to restore normal input.
+- Optional event logging records setup failures and state changes in the existing
+  client-events.jsonl beside settings.json, without mouse movement, coordinates
+  or click history. Video decoding and rendering are unchanged.
+
 ## Connection stats
 
 Traffic means measured usage, not available bandwidth. RTT is transport-specific,

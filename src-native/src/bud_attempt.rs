@@ -75,6 +75,7 @@ pub struct Attempt {
     commands: mpsc::SyncSender<String>,
     cancel: Arc<AtomicBool>,
     thread: std::thread::Thread,
+    hid_mouse: bool,
 }
 
 impl Attempt {
@@ -84,6 +85,7 @@ impl Attempt {
         window: Arc<crate::window::Window>,
         manager: Arc<crate::connection_settings::Manager>,
     ) -> Result<Self> {
+        let hid_mouse = manager.view().0.hid_mouse_enabled();
         let state = Arc::new(Mutex::new(State::default()));
         let session = Arc::new(Mutex::new(None));
         let audio = Arc::new(Mutex::new(None));
@@ -98,7 +100,7 @@ impl Attempt {
         let attempt_id = id.to_owned();
         let worker = std::thread::Builder::new().name("parsec-bud-media".into()).spawn(move || {
             let mut trace = crate::bud_trace::Trace::start();
-            let result = run(&attempt_id, &output, &window, &manager, &worker_state, &worker_session, &worker_audio, &worker_cancel, incoming, &mut trace);
+            let result = run(&attempt_id, &output, &window, &manager, &worker_state, &worker_session, &worker_audio, &worker_cancel, incoming, &mut trace, hid_mouse);
             trace.record(if result.is_err() { "worker_error" } else { "worker_returned" }, &[("cancelled", u64::from(worker_cancel.load(Ordering::Acquire)))]);
             if result.is_err() {
                 if !worker_cancel.load(Ordering::Acquire) {
@@ -130,7 +132,12 @@ impl Attempt {
             commands,
             cancel,
             thread,
+            hid_mouse,
         })
+    }
+
+    pub fn hid_mouse_enabled(&self) -> bool {
+        self.hid_mouse
     }
 
     pub fn outgoing(&self, text: &str, writer: Option<SignalingWrite>) -> Result<Option<String>> {
@@ -536,6 +543,7 @@ fn run(
     cancel: &AtomicBool,
     incoming: mpsc::Receiver<String>,
     trace: &mut crate::bud_trace::Trace,
+    hid_mouse: bool,
 ) -> Result<()> {
     trace.mark("initial_route_resolution");
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -563,7 +571,6 @@ fn run(
         "video_capabilities_declared",
         json!({"transport":"BUD","flags":8 | u32::from(hevc_available) | if ten_bit {16} else {0},"hevc":hevc_available,"main10":ten_bit}),
     );
-    #[cfg(feature = "usb-mouse-probe")]
     let hid_generation;
     let (mut media, mut session, statistics) = {
         let _state = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -579,14 +586,21 @@ fn run(
             ten_bit,
             settings.experimental_raw_audio,
         )?;
-        #[cfg(feature = "usb-mouse-probe")]
         {
-            hid_generation = window.usb_cursor_generation();
+            hid_generation = window.hid_mouse_generation();
         }
         (media, session, Statistics::start(window.stats.clone()))
     };
-    #[cfg(feature = "usb-mouse-probe")]
-    let mut hid_cursor_lifetime = crate::hid_cursor::Lifetime::new(window.clone(), hid_generation);
+    let _hid_lifetime = crate::hid_input::Lifetime::new(window.clone(), hid_generation);
+    session.enable_hid_mouse(hid_mouse);
+    let mut hid_state = (false, 0);
+    if hid_mouse {
+        crate::event_log::record(
+            "INFO",
+            "hid_mouse_enabled",
+            json!({"transport":"BUD","experimental":true}),
+        );
+    }
     state.lock().unwrap_or_else(|e| e.into_inner()).wire_id = id.into();
     session.wake_consumer(std::thread::current());
     trace.mark("initial_native_offer");
@@ -682,10 +696,32 @@ fn run(
             events.push(event);
         }
         let transport = session.snapshot();
-        #[cfg(feature = "usb-mouse-probe")]
-        window.set_usb_cursor_active(hid_generation, session.usb_live_mouse_active());
-        #[cfg(feature = "usb-mouse-probe")]
-        hid_cursor_lifetime.tick();
+        let hid_current = (session.hid_mouse_active(), session.hid_mouse_error());
+        window.set_hid_mouse_active(hid_generation, hid_current.0);
+        if hid_mouse && hid_current != hid_state {
+            if hid_current.1 != 0 && hid_current.1 != hid_state.1 {
+                let reason = match hid_current.1 {
+                    1 => "host_setup_timeout",
+                    2 => "invalid_interrupt_request",
+                    3 => "input_queue_limit",
+                    4 => "transport_send_failed",
+                    _ => "host_device_ended",
+                };
+                crate::event_log::record(
+                    "ERROR",
+                    "hid_mouse_failed",
+                    json!({"reason":reason,"normal_mouse_fallback":false}),
+                );
+            }
+            if hid_current.0 != hid_state.0 {
+                crate::event_log::record(
+                    "INFO",
+                    "hid_mouse_state_changed",
+                    json!({"active":hid_current.0}),
+                );
+            }
+            hid_state = hid_current;
+        }
         if !established && last_trace.elapsed() >= Duration::from_secs(1) {
             trace.record(
                 "transport_progress",
@@ -768,8 +804,6 @@ fn run(
                     ended = true;
                 }
                 Event::ExternalControl { bytes } => {
-                    #[cfg(feature = "usb-mouse-probe")]
-                    window.hid_cursor_metrics.wire(&bytes);
                     shared.controls.push_back(bytes.into());
                 }
             }
@@ -871,6 +905,7 @@ fn run(
                 ten_bit,
                 settings.experimental_raw_audio,
             )?;
+            next.enable_hid_mouse(hid_mouse);
             next.wake_consumer(std::thread::current());
             trace.mark("relay_native_offer");
             log_route_attempt(&relay);

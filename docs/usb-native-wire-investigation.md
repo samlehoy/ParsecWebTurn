@@ -1,3 +1,8 @@
+> Historical research record. The validated absolute path is now a Settings →
+> Input option on the isolated USB branch. Old probe sources, CMD launchers,
+> observers and diagnostic logs described below have been removed. See the
+> [current usage and scope](usb-mouse-probe.md).
+
 # Native USB control-message investigation — 2026-10-19
 
 Static interoperability research, not a working USB implementation. The stock
@@ -425,7 +430,7 @@ or after timeout/failure; non-mouse commands retain the existing route. Native
 focus loss issues release-all, preserving keyboard cleanup and resetting HID
 button/motion state. The older fixed/enumeration modes are retained separately.
 Bounds, teardown behavior, relative-position limitations and test instructions
-are in [the probe guide](usb-mouse-probe.md#live-desktop-mouse-forwarding-2026-10-20).
+are in [the probe guide](usb-mouse-probe.md#supported-scope).
 Automated tests cover routing isolation, button/wheel mappings, split motion,
 drag-edge ordering, focus release, capacity/queue/backlog bounds and descriptor
 sizes. Actual interactive delivery of the new report layout still needs a new
@@ -564,3 +569,29 @@ current requested scope. Further live input work targets a single physical or
 virtual display.
 Client/host wall-clock differences are not treated as transport latency; this
 trial has neither synchronized clock validation nor a round-trip measurement.
+
+### Live absolute desktop input confirmed (2026-10-20)
+
+Inputs: `usb-client-live-absolute-2059-29179.jsonl` and
+`usb-host-2046-18953.jsonl`. The user reported that everything felt normal in the
+live trial, following the earlier single-virtual-display mapping validation.
+
+The client recorded 5417 HID reports, 6464 handled mouse commands and 6489
+suppressed ordinary Parsec mouse commands. There were no transport refusals,
+interrupt rejections, input-backlog faults or relative-motion suppression events.
+The 90-second lifetime ended with device removal at 90,006 ms. These are local
+send/handling counts; the user's live observation supplies the functional input
+confirmation rather than those counters alone.
+
+The host confirmed arrival and removal with zero observer errors. Windows
+parsed both X/Y axes as absolute, 16-bit, logical 0..32767, and accepted the
+Mouse collection with eight input bytes (seven USB bytes plus the report-ID
+placeholder), one button capability and four value capabilities, matching X/Y
+and both wheels. All three capability queries returned HIDP_STATUS_SUCCESS.
+
+One optional OS string-descriptor request (0x03EE) stalled as in earlier working
+trials. Repeated report-descriptor requests continued, but did not prevent this
+observed live input. Neither is treated as a reason for an unrelated protocol
+change. This result is not a per-feature automated coverage matrix, a latency
+benchmark, a multi-monitor test or a confirmation of relative game mouselook.
+No decoder/video change was needed for the successful input path.

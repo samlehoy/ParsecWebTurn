@@ -64,6 +64,8 @@ const VIDEO_TAB: usize = 4121;
 const TEN_BIT: usize = 4122;
 const EVENT_LOG: usize = 4123;
 const AUDIO_TAB: usize = 4124;
+const INPUT_TAB: usize = 4129;
+const HID_MOUSE: usize = 4130;
 const AUDIO_CUSTOM: usize = 4125;
 const AUDIO_MIN: usize = 4126;
 const AUDIO_MAX: usize = 4127;
@@ -73,6 +75,7 @@ enum Tab {
     Network,
     Video,
     Audio,
+    Input,
 }
 const SECTION: usize = 4202;
 const NOTICE: usize = 4203;
@@ -250,6 +253,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         (NETWORK_TAB, "Network", [0, 142, 128, 40]),
         (VIDEO_TAB, "Video", [140, 142, 128, 40]),
         (AUDIO_TAB, "Audio", [280, 142, 128, 40]),
+        (INPUT_TAB, "Input", [420, 142, 128, 40]),
         (BACK, "Back", [550, 142, 110, 40]),
         (SAVE, "Save settings", [676, 142, 144, 40]),
     ] {
@@ -651,6 +655,23 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         page.font,
     );
     check(hwnd, AUDIO_RAW, s.experimental_raw_audio);
+    page.building_tab = Some(Tab::Input);
+    row_label(hwnd,page,"Mouse","Experimental absolute USB HID mouse over BUD.\nEnable USB/Yubikey passthrough on the host.\nSupports a single physical or virtual display.",242,0,64);
+    add(
+        hwnd,
+        page,
+        "BUTTON",
+        "USB HID mouse (experimental, BUD)",
+        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+        [420, 242, 400, 36],
+        HID_MOUSE,
+        0,
+        page.font,
+    );
+    #[cfg(feature = "experimental-bud")]
+    check(hwnd, HID_MOUSE, s.experimental_hid_mouse);
+    row_label(hwnd,page,"Compatibility","Desktop pointer, buttons, dragging and scrolling.\nRelative mouse aiming in games is not supported.\nThe keyboard keeps its normal Parsec input mode.",354,0,64);
+
     page.building_tab = None;
     add(hwnd, page, "STATIC",
         "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection.",
@@ -785,6 +806,7 @@ unsafe fn layout(hwnd: HWND) {
     let footer = match page.active_tab {
         Tab::Network => 1056 + BUD_EXTRA,
         Tab::Audio => 650,
+        Tab::Input => 458,
         Tab::Video => {
             if cfg!(feature = "vendor-video") {
                 626
@@ -948,6 +970,14 @@ unsafe fn checked(hwnd: HWND, id: usize) -> bool {
     SendMessageW(GetDlgItem(hwnd, id as i32), BM_GETCHECK, 0, 0) == 1
 }
 unsafe fn update_enabled(hwnd: HWND) {
+    #[cfg(feature = "experimental-bud")]
+    EnableWindow(
+        GetDlgItem(hwnd, HID_MOUSE as i32),
+        checked(hwnd, BUD) as i32,
+    );
+    #[cfg(not(feature = "experimental-bud"))]
+    EnableWindow(GetDlgItem(hwnd, HID_MOUSE as i32), 0);
+
     for id in [AUDIO_MIN, AUDIO_MAX] {
         EnableWindow(
             GetDlgItem(hwnd, id as i32),
@@ -1010,6 +1040,7 @@ unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
     #[cfg(feature = "experimental-bud")]
     {
         s.experimental_bud = checked(hwnd, BUD);
+        s.experimental_hid_mouse = checked(hwnd, HID_MOUSE);
     }
     let selected = SendMessageW(GetDlgItem(hwnd, GPU as i32), CB_GETCURSEL, 0, 0);
     s.video_gpu = usize::try_from(selected)
@@ -1116,6 +1147,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     NETWORK_TAB as u32,
                     VIDEO_TAB as u32,
                     AUDIO_TAB as u32,
+                    INPUT_TAB as u32,
                     PROVIDER as u32,
                     GPU as u32,
                 ]
@@ -1127,7 +1159,8 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     let selected_tab = (draw.CtlID == NETWORK_TAB as u32
                         && page.active_tab == Tab::Network)
                         || (draw.CtlID == VIDEO_TAB as u32 && page.active_tab == Tab::Video)
-                        || (draw.CtlID == AUDIO_TAB as u32 && page.active_tab == Tab::Audio);
+                        || (draw.CtlID == AUDIO_TAB as u32 && page.active_tab == Tab::Audio)
+                        || (draw.CtlID == INPUT_TAB as u32 && page.active_tab == Tab::Input);
                     let color = if draw.itemState & ODS_SELECTED != 0 {
                         0x00404040
                     } else if primary || selected_tab {
@@ -1168,6 +1201,8 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                         "Video".into()
                     } else if draw.CtlID == AUDIO_TAB as u32 {
                         "Audio".into()
+                    } else if draw.CtlID == INPUT_TAB as u32 {
+                        "Input".into()
                     } else if primary {
                         "Save settings".into()
                     } else {
@@ -1207,9 +1242,13 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                 return 0;
             }
             WM_COMMAND => match wp & 0xffff {
-                NETWORK_TAB | VIDEO_TAB | AUDIO_TAB if (wp >> 16) as u32 == BN_CLICKED => {
+                NETWORK_TAB | VIDEO_TAB | AUDIO_TAB | INPUT_TAB
+                    if (wp >> 16) as u32 == BN_CLICKED =>
+                {
                     page.active_tab = if wp & 0xffff == VIDEO_TAB {
                         Tab::Video
+                    } else if wp & 0xffff == INPUT_TAB {
+                        Tab::Input
                     } else if wp & 0xffff == AUDIO_TAB {
                         Tab::Audio
                     } else {
@@ -1220,6 +1259,8 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                         GetDlgItem(hwnd, SECTION as i32),
                         wide(if page.active_tab == Tab::Video {
                             "VIDEO"
+                        } else if page.active_tab == Tab::Input {
+                            "INPUT"
                         } else if page.active_tab == Tab::Audio {
                             "AUDIO"
                         } else {
@@ -1229,6 +1270,8 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     );
                     SetWindowTextW(GetDlgItem(hwnd, NOTICE as i32), wide(if page.active_tab == Tab::Video {
                         "Video changes apply to your next connection."
+                    } else if page.active_tab == Tab::Input {
+                        "Enable BUD on the Network tab to use HID input.\nInput changes apply to your next connection."
                     } else if page.active_tab == Tab::Audio {
                         "Experimental audio changes apply on your next connection."
                     } else {
@@ -1428,6 +1471,24 @@ mod tests {
             check(page, AUDIO_RAW, true);
             assert_no_overlaps(page);
             capture(page, "audio");
+            SendMessageW(page, WM_COMMAND, INPUT_TAB, 0);
+            assert_ne!(IsWindowVisible(GetDlgItem(page, HID_MOUSE as i32)), 0);
+            assert_eq!(IsWindowVisible(GetDlgItem(page, GPU as i32)), 0);
+            #[cfg(feature = "experimental-bud")]
+            {
+                update_enabled(page);
+                assert_ne!(IsWindowEnabled(GetDlgItem(page, HID_MOUSE as i32)), 0);
+                check(page, HID_MOUSE, true);
+                check(page, BUD, false);
+                update_enabled(page);
+                assert_eq!(IsWindowEnabled(GetDlgItem(page, HID_MOUSE as i32)), 0);
+                assert!(checked(page, HID_MOUSE));
+                check(page, BUD, true);
+                update_enabled(page);
+            }
+            assert_no_overlaps(page);
+            capture(page, "input");
+
             SendMessageW(page, WM_COMMAND, NETWORK_TAB, 0);
             assert_eq!(IsWindowVisible(GetDlgItem(page, GPU as i32)), 0);
             assert!(checked(page, HEVC));
@@ -1465,6 +1526,8 @@ mod tests {
             assert!(manager.view().0.experimental_raw_audio);
             #[cfg(feature = "experimental-bud")]
             assert!(manager.view().0.experimental_bud);
+            #[cfg(feature = "experimental-bud")]
+            assert!(manager.view().0.hid_mouse_enabled());
             assert_eq!(manager.view().0.stun_urls.len(), 2);
             assert_eq!(manager.view().0.turn_urls.len(), 2);
             check(page, STUN_ONLY, true);
@@ -1504,6 +1567,8 @@ mod tests {
             #[cfg(feature = "vendor-video")]
             assert!(checked(page, ZERO_COPY));
             assert!(checked(page, HEVC));
+            #[cfg(feature = "experimental-bud")]
+            assert!(checked(page, HID_MOUSE));
             assert_eq!(
                 SendMessageW(GetDlgItem(page, GPU as i32), CB_GETCURSEL, 0, 0),
                 selected as isize

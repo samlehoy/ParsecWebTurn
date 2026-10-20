@@ -50,6 +50,8 @@ impl GpuPreference {
 pub struct Settings {
     #[cfg(feature = "experimental-bud")]
     pub experimental_bud: bool,
+    #[cfg(feature = "experimental-bud")]
+    pub experimental_hid_mouse: bool,
     pub prefer_hevc: bool,
     pub experimental_ten_bit: bool,
     pub event_logging: bool,
@@ -84,6 +86,8 @@ impl Default for Settings {
         Self {
             #[cfg(feature = "experimental-bud")]
             experimental_bud: false,
+            #[cfg(feature = "experimental-bud")]
+            experimental_hid_mouse: false,
             prefer_hevc: false,
             experimental_ten_bit: false,
             event_logging: false,
@@ -112,6 +116,11 @@ impl Default for Settings {
     }
 }
 impl Settings {
+    #[cfg(feature = "experimental-bud")]
+    pub fn hid_mouse_enabled(&self) -> bool {
+        self.experimental_bud && self.experimental_hid_mouse
+    }
+
     #[cfg(any(test, windows, not(feature = "diagnostics")))]
     fn fresh() -> Self {
         Self {
@@ -570,6 +579,20 @@ fn atomic_write(path: &std::path::Path, raw: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "experimental-bud")]
+    #[test]
+    fn hid_input_preference_roundtrips_without_enabling_webrtc_input() {
+        let mut s: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!s.hid_mouse_enabled());
+        s.experimental_hid_mouse = true;
+        assert!(!s.hid_mouse_enabled());
+        let restored: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(restored.experimental_hid_mouse);
+        assert!(!restored.hid_mouse_enabled());
+        s.experimental_bud = true;
+        assert!(s.hid_mouse_enabled());
+    }
+
     #[test]
     fn audio_defaults_and_limits_preserve_automatic_settings() {
         let mut settings = super::Settings::fresh();

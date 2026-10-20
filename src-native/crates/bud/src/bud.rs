@@ -1,7 +1,7 @@
 //! BUD lifecycle below account signaling, separate from the web WASM contract.
 use std::net::SocketAddr;
 
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{anyhow, ensure, Result};
 pub use lowlat_client::config::RelayTransport;
 use lowlat_client::config::{Port, Relay};
 use lowlat_client::driver::Units;
@@ -88,6 +88,7 @@ pub struct Session {
     prefer_hevc: bool,
     ten_bit: bool,
     raw_audio: bool,
+    hid_mouse: bool,
     cipher: Option<&'static str>,
 }
 
@@ -118,6 +119,7 @@ impl Session {
             prefer_hevc: hevc_available,
             ten_bit: hevc_available && ten_bit,
             raw_audio: false,
+            hid_mouse: false,
             cipher: None,
         })
     }
@@ -125,11 +127,21 @@ impl Session {
     pub fn request_keyframe(&self) -> bool {
         self.client.request_external_keyframe()
     }
-    #[cfg(feature = "usb-mouse-probe")]
-    pub fn usb_live_mouse_active(&self) -> bool {
+    pub fn hid_mouse_active(&self) -> bool {
         let telemetry = self.client.telemetry();
         telemetry.state.load(std::sync::atomic::Ordering::Acquire) == 1
-            && telemetry.usb_live_mouse_active.load(std::sync::atomic::Ordering::Acquire)
+            && telemetry
+                .hid_mouse_active
+                .load(std::sync::atomic::Ordering::Acquire)
+    }
+    pub fn enable_hid_mouse(&mut self, enabled: bool) {
+        self.hid_mouse = enabled;
+    }
+    pub fn hid_mouse_error(&self) -> u32 {
+        self.client
+            .telemetry()
+            .hid_mouse_error
+            .load(std::sync::atomic::Ordering::Acquire)
     }
     pub fn allow_raw_audio(&mut self, enabled: bool) {
         self.raw_audio = enabled;
@@ -171,6 +183,7 @@ impl Session {
         config.video.ten_bit = self.ten_bit;
         config.video.full_range = true;
         config.raw_audio = self.raw_audio;
+        config.hid_mouse = self.hid_mouse;
         let ours = self
             .client
             .new_attempt(id, config, Transport::Bud)
@@ -391,17 +404,13 @@ mod tests {
         assert_eq!(ours.fingerprint.len(), 64);
         assert_eq!(ours.aes256.len(), 254);
         assert!(session.ready("stale").is_err());
-        assert!(
-            session
-                .offer("duplicate", Route::Direct { stun: vec![] })
-                .is_err()
-        );
+        assert!(session
+            .offer("duplicate", Route::Direct { stun: vec![] })
+            .is_err());
         session.close();
         assert!(session.ready("isolated-test").is_err());
-        assert!(
-            session
-                .offer("second", Route::Direct { stun: vec![] })
-                .is_ok()
-        );
+        assert!(session
+            .offer("second", Route::Direct { stun: vec![] })
+            .is_ok());
     }
 }

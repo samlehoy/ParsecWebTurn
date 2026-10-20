@@ -902,13 +902,11 @@ fn backend_call(
                         if let Some(frame) = b.prepare_input_with_viewport(&message, viewport)? {
                             #[cfg(all(windows, feature = "experimental-bud"))]
                             if let Some(attempt) = &b.bud_attempt {
-                                #[cfg(feature = "usb-mouse-probe")]
-                                let normalized = if crate::hid_cursor::live_absolute_requested() {
-                                    crate::hid_cursor::absolute_motion(&frame, viewport)?
+                                let normalized = if attempt.hid_mouse_enabled() {
+                                    crate::hid_input::absolute_motion(&frame, viewport)?
                                 } else {
                                     None
                                 };
-                                #[cfg(feature = "usb-mouse-probe")]
                                 let frame = normalized.unwrap_or(frame);
                                 if attempt.send(&frame).is_err() {
                                     attempt.fail();

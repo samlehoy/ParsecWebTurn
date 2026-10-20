@@ -227,6 +227,8 @@ pub(crate) fn run(args: Attached, mut wake: Wake, running: &Running) {
     let mut shell = Shell::new(socket, wake, endpoint);
     let _ = epoch.set(shell.base());
     let mut driver = Driver::new(init, units, packets, emit.clone(), Arc::clone(&telemetry));
+    #[cfg(feature = "usb-hid-mouse")]
+    driver.enable_hid_mouse(config.hid_mouse);
     let mut reported: Vec<SocketAddr> = Vec::new();
     let mut offered = false;
     let mut pass: u32 = 0;
@@ -297,8 +299,8 @@ pub(crate) fn run(args: Attached, mut wake: Wake, running: &Running) {
         // way -- before a departure the application asked for is let go
         // without a word.
         if let Some(outcome) = ended {
-            #[cfg(feature = "usb-mouse-probe")]
-            driver.finish_usb_probe(shell.endpoint().session());
+            #[cfg(feature = "usb-hid-mouse")]
+            driver.finish_hid_mouse(shell.endpoint().session());
             release(&mut shell);
             telemetry.state.store(2, Ordering::Relaxed);
             emit.send(Event::Ended { outcome });
@@ -366,9 +368,9 @@ pub(crate) fn run(args: Attached, mut wake: Wake, running: &Running) {
             consumer.unpark();
         }
     }
-    #[cfg(feature = "usb-mouse-probe")]
+    #[cfg(feature = "usb-hid-mouse")]
     {
-        driver.finish_usb_probe(shell.endpoint().session());
+        driver.finish_hid_mouse(shell.endpoint().session());
         let _ = shell.turn(|_| {});
         let _ = shell.finish_output(std::time::Duration::from_millis(100));
     }

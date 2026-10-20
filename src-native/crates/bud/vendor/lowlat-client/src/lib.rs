@@ -36,8 +36,8 @@ pub mod input;
 pub mod seam;
 mod shell;
 pub mod sound;
-#[cfg(feature = "usb-mouse-probe")]
-mod usb_mouse_probe;
+#[cfg(feature = "usb-hid-mouse")]
+mod usb_hid_mouse;
 
 pub use config::Config;
 pub use driver::{Driver, Lag, Telemetry};

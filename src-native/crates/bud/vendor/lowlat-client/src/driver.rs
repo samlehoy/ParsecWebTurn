@@ -199,8 +199,10 @@ pub struct Lag {
 /// What the loop publishes about itself, for the seam to read from any thread.
 #[derive(Debug, Default)]
 pub struct Telemetry {
-    #[cfg(feature = "usb-mouse-probe")]
-    pub usb_live_mouse_active: AtomicBool,
+    #[cfg(feature = "usb-hid-mouse")]
+    pub hid_mouse_active: AtomicBool,
+    #[cfg(feature = "usb-hid-mouse")]
+    pub hid_mouse_error: AtomicU32,
     /// UDP payload bytes, including protocol/crypto/relay traffic.
     pub udp_received: AtomicU64,
     pub udp_sent: AtomicU64,
@@ -293,10 +295,10 @@ fn relay_outcome(relay: &Relay<'_>) -> Option<Outcome> {
 /// One session's driver.
 #[derive(Debug)]
 pub struct Driver {
-    #[cfg(feature = "usb-mouse-probe")]
-    usb_probe: Option<crate::usb_mouse_probe::Probe>,
-    #[cfg(feature = "usb-mouse-probe")]
-    usb_live_mouse: bool,
+    #[cfg(feature = "usb-hid-mouse")]
+    hid_mouse: Option<crate::usb_hid_mouse::Mouse>,
+    #[cfg(feature = "usb-hid-mouse")]
+    hid_mouse_enabled: bool,
     init: Init,
     units: Units,
     emit: events::Sender<Event>,
@@ -351,11 +353,10 @@ impl Driver {
         telemetry: Arc<Telemetry>,
     ) -> Self {
         Self {
-            #[cfg(feature = "usb-mouse-probe")]
-            usb_probe: None,
-            #[cfg(feature = "usb-mouse-probe")]
-            usb_live_mouse: crate::usb_mouse_probe::live_requested()
-                || crate::usb_mouse_probe::absolute_requested(),
+            #[cfg(feature = "usb-hid-mouse")]
+            hid_mouse: None,
+            #[cfg(feature = "usb-hid-mouse")]
+            hid_mouse_enabled: false,
             init,
             units,
             packets,
@@ -462,9 +463,11 @@ impl Driver {
                 self.loss_sampled_ms = now_ms;
                 self.telemetry.state.store(1, Ordering::Relaxed);
                 self.start(endpoint.session());
-                #[cfg(feature = "usb-mouse-probe")]
+                #[cfg(feature = "usb-hid-mouse")]
                 {
-                    self.usb_probe = crate::usb_mouse_probe::Probe::from_environment();
+                    self.hid_mouse = self
+                        .hid_mouse_enabled
+                        .then(crate::usb_hid_mouse::Mouse::default);
                 }
                 self.report_due_ms = Some(now_ms + REPORT_INTERVAL_MS);
                 self.emit.send(Event::Established { addr });
@@ -479,14 +482,20 @@ impl Driver {
             return None;
         }
 
-        #[cfg(feature = "usb-mouse-probe")]
+        #[cfg(feature = "usb-hid-mouse")]
         {
-            let frame = self.usb_probe.as_mut().and_then(|p| p.tick(now_ms));
-            self.usb_probe_send(endpoint.session(), frame);
-            self.telemetry.usb_live_mouse_active.store(
-                self.usb_probe
+            self.telemetry.hid_mouse_error.store(
+                self.hid_mouse
                     .as_ref()
-                    .is_some_and(crate::usb_mouse_probe::Probe::live_active),
+                    .map_or(0, crate::usb_hid_mouse::Mouse::error),
+                Ordering::Release,
+            );
+            let frame = self.hid_mouse.as_mut().and_then(|p| p.tick(now_ms));
+            self.hid_mouse_send(endpoint.session(), frame);
+            self.telemetry.hid_mouse_active.store(
+                self.hid_mouse
+                    .as_ref()
+                    .is_some_and(crate::usb_hid_mouse::Mouse::active),
                 Ordering::Release,
             );
         }
@@ -552,8 +561,8 @@ impl Driver {
     /// message reaches the host; [`Driver::left`] says when that is over.
     pub fn leave(&mut self, session: &mut Session<'_>, now_ms: f64) {
         if self.leaving.is_none() {
-            #[cfg(feature = "usb-mouse-probe")]
-            self.finish_usb_probe(session);
+            #[cfg(feature = "usb-hid-mouse")]
+            self.finish_hid_mouse(session);
             self.send_control(
                 session,
                 &Control {
@@ -685,7 +694,7 @@ impl Driver {
 
     pub(crate) fn send_external(&mut self, session: &mut Session<'_>, bytes: &[u8]) {
         if let Ok(mut message) = control::parse(bytes) {
-            #[cfg(feature = "usb-mouse-probe")]
+            #[cfg(feature = "usb-hid-mouse")]
             if self.route_usb_mouse(&message) {
                 return;
             }
@@ -696,14 +705,19 @@ impl Driver {
         }
     }
 
-    #[cfg(feature = "usb-mouse-probe")]
+    #[cfg(feature = "usb-hid-mouse")]
+    pub(crate) fn enable_hid_mouse(&mut self, enabled: bool) {
+        self.hid_mouse_enabled = enabled;
+    }
+
+    #[cfg(feature = "usb-hid-mouse")]
     fn route_usb_mouse(&mut self, message: &Control<'_>) -> bool {
-        if !self.usb_live_mouse {
+        if !self.hid_mouse_enabled {
             return false;
         }
-        let mouse = crate::usb_mouse_probe::mouse_opcode(message.opcode);
+        let mouse = crate::usb_hid_mouse::mouse_opcode(message.opcode);
         if mouse || message.opcode == op::RELEASE {
-            if let Some(probe) = &mut self.usb_probe {
+            if let Some(probe) = &mut self.hid_mouse {
                 probe.external_mouse(message.opcode, message.a0, message.a1, message.a2);
             }
         }
@@ -712,33 +726,30 @@ impl Driver {
         mouse
     }
 
-    #[cfg(feature = "usb-mouse-probe")]
-    fn usb_probe_send(
+    #[cfg(feature = "usb-hid-mouse")]
+    fn hid_mouse_send(
         &mut self,
         session: &mut Session<'_>,
-        frame: Option<[u8; crate::usb_mouse_probe::FRAME]>,
+        frame: Option<[u8; crate::usb_hid_mouse::FRAME]>,
     ) {
-        if let Some(mut frame) = frame {
-            if let Some(probe) = &self.usb_probe {
-                probe.prepare_frame(&mut frame);
-            }
+        if let Some(frame) = frame {
             let (header, body) = frame.split_at(13);
             let success = session.send_message(CONTROL_CHANNEL, header, body).is_ok();
-            if let Some(probe) = &mut self.usb_probe {
+            if let Some(probe) = &mut self.hid_mouse {
                 probe.sent(success);
             }
         }
     }
 
-    #[cfg(feature = "usb-mouse-probe")]
-    pub(crate) fn finish_usb_probe(&mut self, session: &mut Session<'_>) {
+    #[cfg(feature = "usb-hid-mouse")]
+    pub(crate) fn finish_hid_mouse(&mut self, session: &mut Session<'_>) {
         self.telemetry
-            .usb_live_mouse_active
+            .hid_mouse_active
             .store(false, Ordering::Release);
-        let release = self.usb_probe.as_mut().and_then(|p| p.release_input());
-        self.usb_probe_send(session, release);
-        let frame = self.usb_probe.as_mut().and_then(|p| p.remove());
-        self.usb_probe_send(session, frame);
+        let release = self.hid_mouse.as_mut().and_then(|p| p.release_input());
+        self.hid_mouse_send(session, release);
+        let frame = self.hid_mouse.as_mut().and_then(|p| p.remove());
+        self.hid_mouse_send(session, frame);
     }
 
     fn send_control(&mut self, session: &mut Session<'_>, control: &Control<'_>) {
@@ -831,13 +842,13 @@ impl Driver {
                 }
                 *count = count.saturating_add(1);
             }
-            #[cfg(feature = "usb-mouse-probe")]
+            #[cfg(feature = "usb-hid-mouse")]
             {
                 let frame = self
-                    .usb_probe
+                    .hid_mouse
                     .as_mut()
                     .and_then(|p| p.incoming(inbound.get(..len).unwrap_or_default()));
-                self.usb_probe_send(session, frame);
+                self.hid_mouse_send(session, frame);
             }
             {
                 self.emit.send(Event::ExternalControl {
@@ -1157,9 +1168,9 @@ fn negotiated_encoder_flags(external: u32, initial: u32) -> u32 {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "usb-mouse-probe")]
+    #[cfg(feature = "usb-hid-mouse")]
     #[test]
-    fn usb_mouse_probe_live_route_never_duplicates_or_falls_back() {
+    fn usb_hid_mouse_live_route_never_duplicates_or_falls_back() {
         let (emit, _) = events::queue();
         let mut driver = Driver::new(
             crate::config::Config::default().init(&crate::config::Caps::default()),
@@ -1169,7 +1180,7 @@ mod tests {
             Arc::new(Telemetry::default()),
         );
         for live in [false, true] {
-            driver.usb_live_mouse = live;
+            driver.hid_mouse_enabled = live;
             for opcode in [
                 op::MOUSE_BUTTON,
                 op::MOUSE_WHEEL,
