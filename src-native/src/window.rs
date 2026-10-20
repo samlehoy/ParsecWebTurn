@@ -842,6 +842,24 @@ impl Window {
                 }
                 if ClipCursor(&rect) != 0 {
                     self.mouse_clipped.store(true, Ordering::Release);
+                    #[cfg(feature = "usb-mouse-probe")]
+                    if self.hid_raw_mouse.load(Ordering::Acquire)
+                        && crate::hid_cursor::visible_position(
+                            *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner()),
+                        )
+                        .is_some()
+                    {
+                        // Do not depend on ClipCursor eagerly moving an
+                        // already stationary pointer on every Windows build.
+                        // Absolute echoes are ignored while HID Raw Input owns motion.
+                        let mut actual = POINT::default();
+                        if GetCursorPos(&mut actual) == 0
+                            || actual.x != rect.left
+                            || actual.y != rect.top
+                        {
+                            SetCursorPos(rect.left, rect.top);
+                        }
+                    }
                     return true;
                 }
             }
@@ -1653,6 +1671,7 @@ mod tests {
             }
         };
         let window = Window::create_mode(false, false, false, false, false).unwrap();
+        #[track_caller]
         fn wait(mut ready: impl FnMut() -> bool) {
             let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
             while !ready() {
@@ -1784,6 +1803,20 @@ mod tests {
             window.set_usb_cursor_active(generation, false);
             assert!(window.hid_cursor_active.load(Ordering::Acquire));
         }));
+        if result.is_err() {
+            unsafe {
+                let mut point = POINT::default();
+                GetCursorPos(&mut point);
+                let mut clip = RECT::default();
+                GetClipCursor(&mut clip);
+                eprintln!("HID cursor test state: foreground={}, ready={}, visible={}, hid={}, raw={}, suspended={}, detached={}, position=({},{}), clip=({},{},{},{}), dimensions={:?}, host={:?}",
+                GetForegroundWindow()==window.handle(), window.video_ready.load(Ordering::Acquire),
+                window.video_visible.load(Ordering::Acquire),window.hid_cursor_active.load(Ordering::Acquire),
+                window.hid_raw_mouse.load(Ordering::Acquire),window.input_suspended.load(Ordering::Acquire),
+                window.input_state.lock().unwrap().detached,point.x,point.y,clip.left,clip.top,clip.right,clip.bottom,
+                *window.dimensions.lock().unwrap(),*window.host_cursor.lock().unwrap());
+            }
+        }
         window.close();
         result.unwrap();
     }
