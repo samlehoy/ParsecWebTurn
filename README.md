@@ -218,6 +218,15 @@ short descriptions; detailed error information remains available to diagnostics.
 GPU decoder surfaces are evidence of a GPU video path, not independent proof of
 hardware execution, so uncertain hardware decoding is labelled **Likely**.
 
+Detailed host video/audio timing is requested automatically while Connection
+stats is visible or event logging is enabled, with no separate setting. The
+experimental timing section shows reported values as latest/average/peak in
+milliseconds, sample counts and freshness. Missing reports stay unknown. These
+are host processing durations, not end-to-end latency or GPU execution timings;
+the uncertain audio intermediate field is not presented as encoder time. There
+is no per-frame file logging. The collector is covered by synthetic tests;
+live stock-host validation over BUD and WebRTC is still pending.
+
 ## Saved data and updates
 
 `settings.json` beside the executable stores native connection/video settings

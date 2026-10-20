@@ -41,6 +41,13 @@ struct Statistics {
     generation: u64,
 }
 impl Statistics {
+    fn consume_timing(&self, event: &Event) -> bool {
+        if let Event::ExternalControl { bytes } = event {
+            self.shared.host_timing.receive(self.generation, bytes)
+        } else {
+            false
+        }
+    }
     fn start(shared: Arc<crate::stats::Shared>) -> Self {
         let generation = shared.begin();
         shared.publish(
@@ -56,6 +63,7 @@ impl Statistics {
 }
 impl Drop for Statistics {
     fn drop(&mut self) {
+        self.shared.host_timing.end(self.generation);
         self.shared.publish(
             self.generation,
             crate::stats::Sample {
@@ -637,6 +645,8 @@ fn run(
     }
     let mut deadline = Instant::now() + Duration::from_secs(30);
     let mut established = false;
+    let mut timing_requests = crate::frame_timing::Requests::default();
+    let mut timing_active = false;
     let mut answered_at: Option<Instant> = None;
     let mut direct_attempt = !settings.force_relay;
     let mut wire_id = id.to_owned();
@@ -711,6 +721,29 @@ fn run(
             events.push(event);
         }
         let transport = session.snapshot();
+        if established && statistics.shared.host_timing.current(statistics.generation) {
+            let desired = statistics.shared.requested();
+            if let Some(request) = timing_requests.update(desired) {
+                if desired {
+                    timing_active = true;
+                }
+                statistics
+                    .shared
+                    .host_timing
+                    .set_requested(statistics.generation, desired);
+                if session.send_control(&request).is_err() {
+                    timing_requests.fail();
+                    statistics.shared.host_timing.failed(statistics.generation);
+                    crate::event_log::record(
+                        "WARN",
+                        "host_timing_request_failed",
+                        json!({"transport":"BUD"}),
+                    );
+                } else if !desired {
+                    timing_active = false;
+                }
+            }
+        }
         let hid_current = session.hid_input_state();
         window.set_hid_input_active(hid_generation, hid_current[0].0, hid_current[1].0);
         for (index, (enabled, device)) in [(hid_mouse, "mouse"), (hid_keyboard, "keyboard")]
@@ -774,6 +807,9 @@ fn run(
         }
         let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
         for event in events {
+            if statistics.consume_timing(&event) {
+                continue;
+            }
             ensure!(
                 shared.events.len() < 64 && shared.controls.len() < 64,
                 "BUD application queue full"
@@ -906,6 +942,9 @@ fn run(
                 .and_then(VecDeque::pop_front)
                 .context("BUD configured routes exhausted")?;
             direct_attempt = false;
+            timing_requests = Default::default();
+            timing_active = false;
+            statistics.shared.host_timing.begin(statistics.generation);
             drop(source);
             let mut old = shared_session
                 .lock()
@@ -960,6 +999,15 @@ fn run(
         // Packet arrivals unpark this consumer; this timeout only checks lifecycle/stats.
         std::thread::park_timeout(Duration::from_millis(100));
     }
+    if timing_active {
+        if let Some(session) = shared_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            let _ = session.send_control(&crate::frame_timing::request(false));
+        }
+    }
     Ok(())
 }
 
@@ -988,6 +1036,38 @@ fn native_attempt_id() -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn timing_reports_bypass_application_events_and_retire_with_their_generation() {
+        let bus = std::sync::Arc::new(crate::stats::Shared::default());
+        let statistics = super::Statistics::start(bus.clone());
+        bus.host_timing.set_requested(statistics.generation, true);
+        let event = parsec_native_bud::bud::Event::ExternalControl {
+            bytes: crate::frame_timing::tests::packet(1, 0, &[8., 0., 20.]),
+        };
+        for _ in 0..10_000 {
+            assert!(statistics.consume_timing(&event));
+        }
+        assert_eq!(
+            bus.host_timing
+                .snapshot(statistics.generation)
+                .audio
+                .unwrap()
+                .count,
+            10_000
+        );
+        assert!(
+            !statistics.consume_timing(&parsec_native_bud::bud::Event::ExternalControl {
+                bytes: vec![0; 13]
+            })
+        );
+        let newer = super::Statistics::start(bus.clone());
+        bus.host_timing.set_requested(newer.generation, true);
+        assert!(statistics.consume_timing(&event));
+        drop(statistics);
+        let report = bus.host_timing.snapshot(newer.generation);
+        assert!(report.requested);
+        assert!(report.audio.is_none());
+    }
     use super::*;
     #[test]
     fn turn_urls_prefer_udp_then_tls_then_tcp80_without_rewriting_ports() {

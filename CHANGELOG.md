@@ -5,6 +5,7 @@ builds, not published stable releases.
 
 ## Unreleased
 
+- **Detailed host timing (experimental):** automatically request video/audio timing while Connection stats is visible or event logging is enabled. Show reported processing durations, video capture/encode segments and frame/block intervals with latest/average/peak values, report counts and freshness. Bounded collectors bypass application control queues in BUD and WebRTC; malformed or unavailable diagnostics do not fail the stream. No separate switch or per-frame file logging. Synthetic validation only; live stock-host testing is pending.
 - **Multichannel audio (experimental, BUD; synthetic tests only):** optional automatic 5.1/7.1 requests based on the Windows output layout, per-packet Opus/PCM format handling, native multichannel playback, and actual channel information in Connection stats. Stereo remains the default and the host may fall back to stereo. Validation covers synthetic Opus/PCM tests and silent WASAPI output only; live host-to-client operation, channel ordering and audible surround playback remain unverified. WebRTC retains stereo.
 - **Relative mouse transition:** hide the local cursor before Raw Input registration and confinement, while retaining cursor restoration if acquisition fails. This narrows the visible transition; the reported intermittent flash still needs live verification.
 

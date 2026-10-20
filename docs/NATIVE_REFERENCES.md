@@ -9,6 +9,11 @@ Historical measurements below should be read alongside the current root README.
 
 ## lowlat
 
+The opcode-35 diagnostic flags and opcode-34 replies were compared against the
+pinned WASM and installed stock host on 2026-10-20. The second flag selects
+audio timing in the inspected host. See [frame timing diagnostics](frame-timing-diagnostics.md)
+for the static evidence, wire formats, limits and native diagnostic integration.
+
 [nomi-san/lowlat](https://github.com/nomi-san/lowlat) implements independent Parsec
 host and client components. The originally reviewed **main** revision below
 contains the Linux host only. The maintainer subsequently pointed out that the

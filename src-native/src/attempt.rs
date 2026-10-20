@@ -200,6 +200,8 @@ struct Progress {
 struct Completion {
     #[cfg(windows)]
     telemetry: Option<(Arc<crate::stats::Shared>, u64)>,
+    #[cfg(windows)]
+    timing_active: bool,
     started_at: std::time::Instant,
     closing: bool,
     output: Option<Output>,
@@ -219,6 +221,8 @@ struct Completion {
 
 enum Delivery {
     Queued,
+    #[cfg(windows)]
+    Timing(Option<(Arc<crate::stats::Shared>, u64)>),
     Audio(Option<crate::audio_stream::Sender>),
     Video {
         inspector: Arc<Mutex<crate::video_stream::Inspector>>,
@@ -230,6 +234,13 @@ impl Delivery {
     fn submit(self, bytes: &[u8]) -> Option<bool> {
         match self {
             Self::Queued => None,
+            #[cfg(windows)]
+            Self::Timing(link) => {
+                if let Some((bus, generation)) = link {
+                    bus.host_timing.receive(generation, bytes);
+                }
+                None
+            }
             Self::Audio(audio) => Some(!audio.is_some_and(|sender| sender.submit(bytes))),
             Self::Video {
                 inspector,
@@ -322,6 +333,10 @@ impl Completion {
             self.progress.channel_bytes_received[i].saturating_add(bytes.len() as u64);
         self.progress.channel_max_message_bytes[i] =
             self.progress.channel_max_message_bytes[i].max(bytes.len());
+        #[cfg(windows)]
+        if channel == 0 && self.discard_unavailable_media && crate::frame_timing::is_report(bytes) {
+            return Some(Delivery::Timing(self.telemetry.clone()));
+        }
         if channel != 0 && self.discard_unavailable_media {
             if channel == 1 {
                 return Some(Delivery::Video {
@@ -382,11 +397,11 @@ async fn read_channel(
     let mut buffer = vec![0; MAX_CHANNEL_MESSAGE];
     // This session mode is immutable. Native media goes straight to its sink;
     // only control/probe receipts need an owned copy for the guest queue.
-    let queue_receipts = id == 0
-        || !shared
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .discard_unavailable_media;
+    let native_mode = shared
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .discard_unavailable_media;
+    let queue_receipts = id == 0 || !native_mode;
     loop {
         let read = channel.read_data_channel(&mut buffer).await;
         let len = read.as_ref().map_or(0, |(len, _)| *len);
@@ -397,7 +412,12 @@ async fn read_channel(
                 None
             }
             Ok((len, text)) => {
-                let payload = (queue_receipts && !text && len <= MAX_CHANNEL_MESSAGE)
+                #[cfg(windows)]
+                let timing =
+                    native_mode && id == 0 && crate::frame_timing::is_report(&buffer[..len]);
+                #[cfg(not(windows))]
+                let timing = false;
+                let payload = (queue_receipts && !timing && !text && len <= MAX_CHANNEL_MESSAGE)
                     .then(|| Bytes::copy_from_slice(&buffer[..len]));
                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                 match state.prepare_receive(id, text, &buffer[..len]) {
@@ -517,6 +537,8 @@ impl Attempt {
         let completion = Arc::new(Mutex::new(Completion {
             #[cfg(windows)]
             telemetry: None,
+            #[cfg(windows)]
+            timing_active: false,
             started_at: std::time::Instant::now(),
             closing: false,
             output: Some(output),
@@ -1185,6 +1207,8 @@ fn worker(
         if !ready {
             bail!("native offer publication failed or was cancelled");
         }
+        #[cfg(windows)]
+        let timing_task = runtime.spawn(collect_host_timing(shared.clone(), channels[0].clone()));
         let mut deadline = EstablishmentDeadline::new(std::time::Instant::now());
         #[cfg(windows)]
         let mut next_video_recovery_check = std::time::Instant::now();
@@ -1239,6 +1263,11 @@ fn worker(
                 break;
             }
             if matches!(command, Command::Disconnect) {
+                #[cfg(windows)]
+                {
+                    timing_task.abort();
+                    runtime.block_on(stop_host_timing(&shared, &channels[0]));
+                }
                 let _ = runtime.block_on(send_disconnect(&channels[0]));
                 break;
             }
@@ -1353,6 +1382,14 @@ fn worker(
                 .await
             })??;
         }
+        #[cfg(windows)]
+        {
+            timing_task.abort();
+            runtime.block_on(async {
+                let _ = timing_task.await;
+                stop_host_timing(&shared, &channels[0]).await;
+            });
+        }
         drop((offer, channels));
         Ok(())
     })();
@@ -1438,6 +1475,92 @@ fn worker(
         bail!("native offer peer did not close within the deadline");
     }
     outcome
+}
+
+#[cfg(windows)]
+async fn stop_host_timing(
+    state: &Mutex<Completion>,
+    channel: &webrtc::data_channel::RTCDataChannel,
+) {
+    let (link, active) = {
+        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            state.telemetry.clone(),
+            std::mem::take(&mut state.timing_active),
+        )
+    };
+    if active {
+        let _ = tokio::time::timeout(
+            Duration::from_millis(250),
+            channel.send(&Bytes::copy_from_slice(&crate::frame_timing::request(
+                false,
+            ))),
+        )
+        .await;
+    }
+    if let Some((bus, generation)) = link {
+        bus.host_timing.end(generation);
+    }
+}
+
+#[cfg(windows)]
+async fn collect_host_timing(
+    state: Arc<Mutex<Completion>>,
+    channel: Arc<webrtc::data_channel::RTCDataChannel>,
+) {
+    let mut requests = crate::frame_timing::Requests::default();
+    loop {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let link = {
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
+            if s.cancelled || s.closing || s.progress.failed {
+                break;
+            }
+            if !s.progress.control_ready {
+                continue;
+            }
+            s.telemetry.clone()
+        };
+        let Some((bus, generation)) = link else {
+            continue;
+        };
+        if !bus.host_timing.current(generation) {
+            break;
+        }
+        let desired = bus.requested();
+        let Some(payload) = requests.update(desired) else {
+            continue;
+        };
+        if desired {
+            state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .timing_active = true;
+        }
+        bus.host_timing.set_requested(generation, desired);
+        if !matches!(
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                channel.send(&Bytes::copy_from_slice(&payload))
+            )
+            .await,
+            Ok(Ok(_))
+        ) {
+            bus.host_timing.failed(generation);
+            crate::event_log::record(
+                "WARN",
+                "host_timing_request_failed",
+                serde_json::json!({"transport":"WebRTC"}),
+            );
+            break;
+        }
+        if !desired {
+            state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .timing_active = false;
+        }
+    }
 }
 
 pub(crate) async fn send_disconnect(channel: &webrtc::data_channel::RTCDataChannel) -> Result<()> {
@@ -1675,6 +1798,8 @@ mod tests {
         Completion {
             #[cfg(windows)]
             telemetry: None,
+            #[cfg(windows)]
+            timing_active: false,
             started_at: std::time::Instant::now(),
             closing: false,
             output: None,
@@ -1690,6 +1815,37 @@ mod tests {
             video_output: None,
             audio_stream: None,
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn host_timing_bursts_bypass_the_control_queue_without_changing_normal_delivery() {
+        let bus = Arc::new(crate::stats::Shared::default());
+        let generation = bus.begin();
+        bus.host_timing.set_requested(generation, true);
+        let mut state = empty_completion();
+        state.telemetry = Some((bus.clone(), generation));
+        state.discard_unavailable_media = true;
+        let frame = crate::frame_timing::tests::packet(0, 0, &[12., 2., 16., 4.]);
+        for _ in 0..10_000 {
+            assert!(state.receive(0, false, &frame));
+        }
+        assert!(!state.progress.failed);
+        assert!(state.messages.is_empty());
+        assert_eq!(state.message_bytes, 0);
+        assert_eq!(
+            bus.host_timing.snapshot(generation).video[0]
+                .as_ref()
+                .unwrap()
+                .count,
+            10_000
+        );
+        assert!(state.receive(0, false, &[0; 13]));
+        assert_eq!(state.messages.len(), 1);
+        // Synthetic transport probes still retain arbitrary control receipts.
+        let mut probe = empty_completion();
+        assert!(probe.receive(0, false, &frame));
+        assert_eq!(probe.messages.len(), 1);
     }
 
     #[test]

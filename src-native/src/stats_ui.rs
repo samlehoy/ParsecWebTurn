@@ -1,4 +1,4 @@
-//! Read-only, modeless native statistics. Painting never touches video textures.
+//! Modeless native statistics. Painting never touches video textures.
 use crate::stats::{Rates, Sample, Shared, Values};
 use std::{
     ptr::{null, null_mut},
@@ -120,6 +120,89 @@ fn reported(s: &str) -> String {
     } else {
         s.into()
     }
+}
+fn host_timing_rows(s: &crate::frame_timing::Snapshot) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    if !s.requested && !s.request_failed {
+        return rows;
+    }
+    rows.push(("HOST TIMING (EXPERIMENTAL)".into(), String::new()));
+    if s.request_failed {
+        rows.push(("Host timing".into(), "Unavailable (request failed)".into()));
+        return rows;
+    }
+    rows.push((
+        "Timing values".into(),
+        "Latest / average / peak (ms)".into(),
+    ));
+    let value = |series: &crate::frame_timing::Series, i: usize| {
+        let n = |v: f64| {
+            if v < 1_000_000. {
+                format!("{v:.2}")
+            } else {
+                format!("{v:.2e}")
+            }
+        };
+        format!(
+            "{} / {} / {}",
+            n(series.last[i]),
+            n(series.mean[i]),
+            n(series.peak[i])
+        )
+    };
+    let age = |series: &crate::frame_timing::Series| {
+        let seconds = series.at.elapsed().as_secs_f64();
+        if seconds > 3. {
+            format!("Stale ({seconds:.1} s old)")
+        } else {
+            format!("{seconds:.1} s")
+        }
+    };
+    if s.video.iter().all(Option::is_none) {
+        rows.push(("Video timing".into(), "Not reported by host".into()));
+    }
+    for (stream, series) in s.video.iter().enumerate() {
+        let Some(series) = series else {
+            continue;
+        };
+        let prefix = if stream == 0 {
+            String::new()
+        } else {
+            format!("Stream {stream} ")
+        };
+        for (i, label) in [
+            "Video processing",
+            "Capture segment",
+            "Video frame interval",
+            "Host encode",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            rows.push((format!("{prefix}{label}"), value(series, i)));
+        }
+        rows.push((
+            format!("{prefix}Video timing reports"),
+            series.count.to_string(),
+        ));
+        rows.push((format!("{prefix}Video report age"), age(series)));
+    }
+    if let Some(series) = &s.audio {
+        rows.push(("Audio processing".into(), value(series, 0)));
+        rows.push(("Audio block interval".into(), value(series, 2)));
+        // The intermediate host slot is not a complete per-peer codec timing.
+        rows.push(("Audio timing reports".into(), series.count.to_string()));
+        rows.push(("Audio report age".into(), age(series)));
+    } else {
+        rows.push(("Audio timing".into(), "Not reported by host".into()));
+    }
+    if s.rejected > 0 {
+        rows.push(("Invalid timing reports".into(), s.rejected.to_string()));
+    }
+    if s.unknown > 0 {
+        rows.push(("Unknown timing formats".into(), s.unknown.to_string()));
+    }
+    rows
 }
 fn webrtc_network_rows(s: &Sample, row: &mut impl FnMut(&str, String)) {
     row("NETWORK", String::new());
@@ -564,7 +647,11 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
         );
     }
     y += (cards.len().div_ceil(2) * 100) as i32 + 18;
-    for (label, value) in rows(&page.sample, &page.values, page.usage) {
+    let timing = page.bus.host_timing.snapshot(page.sample.generation);
+    for (label, value) in rows(&page.sample, &page.values, page.usage)
+        .into_iter()
+        .chain(host_timing_rows(&timing))
+    {
         let section = value.is_empty();
         let h = if section { 48 } else { 44 };
         text(
@@ -604,6 +691,11 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
     };
     #[cfg(not(feature = "experimental-bud"))]
     let footer = "Traffic is measured usage, not available bandwidth. RTT is the active ICE path's round-trip time, not ICMP ping. Local dropped frames are not network packet loss. Missing values remain unknown.";
+    let footer = if timing.requested {
+        format!("{footer} Host timing averages and peaks cover the current diagnostic collection. These are host durations, not capture-to-display latency or GPU execution times.")
+    } else {
+        footer.to_owned()
+    };
     // Measure wrapped text using the same font and width as the actual paint.
     // The BUD explanation can exceed a fixed-height box, especially on resize.
     let mut footer_rect = RECT {
@@ -615,12 +707,12 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
     SelectObject(memory, page.font);
     DrawTextW(
         memory,
-        wide(footer).as_ptr(),
+        wide(&footer).as_ptr(),
         -1,
         &mut footer_rect,
         DT_LEFT | DT_WORDBREAK | DT_NOPREFIX | DT_CALCRECT,
     );
-    text(memory, page.font, MUTED, footer, footer_rect);
+    text(memory, page.font, MUTED, &footer, footer_rect);
     y = footer_rect.bottom + 24;
     page.height = y + page.scroll;
     let info = SCROLLINFO {
@@ -750,6 +842,40 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn timing_rows_preserve_unknown_and_stale_values_and_do_not_invent_audio_encode_time() {
+        let bus = crate::frame_timing::Shared::default();
+        bus.begin(1);
+        assert!(super::host_timing_rows(&bus.snapshot(1)).is_empty());
+        bus.set_requested(1, true);
+        let waiting = super::host_timing_rows(&bus.snapshot(1));
+        assert!(waiting
+            .iter()
+            .any(|(k, v)| k == "Video timing" && v == "Not reported by host"));
+        bus.receive(
+            1,
+            &crate::frame_timing::tests::packet(0, 0, &[12., 2., 16., 4.]),
+        );
+        bus.receive(1, &crate::frame_timing::tests::packet(1, 0, &[8., 0., 20.]));
+        let mut report = bus.snapshot(1);
+        report.video[0].as_mut().unwrap().at =
+            std::time::Instant::now() - std::time::Duration::from_secs(5);
+        let rows = super::host_timing_rows(&report);
+        assert!(rows
+            .iter()
+            .any(|(k, v)| k == "Host encode" && v == "4.00 / 4.00 / 4.00"));
+        assert!(rows
+            .iter()
+            .any(|(k, v)| k == "Video report age" && v.starts_with("Stale")));
+        assert!(rows
+            .iter()
+            .any(|(k, v)| k == "Audio processing" && v == "8.00 / 8.00 / 8.00"));
+        assert!(!rows.iter().any(|(k, _)| k == "Audio encode"));
+        bus.failed(1);
+        assert!(super::host_timing_rows(&bus.snapshot(1))
+            .iter()
+            .any(|(_, v)| v.contains("request failed")));
+    }
     #[test]
     fn rgb_output_precision_is_observed_separately_from_decoded_precision() {
         let mut sample = Sample {

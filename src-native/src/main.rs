@@ -51,6 +51,8 @@ mod event_queue;
 mod execution_diagnostics;
 mod filesystem;
 #[cfg(windows)]
+mod frame_timing;
+#[cfg(windows)]
 mod fullscreen;
 #[cfg(windows)]
 mod gpu_windows;
