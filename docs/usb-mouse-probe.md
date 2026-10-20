@@ -129,3 +129,13 @@ consumed once, both held input states are released before removal, and input
 contents remain absent from the event log. A focused regression checks the
 single announcement, descriptor IDs/lengths, request correlation for both
 payload sizes, keyboard LED output and both release reports before teardown.
+
+The [corrected build](https://github.com/vampywiz17/ParsecWebTurn/actions/runs/39418023083)
+from `6c01715` passed seven HID protocol/input checks, three settings/desktop
+checks, the native Settings UI check and strict vendored-client Clippy. The
+Input-tab screenshot was visually checked. Its standalone EXE is 18,105,856
+bytes, SHA-256
+`f80d506d1f474db959277f111e4c9ca97a938fa9b483aae1e0a265ce8f631631`.
+This verifies the implementation's synthetic correlations and lifecycle;
+simultaneous mouse/keyboard acceptance on the real host still needs the user's
+live test. The user has separately confirmed working keyboard-only forwarding.
