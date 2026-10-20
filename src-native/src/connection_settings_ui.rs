@@ -657,7 +657,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     );
     check(hwnd, AUDIO_RAW, s.experimental_raw_audio);
     page.building_tab = Some(Tab::Input);
-    row_label(hwnd,page,"Mouse","Experimental absolute USB HID mouse over BUD.\nEnable USB/Yubikey passthrough on the host.\nSupports a single physical or virtual display.",242,0,64);
+    row_label(hwnd,page,"Mouse","Experimental USB HID mouse over BUD.\nEnable USB/Yubikey passthrough on the host.\nSupports a single physical or virtual display.",242,0,64);
     add(
         hwnd,
         page,
@@ -685,7 +685,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     );
     #[cfg(feature = "experimental-bud")]
     check(hwnd, HID_KEYBOARD, s.experimental_hid_keyboard);
-    row_label(hwnd,page,"Compatibility","Mouse: desktop movement, buttons and scrolling.\nRelative mouse aiming in games is not supported.\nKeyboard layout is not switched automatically.",466,0,64);
+    row_label(hwnd,page,"Compatibility","Absolute desktop and relative camera movement.\nCamera mode follows the host cursor state.\nKeyboard layout is not switched automatically.",466,0,64);
 
     page.building_tab = None;
     add(hwnd, page, "STATIC",

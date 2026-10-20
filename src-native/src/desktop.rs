@@ -292,6 +292,25 @@ fn dispatch_input_event(
             }
         }
     }
+    #[cfg(feature = "experimental-bud")]
+    if let Event::RelativeMode(active) = &event {
+        let backend = store
+            .data()
+            .backend
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(attempt) = &backend.bud_attempt {
+            // Adapter-only mode control follows actual native capture, before
+            // subsequent motion/buttons. Never sent on WebRTC or to the host.
+            if attempt.hid_mouse_enabled()
+                && attempt
+                    .send(&crate::control::header(3, 3, i32::from(*active), 0))
+                    .is_err()
+            {
+                attempt.fail();
+            }
+        }
+    }
     let (name, values, count) = match event {
         #[cfg(feature = "experimental-bud")]
         Event::HidInputRelease => return Ok(()),

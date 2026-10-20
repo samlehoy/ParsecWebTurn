@@ -34,8 +34,8 @@ impl Kind {
                 config: input::CONFIG,
                 report: input::REPORT,
                 product: "Experimental USB HID mouse",
-                serial: "ABS-LIVE",
-                input_bytes: 7,
+                serial: "MOUSE-DUAL",
+                input_bytes: 8,
             },
             Self::Keyboard => Layout {
                 id: keyboard::ID,
@@ -47,12 +47,12 @@ impl Kind {
                 input_bytes: keyboard::BYTES,
             },
             Self::Both => Layout {
-                id: 0xffff_f006,
+                id: 0xffff_f008,
                 device: &BOTH_DEVICE,
                 config: &BOTH_CONFIG,
                 report: &BOTH_REPORT,
                 product: "Experimental USB HID mouse and keyboard",
-                serial: "INPUT-COMBINED",
+                serial: "INPUT-DUAL-MOUSE",
                 input_bytes: keyboard::BYTES + 1,
             },
         }
@@ -69,37 +69,34 @@ const fn copy_descriptor<const N: usize>(source: &[u8]) -> [u8; N] {
 }
 const BOTH_DEVICE: [u8; 18] = {
     let mut r = copy_descriptor::<18>(keyboard::DEVICE);
-    r[10] = 6;
+    r[10] = 8;
     r
 };
-const BOTH_REPORT: [u8; input::REPORT.len() + keyboard::REPORT.len() + 4] = {
-    let mut r = [0; input::REPORT.len() + keyboard::REPORT.len() + 4];
-    let mut dst = 0;
-    let mut part = 0;
-    while part < 2 {
-        let source = if part == 0 {
-            input::REPORT
-        } else {
-            keyboard::REPORT
-        };
-        let mut i = 0;
-        while i < source.len() {
-            if i == 6 {
-                r[dst] = 0x85;
-                r[dst + 1] = (part + 1) as u8;
-                dst += 2;
-            }
-            r[dst] = source[i];
-            dst += 1;
-            i += 1;
+const BOTH_REPORT: [u8; input::REPORT.len() + keyboard::REPORT.len() + 2] = {
+    let mut r = [0; input::REPORT.len() + keyboard::REPORT.len() + 2];
+    let mut i = 0;
+    while i < input::REPORT.len() {
+        r[i] = input::REPORT[i];
+        i += 1;
+    }
+    let mut dst = i;
+    i = 0;
+    while i < keyboard::REPORT.len() {
+        if i == 6 {
+            r[dst] = 0x85;
+            r[dst + 1] = 2;
+            dst += 2;
         }
-        part += 1;
+        r[dst] = keyboard::REPORT[i];
+        dst += 1;
+        i += 1;
     }
     r
 };
 const BOTH_CONFIG: [u8; 34] = {
     let mut r = copy_descriptor::<34>(keyboard::CONFIG);
     r[25] = BOTH_REPORT.len() as u8;
+    r[26] = (BOTH_REPORT.len() >> 8) as u8;
     r
 };
 #[derive(Debug, Clone, Copy)]
@@ -135,15 +132,14 @@ impl Pair {
             self.keyboard
                 .next(now)
                 .map(|r| r.numbered(2))
-                .or_else(|| self.mouse.next(now).map(|r| r.numbered(1)))
+                .or_else(|| self.mouse.next(now))
         } else {
             self.mouse
                 .next(now)
-                .map(|r| r.numbered(1))
                 .or_else(|| self.keyboard.next(now).map(|r| r.numbered(2)))
         };
         if let Some(r) = &report {
-            self.keyboard_next = r.bytes[0] == 1;
+            self.keyboard_next = r.bytes[0] != 2;
         }
         report
     }
@@ -152,7 +148,6 @@ impl Pair {
         self.keyboard.reset();
         self.mouse
             .release()
-            .map(|r| r.numbered(1))
             .or_else(|| self.keyboard.release().map(|r| r.numbered(2)))
     }
     fn start(&mut self) {
@@ -452,7 +447,7 @@ impl Device {
         self.announced && !self.removed && self.error == 0 && self.ready
     }
     pub(crate) fn external_input(&mut self, opcode: u8, a: u32, b: u32, c: u32) {
-        if self.active() {
+        if self.active() || (!self.removed && self.error == 0 && opcode == 3 && a == 3) {
             self.input.command(opcode, a, b, c);
         }
     }
@@ -535,9 +530,9 @@ mod tests {
         d.external_input(0, 225, 0, 1);
         d.external_input(0, 4, 0, 1);
         for (time, id, report_id, len) in [
-            (2004.0, 102, 1, 8),
+            (2004.0, 102, 1, 5),
             (2008.0, 103, 2, 30),
-            (2012.0, 104, 1, 8),
+            (2012.0, 104, 3, 8),
             (2016.0, 105, 2, 30),
         ] {
             let f = d.tick(time).unwrap();
@@ -559,10 +554,10 @@ mod tests {
         put(&mut r, 1042, 77);
         let ack = d.incoming(&frame(&r, layout.id)).unwrap();
         assert_eq!((dword(&ack, 25), dword(&ack, 21 + 1036)), (2, 77));
-        for (id, report_id) in [(106, 1), (107, 2)] {
+        for (id, report_id) in [(106, 3), (107, 2)] {
             let f = d.release_input().unwrap();
             assert_eq!((dword(&f, 29), f[41]), (id, report_id));
-            if report_id == 1 {
+            if report_id == 3 {
                 assert_eq!(f[42], 0);
             } else {
                 assert!(f[42..71].iter().all(|b| *b == 0));
@@ -609,7 +604,7 @@ mod tests {
         put(&mut r, 0, 7);
         r[4] = 0x81;
         r[5] = 3;
-        put(&mut r, 16, 7);
+        put(&mut r, 16, 8);
         assert!(m.incoming(&frame(&r, input::ID)).is_none());
         assert!(m.active());
         assert!(m.tick(100000000.0).is_none());

@@ -553,7 +553,9 @@ impl Window {
     }
     #[cfg(feature = "experimental-bud")]
     unsafe fn sync_absolute_pointer(&self, x: i32, y: i32, screen: bool) {
-        if self.hid_mouse_active.load(Ordering::Acquire) {
+        if self.hid_mouse_active.load(Ordering::Acquire)
+            && !self.relative_mouse.load(Ordering::Acquire)
+        {
             let mut point = POINT { x, y };
             if !screen || ScreenToClient(self.handle(), &mut point) != 0 {
                 self.push(Event::Motion(point.x, point.y));
@@ -582,18 +584,6 @@ impl Window {
         self.request_relative_mouse(enabled, false);
     }
     fn request_relative_mouse(&self, enabled: bool, authoritative: bool) {
-        #[cfg(feature = "experimental-bud")]
-        let enabled = if self.hid_mouse_active.load(Ordering::Acquire) {
-            // Absolute desktop HID mode. Keep the original core informed
-            // of the actual local mode without modifying its cursor events.
-            if enabled {
-                self.push(Event::RelativeMode(false));
-            }
-            false
-        } else {
-            enabled
-        };
-
         let state = *self.input_state.lock().unwrap_or_else(|e| e.into_inner());
         let suspended = !self.has_focus.load(Ordering::Acquire)
             || unsafe { IsIconic(self.handle()) != 0 || GetForegroundWindow() != self.handle() }
@@ -796,8 +786,12 @@ impl Window {
         drop(generation);
         if changed {
             if mouse_changed && mouse {
-                self.request_relative_mouse(false, true);
-                self.push(Event::RelativeMode(false));
+                self.set_relative_mouse(false);
+                // Enumeration can finish while capture is already relative.
+                // Seed the new USB adapter even if the native state did not change.
+                self.push(Event::RelativeMode(
+                    self.relative_mouse.load(Ordering::Acquire),
+                ));
             }
             unsafe {
                 PostMessageW(self.handle(), crate::hid_input::REFRESH, 0, 0);
@@ -814,8 +808,6 @@ impl Window {
         }
     }
     unsafe fn apply_relative_mouse(&self, enabled: bool) {
-        #[cfg(feature = "experimental-bud")]
-        let enabled = enabled && !self.hid_mouse_active.load(Ordering::Acquire);
         let enabled = enabled && self.input_allowed();
         let previous = self.relative_mouse.load(Ordering::Acquire);
         if enabled == previous {
@@ -1361,7 +1353,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                     && s.video_hwnd.load(Ordering::Acquire) != 0
                     && !s.core_owns_key("F8", modifiers()) =>
             {
-                return 0
+                return 0;
             }
             WM_KEYDOWN if wp as u32 == VK_F11 as u32 && !s.core_owns_key("F11", modifiers()) => {
                 if lp & (1 << 30) == 0 {
@@ -1370,7 +1362,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
             WM_KEYUP if wp as u32 == VK_F11 as u32 && !s.core_owns_key("F11", modifiers()) => {
-                return 0
+                return 0;
             }
             WM_SIZE => {
                 s.software_presenter
@@ -1661,7 +1653,21 @@ mod tests {
 
             window.set_hid_input_active(generation, true, false);
             wait(|| window.hid_input_acquired.load(Ordering::Acquire));
-            window.set_relative_mouse(true);
+            window.set_host_cursor(100, 200, false, true);
+            wait(|| window.relative_mouse.load(Ordering::Acquire));
+            window.events.drain();
+            unsafe {
+                SendMessageW(window.handle(), WM_RBUTTONDOWN, 2, (200 << 16) | 200);
+            }
+            assert!(!window
+                .events
+                .drain()
+                .iter()
+                .any(|e| matches!(e, Event::Motion(_, _))));
+            unsafe {
+                SendMessageW(window.handle(), WM_RBUTTONUP, 0, (200 << 16) | 200);
+            }
+            window.set_host_cursor(100, 200, false, false);
             wait(|| !window.relative_mouse.load(Ordering::Acquire));
             window.events.drain();
             unsafe {
@@ -2086,12 +2092,18 @@ mod tests {
             wait(|| !relative() && !clipped() && !keyboard());
         }));
         if result.is_err() {
-            eprintln!("capture state: requested={} relative={} clipped={} keyboard={} focused={} suspended={} iconic={} foreground={} input={:?}",
-                window.relative_requested.load(Ordering::Acquire),window.relative_mouse.load(Ordering::Acquire),
-                window.mouse_clipped.load(Ordering::Acquire),window.keyboard_grab.lock().unwrap().active(),
-                window.has_focus.load(Ordering::Acquire),window.input_suspended.load(Ordering::Acquire),
-                unsafe {IsIconic(window.handle())},unsafe {GetForegroundWindow()==window.handle()},
-                *window.input_state.lock().unwrap());
+            eprintln!(
+                "capture state: requested={} relative={} clipped={} keyboard={} focused={} suspended={} iconic={} foreground={} input={:?}",
+                window.relative_requested.load(Ordering::Acquire),
+                window.relative_mouse.load(Ordering::Acquire),
+                window.mouse_clipped.load(Ordering::Acquire),
+                window.keyboard_grab.lock().unwrap().active(),
+                window.has_focus.load(Ordering::Acquire),
+                window.input_suspended.load(Ordering::Acquire),
+                unsafe { IsIconic(window.handle()) },
+                unsafe { GetForegroundWindow() == window.handle() },
+                *window.input_state.lock().unwrap()
+            );
         }
         window.close();
         wait(|| window.hwnd.load(Ordering::Acquire) == 0);

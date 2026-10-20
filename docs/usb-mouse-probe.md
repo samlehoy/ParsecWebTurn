@@ -1,6 +1,6 @@
 # Experimental USB HID input
 
-The successful live absolute probe is now an optional Settings → Input feature
+The successful live absolute probe is now an optional Settings â†’ Input feature
 on the isolated USB branch. It is disabled by default and requires BUD. Save
 and reconnect after changing it. Enable USB/Yubikey passthrough on the stock
 Parsec host. The client needs only its normal EXE and settings.json, without
@@ -10,14 +10,15 @@ The Input tab also offers an independent experimental USB HID keyboard. Both
 functions reuse `usb_hid.rs` for creation/removal, framing, enumeration, standard
 control transfers and failure handling. Only descriptors and input state differ.
 Exactly one USB device is announced per session: mouse-only, keyboard-only or
-a combined device with two top-level HID application collections (mouse report
-ID 1, keyboard report ID 2). Both collections share one interrupt endpoint and
+a combined device with three top-level HID application collections (absolute
+mouse report ID 1, relative mouse report ID 3, keyboard report ID 2). All
+collections share one interrupt endpoint and
 one bounded queue of real host read correlations. The Windows HID class driver
-can expose the two collections separately; see [Microsoft's collection model](https://learn.microsoft.com/en-us/windows-hardware/drivers/hid/top-level-collections).
+exposes the collections separately; see [Microsoft's collection model](https://learn.microsoft.com/en-us/windows-hardware/drivers/hid/top-level-collections).
 Both options are BUD-only, disabled by default, and apply after reconnecting.
 
 For the keyboard, select the same active layout on host and client (including
-Hungarian–Hungarian). Physical usage codes are forwarded without guessing text
+Hungarianâ€“Hungarian). Physical usage codes are forwarded without guessing text
 or changing the host's layout. Modifiers and simultaneous keys are represented
 in a bitmap input report, without a six-key array limit. Duplicate typematic
 events are ignored; the host handles repetition. LED output reports are accepted
@@ -25,18 +26,21 @@ as device state, without changing the client's physical keyboard LEDs. Queues
 are bounded and ordered; focus loss/local menus/disconnect release held keys.
 Normal Parsec keyboard packets are suppressed while the HID keyboard is selected,
 even on setup failure. No keystrokes or typed text are logged. Keyboard-only
-host acceptance and typing have been confirmed by the user; combined operation
-awaits the corrected build's live test. No intermediate
+host acceptance and typing, including combined mouse/keyboard operation, have
+been confirmed by the user. No intermediate
 enumeration/descriptor/input probe program is introduced.
 
 ## Supported scope
 
-The PID_F004 descriptor describes five buttons, absolute 16-bit X/Y (0..32767),
-and signed relative vertical/horizontal wheels. Seven USB bytes become eight
-Windows HID input bytes including the report-ID placeholder. A single physical
-or virtual display is supported. Relative game aiming and multi-monitor
-coordinate mapping are outside the validated scope. No game/anti-cheat
-compatibility is claimed.
+The mouse descriptor provides absolute 16-bit X/Y (0..32767) on report ID 1
+and signed relative 16-bit X/Y (-32767..32767), five buttons and two signed
+wheels on report ID 3. Both are standard Mouse top-level collections within
+one USB device. Buttons and wheels always belong to the relative collection,
+including on the desktop, so a mode switch does not release/repress a held
+camera button or migrate its state between devices. Mouse-only uses PID_F007;
+combined mouse/keyboard uses PID_F008 to avoid reusing cached older descriptors.
+A single physical or virtual display is supported. Multi-monitor mapping is
+outside the validated scope. Game compatibility needs live testing.
 
 The unmodified core still routes events between local UI and the remote session.
 Remote absolute positions are normalized through the existing video viewport
@@ -46,13 +50,21 @@ are suppressed whenever HID is selected, including setup failure. Keyboard
 input retains its existing path unless the separate HID keyboard option is
 selected. WebRTC does not enable either HID device.
 
-No report is fabricated at the origin during enumeration. Buttons and wheels
-require a known position. Press/release edges keep their positions and order;
-compatible motion coalesces and wheels retain their target. Queues are bounded
-to 64 samples and eight pending reads, with at least 4 ms between reports.
-Focus loss and local menus release held buttons, discard old motion and require
-fresh coordinates. Session teardown releases/removes the device. There is no
-diagnostic session-duration or request-count cutoff.
+No report is fabricated at the origin during enumeration. Absolute moves and
+button/wheel edges keep their FIFO order. Compatible moves coalesce: absolute
+coordinates replace older coordinates; relative deltas add without applying
+Windows pointer acceleration. Signed 16-bit overflow is split into later reports,
+not clipped or repeated. Queues stay bounded to 64 samples and eight pending
+reads, with at least 4 ms between reports. Focus loss/local menus release held
+buttons and discard old motion. Teardown releases/removes the single USB device.
+
+The host cursor's existing relative/hidden flags select native Raw Input capture
+and hide the local cursor, using the same documented Win32 path as ordinary
+Parsec input. When capture ends, the desktop again uses viewport-normalized
+absolute coordinates. Adapter-only mode changes never go to the stock host as
+normal Parsec mouse commands. No button-based guess of camera mode is added.
+See [USB HID report definitions](https://www.usb.org/sites/default/files/hid1_11.pdf)
+and [Windows Raw Input motion flags](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-rawmouse).
 
 ## Logging and implementation
 
@@ -78,7 +90,7 @@ not a publicly supported Parsec API.
 ## Validation evidence
 
 The nine-point absolute trial matched actual Windows cursor positions to within
-three pixels on one virtual 1920×1080 display. The following live trial was
+three pixels on one virtual 1920Ă—1080 display. The following live trial was
 reported as working normally and recorded 5417 reports, no transport refusal,
 interrupt rejection or backlog fault. See the
 [research record](usb-native-wire-investigation.md#live-absolute-desktop-input-confirmed-2026-10-20).
@@ -139,3 +151,16 @@ bytes, SHA-256
 This verifies the implementation's synthetic correlations and lifecycle;
 simultaneous mouse/keyboard acceptance on the real host still needs the user's
 live test. The user has separately confirmed working keyboard-only forwarding.
+
+## Relative camera input correction
+
+The user confirmed the combined-device fix works for both inputs. The initial
+absolute-only mouse still jumped in Aion 2 camera control and left its pointer
+visible. HID mode had explicitly disabled native relative capture. That block
+is removed; the adapter now accepts raw relative motion using report ID 3 while
+retaining report ID 1 for desktop mapping. Button state has a single owner
+across both modes. A focused regression covers signed/coalesced motion, overflow
+remainder, stale-motion removal, wheel-only reports, mode transitions while a
+button is held, and focus cleanup. The existing native-window test checks
+hidden-host-cursor capture and suppresses absolute synchronization in that mode.
+Live game behavior of this new relative path remains to be tested.

@@ -171,7 +171,7 @@ See [audio-path audit and implementation](docs/native-audio-options.md).
 
 ### Input (experimental)
 
-- **USB HID mouse:** optional absolute desktop mouse over **BUD**, disabled by
+- **USB HID mouse:** optional desktop/relative-camera mouse over **BUD**, disabled by
   default. Enable BUD on the Network tab, then select the mouse on the Input
   tab, save and reconnect. Enable USB/Yubikey passthrough on the stock host.
 - Supports pointer movement, five buttons, dragging and vertical/horizontal
