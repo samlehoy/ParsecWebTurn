@@ -814,6 +814,11 @@ impl Window {
             self.apply_mouse_clip();
             return;
         }
+        if enabled {
+            // Hide before Raw Input registration/confinement can refresh the
+            // pointer. Failed acquisition restores it through the path below.
+            SetCursor(std::ptr::null_mut());
+        }
         let device = RAWINPUTDEVICE {
             usUsagePage: 1,
             usUsage: 2,

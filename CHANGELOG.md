@@ -5,6 +5,8 @@ builds, not published stable releases.
 
 ## Unreleased
 
+- **Relative mouse transition:** hide the local cursor before Raw Input registration and confinement, while retaining cursor restoration if acquisition fails. This narrows the visible transition; the reported intermittent flash still needs live verification.
+
 ## 0.9.4-dev.5 - Experimental USB HID input (2026-10-20)
 
 Changes since v0.9.4-dev.4.
