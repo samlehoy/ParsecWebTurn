@@ -61,6 +61,11 @@ pub struct Shared(Mutex<State>);
 impl Shared {
     pub fn begin(&self, generation: u64) {
         let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        // A retiring BUD worker may still reach its route-retry reset after a
+        // replacement connection has begun. It must not rewind the collector.
+        if generation < state.generation {
+            return;
+        }
         *state = State {
             generation,
             ..Default::default()
@@ -214,6 +219,7 @@ pub(crate) mod tests {
         assert!(shared.snapshot(7).video.iter().all(Option::is_none));
         shared.begin(8);
         shared.set_requested(8, true);
+        shared.begin(7);
         shared.receive(7, &packet(1, 0, &[1., 2., 3.]));
         shared.end(7);
         shared.failed(7);
