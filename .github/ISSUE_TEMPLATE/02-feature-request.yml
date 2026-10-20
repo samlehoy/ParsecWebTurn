@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest a new feature or an improvement.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: checkboxes
+    id: existing-features
+    attributes:
+      label: Before suggesting
+      description: Check [open and closed issues](https://github.com/vampywiz17/ParsecWebTurn/issues?q=is%3Aissue) and the [dev README](https://github.com/vampywiz17/ParsecWebTurn/blob/dev/README.md) for existing features and plans.
+      options:
+        - label: I checked that this feature is not already available or requested.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would this help you do?
+      description: Briefly describe the problem or use case.
+      placeholder: I would like to ... because ...
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested improvement
+      description: Describe your idea. Alternatives or screenshots are welcome, but not required.
+    validations:
+      required: true
