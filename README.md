@@ -175,17 +175,18 @@ See [audio-path audit and implementation](docs/native-audio-options.md).
   default. Enable BUD on the Network tab, then select the mouse on the Input
   tab, save and reconnect. Enable USB/Yubikey passthrough on the stock host.
 - Supports pointer movement, five buttons, dragging and vertical/horizontal
-  scrolling on one physical or virtual display. Relative game aiming and
-  multi-monitor mapping are not supported. Local menus remain accessible.
+  scrolling on one physical or virtual display. Relative camera movement follows
+  the host cursor mode and uses native Raw Input. This new path needs live game
+  testing. Multi-monitor mapping is not supported. Local menus remain accessible.
 - **USB HID keyboard:** a separate experimental BUD option, also disabled by
   default. Uses the same USB transport/device lifecycle as the mouse. Physical
   key presses, releases and modifiers are forwarded; select the same active
   keyboard layout on host and client (for example Hungarian on both). The client
   does not change the host layout. Normal Parsec keyboard forwarding is suppressed
   while selected. Focus loss, local menus and disconnect release held keys.
-  Keyboard-only input has been live-tested. Selecting both uses one USB device
-  with separate mouse/keyboard HID report IDs; this combined mode awaits a new
-  live test after correcting the initial two-device routing conflict.
+  Keyboard-only and combined input have been live-tested. Selecting both uses
+  one USB device with separate absolute-mouse, relative-mouse and keyboard
+  collections/report IDs; buttons have one owner across both mouse modes.
 - Only the usual EXE and settings.json are needed. No launcher or observer is
   required. While selected, ordinary Parsec mouse messages stay suppressed,
   including if HID setup fails; disable it and reconnect to restore normal input.

@@ -164,3 +164,13 @@ remainder, stale-motion removal, wheel-only reports, mode transitions while a
 button is held, and focus cleanup. The existing native-window test checks
 hidden-host-cursor capture and suppresses absolute synchronization in that mode.
 Live game behavior of this new relative path remains to be tested.
+
+The [Windows build](https://github.com/vampywiz17/ParsecWebTurn/actions/runs/39421160915)
+from `bc06fe9` passed eight HID protocol/input tests, three settings/window
+tests, the native Settings UI test and strict vendored-client Clippy. The
+updated Input tab was visually checked. The standalone EXE is 18,107,392 bytes,
+SHA-256 `d80c141c75b7a75fdaf44c264655b83bffd928fb7d13bacd64f906ab63bdc49a`.
+A separate descriptor check confirmed report 1 contains two unsigned absolute
+16-bit axes (five bytes including ID), and report 3 contains signed relative
+16-bit axes, buttons and wheels (eight bytes including ID). These offline
+checks do not prove host HID binding or game acceptance of the new descriptors.
