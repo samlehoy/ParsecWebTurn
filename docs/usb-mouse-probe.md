@@ -2,6 +2,11 @@
 
 ## Live desktop mouse forwarding (2026-10-20)
 
+Live two-PC result: movement, button release, scrolling and continuous drawing
+were confirmed. The remaining reported issue is local/host cursor misalignment
+in this relative-HID experiment. The new five-byte layout was parsed as six
+Windows HID input bytes. See the [result and limits](usb-native-wire-investigation.md#interactive-two-pc-result-2026-10-20).
+
 Use `Start-Client-Live-Mouse-Probe.cmd` with the **new host observer** for an
 interactive, 90-second experiment on your own desktop. Enable stock host
 USB/Yubikey passthrough, end earlier probe sessions, start the observer on the
@@ -50,6 +55,40 @@ not actual movement coordinates, button histories, keystrokes or arbitrary USB
 payloads. Counts prove local handling only; confirm actual host behavior visually.
 The observer recognizes both diagnostic PIDs and otherwise remains read-only.
 This is still an isolated test branch, not a production input feature.
+
+### Host-position cursor following
+
+The cursor-following build uses the **same live launcher**. After the host has
+issued a valid live HID read and provided cursor metadata, focused remote input
+uses Raw Input deltas. The native Windows cursor is confined to the latest
+host-reported position mapped through the existing video letterbox geometry.
+Host cursor updates refresh that position through one coalesced UI notification;
+their absolute WM_MOUSEMOVE echoes are not sent back as motion. No extra video
+render pass, decoded-frame copy, framebuffer readback, dependency or custom
+cursor-composition window is added. The native cursor image/hotspot stays on
+the existing supported Win32 cursor path.
+
+This separate HID capture does not change the core's relative-mode request.
+Local core detach/overlay menus, native settings, menu loops, lost focus,
+minimization and hidden video suspend it and request button release. Local
+absolute UI input resumes while suspended. A hidden/relative host cursor keeps
+the existing hidden-cursor policy. Probe expiry/failure/disconnect disables the
+following state; generation checks prevent an old connection from controlling
+a new connection's cursor. Ordinary remote mouse commands remain blocked as
+before, so expiry still requires restarting the client for a normal mouse route.
+
+The visible position is the **latest reported host position**, not a prediction
+of the next one: host/network reporting latency can therefore be felt at the
+cursor. Test alignment in Paint, drawing, drag/release, both scroll axes and
+focus changes; open the local overlay/settings and verify free local navigation
+and correct re-acquisition on returning. Cursor-capture transitions are written
+to the optional application event log as `hid_cursor_capture`, with requested
+and active booleans only. USB report/count logs remain unchanged.
+
+Windows CI additionally exercises actual cursor positioning, zero outgoing
+motion from position corrections, retained relative deltas, local menu input,
+capture release/re-entry and stale-generation rejection in a native UI test.
+That test does not establish performance or correctness on every remote machine.
 
 ## Fixed desktop input experiment (2026-10-20)
 

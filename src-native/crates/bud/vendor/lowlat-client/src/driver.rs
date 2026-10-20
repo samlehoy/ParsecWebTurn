@@ -199,6 +199,8 @@ pub struct Lag {
 /// What the loop publishes about itself, for the seam to read from any thread.
 #[derive(Debug, Default)]
 pub struct Telemetry {
+    #[cfg(feature = "usb-mouse-probe")]
+    pub usb_live_mouse_active: AtomicBool,
     /// UDP payload bytes, including protocol/crypto/relay traffic.
     pub udp_received: AtomicU64,
     pub udp_sent: AtomicU64,
@@ -480,6 +482,12 @@ impl Driver {
         {
             let frame = self.usb_probe.as_mut().and_then(|p| p.tick(now_ms));
             self.usb_probe_send(endpoint.session(), frame);
+            self.telemetry.usb_live_mouse_active.store(
+                self.usb_probe
+                    .as_ref()
+                    .is_some_and(crate::usb_mouse_probe::Probe::live_active),
+                Ordering::Release,
+            );
         }
 
         if let Some(outcome) = self.check_health(endpoint, now_ms) {
@@ -723,6 +731,9 @@ impl Driver {
 
     #[cfg(feature = "usb-mouse-probe")]
     pub(crate) fn finish_usb_probe(&mut self, session: &mut Session<'_>) {
+        self.telemetry
+            .usb_live_mouse_active
+            .store(false, Ordering::Release);
         let release = self.usb_probe.as_mut().and_then(|p| p.release_input());
         self.usb_probe_send(session, release);
         let frame = self.usb_probe.as_mut().and_then(|p| p.remove());

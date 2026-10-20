@@ -1,6 +1,6 @@
 //! Bounded offline native UI experiment, separate from connected video.
 use crate::{host::HostState, window::Event};
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::{
     sync::atomic::Ordering,
     time::{Duration, Instant},
@@ -275,7 +275,7 @@ fn dispatch_input_event(
     event: Event,
 ) -> Result<()> {
     #[cfg(feature = "usb-mouse-probe")]
-    if matches!(&event, Event::Focus(false))
+    if matches!(&event, Event::Focus(false) | Event::HidMouseRelease)
         && std::env::var("PARSEC_USB_MOUSE_PROBE").as_deref() == Ok("1")
         && std::env::var("PARSEC_USB_MOUSE_LIVE_PROBE").as_deref() == Ok("1")
     {
@@ -294,6 +294,8 @@ fn dispatch_input_event(
         }
     }
     let (name, values, count) = match event {
+        #[cfg(feature = "usb-mouse-probe")]
+        Event::HidMouseRelease => return Ok(()),
         Event::Fullscreen(active) => (
             "mty_window_update_fullscreen",
             [app, active as i32, 0, 0, 0],

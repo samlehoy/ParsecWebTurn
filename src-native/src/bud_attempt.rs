@@ -563,6 +563,8 @@ fn run(
         "video_capabilities_declared",
         json!({"transport":"BUD","flags":8 | u32::from(hevc_available) | if ten_bit {16} else {0},"hevc":hevc_available,"main10":ten_bit}),
     );
+    #[cfg(feature = "usb-mouse-probe")]
+    let hid_generation;
     let (mut media, mut session, statistics) = {
         let _state = state.lock().unwrap_or_else(|e| e.into_inner());
         if cancel.load(Ordering::Acquire) {
@@ -577,8 +579,14 @@ fn run(
             ten_bit,
             settings.experimental_raw_audio,
         )?;
+        #[cfg(feature = "usb-mouse-probe")]
+        {
+            hid_generation = window.usb_cursor_generation();
+        }
         (media, session, Statistics::start(window.stats.clone()))
     };
+    #[cfg(feature = "usb-mouse-probe")]
+    let _hid_cursor_lifetime = crate::hid_cursor::Lifetime::new(window.clone(), hid_generation);
     state.lock().unwrap_or_else(|e| e.into_inner()).wire_id = id.into();
     session.wake_consumer(std::thread::current());
     trace.mark("initial_native_offer");
@@ -674,6 +682,8 @@ fn run(
             events.push(event);
         }
         let transport = session.snapshot();
+        #[cfg(feature = "usb-mouse-probe")]
+        window.set_usb_cursor_active(hid_generation, session.usb_live_mouse_active());
         if !established && last_trace.elapsed() >= Duration::from_secs(1) {
             trace.record(
                 "transport_progress",

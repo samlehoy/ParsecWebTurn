@@ -31,6 +31,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Observer test build failed' }
           & ./src-native/target/usb-observer-tests.exe
           if ($LASTEXITCODE -ne 0) { throw 'Observer phase test failed' }
+      - name: Check HID cursor following and native menu lifecycle
+        shell: pwsh
+        run: |
+          cargo test --locked --release --manifest-path src-native/Cargo.toml --features usb-mouse-probe hid_cursor -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'HID cursor native UI tests failed' }
       - name: Build opt-in client and read-only host observer
         shell: pwsh
         run: |

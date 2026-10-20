@@ -53,6 +53,9 @@ pub(super) struct Input {
 }
 
 impl Input {
+    pub(super) fn ready(&self) -> bool {
+        self.ready && !self.faulted
+    }
     pub(super) fn buttons(&self) -> u8 {
         self.buttons
     }

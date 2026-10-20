@@ -430,3 +430,56 @@ Automated tests cover routing isolation, button/wheel mappings, split motion,
 drag-edge ordering, focus release, capacity/queue/backlog bounds and descriptor
 sizes. Actual interactive delivery of the new report layout still needs a new
 two-PC test; the earlier three-byte fixed-sequence success is not proof of it.
+
+### Interactive two-PC result (2026-10-20)
+
+The user confirmed movement, button release, scrolling and a continuous Paint
+stroke using `usb-client-live-4806-14599.jsonl` / `usb-host-4793-4373.jsonl`.
+The client logged 6332 HID reports, 7430 handled commands and 7457 ordinary
+mouse commands suppressed, before timed removal at 90005 ms. There were no
+transport refusals, interrupt rejections or backlog-limit events. These are
+local counters; the user's desktop observations establish actual delivery of
+the tested operations, not independent acknowledgement of every report.
+
+The host confirmed mouse usage, HIDP_STATUS_SUCCESS, six Windows input-report
+bytes and four value-capability entries, followed by removal. The observer
+also logged one early error 122 (insufficient buffer); it recovered and completed
+the observation. This must not be reported as an entirely error-free observer
+run. The sole control stall was the optional Microsoft OS string `0x03EE`.
+Descriptor queries continued: one real-ID request and 754 zero-ID requests,
+requesting 129 bytes and receiving the new 65-byte report descriptor.
+
+The remaining visible issue is local/host cursor misalignment, as expected
+from absolute-coordinate differences driving a relative HID mouse. The first
+sample only establishes an anchor; host pointer acceleration and independently
+maintained pointer positions prevent exact absolute correspondence. Existing
+cursor handling selects a native cursor at the local position, and only warps
+to a host position on specific capture transitions. This is not a measurement
+of dropped HID reports. A future cursor-mode change must preserve local UI,
+focus release, normal-mouse suppression and the GPU-only video path; blindly
+warping on every host update risks feedback or disturbed relative deltas.
+
+### Host-position cursor following implementation
+
+The isolated follow-up separates live HID Raw Input acquisition from the core's
+existing relative-mode acquisition. A valid live interrupt read activates a
+test-only telemetry bit; the BUD adapter publishes it into a generation-guarded
+window state. Expiry, errors and retirement clear it. This bit is local native
+state, not a new message to the proprietary host or a change to its protocol.
+
+While remote input is allowed, host position is mapped with the existing
+Viewport::unmap geometry to the native cursor's one-pixel ClipCursor region.
+The existing custom native cursor/hotspot is selected for a visible desktop
+cursor; hidden/relative host intent retains hidden capture. Position updates
+are coalesced on the existing UI thread. Absolute cursor-position messages are
+ignored while this HID raw acquisition is active, and hardware deltas remain
+the only motion source. Local detach, menus, focus and visibility suspend HID
+capture and request release, restoring the existing local UI path.
+
+The platform basis is documented [ClipCursor](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-clipcursor)
+and [Raw Input](https://learn.microsoft.com/en-us/windows/win32/inputdev/about-raw-input).
+The Windows UI regression test checks actual position changes and the absence
+of outgoing motion during synthetic host updates, rather than assuming that
+every OS-generated move is physical input. No decoded video surface or graphics
+backend is changed. The new behavior still needs confirmation in the two-PC
+desktop trial; following the latest host report also inherits its latency.

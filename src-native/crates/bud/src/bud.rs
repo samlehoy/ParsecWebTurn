@@ -125,6 +125,12 @@ impl Session {
     pub fn request_keyframe(&self) -> bool {
         self.client.request_external_keyframe()
     }
+    #[cfg(feature = "usb-mouse-probe")]
+    pub fn usb_live_mouse_active(&self) -> bool {
+        let telemetry = self.client.telemetry();
+        telemetry.state.load(std::sync::atomic::Ordering::Acquire) == 1
+            && telemetry.usb_live_mouse_active.load(std::sync::atomic::Ordering::Acquire)
+    }
     pub fn allow_raw_audio(&mut self, enabled: bool) {
         self.raw_audio = enabled;
     }

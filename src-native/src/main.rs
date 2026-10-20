@@ -57,6 +57,8 @@ mod gpu_windows;
 mod graphics;
 #[cfg(windows)]
 mod gui_visibility;
+#[cfg(all(windows, feature = "usb-mouse-probe"))]
+mod hid_cursor;
 mod host;
 mod http;
 #[cfg(any(test, feature = "diagnostics"))]

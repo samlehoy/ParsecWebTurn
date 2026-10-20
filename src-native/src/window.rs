@@ -24,6 +24,8 @@ pub enum Event {
     Key(bool, &'static str, i32),
     Scroll(i32, i32),
     Fullscreen(bool),
+    #[cfg(feature = "usb-mouse-probe")]
+    HidMouseRelease,
 }
 
 pub struct Window {
@@ -69,6 +71,12 @@ pub struct Window {
     pub network_origin_audit: bool,
     pub stop: Arc<crate::lifecycle::StopSignal>,
     relative_mouse: AtomicBool,
+    #[cfg(feature = "usb-mouse-probe")]
+    hid_cursor_active: AtomicBool,
+    #[cfg(feature = "usb-mouse-probe")]
+    hid_raw_mouse: AtomicBool,
+    #[cfg(feature = "usb-mouse-probe")]
+    hid_cursor_posted: AtomicBool,
     relative_pending: AtomicUsize,
     relative_requested: AtomicBool,
     relative_anchor: Mutex<Option<(i32, i32)>>,
@@ -195,6 +203,12 @@ impl Window {
             network_origin_audit: _network_origin_audit,
             stop: Default::default(),
             relative_mouse: AtomicBool::new(false),
+            #[cfg(feature = "usb-mouse-probe")]
+            hid_cursor_active: AtomicBool::new(false),
+            #[cfg(feature = "usb-mouse-probe")]
+            hid_raw_mouse: AtomicBool::new(false),
+            #[cfg(feature = "usb-mouse-probe")]
+            hid_cursor_posted: AtomicBool::new(false),
             relative_pending: AtomicUsize::new(0),
             relative_requested: AtomicBool::new(false),
             relative_anchor: Mutex::new(None),
@@ -432,6 +446,8 @@ impl Window {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         *generation = generation.wrapping_add(1);
+        #[cfg(feature = "usb-mouse-probe")]
+        self.hid_cursor_active.store(false, Ordering::Release);
         self.set_video_ready(false);
         *generation
     }
@@ -597,6 +613,10 @@ impl Window {
         // must acquire native relative input too; button state is not evidence.
         let relative = relative || hidden;
         *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner()) = Some((x, y, relative));
+        #[cfg(feature = "usb-mouse-probe")]
+        if self.hid_cursor_active.load(Ordering::Acquire) {
+            self.refresh_hid_cursor();
+        }
         // When capture is suspended, the guest already sees relative=false and
         // may omit its redundant unlock. Do not retain a stale relative request.
         if relative != self.relative_requested.load(Ordering::Acquire) {
@@ -667,6 +687,8 @@ impl Window {
     }
     unsafe fn apply_input_capture(&self) {
         let allowed = self.input_allowed();
+        #[cfg(feature = "usb-mouse-probe")]
+        self.apply_hid_capture(allowed);
         self.keyboard_grab
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -675,11 +697,106 @@ impl Window {
                 allowed && self.keyboard_requested.load(Ordering::Acquire),
             );
         self.apply_relative_mouse(allowed && self.relative_requested.load(Ordering::Acquire));
+        #[cfg(feature = "usb-mouse-probe")]
+        self.select_mouse_cursor();
+    }
+    fn raw_mouse_active(&self) -> bool {
+        #[cfg(feature = "usb-mouse-probe")]
+        if self.hid_raw_mouse.load(Ordering::Acquire) {
+            return true;
+        }
+        self.relative_mouse.load(Ordering::Acquire)
+    }
+    unsafe fn select_mouse_cursor(&self) {
+        if self.relative_mouse.load(Ordering::Acquire) {
+            SetCursor(std::ptr::null_mut());
+            return;
+        }
+        let cursor = self.cursor.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(feature = "usb-mouse-probe")]
+        if self.hid_raw_mouse.load(Ordering::Acquire) {
+            if crate::hid_cursor::visible_position(
+                *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner()),
+            )
+            .is_some()
+            {
+                cursor.select_remote();
+            } else {
+                SetCursor(std::ptr::null_mut());
+            }
+            return;
+        }
+        cursor.select();
+    }
+    #[cfg(feature = "usb-mouse-probe")]
+    pub fn usb_cursor_generation(&self) -> u64 {
+        *self
+            .video_generation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+    #[cfg(feature = "usb-mouse-probe")]
+    pub fn set_usb_cursor_active(&self, expected: u64, active: bool) {
+        let generation = self
+            .video_generation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if *generation == expected
+            && self.hid_cursor_active.swap(active, Ordering::AcqRel) != active
+        {
+            self.refresh_hid_cursor();
+        }
+    }
+    #[cfg(feature = "usb-mouse-probe")]
+    fn refresh_hid_cursor(&self) {
+        if !self.hid_cursor_posted.swap(true, Ordering::AcqRel) {
+            unsafe {
+                if PostMessageW(self.handle(), WM_APP + 16, 0, 0) == 0 {
+                    self.hid_cursor_posted.store(false, Ordering::Release);
+                }
+            }
+        }
+    }
+    #[cfg(feature = "usb-mouse-probe")]
+    unsafe fn apply_hid_capture(&self, allowed: bool) {
+        let wanted = allowed
+            && self.hid_cursor_active.load(Ordering::Acquire)
+            && self
+                .host_cursor
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some();
+        let previous = self.hid_raw_mouse.load(Ordering::Acquire);
+        if previous == wanted {
+            return;
+        }
+        let registered = wanted || self.relative_mouse.load(Ordering::Acquire);
+        let device = RAWINPUTDEVICE {
+            usUsagePage: 1,
+            usUsage: 2,
+            dwFlags: if registered { 0 } else { RIDEV_REMOVE },
+            hwndTarget: if registered {
+                self.handle()
+            } else {
+                std::ptr::null_mut()
+            },
+        };
+        let acquired =
+            RegisterRawInputDevices(&device, 1, std::mem::size_of::<RAWINPUTDEVICE>() as u32) != 0
+                && wanted;
+        self.hid_raw_mouse.store(acquired, Ordering::Release);
+        if previous && !acquired {
+            self.push(Event::HidMouseRelease);
+        }
+        crate::event_log::record(
+            "INFO",
+            "hid_cursor_capture",
+            serde_json::json!({"requested":wanted,"active":acquired}),
+        );
     }
     unsafe fn apply_mouse_clip(&self) -> bool {
         let state = *self.input_state.lock().unwrap_or_else(|e| e.into_inner());
-        let enabled = self.input_allowed()
-            && (state.mode.mouse || self.relative_mouse.load(Ordering::Acquire));
+        let enabled = self.input_allowed() && (state.mode.mouse || self.raw_mouse_active());
         if enabled {
             let mut rect = RECT::default();
             let mut origin = POINT::default();
@@ -692,7 +809,20 @@ impl Window {
                 rect.right += origin.x;
                 rect.top += origin.y;
                 rect.bottom += origin.y;
-                if self.relative_mouse.load(Ordering::Acquire) {
+                #[cfg(feature = "usb-mouse-probe")]
+                if self.hid_raw_mouse.load(Ordering::Acquire) {
+                    let cursor = *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some((x, y)) = crate::hid_cursor::visible_position(cursor)
+                        .and_then(|(x, y)| self.presented_viewport().and_then(|v| v.unmap(x, y)))
+                    {
+                        *self
+                            .relative_anchor
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner()) =
+                            Some((origin.x + x, origin.y + y));
+                    }
+                }
+                if self.raw_mouse_active() {
                     if let Some((x, y)) = *self
                         .relative_anchor
                         .lock()
@@ -728,11 +858,14 @@ impl Window {
             self.apply_mouse_clip();
             return;
         }
+        let registered_input = enabled;
+        #[cfg(feature = "usb-mouse-probe")]
+        let registered_input = registered_input || self.hid_raw_mouse.load(Ordering::Acquire);
         let device = RAWINPUTDEVICE {
             usUsagePage: 1,
             usUsage: 2,
-            dwFlags: if enabled { 0 } else { RIDEV_REMOVE },
-            hwndTarget: if enabled {
+            dwFlags: if registered_input { 0 } else { RIDEV_REMOVE },
+            hwndTarget: if registered_input {
                 self.handle()
             } else {
                 std::ptr::null_mut()
@@ -865,7 +998,7 @@ impl Window {
         self.events.push(event);
     }
     fn raw_mouse_motion(&self, mouse: &RAWMOUSE) {
-        if self.relative_mouse.load(Ordering::Acquire) && mouse.usFlags & MOUSE_MOVE_ABSOLUTE == 0 {
+        if self.raw_mouse_active() && mouse.usFlags & MOUSE_MOVE_ABSOLUTE == 0 {
             self.push(Event::RelativeMotion(mouse.lLastX, mouse.lLastY));
         }
     }
@@ -1040,6 +1173,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             WM_CLOSE => {
                 s.input_suspended.store(true, Ordering::Release);
+                #[cfg(feature = "usb-mouse-probe")]
+                s.apply_hid_capture(false);
                 s.keyboard_grab
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -1058,8 +1193,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 let pending = std::mem::take(
                     &mut *s.cursor_pending.lock().unwrap_or_else(|e| e.into_inner()),
                 );
-                let mut cursor = s.cursor.lock().unwrap_or_else(|e| e.into_inner());
-                cursor.apply(pending);
+                s.cursor
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .apply(pending);
                 // Refresh stationary pointers too, without changing another
                 // window's cursor or the system resize/titlebar cursors.
                 let mut point: POINT = std::mem::zeroed();
@@ -1072,22 +1209,20 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                         && point.y >= rect.top
                         && point.y < rect.bottom
                     {
-                        if s.relative_mouse.load(Ordering::Acquire) {
-                            SetCursor(std::ptr::null_mut());
-                        } else {
-                            cursor.select();
-                        }
+                        s.select_mouse_cursor();
                     }
                 }
                 return 0;
             }
             WM_SETCURSOR if lp as u16 as u32 == HTCLIENT => {
-                if s.relative_mouse.load(Ordering::Acquire) {
-                    SetCursor(std::ptr::null_mut());
-                    return 1;
-                }
-                s.cursor.lock().unwrap_or_else(|e| e.into_inner()).select();
+                s.select_mouse_cursor();
                 return 1;
+            }
+            #[cfg(feature = "usb-mouse-probe")]
+            m if m == WM_APP + 16 => {
+                s.hid_cursor_posted.store(false, Ordering::Release);
+                s.apply_input_capture();
+                return 0;
             }
             m if m == WM_APP + 3 => {
                 let pending = s.fullscreen_pending.swap(0, Ordering::AcqRel);
@@ -1223,7 +1358,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 }
                 return 0;
             }
-            WM_INPUT if s.relative_mouse.load(Ordering::Acquire) => {
+            WM_INPUT if s.raw_mouse_active() => {
                 let mut raw: RAWINPUT = std::mem::zeroed();
                 let mut size = std::mem::size_of::<RAWINPUT>() as u32;
                 let read = GetRawInputData(
@@ -1336,6 +1471,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             WM_KILLFOCUS => {
                 s.has_focus.store(false, Ordering::Release);
+                #[cfg(feature = "usb-mouse-probe")]
+                s.apply_hid_capture(false);
                 s.keyboard_grab
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -1350,7 +1487,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 *s.text_decoder.lock().unwrap_or_else(|e| e.into_inner()) = Default::default();
             }
             WM_CAPTURECHANGED => s.release_buttons(),
-            WM_MOUSEMOVE if !s.relative_mouse.load(Ordering::Acquire) => {
+            WM_MOUSEMOVE if !s.raw_mouse_active() => {
                 let echo = s.warp_echo.swap(0, Ordering::AcqRel);
                 if echo == 0 || echo - 1 != (u64::from(x as u32) << 32 | u64::from(y as u32)) {
                     s.push(Event::Motion(x, y));
@@ -1421,6 +1558,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             WM_DESTROY => {
                 KillTimer(hwnd, crate::updater_ui::NOTIFY_TIMER);
                 s.input_suspended.store(true, Ordering::Release);
+                #[cfg(feature = "usb-mouse-probe")]
+                s.apply_hid_capture(false);
                 s.software_presenter
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -1485,6 +1624,169 @@ unsafe extern "system" fn video_surface_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "usb-mouse-probe")]
+    #[test]
+    fn hid_cursor_follows_host_without_feedback_and_restores_local_menus() {
+        struct Restore {
+            clip: RECT,
+            point: POINT,
+            foreground: usize,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                unsafe {
+                    ClipCursor(&self.clip);
+                    SetCursorPos(self.point.x, self.point.y);
+                    SetForegroundWindow(self.foreground as HWND);
+                }
+            }
+        }
+        let _restore = unsafe {
+            let mut clip = RECT::default();
+            let mut point = POINT::default();
+            assert_ne!(GetClipCursor(&mut clip), 0);
+            assert_ne!(GetCursorPos(&mut point), 0);
+            Restore {
+                clip,
+                point,
+                foreground: GetForegroundWindow() as usize,
+            }
+        };
+        let window = Window::create_mode(false, false, false, false, false).unwrap();
+        fn wait(mut ready: impl FnMut() -> bool) {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !ready() {
+                assert!(
+                    std::time::Instant::now() < until,
+                    "HID cursor UI did not settle"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            unsafe {
+                SetWindowPos(
+                    window.handle(),
+                    std::ptr::null_mut(),
+                    0,
+                    0,
+                    900,
+                    600,
+                    SWP_NOZORDER,
+                );
+                SetForegroundWindow(window.handle());
+            }
+            wait(|| unsafe { GetForegroundWindow() == window.handle() });
+            let generation = window.begin_video();
+            *window.video_report.lock().unwrap() = Some(crate::video_output::Snapshot {
+                width: Some(1920),
+                height: Some(1080),
+                frames_presented: 1,
+                ..Default::default()
+            });
+            window.set_video_ready_for(generation, true);
+            window.set_host_cursor(960, 540, false, false);
+            window.set_usb_cursor_active(generation, true);
+            wait(|| window.hid_raw_mouse.load(Ordering::Acquire));
+            assert!(
+                !window.relative_mouse.load(Ordering::Acquire),
+                "HID capture must not change core relative mode"
+            );
+            let at_host = |x, y| unsafe {
+                let (x, y) = window.presented_viewport().unwrap().unmap(x, y).unwrap();
+                let mut expected = POINT { x, y };
+                ClientToScreen(window.handle(), &mut expected);
+                let mut actual = POINT::default();
+                GetCursorPos(&mut actual);
+                (actual.x, actual.y) == (expected.x, expected.y)
+            };
+            wait(|| at_host(960, 540));
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            window.events.drain();
+            for (x, y) in [(1000, 550), (1100, 520), (960, 540)] {
+                window.set_host_cursor(x, y, false, false);
+                wait(|| at_host(x, y));
+                std::thread::sleep(std::time::Duration::from_millis(40));
+                assert!(
+                    !window
+                        .events
+                        .drain()
+                        .iter()
+                        .any(|e| matches!(e, Event::Motion(..) | Event::RelativeMotion(..))),
+                    "host cursor positioning generated outgoing motion"
+                );
+            }
+            window.raw_mouse_motion(&RAWMOUSE {
+                lLastX: 7,
+                lLastY: -4,
+                ..Default::default()
+            });
+            assert_eq!(
+                window
+                    .events
+                    .drain()
+                    .iter()
+                    .filter(|e| matches!(e, Event::RelativeMotion(7, -4)))
+                    .count(),
+                1
+            );
+            unsafe {
+                SendMessageW(window.handle(), WM_MOUSEMOVE, 0, (200 << 16) | 200);
+            }
+            assert!(!window
+                .events
+                .drain()
+                .iter()
+                .any(|e| matches!(e, Event::Motion(..))));
+            window.set_input_state(crate::core_input::State {
+                detached: true,
+                ..Default::default()
+            });
+            wait(|| {
+                !window.hid_raw_mouse.load(Ordering::Acquire)
+                    && !window.mouse_clipped.load(Ordering::Acquire)
+            });
+            assert!(window
+                .events
+                .drain()
+                .iter()
+                .any(|e| matches!(e, Event::HidMouseRelease)));
+            unsafe {
+                SendMessageW(window.handle(), WM_MOUSEMOVE, 0, (200 << 16) | 200);
+            }
+            assert!(
+                window
+                    .events
+                    .drain()
+                    .iter()
+                    .any(|e| matches!(e, Event::Motion(200, 200))),
+                "local menu input was lost"
+            );
+            window.set_input_state(Default::default());
+            wait(|| window.hid_raw_mouse.load(Ordering::Acquire));
+            unsafe {
+                SendMessageW(window.handle(), WM_ENTERMENULOOP, 0, 0);
+            }
+            assert!(!window.hid_raw_mouse.load(Ordering::Acquire));
+            unsafe {
+                SendMessageW(window.handle(), WM_EXITMENULOOP, 0, 0);
+            }
+            wait(|| window.hid_raw_mouse.load(Ordering::Acquire));
+            window.set_usb_cursor_active(generation, false);
+            wait(|| {
+                !window.hid_raw_mouse.load(Ordering::Acquire)
+                    && !window.mouse_clipped.load(Ordering::Acquire)
+            });
+            let new = window.begin_video();
+            window.set_usb_cursor_active(generation, true);
+            assert!(!window.hid_cursor_active.load(Ordering::Acquire));
+            window.set_usb_cursor_active(new, true);
+            window.set_usb_cursor_active(generation, false);
+            assert!(window.hid_cursor_active.load(Ordering::Acquire));
+        }));
+        window.close();
+        result.unwrap();
+    }
     #[test]
     #[ignore = "requires an accelerated OpenGL desktop; run the isolated GUI harness explicitly"]
     fn idle_core_gui_presents_after_back_without_extra_input() {

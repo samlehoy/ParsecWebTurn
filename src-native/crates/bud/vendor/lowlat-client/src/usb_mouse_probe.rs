@@ -386,6 +386,12 @@ impl Probe {
             live.command(opcode, a, b, c);
         }
     }
+    pub(crate) fn live_active(&self) -> bool {
+        self.announced
+            && !self.stopping
+            && !self.removed
+            && self.live.as_ref().is_some_and(live_probe::Input::ready)
+    }
     pub(crate) fn prepare_frame(&self, packet: &mut [u8; FRAME]) {
         if self.live.is_some() {
             packet[8..12].copy_from_slice(&live_probe::ID.to_be_bytes());
