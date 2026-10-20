@@ -586,7 +586,7 @@ fn run(
         (media, session, Statistics::start(window.stats.clone()))
     };
     #[cfg(feature = "usb-mouse-probe")]
-    let _hid_cursor_lifetime = crate::hid_cursor::Lifetime::new(window.clone(), hid_generation);
+    let mut hid_cursor_lifetime = crate::hid_cursor::Lifetime::new(window.clone(), hid_generation);
     state.lock().unwrap_or_else(|e| e.into_inner()).wire_id = id.into();
     session.wake_consumer(std::thread::current());
     trace.mark("initial_native_offer");
@@ -684,6 +684,8 @@ fn run(
         let transport = session.snapshot();
         #[cfg(feature = "usb-mouse-probe")]
         window.set_usb_cursor_active(hid_generation, session.usb_live_mouse_active());
+        #[cfg(feature = "usb-mouse-probe")]
+        hid_cursor_lifetime.tick();
         if !established && last_trace.elapsed() >= Duration::from_secs(1) {
             trace.record(
                 "transport_progress",
@@ -765,7 +767,11 @@ fn run(
                     );
                     ended = true;
                 }
-                Event::ExternalControl { bytes } => shared.controls.push_back(bytes.into()),
+                Event::ExternalControl { bytes } => {
+                    #[cfg(feature = "usb-mouse-probe")]
+                    window.hid_cursor_metrics.wire(&bytes);
+                    shared.controls.push_back(bytes.into());
+                }
             }
         }
         let mut ingress = media.ingress();

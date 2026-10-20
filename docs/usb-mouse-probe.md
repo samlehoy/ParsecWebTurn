@@ -90,6 +90,32 @@ motion from position corrections, retained relative deltas, local menu input,
 capture release/re-entry and stale-generation rejection in a native UI test.
 That test does not establish performance or correctness on every remote machine.
 
+### Cursor-following diagnostic follow-up
+
+The first remote trial still showed intermittent cursor following. Its USB log
+confirmed 6698 reports, 8653 handled/suppressed mouse commands and no transport
+refusals or input backlog failures. The observer confirmed arrival, valid mouse
+capabilities and removal without errors. These logs did **not** measure cursor
+events, so they do not distinguish infrequent stock-host position reports from
+client delivery, visibility or positioning problems. The native UI test alone
+does not prove a continuous live host-position feed.
+
+The follow-up keeps the same behavior and live launcher, and automatically adds
+`usb-client-live-*.cursor.jsonl` beside the ordinary USB log. It samples once per
+second for at most 120 seconds: wire cursor event/image/position-change counts,
+delivered event/change counts and ages, UI notification counts, Raw Input motion
+counts, ClipCursor successes/failures, capture/UI state, native cursor visibility,
+and whether the actual cursor and clip match the latest host position. It saves
+no coordinates, trajectories, button history, images or credentials. A new file
+is required; file errors disable this diagnostic instead of interrupting input.
+All disk writes occur on the existing BUD worker, never the UI/input thread.
+
+For comparison, move continuously for 10 seconds inside one Paint canvas area
+without changing the cursor shape, then move across an area that changes the
+cursor shape, and finally open/close local Settings. Send the new `.cursor.jsonl`
+and the ordinary live USB log. Host observation remains optional and unchanged.
+This build adds evidence; it does not claim the live cursor problem is fixed.
+
 ## Fixed desktop input experiment (2026-10-20)
 
 Live result: a two-PC trial confirmed visible movement and a click mark in

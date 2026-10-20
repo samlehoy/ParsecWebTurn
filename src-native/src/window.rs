@@ -77,6 +77,8 @@ pub struct Window {
     hid_raw_mouse: AtomicBool,
     #[cfg(feature = "usb-mouse-probe")]
     hid_cursor_posted: AtomicBool,
+    #[cfg(feature = "usb-mouse-probe")]
+    pub(crate) hid_cursor_metrics: crate::hid_cursor::Metrics,
     relative_pending: AtomicUsize,
     relative_requested: AtomicBool,
     relative_anchor: Mutex<Option<(i32, i32)>>,
@@ -218,6 +220,8 @@ impl Window {
             mouse_clipped: AtomicBool::new(false),
             input_suspended: AtomicBool::new(false),
             host_cursor: Default::default(),
+            #[cfg(feature = "usb-mouse-probe")]
+            hid_cursor_metrics: Default::default(),
             warp_pending: AtomicBool::new(false),
             warp_echo: Default::default(),
             keyboard_requested: AtomicBool::new(false),
@@ -612,7 +616,13 @@ impl Window {
         // Parsec SDK cursor_func and lowlat both use OR. A hidden-only event
         // must acquire native relative input too; button state is not evidence.
         let relative = relative || hidden;
-        *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner()) = Some((x, y, relative));
+        {
+            let mut cursor = self.host_cursor.lock().unwrap_or_else(|e| e.into_inner());
+            #[cfg(feature = "usb-mouse-probe")]
+            self.hid_cursor_metrics
+                .delivered(cursor.is_some_and(|(px, py, _)| (px, py) != (x, y)));
+            *cursor = Some((x, y, relative));
+        }
         #[cfg(feature = "usb-mouse-probe")]
         if self.hid_cursor_active.load(Ordering::Acquire) {
             self.refresh_hid_cursor();
@@ -736,6 +746,40 @@ impl Window {
             .unwrap_or_else(|e| e.into_inner())
     }
     #[cfg(feature = "usb-mouse-probe")]
+    pub fn hid_cursor_diagnostic(&self) -> serde_json::Value {
+        let host = *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner());
+        let mut expected = crate::hid_cursor::visible_position(host)
+            .and_then(|(x, y)| self.presented_viewport().and_then(|v| v.unmap(x, y)))
+            .map(|(x, y)| POINT { x, y });
+        unsafe {
+            if expected
+                .as_mut()
+                .is_some_and(|p| ClientToScreen(self.handle(), p) == 0)
+            {
+                expected = None;
+            }
+            let mut actual = POINT::default();
+            let actual_ok = GetCursorPos(&mut actual) != 0;
+            let mut clip = RECT::default();
+            let clip_ok = GetClipCursor(&mut clip) != 0;
+            let mut info = CURSORINFO {
+                cbSize: std::mem::size_of::<CURSORINFO>() as u32,
+                ..Default::default()
+            };
+            let info_ok = GetCursorInfo(&mut info) != 0;
+            serde_json::json!({"requested":self.hid_cursor_active.load(Ordering::Acquire),
+                "raw_acquired":self.hid_raw_mouse.load(Ordering::Acquire),
+                "foreground":GetForegroundWindow()==self.handle(),"focused":self.has_focus.load(Ordering::Acquire),
+                "core_relative":self.relative_mouse.load(Ordering::Acquire),"host_metadata":host.is_some(),
+                "host_relative_or_hidden":host.map(|(_,_,hidden)|hidden),
+                "position_matches_host":expected.map(|p|actual_ok && (actual.x,actual.y)==(p.x,p.y)),
+                "clip_matches_host":expected.map(|p|clip_ok && (clip.left,clip.top,clip.right,clip.bottom)==(p.x,p.y,p.x+1,p.y+1)),
+                "native_cursor_visible":info_ok.then_some(info.flags & CURSOR_SHOWING != 0),
+                "settings_open":self.settings_open(),"suspended":self.input_suspended.load(Ordering::Acquire),
+                "detached":self.input_state.lock().unwrap_or_else(|e|e.into_inner()).detached})
+        }
+    }
+    #[cfg(feature = "usb-mouse-probe")]
     pub fn set_usb_cursor_active(&self, expected: u64, active: bool) {
         let generation = self
             .video_generation
@@ -753,6 +797,10 @@ impl Window {
             unsafe {
                 if PostMessageW(self.handle(), crate::hid_cursor::REFRESH, 0, 0) == 0 {
                     self.hid_cursor_posted.store(false, Ordering::Release);
+                } else {
+                    self.hid_cursor_metrics
+                        .refresh_posted
+                        .fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
@@ -841,8 +889,20 @@ impl Window {
                     }
                 }
                 if ClipCursor(&rect) != 0 {
+                    #[cfg(feature = "usb-mouse-probe")]
+                    if self.hid_raw_mouse.load(Ordering::Acquire) {
+                        self.hid_cursor_metrics
+                            .clip_successes
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
                     self.mouse_clipped.store(true, Ordering::Release);
                     return true;
+                }
+                #[cfg(feature = "usb-mouse-probe")]
+                if self.hid_raw_mouse.load(Ordering::Acquire) {
+                    self.hid_cursor_metrics
+                        .clip_failures
+                        .fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
@@ -999,6 +1059,14 @@ impl Window {
     }
     fn raw_mouse_motion(&self, mouse: &RAWMOUSE) {
         if self.raw_mouse_active() && mouse.usFlags & MOUSE_MOVE_ABSOLUTE == 0 {
+            #[cfg(feature = "usb-mouse-probe")]
+            if self.hid_raw_mouse.load(Ordering::Acquire)
+                && (mouse.lLastX != 0 || mouse.lLastY != 0)
+            {
+                self.hid_cursor_metrics
+                    .raw_motion_packets
+                    .fetch_add(1, Ordering::Relaxed);
+            }
             self.push(Event::RelativeMotion(mouse.lLastX, mouse.lLastY));
         }
     }
@@ -1221,6 +1289,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             #[cfg(feature = "usb-mouse-probe")]
             m if m == crate::hid_cursor::REFRESH => {
                 s.hid_cursor_posted.store(false, Ordering::Release);
+                s.hid_cursor_metrics
+                    .refresh_applied
+                    .fetch_add(1, Ordering::Relaxed);
                 s.apply_input_capture();
                 return 0;
             }
@@ -1705,7 +1776,19 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
             window.events.drain();
             for (x, y) in [(1000, 550), (1100, 520), (960, 540)] {
-                window.set_host_cursor(x, y, false, false);
+                // Exercise the real control-message parser and UI event contract,
+                // rather than synthesizing an already-delivered host position.
+                let mut wire = vec![0; 34];
+                wire[12] = 9;
+                wire[24..26].copy_from_slice(&(x as i16).to_be_bytes());
+                wire[26..28].copy_from_slice(&(y as i16).to_be_bytes());
+                window.hid_cursor_metrics.wire(&wire);
+                let crate::control::Message::Buffer { event, .. } =
+                    crate::control::decode(&wire).unwrap()
+                else {
+                    panic!("cursor control event expected")
+                };
+                window.host_cursor_event(&event);
                 wait(|| at_host(x, y));
                 std::thread::sleep(std::time::Duration::from_millis(40));
                 assert!(
@@ -1717,6 +1800,23 @@ mod tests {
                     "host cursor positioning generated outgoing motion"
                 );
             }
+            let diagnostic = window.hid_cursor_diagnostic();
+            assert_eq!(diagnostic["position_matches_host"], true);
+            assert_eq!(diagnostic["clip_matches_host"], true);
+            assert_eq!(
+                window
+                    .hid_cursor_metrics
+                    .wire_events
+                    .load(Ordering::Relaxed),
+                3
+            );
+            assert_eq!(
+                window
+                    .hid_cursor_metrics
+                    .wire_position_changes
+                    .load(Ordering::Relaxed),
+                2
+            );
             window.raw_mouse_motion(&RAWMOUSE {
                 lLastX: 7,
                 lLastY: -4,
