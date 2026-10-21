@@ -356,6 +356,8 @@ impl Client {
             self.telemetry.input_dropped.fetch_add(1, Ordering::Relaxed);
             return false;
         }
+        #[cfg(feature = "input-trace")]
+        crate::input_trace::button_command("button_ring_queued", bytes);
         thread.wake_handle().notify().is_ok()
     }
 

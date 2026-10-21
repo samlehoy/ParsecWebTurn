@@ -303,6 +303,8 @@ pub struct Driver {
     hid_device: Option<crate::usb_hid::Device>,
     #[cfg(feature = "usb-hid-input")]
     hid_mouse_enabled: bool,
+    #[cfg(all(feature = "usb-hid-input", feature = "input-trace"))]
+    traced_mouse_buttons: Option<u8>,
     #[cfg(feature = "usb-hid-input")]
     hid_keyboard_enabled: bool,
     init: Init,
@@ -363,6 +365,8 @@ impl Driver {
             hid_device: None,
             #[cfg(feature = "usb-hid-input")]
             hid_mouse_enabled: false,
+            #[cfg(all(feature = "usb-hid-input", feature = "input-trace"))]
+            traced_mouse_buttons: None,
             #[cfg(feature = "usb-hid-input")]
             hid_keyboard_enabled: false,
             init,
@@ -752,6 +756,10 @@ impl Driver {
         }
         if selected || message.opcode == op::RELEASE {
             if let Some(device) = &mut self.hid_device {
+                #[cfg(feature = "input-trace")]
+                if self.hid_mouse_enabled && message.opcode == op::MOUSE_BUTTON {
+                    crate::input_trace::record("hid_read_pool", device.trace_read_state());
+                }
                 device.external_input(message.opcode, message.a0, message.a1, message.a2);
             }
         }
@@ -764,6 +772,19 @@ impl Driver {
             let success = session.send_message(CONTROL_CHANNEL, header, body).is_ok();
             #[cfg(feature = "input-trace")]
             crate::input_trace::sent_frame(success, &frame);
+            #[cfg(feature = "input-trace")]
+            if let Some(buttons) = crate::input_trace::mouse_buttons(&frame) {
+                if self.traced_mouse_buttons != Some(buttons) || !success {
+                    crate::input_trace::record(
+                        "hid_button_report",
+                        [i32::from(buttons), i32::from(success), 0, 0],
+                    );
+                    crate::input_trace::pressure("control_pressure_out", session);
+                    if success {
+                        self.traced_mouse_buttons = Some(buttons);
+                    }
+                }
+            }
             let error = if let Some(device) = self.hid_device.as_mut() {
                 device.sent(success);
                 device.error()
@@ -880,6 +901,10 @@ impl Driver {
                 "cursor_transport",
                 inbound.get(..len).unwrap_or_default(),
             );
+            #[cfg(feature = "input-trace")]
+            if inbound.get(12) == Some(&op::CURSOR) && len >= 34 {
+                crate::input_trace::pressure("control_pressure_in", session);
+            }
             let Ok(message) = control::parse(inbound.get(..len).unwrap_or(&[])) else {
                 continue;
             };

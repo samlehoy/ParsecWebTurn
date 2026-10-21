@@ -23,7 +23,27 @@ the omitted count identifies saturation. Reproduce promptly after connecting.
 Timing is diagnostic CPU arrival order, not host receipt/completion proof.
 The temporary tracing branch is not intended for merging into dev.
 
-Schema 4 stages (all use the same process monotonic clock):
+Schema 5 stages (all use the same process monotonic clock):
+
+- `core_button`: the retained core prepared a mouse button message (type,
+  button index, pressed, reserved). Continuous core motion is filtered out.
+- `button_submit`, `button_session_locked`, `button_ring_queued`: entry to the
+  BUD sender, acquisition of its existing session mutex, successful enqueue in
+  the existing bounded input ring. Values are the unchanged opcode/arguments.
+- `hid_button_command`: the transport thread has consumed the button command;
+  the same opcode/arguments as the ring probes.
+- `hid_read_pool`, `hid_read_pool_refilled`: shared HID device ready flag,
+  pending host interrupt-read count, device error code, reserved. Sampled at a
+  button command and when an empty read pool receives a valid host read.
+- `hid_button_report`: mouse button bitmask, protocol-queue acceptance boolean,
+  reserved, reserved. Only button-state changes or send failures are recorded;
+  absolute/relative movement and keyboard reports are excluded.
+- `control_pressure_out`, `control_pressure_in`: control send-window fragment
+  count (queued/unacknowledged), cumulative NACK retransmissions, cumulative
+  timeout retransmissions and smoothed BUD acknowledgement RTT in microseconds
+  (-1 when unavailable). Sampled at a changed mouse-button report and a received
+  cursor message. Counts are saturated to i32::MAX. These are aggregate channel
+  values, not an ACK or retransmission proof for a particular mouse report.
 
 - `cursor_transport`: the BUD transport has delivered a reassembled control
   message to the session driver; X/Y, relative and hidden flags only.
@@ -50,6 +70,11 @@ arrival. A delay before it still combines input delivery, host handling, network
 transit/retransmissions and transport reassembly. No host clock is compared with
 the client clock. The probes themselves do not change mouse/camera policy,
 queues, transport timers or media behavior.
+The outgoing report timestamp is protocol-queue acceptance, not OS/socket send
+completion, host USB completion or input application. The interval after it
+still combines protocol/carrier output, network/retransmissions, host handling
+and return delivery. The RTT estimate must not be subtracted as an exact
+one-way network delay. No timestamp is taken from another machine's clock.
 
 ## Candidate event scheduling
 
@@ -72,3 +97,10 @@ the local-only wake hint and callback scheduling without a catch-up burst.
 The previous foreground capture regression still covers hidden-only camera
 capture and return to absolute input. Live improvement/camera compatibility of
 this candidate remains to be checked; it is not merged into dev.
+
+The event-scheduling candidate remains enabled in this measurement build. The
+schema-4 live trace showed average BUD delivery-to-native-cursor time fall from
+19.24 ms to 1.36 ms across the respective drag samples; network/host conditions
+changed between runs, so this does not establish end-to-end improvement of that
+size. Schema 5 adds observation only and does not change the mouse, camera,
+HID pacing/read pool, retransmissions, transport waits, audio or video behavior.

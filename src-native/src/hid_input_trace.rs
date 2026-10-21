@@ -30,9 +30,24 @@ pub fn start(path: PathBuf) -> Guard {
     Guard(path)
 }
 pub fn record(stage: &'static str, values: [i32; 4]) {
+    let stage = match stage {
+        "core_mouse" if values[0] == 2 => "core_button",
+        "adapter_command" if values[0] == 1 => "hid_button_command",
+        stage => stage,
+    };
     if !matches!(
         stage,
         "host_cursor"
+            | "core_button"
+            | "button_submit"
+            | "button_session_locked"
+            | "button_ring_queued"
+            | "hid_button_command"
+            | "hid_read_pool"
+            | "hid_read_pool_refilled"
+            | "hid_button_report"
+            | "control_pressure_out"
+            | "control_pressure_in"
             | "cursor_transport"
             | "cursor_worker_poll"
             | "cursor_control_queued"
@@ -80,7 +95,7 @@ impl Drop for Guard {
         let Some(trace) = TRACE.get() else { return };
         let state = trace.lock().unwrap_or_else(|e| e.into_inner());
         let report = serde_json::json!({
-            "schema":4,"commit":"cursor-callback-wakeup-candidate",
+            "schema":5,"commit":"cursor-outbound-button-diagnostics",
             "capacity":CAPACITY,"omitted":state.omitted,"records":state.records,
         });
         if let Ok(bytes) = serde_json::to_vec(&report) {

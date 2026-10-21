@@ -259,7 +259,11 @@ impl Attempt {
     }
 
     pub fn send(&self, frame: &[u8]) -> Result<()> {
+        #[cfg(feature = "hid-input-trace")]
+        parsec_native_bud::input_trace::button_command("button_submit", frame);
         let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(feature = "hid-input-trace")]
+        parsec_native_bud::input_trace::button_command("button_session_locked", frame);
         let session = session.as_mut().context("BUD session unavailable")?;
         if frame.len() >= 14 && frame[12] == 17 {
             let id = u32::from_be_bytes(frame[4..8].try_into()?);

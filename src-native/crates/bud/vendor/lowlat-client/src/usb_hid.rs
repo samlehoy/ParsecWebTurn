@@ -353,6 +353,15 @@ pub(crate) struct Device {
     last_report: Option<u64>,
 }
 impl Device {
+    #[cfg(feature = "input-trace")]
+    pub(crate) fn trace_read_state(&self) -> [i32; 4] {
+        [
+            i32::from(self.ready),
+            self.pending.len() as i32,
+            self.error as i32,
+            0,
+        ]
+    }
     pub(crate) fn new(kind: Kind) -> Self {
         Self {
             input: match kind {
@@ -422,10 +431,16 @@ impl Device {
                     self.fail(2);
                     return self.remove();
                 }
+                #[cfg(feature = "input-trace")]
+                let was_empty = self.pending.is_empty();
                 self.pending.push_back(dword(r, 8));
                 if !self.ready {
                     self.input.start();
                     self.ready = true;
+                }
+                #[cfg(feature = "input-trace")]
+                if was_empty {
+                    crate::input_trace::record("hid_read_pool_refilled", self.trace_read_state());
                 }
                 None
             }
