@@ -383,6 +383,8 @@ impl Backend {
             self.media_ingress.unavailable(channel, bytes.len());
             return Ok(());
         }
+        #[cfg(all(windows, feature = "hid-input-trace"))]
+        parsec_native_bud::input_trace::cursor_frame("cursor_backend_decode", &bytes);
         let decoded =
             crate::control::decode(&bytes).context(crate::attempt::FailureStage::InboundControl)?;
         self.control_frames_received = self.control_frames_received.saturating_add(1);

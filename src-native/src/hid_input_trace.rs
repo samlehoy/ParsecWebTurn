@@ -33,6 +33,10 @@ pub fn record(stage: &'static str, values: [i32; 4]) {
     if !matches!(
         stage,
         "host_cursor"
+            | "cursor_transport"
+            | "cursor_worker_poll"
+            | "cursor_control_queued"
+            | "cursor_backend_decode"
             | "win_button"
             | "win_capture_changed"
             | "relative_request"
@@ -45,7 +49,13 @@ pub fn record(stage: &'static str, values: [i32; 4]) {
     }
     let Some(trace) = TRACE.get() else { return };
     let mut state = trace.lock().unwrap_or_else(|e| e.into_inner());
-    if state
+    if !matches!(
+        stage,
+        "cursor_transport"
+            | "cursor_worker_poll"
+            | "cursor_control_queued"
+            | "cursor_backend_decode"
+    ) && state
         .records
         .last()
         .is_some_and(|record| record.stage == stage && record.values == values)
@@ -68,7 +78,7 @@ impl Drop for Guard {
         let Some(trace) = TRACE.get() else { return };
         let state = trace.lock().unwrap_or_else(|e| e.into_inner());
         let report = serde_json::json!({
-            "schema":2,"commit":"cursor-visibility-diagnostics",
+            "schema":3,"commit":"cursor-pipeline-diagnostics",
             "capacity":CAPACITY,"omitted":state.omitted,"records":state.records,
         });
         if let Ok(bytes) = serde_json::to_vec(&report) {

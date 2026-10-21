@@ -875,6 +875,11 @@ impl Driver {
                 }
             };
             self.control_bytes = self.control_bytes.saturating_add(len as u64);
+            #[cfg(feature = "input-trace")]
+            crate::input_trace::cursor_frame(
+                "cursor_transport",
+                inbound.get(..len).unwrap_or_default(),
+            );
             let Ok(message) = control::parse(inbound.get(..len).unwrap_or(&[])) else {
                 continue;
             };

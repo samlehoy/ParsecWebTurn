@@ -709,6 +709,10 @@ fn run(
             let Some(event) = session.poll()? else {
                 break;
             };
+            #[cfg(feature = "hid-input-trace")]
+            if let Event::ExternalControl { bytes } = &event {
+                parsec_native_bud::input_trace::cursor_frame("cursor_worker_poll", bytes);
+            }
             events.push(event);
         }
         let transport = session.snapshot();
@@ -841,6 +845,8 @@ fn run(
                     ended = true;
                 }
                 Event::ExternalControl { bytes } => {
+                    #[cfg(feature = "hid-input-trace")]
+                    parsec_native_bud::input_trace::cursor_frame("cursor_control_queued", &bytes);
                     shared.controls.push_back(bytes.into());
                 }
             }

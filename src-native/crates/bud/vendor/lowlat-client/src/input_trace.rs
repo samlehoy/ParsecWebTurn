@@ -12,6 +12,26 @@ pub fn record(stage: &'static str, values: [i32; 4]) {
         sink(stage, values);
     }
 }
+/// Only the fixed cursor metadata from a complete, reassembled control message.
+/// This is after transport delivery, not the socket's raw packet arrival time.
+pub fn cursor_frame(stage: &'static str, frame: &[u8]) {
+    if let Some(values) = cursor_values(frame) {
+        record(stage, values);
+    }
+}
+fn cursor_values(frame: &[u8]) -> Option<[i32; 4]> {
+    if frame.len() < 34 || frame[12] != 9 {
+        return None;
+    }
+    let word = |offset| i16::from_be_bytes([frame[offset], frame[offset + 1]]);
+    let flags = u16::from_be_bytes([frame[32], frame[33]]);
+    Some([
+        i32::from(word(24)),
+        i32::from(word(26)),
+        i32::from(flags & 256 != 0),
+        i32::from(flags & 512 != 0),
+    ])
+}
 pub fn sent_frame(sent: bool, frame: &[u8]) {
     if frame.get(21..25) != Some(&[8, 0, 0, 0]) {
         return;
@@ -81,6 +101,20 @@ fn decode_mouse_report(sent: bool, report: &[u8]) -> Option<(&'static str, [i32;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cursor_probe_excludes_other_messages_and_truncated_headers() {
+        let mut frame = [0; 34];
+        frame[12] = 9;
+        frame[24..26].copy_from_slice(&(-12i16).to_be_bytes());
+        frame[26..28].copy_from_slice(&320i16.to_be_bytes());
+        frame[32..34].copy_from_slice(&0x200u16.to_be_bytes());
+        assert_eq!(cursor_values(&frame), Some([-12, 320, 0, 1]));
+        for length in 0..34 {
+            assert!(cursor_values(&frame[..length]).is_none());
+        }
+        frame[12] = 8;
+        assert!(cursor_values(&frame).is_none());
+    }
     #[test]
     fn trace_decodes_only_complete_mouse_reports() {
         assert_eq!(
