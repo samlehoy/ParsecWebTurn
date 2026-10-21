@@ -253,6 +253,11 @@ is no per-frame file logging. The collector is covered by synthetic tests.
 Live BUD report reception has been observed; live WebRTC validation and unusual
 audio interval values still need investigation.
 
+The embedded overlay receives native decoder input-to-output timing and active
+transport RTT through the unchanged web interface. Its Bitrate field remains
+unavailable because that interface provides no bitrate output; use the native
+traffic counters. See [overlay metric scope](docs/wasm-overlay-metrics.md).
+
 ## Clipboard
 
 Unicode text clipboard synchronization uses the original core in both directions.

@@ -5,6 +5,7 @@ builds, not published stable releases.
 
 ## Unreleased
 
+- **Embedded overlay metrics:** supply measured native decoder input-to-output time and fresh BUD/WebRTC RTT through the original seven-output web import. Keep unavailable values unknown and preserve the WASM binary. The web import has no bitrate output; native Connection stats remains the source for traffic rates.
 - **Feature status:** remove the experimental label from BUD, custom audio buffering, raw PCM permission and host timing. Keep existing defaults and accept the former settings keys when loading saved profiles. Other experimental options keep their labels; historical release notes describe their original status.
 - **Connection stats layout:** measure both text columns when sizing rows so wrapped labels and values do not overlap; shorten the display catch-up counter label.
 - **Local video timing:** bounded CPU measurements of native compressed-queue wait, decoder setup/service and correlated input-to-output time, surface handoff, presentation preparation and Present calls. No GPU execution/scanout claim, pixel readback or per-frame logging.

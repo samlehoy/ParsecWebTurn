@@ -1021,7 +1021,9 @@ fn backend_call(
                 }
                 "parsec_web_get_metrics" => {
                     b.pump_native_events()?;
-                    // Idle values from X's constructor, NOT measured telemetry.
+                    // Zero is the pinned overlay's unavailable sentinel. Only
+                    // fill the documented output arguments, never adjacent
+                    // private guest fields (e.g. the absent bitrate output).
                     for i in [0, 1, 4, 5, 6] {
                         m.set_u32(ptr(args, i)?, 0)?;
                     }
@@ -1029,6 +1031,12 @@ fn backend_call(
                         m.write(ptr(args, i)?, &[0])?;
                     }
                     m.write(ptr(args, 5)?, &b.encode_latency.to_le_bytes())?;
+                    if b.status == Some(0) {
+                        m.write(
+                            ptr(args, 6)?,
+                            &b.media_ingress.overlay_network_ms().to_le_bytes(),
+                        )?;
+                    }
                     if let Some(v) = b
                         .media_ingress
                         .video_output
@@ -1037,6 +1045,17 @@ fn backend_call(
                     {
                         m.set_u32(ptr(args, 0)?, v.width.unwrap_or(0))?;
                         m.set_u32(ptr(args, 1)?, v.height.unwrap_or(0))?;
+                        let timing = &v.local_timing.decoder_residence;
+                        if b.status == Some(0)
+                            && v.failure_stage.is_none()
+                            && timing.count > 0
+                            && timing.latest_ms.is_finite()
+                            && (0.0..=f64::from(f32::MAX)).contains(&timing.latest_ms)
+                        {
+                            // Native input -> observed decoder output, like
+                            // WebCodecs input -> output; not GPU execution time.
+                            m.write(ptr(args, 4)?, &(timing.latest_ms as f32).to_le_bytes())?;
+                        }
                         // The active decoded format is NV12 (4:2:0). MF range metadata is optional.
                         m.write(ptr(args, 3)?, &[u8::from(v.nominal_range == Some(1))])?;
                     }

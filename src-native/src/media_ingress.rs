@@ -2,6 +2,10 @@
 use serde::Serialize;
 #[derive(Clone, Default, Serialize)]
 pub struct Ingress {
+    /// Cached active-transport RTT for the unchanged guest metrics import.
+    /// Not a one-way/media transit measurement; never persist Instant values.
+    #[serde(skip)]
+    pub network_rtt: Option<(std::time::Instant, f64)>,
     pub video_stream: crate::video_stream::Snapshot,
     pub audio_output: Option<crate::audio_stream::Snapshot>,
     pub video_output: Option<crate::video_output::Snapshot>,
@@ -14,6 +18,16 @@ pub struct Ingress {
     pub audio_decoder_available: bool,
 }
 impl Ingress {
+    pub fn overlay_network_ms(&self) -> f32 {
+        self.network_rtt
+            .filter(|(at, ms)| {
+                at.elapsed() <= std::time::Duration::from_secs(3)
+                    && ms.is_finite()
+                    && *ms >= 0.0
+                    && *ms <= f64::from(f32::MAX)
+            })
+            .map_or(0.0, |(_, ms)| ms as f32)
+    }
     pub fn unavailable(&mut self, channel: u16, size: usize) {
         self.record(channel, size, true);
     }
@@ -40,6 +54,22 @@ impl Ingress {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn overlay_rtt_requires_a_fresh_finite_transport_measurement() {
+        let mut ingress = Ingress::default();
+        assert_eq!(ingress.overlay_network_ms(), 0.0);
+        for invalid in [f64::NAN, f64::INFINITY, -1.0, f64::MAX] {
+            ingress.network_rtt = Some((std::time::Instant::now(), invalid));
+            assert_eq!(ingress.overlay_network_ms(), 0.0);
+        }
+        ingress.network_rtt = Some((std::time::Instant::now(), 27.5));
+        assert_eq!(ingress.overlay_network_ms(), 27.5);
+        ingress.network_rtt = Some((
+            std::time::Instant::now() - std::time::Duration::from_secs(4),
+            27.5,
+        ));
+        assert_eq!(ingress.overlay_network_ms(), 0.0);
+    }
     #[test]
     fn unavailable_media_is_counted_without_retaining_payload_or_claiming_decoding() {
         let mut backend = crate::backend::Backend::default();

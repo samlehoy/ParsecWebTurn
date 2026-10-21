@@ -867,6 +867,7 @@ fn run(
             }
         }
         let mut ingress = media.ingress();
+        ingress.network_rtt = transport.rtt_ms.map(|ms| (Instant::now(), ms));
         ingress.video_packets_received =
             shared.ingress.video_packets_received + pumped.video_messages as u64;
         ingress.audio_packets_received =

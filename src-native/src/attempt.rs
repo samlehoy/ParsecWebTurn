@@ -1015,9 +1015,6 @@ fn worker(
                 let Some((bus, generation)) = link else {
                     continue;
                 };
-                if !bus.requested() {
-                    continue;
-                }
                 let Some(peer) = weak.upgrade() else {
                     break;
                 };
@@ -1027,6 +1024,22 @@ fn worker(
                 else {
                     continue;
                 };
+                {
+                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                    if s.cancelled || s.closing {
+                        break;
+                    }
+                    s.media_ingress.network_rtt = if sample.state == "connected" {
+                        sample.rtt_ms.map(|ms| (sample.at, ms))
+                    } else {
+                        None
+                    };
+                }
+                // The guest overlay also needs RTT with the native stats window
+                // closed. Reuse this existing 1 Hz task, not the per-frame import.
+                if !bus.requested() {
+                    continue;
+                }
                 let (video, inspector) = {
                     let s = state.lock().unwrap_or_else(|e| e.into_inner());
                     if s.cancelled || s.closing {

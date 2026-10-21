@@ -386,6 +386,49 @@ mod tests {
         assert_eq!(m.u32(108).unwrap(), 0);
         assert_eq!(m.read(128, 4).unwrap(), vec![0, 0, 255, 255]);
         assert_eq!(m.u32(140).unwrap(), 0);
+        // Exercise the real seven-pointer import, including its packed byte
+        // fields and padding. No native GPU, account or transport is required.
+        {
+            let mut backend = main.data().backend.lock().unwrap();
+            backend.status = Some(0);
+            backend.encode_latency = 2.68;
+            backend.media_ingress.network_rtt = Some((std::time::Instant::now(), 42.5));
+            let mut video = video_output::Snapshot {
+                width: Some(1920),
+                height: Some(1080),
+                frames_decoded: 1,
+                frames_presented: 1,
+                nominal_range: Some(1),
+                ..Default::default()
+            };
+            video
+                .local_timing
+                .decoder_residence
+                .record(std::time::Duration::from_micros(3250));
+            backend.media_ingress.video_output = Some(video);
+        }
+        instance
+            .get_typed_func::<(), ()>(&mut main, "metrics")
+            .unwrap()
+            .call(&mut main, ())
+            .unwrap();
+        let metric = |pointer| f32::from_le_bytes(m.read(pointer, 4).unwrap().try_into().unwrap());
+        assert_eq!((m.u32(120).unwrap(), m.u32(124).unwrap()), (1920, 1080));
+        assert_eq!(m.read(128, 4).unwrap(), vec![0, 1, 255, 255]);
+        assert_eq!(metric(132), 3.25);
+        assert_eq!(metric(136), 2.68);
+        assert_eq!(metric(140), 42.5);
+        {
+            let mut backend = main.data().backend.lock().unwrap();
+            backend.status = Some(-3);
+        }
+        instance
+            .get_typed_func::<(), ()>(&mut main, "metrics")
+            .unwrap()
+            .call(&mut main, ())
+            .unwrap();
+        assert_eq!(metric(132), 0.0);
+        assert_eq!(metric(140), 0.0);
         other
             .get_typed_func::<(), ()>(&mut worker, "destroy")
             .unwrap()
