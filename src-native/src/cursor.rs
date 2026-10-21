@@ -230,15 +230,27 @@ impl Default for State {
 }
 impl State {
     pub fn apply(&mut self, pending: Pending) {
-        if let Some(image) = pending.image {
-            self.custom = image.as_ref().and_then(|frame| create(frame).ok());
-        }
+        // Keep the selected old cursor alive until its replacement is ready.
+        // Otherwise OwnedCursor::drop temporarily selects the system arrow.
+        let retired = pending.image.and_then(|image| {
+            std::mem::replace(
+                &mut self.custom,
+                image.as_ref().and_then(|frame| create(frame).ok()),
+            )
+        });
         if let Some(visible) = pending.visible {
             self.visible = visible;
         }
         if let Some(default) = pending.default {
             self.default = default;
         }
+        if retired
+            .as_ref()
+            .is_some_and(|old| unsafe { GetCursor() == old.0 as HCURSOR })
+        {
+            self.select();
+        }
+        drop(retired);
     }
     pub fn select(&self) {
         unsafe {
@@ -261,6 +273,41 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn selected_cursor_replacement_never_uses_the_retirement_arrow() {
+        struct Restore(HCURSOR);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                unsafe { SetCursor(self.0) };
+            }
+        }
+        let _restore = Restore(unsafe { GetCursor() });
+        let mut state = State::default();
+        let replacement = || {
+            let mut pending = Pending::default();
+            pending.submit(Request::Image(Some(
+                Frame::rgba(vec![255; 16], 2, 2, 0, 0).unwrap(),
+            )));
+            pending
+        };
+        state.apply(replacement());
+        state.select();
+        let old = unsafe { GetCursor() };
+        assert!(!old.is_null());
+        state.apply(replacement());
+        assert_ne!(state.handle(), old);
+        assert_eq!(unsafe { GetCursor() }, state.handle());
+
+        // A replacement must not reveal a cursor hidden by relative capture.
+        unsafe { SetCursor(std::ptr::null_mut()) };
+        state.apply(replacement());
+        assert!(unsafe { GetCursor() }.is_null());
+        state.select();
+        let mut pending = replacement();
+        pending.submit(Request::Visible(false));
+        state.apply(pending);
+        assert!(unsafe { GetCursor() }.is_null());
+    }
     #[test]
     fn bounded_pixels_hotspots_and_alpha() {
         let f = Frame::rgba(vec![200, 100, 50, 128], 1, 1, -1, 999).unwrap();

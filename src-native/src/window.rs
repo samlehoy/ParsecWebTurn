@@ -657,18 +657,17 @@ impl Window {
         // relative capture. Otherwise the next absolute move sends the old
         // local capture anchor back to the host. This is transition-only:
         // ordinary host cursor images must never continuously warp HID input.
-        if !self.warp_pending.swap(false, Ordering::AcqRel)
-            || !self.input_allowed()
-            || self
+        if !self.warp_pending.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let restore = self.input_allowed()
+            && !self
                 .input_state
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .warp_disabled
-        {
-            return;
-        }
+                .warp_disabled;
         let cursor = *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((x, y, false)) = cursor {
+        if let Some((x, y, false)) = cursor.filter(|_| restore) {
             if let Some((cx, cy)) = self.presented_viewport().and_then(|v| v.unmap(x, y)) {
                 let mut point = POINT { x: cx, y: cy };
                 if ClientToScreen(self.handle(), &mut point) != 0
@@ -680,6 +679,22 @@ impl Window {
                         .store(((cx as u64) << 32 | cy as u64) + 1, Ordering::Release);
                 }
             }
+        }
+        // Relative capture release kept the cursor hidden until its position
+        // was restored. Showing it first exposes the stale capture anchor.
+        self.select_client_cursor();
+    }
+    fn client_cursor_hidden(&self) -> bool {
+        self.relative_mouse.load(Ordering::Acquire) || self.warp_pending.load(Ordering::Acquire)
+    }
+    unsafe fn select_client_cursor(&self) {
+        if self.client_cursor_hidden() {
+            SetCursor(std::ptr::null_mut());
+        } else {
+            self.cursor
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .select();
         }
     }
     pub fn set_keyboard_grab(&self, enabled: bool) {
@@ -899,10 +914,7 @@ impl Window {
         if acquired {
             SetCursor(std::ptr::null_mut());
         } else {
-            self.cursor
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .select();
+            self.select_client_cursor();
         }
         // A rejected request must also report the actual state to the guest.
         self.relative_mouse.store(acquired, Ordering::Release);
@@ -1204,6 +1216,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                     &mut *s.cursor_pending.lock().unwrap_or_else(|e| e.into_inner()),
                 );
                 let mut cursor = s.cursor.lock().unwrap_or_else(|e| e.into_inner());
+                if s.client_cursor_hidden() {
+                    SetCursor(std::ptr::null_mut());
+                }
                 cursor.apply(pending);
                 // Refresh stationary pointers too, without changing another
                 // window's cursor or the system resize/titlebar cursors.
@@ -1217,7 +1232,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                         && point.y >= rect.top
                         && point.y < rect.bottom
                     {
-                        if s.relative_mouse.load(Ordering::Acquire) {
+                        if s.client_cursor_hidden() {
                             SetCursor(std::ptr::null_mut());
                         } else {
                             cursor.select();
@@ -1227,11 +1242,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
             WM_SETCURSOR if lp as u16 as u32 == HTCLIENT => {
-                if s.relative_mouse.load(Ordering::Acquire) {
-                    SetCursor(std::ptr::null_mut());
-                    return 1;
-                }
-                s.cursor.lock().unwrap_or_else(|e| e.into_inner()).select();
+                s.select_client_cursor();
                 return 1;
             }
             #[cfg(feature = "bud")]
