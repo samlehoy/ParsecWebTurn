@@ -651,6 +651,7 @@ fn run(
     let mut direct_attempt = !settings.force_relay;
     let mut wire_id = id.to_owned();
     let mut last_stats = Instant::now();
+    let mut last_cursor_capture = None;
     *stage = "initial_waiting_for_host";
     while !cancel.load(Ordering::Acquire) {
         if !established && Instant::now() >= deadline {
@@ -785,6 +786,7 @@ fn run(
             }
         }
         let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cursor_ready = false;
         for event in events {
             if statistics.consume_timing(&event) {
                 continue;
@@ -841,6 +843,10 @@ fn run(
                     ended = true;
                 }
                 Event::ExternalControl { bytes } => {
+                    if let Some(capture) = crate::control::cursor_capture(&bytes) {
+                        cursor_ready |= last_cursor_capture != Some(capture);
+                        last_cursor_capture = Some(capture);
+                    }
                     shared.controls.push_back(bytes.into());
                 }
             }
@@ -905,6 +911,12 @@ fn run(
             last_stats = Instant::now();
         }
         drop(shared);
+        if cursor_ready {
+            // Wake only after the unchanged FIFO contains the host event and
+            // after releasing the worker state lock. The WASM still consumes
+            // that event and owns its visibility/capture decisions.
+            window.events.push(crate::window::Event::CursorReady);
+        }
         let fallback_due = !established
             && (ended
                 || (direct_attempt
@@ -942,6 +954,7 @@ fn run(
             // Do not append a diagnostic suffix to an account protocol ID:
             // local SDK acceptance does not establish service compatibility.
             wire_id = native_attempt_id()?;
+            last_cursor_capture = None;
             let mut next = crate::bud_media::session(
                 hevc_available,
                 ten_bit,

@@ -299,6 +299,8 @@ fn relay_outcome(relay: &Relay<'_>) -> Option<Outcome> {
 /// One session's driver.
 #[derive(Debug)]
 pub struct Driver {
+    /// Successful application enqueues since the shell last drained output.
+    output_queued: bool,
     #[cfg(feature = "usb-hid-input")]
     hid_device: Option<crate::usb_hid::Device>,
     #[cfg(feature = "usb-hid-input")]
@@ -359,6 +361,7 @@ impl Driver {
         telemetry: Arc<Telemetry>,
     ) -> Self {
         Self {
+            output_queued: false,
             #[cfg(feature = "usb-hid-input")]
             hid_device: None,
             #[cfg(feature = "usb-hid-input")]
@@ -401,6 +404,10 @@ impl Driver {
 
     pub fn established(&self) -> bool {
         self.established
+    }
+
+    pub(crate) fn take_output_queued(&mut self) -> bool {
+        std::mem::take(&mut self.output_queued)
     }
 
     /// Messages received, one count per opcode.
@@ -748,6 +755,7 @@ impl Driver {
         if let Some(frame) = frame {
             let (header, body) = frame.split_at(13);
             let success = session.send_message(CONTROL_CHANNEL, header, body).is_ok();
+            self.output_queued |= success;
             let error = if let Some(device) = self.hid_device.as_mut() {
                 device.sent(success);
                 device.error()
@@ -795,6 +803,7 @@ impl Driver {
             .send_message(CONTROL_CHANNEL, &header, control.body)
             .is_ok()
         {
+            self.output_queued = true;
             self.count_sent(control.opcode);
         }
     }
@@ -1201,6 +1210,56 @@ fn negotiated_encoder_flags(external: u32, initial: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_flush_hint_tracks_only_accepted_control_messages() {
+        let (emit, _) = events::queue();
+        let mut driver = Driver::new(
+            crate::config::Config::default().init(&crate::config::Caps::default()),
+            Units::new(),
+            Packets::new(),
+            emit,
+            Arc::new(Telemetry::default()),
+        );
+        let mut session = Session::new(
+            lowlat_core::envelope::Envelope::from_key(&[0x77; 32]).unwrap(),
+            1,
+            0.0,
+        );
+        let control = Control {
+            opcode: op::MOUSE_BUTTON,
+            a0: 1,
+            a1: 1,
+            a2: 0,
+            body: &[],
+        };
+        // A missing channel rejects the enqueue, so there is nothing to flush.
+        driver.send_control(&mut session, &control);
+        assert!(!driver.take_output_queued());
+        let mut bodies = vec![0u8; 256 * 64];
+        let mut slots = vec![lowlat_core::send::SendSlot::default(); 64];
+        session
+            .attach_send(
+                CONTROL_CHANNEL,
+                lowlat_core::send::SendRing::new(&mut bodies, &mut slots, 256, CONTROL_CHANNEL)
+                    .unwrap(),
+            )
+            .unwrap();
+        driver.send_control(&mut session, &control);
+        assert!(driver.take_output_queued());
+        assert!(!driver.take_output_queued());
+        let before = driver.sent()[usize::from(op::MOUSE_BUTTON)];
+        let oversized = vec![0u8; 256 * 65];
+        driver.send_control(
+            &mut session,
+            &Control {
+                body: &oversized,
+                ..control
+            },
+        );
+        assert_eq!(driver.sent()[usize::from(op::MOUSE_BUTTON)], before);
+        assert!(!driver.take_output_queued());
+    }
 
     #[cfg(feature = "usb-hid-input")]
     #[test]

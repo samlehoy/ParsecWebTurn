@@ -17,6 +17,8 @@ pub enum Event {
     Size(i32, i32),
     Focus(bool),
     Clipboard,
+    // Local scheduling hint only; never translated into remote mouse input.
+    CursorReady,
     Motion(i32, i32),
     RelativeMotion(i32, i32),
     RelativeMode(bool),

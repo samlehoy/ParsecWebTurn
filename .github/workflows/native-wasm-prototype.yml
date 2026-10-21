@@ -81,6 +81,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
           cargo clippy --locked --manifest-path src-native/Cargo.toml --features diagnostics --all-targets -- -D warnings
           if ($LASTEXITCODE -ne 0) { throw 'Diagnostic Clippy failed' }
+          cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml -p lowlat-client --features usb-hid-input --lib output_flush_hint
+          if ($LASTEXITCODE -ne 0) { throw 'Post-turn output hint regression failed' }
+          cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml -p lowlat-net --features turn-stream --lib post_turn_output
+          if ($LASTEXITCODE -ne 0) { throw 'Post-turn carrier drain regression failed' }
       - name: Package optional hardware GUI regression harness
         if: github.event_name == 'workflow_dispatch' && inputs.gui_harness
         shell: pwsh

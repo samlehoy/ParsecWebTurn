@@ -276,8 +276,8 @@ struct CallbackCadence {
     period: Duration,
 }
 impl CallbackCadence {
-    fn due(&mut self, now: Instant) -> bool {
-        if now < self.next {
+    fn due(&mut self, now: Instant, cursor_ready: bool) -> bool {
+        if !cursor_ready && now < self.next {
             return false;
         }
         // Skip overdue ticks instead of running a burst of catch-up callbacks.
@@ -337,6 +337,7 @@ fn dispatch_input_event(
         }
     }
     let (name, values, count) = match event {
+        Event::CursorReady => return Ok(()),
         Event::Clipboard => {
             if let Some(window) = &store.data().window {
                 window.take_clipboard_event();
@@ -520,6 +521,7 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
         } else {
             50_000_000
         })?;
+        let mut cursor_ready = false;
         if input {
             #[cfg(any(test, feature = "diagnostics"))]
             if window.synthetic_login {
@@ -576,12 +578,16 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
             let app = store.data().app_pointer.context("app pointer missing")? as i32;
             window.events.take_batch(&mut input_batch);
             for event in input_batch.drain(..) {
+                cursor_ready |= matches!(&event, Event::CursorReady);
                 dispatch_input_event(store, instance, app, event)?;
             }
         }
         // Input exports can send synchronously, without waiting for the next
-        // regular callback. Waking on input must not accelerate UI ticks.
-        if !input || cadence.due(Instant::now()) {
+        // regular callback. Ordinary input never accelerates UI ticks. A host
+        // cursor capture transition may bring one callback forward; cadence
+        // then starts from that callback, avoiding a redundant follow-up tick.
+        // The separate graphics worker and all video presentation are unchanged.
+        if !input || cadence.due(Instant::now(), cursor_ready) {
             #[cfg(any(test, feature = "diagnostics"))]
             {
                 store.data_mut().execution_stage = Some("event-loop-callback");
@@ -685,6 +691,10 @@ mod tests {
                 assert_eq!(memory.u32((index * 4) as u32).unwrap() as i32, expected);
             }
         }
+        let memory = store.data().memory.clone();
+        memory.write(0, &[0xff; 36]).unwrap();
+        dispatch_input_event(&mut store, &instance, 42, Event::CursorReady).unwrap();
+        assert_eq!(memory.read(0, 36).unwrap(), vec![0xff; 36]);
     }
 
     #[test]
@@ -695,18 +705,36 @@ mod tests {
             next: start,
             period,
         };
-        assert!(cadence.due(start));
+        assert!(cadence.due(start, false));
         for _ in 0..60 {
             let deadline = cadence.next;
             for us in 1..1000 {
-                assert!(!cadence.due(deadline - period + Duration::from_micros(us)));
+                assert!(!cadence.due(deadline - period + Duration::from_micros(us), false));
                 assert_eq!(cadence.next, deadline);
             }
-            assert!(cadence.due(deadline));
+            assert!(cadence.due(deadline, false));
         }
         let late = cadence.next + Duration::from_secs(2);
-        assert!(cadence.due(late));
+        assert!(cadence.due(late, false));
         assert_eq!(cadence.next, late + period);
-        assert!(!cadence.due(late));
+        assert!(!cadence.due(late, false));
+    }
+
+    #[test]
+    fn host_cursor_wakeup_brings_callback_forward_without_a_followup_tick() {
+        let start = Instant::now();
+        let period = Duration::from_nanos(1_000_000_000 / 60);
+        let mut cadence = CallbackCadence {
+            next: start,
+            period,
+        };
+        assert!(cadence.due(start, false));
+        let original_deadline = cadence.next;
+        let arrival = start + Duration::from_millis(2);
+        assert!(!cadence.due(arrival, false));
+        assert!(cadence.due(arrival, true));
+        assert!(!cadence.due(original_deadline, false));
+        assert!(!cadence.due(arrival, false));
+        assert!(cadence.due(arrival + period, false));
     }
 }
