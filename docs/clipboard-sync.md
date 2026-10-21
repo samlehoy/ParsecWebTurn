@@ -60,5 +60,6 @@ SDK, decoder, session layer or lowlat dependency is imported by this fix.
 
 Automated coverage uses the unchanged core's callback/allocation ABI, a synthetic
 desktop for Unicode/empty/unavailable reads, and queue-full/shutdown assertions.
-No test opens or replaces a signed-in user's real clipboard. Actual host
-permissions and end-to-end pasting remain live-test responsibilities.
+No test opens or replaces a signed-in user's real clipboard. Client-to-host
+pasting has also been confirmed in live use. Actual host permissions still
+apply; this does not establish every host/application combination.

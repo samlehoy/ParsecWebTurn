@@ -8,8 +8,6 @@ mod attempt;
 mod bud_attempt;
 #[cfg(all(windows, feature = "bud"))]
 pub mod bud_media;
-#[cfg(all(windows, feature = "bud"))]
-mod bud_trace;
 const APP_TITLE: &str = "ParsecWebTurn";
 const PARSEC_CORE_VERSION: &str = "150-104a";
 #[cfg(any(test, feature = "diagnostics"))]

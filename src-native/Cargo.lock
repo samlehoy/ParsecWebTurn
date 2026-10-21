@@ -1874,7 +1874,7 @@ dependencies = [
 
 [[package]]
 name = "parsec-web-turn"
-version = "0.9.4-dev.5"
+version = "0.9.4-dev.6"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

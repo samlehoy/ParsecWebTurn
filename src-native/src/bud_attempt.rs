@@ -111,12 +111,12 @@ impl Attempt {
         );
         let attempt_id = id.to_owned();
         let worker = std::thread::Builder::new().name("parsec-bud-media".into()).spawn(move || {
-            let mut trace = crate::bud_trace::Trace::start();
-            let result = run(&attempt_id, &output, &window, &manager, &worker_state, &worker_session, &worker_audio, &worker_cancel, incoming, &mut trace, hid_input);
-            trace.record(if result.is_err() { "worker_error" } else { "worker_returned" }, &[("cancelled", u64::from(worker_cancel.load(Ordering::Acquire)))]);
+            let mut stage = "start";
+            let result = run(&attempt_id, &output, &window, &manager, &worker_state, &worker_session, &worker_audio, &worker_cancel, incoming, &mut stage, hid_input);
+
             if result.is_err() {
                 if !worker_cancel.load(Ordering::Acquire) {
-                    crate::event_log::record("ERROR", "connection_failed", json!({"transport":"BUD","stage":trace.stage(),"route":window.stats.read().map(|s|s.route)}));
+                    crate::event_log::record("ERROR", "connection_failed", json!({"transport":"BUD","stage":stage,"route":window.stats.read().map(|s|s.route)}));
                 }
                 let mut state = worker_state.lock().unwrap_or_else(|e| e.into_inner());
                 if !worker_cancel.load(Ordering::Acquire) {
@@ -561,22 +561,22 @@ fn run(
     audio: &SharedAudio,
     cancel: &AtomicBool,
     incoming: mpsc::Receiver<String>,
-    trace: &mut crate::bud_trace::Trace,
+    stage: &mut &'static str,
     hid_input: (bool, bool),
 ) -> Result<()> {
     let (hid_mouse, hid_keyboard) = hid_input;
-    trace.mark("initial_route_resolution");
+    *stage = "initial_route_resolution";
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let (route, mut relay_routes, settings) = runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(15), route(manager)).await
     })??;
-    trace.mark(if settings.force_relay {
+    *stage = if settings.force_relay {
         "initial_relay_selected"
     } else {
         "initial_direct_selected"
-    });
+    };
     if cancel.load(Ordering::Acquire) {
         return Ok(());
     }
@@ -626,14 +626,14 @@ fn run(
     }
     state.lock().unwrap_or_else(|e| e.into_inner()).wire_id = id.into();
     session.wake_consumer(std::thread::current());
-    trace.mark("initial_native_offer");
+    *stage = "initial_native_offer";
     log_route_attempt(&route);
     let creds = session.offer(id, route)?;
     let mut source = session.take_media()?;
     let mut signaling = Signaling::new("host", id)?;
     *audio.lock().unwrap_or_else(|e| e.into_inner()) = Some(media.audio_pipeline());
     *shared_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
-    trace.mark("initial_guest_offer_completion");
+    *stage = "initial_guest_offer_completion";
     if !complete_offer(
         state,
         cancel,
@@ -651,11 +651,10 @@ fn run(
     let mut direct_attempt = !settings.force_relay;
     let mut wire_id = id.to_owned();
     let mut last_stats = Instant::now();
-    let mut last_trace = Instant::now();
-    trace.mark("initial_waiting_for_host");
+    *stage = "initial_waiting_for_host";
     while !cancel.load(Ordering::Acquire) {
         if !established && Instant::now() >= deadline {
-            trace.mark("establishment_deadline");
+            *stage = "establishment_deadline";
         }
         let mut guard = shared_session.lock().unwrap_or_else(|e| e.into_inner());
         let session = guard.as_mut().context("BUD session retired")?;
@@ -665,19 +664,11 @@ fn run(
                 break;
             };
             if native_close(&text, &wire_id) {
-                trace.mark("host_close_received");
+                *stage = "host_close_received";
                 ended = true;
                 break;
             }
-            if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                if value["action"] == "answer_relay" {
-                    trace.record(
-                        "host_answer_received",
-                        &[("approved", u64::from(value["payload"]["approved"] == true))],
-                    );
-                }
-            }
-            trace.mark("native_signal_processing");
+            *stage = "native_signal_processing";
             if let Err(error) = signaling.receive(&text, session) {
                 let native = error.downcast_ref::<parsec_native_bud::bud::AnswerFailure>();
                 let io = native.and_then(|e| e.io_details());
@@ -696,25 +687,25 @@ fn run(
                 }
                 return Err(error);
             }
-            trace.mark("native_signal_processed");
+            *stage = "native_signal_processed";
             if let Ok(value) = serde_json::from_str::<Value>(&text) {
                 if value["action"] == "answer_relay"
                     && value["payload"]["attempt_id"].as_str() == Some(&wire_id)
                 {
                     answered_at.get_or_insert_with(Instant::now);
-                    trace.mark("host_answer_accepted");
+                    *stage = "host_answer_accepted";
                 } else if value["action"] == "candex_relay" {
-                    trace.mark(if value["payload"]["data"]["sync"] == true {
+                    *stage = if value["payload"]["data"]["sync"] == true {
                         "host_readiness_received"
                     } else {
                         "host_candidate_received"
-                    });
+                    };
                 }
             }
         }
         let mut events = Vec::new();
         for _ in 0..64 {
-            trace.set_stage("native_event_poll");
+            *stage = "native_event_poll";
             let Some(event) = session.poll()? else {
                 break;
             };
@@ -777,32 +768,20 @@ fn run(
                 hid_states[index] = current;
             }
         }
-        if !established && last_trace.elapsed() >= Duration::from_secs(1) {
-            trace.record(
-                "transport_progress",
-                &[
-                    ("udp_received", transport.udp_received),
-                    ("udp_sent", transport.udp_sent),
-                    ("connected", u64::from(transport.connected)),
-                    ("relay", u64::from(transport.relay)),
-                ],
-            );
-            last_trace = Instant::now();
-        }
         media.recover(session);
         drop(guard);
-        trace.set_stage("native_media_processing");
+        *stage = "native_media_processing";
         let pumped = media.pump(&mut source)?;
-        trace.set_stage("native_media_processed");
+        *stage = "native_media_processed";
         for event in &events {
             if matches!(event, Event::Candidate { .. } | Event::Ready) {
-                trace.mark(if matches!(event, Event::Ready) {
+                *stage = if matches!(event, Event::Ready) {
                     "local_readiness_sending"
                 } else {
                     "local_candidate_sending"
-                });
+                };
                 send_candidate(state, event)?;
-                trace.mark("local_signal_sent");
+                *stage = "local_signal_sent";
             }
         }
         let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -828,7 +807,7 @@ fn run(
                 }
                 Event::Candidate { .. } | Event::Ready => {}
                 Event::Established { .. } => {
-                    trace.mark("transport_established");
+                    *stage = "transport_established";
                     crate::event_log::record(
                         "INFO",
                         "bud_connection_established",
@@ -853,7 +832,7 @@ fn run(
                         Outcome::RelayRefused => "ended_relay_refused",
                         Outcome::RelayLost => "ended_relay_lost",
                     };
-                    trace.mark(reason);
+                    *stage = reason;
                     crate::event_log::record(
                         "WARN",
                         "bud_connection_ended",
@@ -931,7 +910,7 @@ fn run(
                 || (direct_attempt
                     && answered_at.is_some_and(|t| t.elapsed() >= Duration::from_secs(4))));
         if fallback_due {
-            trace.mark("relay_retry_started");
+            *stage = "relay_retry_started";
             if relay_routes.is_none() {
                 relay_routes = Some(runtime.block_on(async {
                     tokio::time::timeout(Duration::from_secs(15), relay_route(manager, &settings))
@@ -955,7 +934,7 @@ fn run(
                 old.close();
             }
             drop(old);
-            trace.mark("relay_credentials_ready");
+            *stage = "relay_credentials_ready";
             if cancel.load(Ordering::Acquire) {
                 return Ok(());
             }
@@ -971,13 +950,13 @@ fn run(
             )?;
             next.enable_hid_input(hid_mouse, hid_keyboard);
             next.wake_consumer(std::thread::current());
-            trace.mark("relay_native_offer");
+            *stage = "relay_native_offer";
             log_route_attempt(&relay);
             let creds = next.offer(&wire_id, relay)?;
             source = next.take_media()?;
             signaling = Signaling::new("host", &wire_id)?;
             *shared_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(next);
-            trace.mark("relay_account_offer_sending");
+            *stage = "relay_account_offer_sending";
             if !switch_offer(
                 state,
                 cancel,
@@ -986,7 +965,7 @@ fn run(
             )? {
                 return Ok(());
             }
-            trace.mark("relay_account_offer_sent");
+            *stage = "relay_account_offer_sent";
             answered_at = None;
             // A fresh relay attempt needs the same establishment allowance as
             // Force relay, independent of time spent discovering a direct path.
