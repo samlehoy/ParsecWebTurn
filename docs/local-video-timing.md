@@ -70,10 +70,12 @@ Unsupported GPU cases are explicitly reported, not treated as successful output.
 
 ## CPU and memory scope
 
-Seven fixed-size duration accumulators and a 64-slot input-identity table replace
-unbounded histories. The identity table retains metadata only, no picture bytes
+Seven fixed-size duration accumulators and a 64-slot input-identity table are
+used instead of storing per-frame histories. The identity table retains metadata only, no picture bytes
 or COM surfaces. Existing 32-message/8 MiB compressed queue and 8 MiB reuse-pool
 budgets remain; no larger picture buffers or extra worker is introduced.
+The worker marks its queue stopped before clearing it, so a retired pipeline's
+compressed-buffer reuse pool is released even if its owner still retains stats.
 
 Connection stats queries process memory only on its existing visible-window
 timer. Optional event logging records a few startup milestones (core load,
@@ -86,6 +88,7 @@ measurement of the whole process. Driver caches and compiled module pages need
 separate observation. No working-set trimming or forced garbage collection is
 used to manufacture a lower Task Manager number.
 
-An intermittent 200–250 MB startup versus 38–40 MB has been reported. Its cause
-and a lower steady-state target are not established; compare startup logs from
-both cases before changing allocation policy.
+An intermittent 200–250 MB versus 38–40 MB has been reported, with later
+observation of memory decreasing while the process remains open. Its cause and
+a lower steady-state target are not established; compare resident and committed
+values over time before changing allocation policy.

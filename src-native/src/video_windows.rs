@@ -242,8 +242,10 @@ impl Pipeline {
                     Err(_) => q.fail("video-worker-panic", None),
                     Ok(Ok(())) => {}
                 }
-                q.clear();
                 q.stopped = true;
+                // A retired pipeline must release its reuse pool even while
+                // an attempt owner still holds the final statistics snapshot.
+                q.clear();
                 q.report.worker_finished = true;
                 q.report.resources_released = true;
                 window.finish_video(surface_generation);
