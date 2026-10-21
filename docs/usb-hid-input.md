@@ -15,6 +15,14 @@ and hides its local pointer. Five buttons, dragging and vertical/horizontal
 scrolling are supported. Focus loss and local menus release capture and held
 input; returning to the session restores the applicable host-requested mode.
 
+When the host leaves relative/hidden-cursor mode, the local pointer is restored
+to that transition's host-reported position through the video viewport. This
+also covers desktop window dragging that temporarily hides the host cursor.
+Without the restoration, the old local capture anchor can be sent back as an
+absolute HID move after release. Ordinary visible cursor reports do not warp
+the pointer; relative Raw Input and camera HID reports are unchanged. Focus,
+local-menu and Disable Cursor Warp safeguards remain in effect.
+
 Keyboard events carry physical HID usages and modifiers. Select the same
 active layout on host and client, for example Hungarian on both computers.
 The client does not synchronize layouts or guess characters. Simultaneous

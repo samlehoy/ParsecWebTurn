@@ -5,6 +5,8 @@ builds, not published stable releases.
 
 ## Unreleased
 
+- **HID cursor after dragging:** restore the local pointer to the host-reported endpoint when leaving relative/hidden-cursor capture, preventing the old capture anchor from being sent back as the next absolute HID position. Relative camera input is unchanged. The supplied live trace identifies the transition; native regression coverage is added, with live confirmation of the fix pending.
+
 ## 0.9.4-dev.6 - Playback diagnostics and display timing (2026-10-21)
 
 Changes since v0.9.4-dev.5.

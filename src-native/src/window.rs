@@ -676,11 +676,10 @@ impl Window {
         }
     }
     unsafe fn restore_host_cursor(&self) {
-        #[cfg(feature = "bud")]
-        if self.hid_mouse_active.load(Ordering::Acquire) {
-            self.warp_pending.store(false, Ordering::Release);
-            return;
-        }
+        // HID desktop input also needs the host's endpoint when leaving raw
+        // relative capture. Otherwise the next absolute move sends the old
+        // local capture anchor back to the host. This is transition-only:
+        // ordinary host cursor images must never continuously warp HID input.
         if !self.warp_pending.swap(false, Ordering::AcqRel)
             || !self.input_allowed()
             || self
@@ -2140,25 +2139,45 @@ mod tests {
                 }
             }
             window.set_input_state(mode(false, false));
-            window.set_host_cursor(960, 540, false, true);
-            wait(relative);
-            window.set_host_cursor(960, 540, false, false);
-            wait(|| !relative());
-            // Serialize with WM_APP+7: it applies unlock then warps through
-            // the letterboxed viewport. No global input injection is needed.
-            unsafe {
-                SendMessageW(window.handle(), WM_APP + 7, 0, 0);
-                let (x, y) = window
-                    .presented_viewport()
-                    .unwrap()
-                    .unmap(960, 540)
-                    .unwrap();
-                let mut expected = POINT { x, y };
-                ClientToScreen(window.handle(), &mut expected);
-                let mut actual = POINT::default();
-                GetCursorPos(&mut actual);
-                assert_eq!((actual.x, actual.y), (expected.x, expected.y));
+            #[cfg(feature = "bud")]
+            let hid_modes = [false, true];
+            #[cfg(not(feature = "bud"))]
+            let hid_modes = [false];
+            for hid in hid_modes {
+                #[cfg(feature = "bud")]
+                window.hid_mouse_active.store(hid, Ordering::Release);
+                // Replay the observed hidden-only drag -> visible cursor
+                // transition, with a different HID endpoint from its anchor.
+                let target = if hid { (480, 270) } else { (960, 540) };
+                window.set_host_cursor(960, 540, false, true);
+                wait(relative);
+                window.set_host_cursor(target.0, target.1, false, false);
+                wait(|| !relative());
+                // Serialize with WM_APP+7: unlock and map the host endpoint
+                // through the viewport. No global mouse injection is needed.
+                unsafe {
+                    SendMessageW(window.handle(), WM_APP + 7, 0, 0);
+                    let (x, y) = window
+                        .presented_viewport()
+                        .unwrap()
+                        .unmap(target.0, target.1)
+                        .unwrap();
+                    let mut expected = POINT { x, y };
+                    ClientToScreen(window.handle(), &mut expected);
+                    let mut actual = POINT::default();
+                    GetCursorPos(&mut actual);
+                    assert_eq!((actual.x, actual.y), (expected.x, expected.y));
+
+                    // A stationary shape/position report in absolute mode
+                    // must not continually relocate a HID desktop pointer.
+                    window.set_host_cursor(100, 100, false, false);
+                    SendMessageW(window.handle(), WM_APP + 7, 0, 0);
+                    GetCursorPos(&mut actual);
+                    assert_eq!((actual.x, actual.y), (expected.x, expected.y));
+                }
             }
+            #[cfg(feature = "bud")]
+            window.hid_mouse_active.store(false, Ordering::Release);
             window.set_host_cursor(960, 540, false, true);
             wait(relative);
             window.set_input_state(mode(true, true));
