@@ -5,8 +5,8 @@ behavior. The normal build has no trace code enabled; only this branch's
 `hid-input-trace` test executable records cursor diagnostics.
 No new dependency is added. No video/GPU path is instrumented or changed.
 
-Run the test EXE with the usual settings.json. Connect in either normal or HID
-mouse mode, reproduce the brief disappearance after releasing a dragged window
+Run the test EXE with the usual settings.json and BUD HID mouse enabled, so the
+existing host-cursor/button probes are active. Reproduce the brief disappearance after releasing a dragged window
 two or three times, then close the client normally. Send
 `cursor-visibility-trace.json` from beside
 settings.json. Administrator rights, host changes and helpers are not needed.
