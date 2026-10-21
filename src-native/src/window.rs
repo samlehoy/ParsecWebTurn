@@ -622,6 +622,16 @@ impl Window {
             || self.settings_open()
             || state.detached;
         let previous = self.relative_requested.load(Ordering::Acquire);
+        #[cfg(feature = "hid-input-trace")]
+        crate::hid_input_trace::record(
+            "relative_request",
+            [
+                i32::from(previous),
+                i32::from(enabled),
+                i32::from(authoritative),
+                i32::from(suspended),
+            ],
+        );
         // The core may issue an unlock while focus/detach temporarily suspends
         // acquisition. Keep the host's relative request for the next activation.
         if authoritative || enabled || !suspended {
@@ -719,6 +729,20 @@ impl Window {
                 .unwrap_or_else(|e| e.into_inner())
                 .select();
         }
+        #[cfg(feature = "hid-input-trace")]
+        self.trace_cursor_selection("cursor_selected");
+    }
+    #[cfg(feature = "hid-input-trace")]
+    unsafe fn trace_cursor_selection(&self, stage: &'static str) {
+        crate::hid_input_trace::record(
+            stage,
+            [
+                i32::from(!GetCursor().is_null()),
+                i32::from(self.relative_mouse.load(Ordering::Acquire)),
+                i32::from(self.warp_pending.load(Ordering::Acquire)),
+                i32::from(self.relative_requested.load(Ordering::Acquire)),
+            ],
+        );
     }
     pub fn set_keyboard_grab(&self, enabled: bool) {
         self.keyboard_requested.store(enabled, Ordering::Release);
@@ -973,6 +997,15 @@ impl Window {
     pub fn set_cursor(&self, request: crate::cursor::Request) {
         if self.closing.load(Ordering::Acquire) {
             return;
+        }
+        #[cfg(feature = "hid-input-trace")]
+        {
+            let (kind, value) = match &request {
+                crate::cursor::Request::Visible(value) => (1, i32::from(*value)),
+                crate::cursor::Request::Default(value) => (2, i32::from(*value)),
+                crate::cursor::Request::Image(image) => (3, i32::from(image.is_some())),
+            };
+            crate::hid_input_trace::record("cursor_request", [kind, value, 0, 0]);
         }
         self.cursor_pending
             .lock()
@@ -1262,6 +1295,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                         }
                     }
                 }
+                #[cfg(feature = "hid-input-trace")]
+                s.trace_cursor_selection("cursor_applied");
                 return 0;
             }
             WM_SETCURSOR if lp as u16 as u32 == HTCLIENT => {
@@ -1350,6 +1385,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 if pending != 0 {
                     s.apply_input_capture();
                     s.restore_host_cursor();
+                    #[cfg(feature = "hid-input-trace")]
+                    s.trace_cursor_selection("capture_applied");
                 }
                 return 0;
             }

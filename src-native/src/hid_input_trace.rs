@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-const CAPACITY: usize = 16384;
+const CAPACITY: usize = 4096;
 #[derive(Serialize)]
 struct Record {
     microseconds: u128,
@@ -30,8 +30,28 @@ pub fn start(path: PathBuf) -> Guard {
     Guard(path)
 }
 pub fn record(stage: &'static str, values: [i32; 4]) {
+    if !matches!(
+        stage,
+        "host_cursor"
+            | "win_button"
+            | "win_capture_changed"
+            | "relative_request"
+            | "cursor_request"
+            | "cursor_selected"
+            | "cursor_applied"
+            | "capture_applied"
+    ) {
+        return;
+    }
     let Some(trace) = TRACE.get() else { return };
     let mut state = trace.lock().unwrap_or_else(|e| e.into_inner());
+    if state
+        .records
+        .last()
+        .is_some_and(|record| record.stage == stage && record.values == values)
+    {
+        return;
+    }
     if state.records.len() == CAPACITY {
         state.omitted += 1;
         return;
@@ -48,7 +68,7 @@ impl Drop for Guard {
         let Some(trace) = TRACE.get() else { return };
         let state = trace.lock().unwrap_or_else(|e| e.into_inner());
         let report = serde_json::json!({
-            "schema":1,"commit":"hid-drag-diagnostics",
+            "schema":2,"commit":"cursor-visibility-diagnostics",
             "capacity":CAPACITY,"omitted":state.omitted,"records":state.records,
         });
         if let Ok(bytes) = serde_json::to_vec(&report) {
