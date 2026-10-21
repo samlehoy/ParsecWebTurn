@@ -7,7 +7,7 @@ use std::sync::{
 use windows_sys::Win32::{
     Foundation::*,
     Graphics::{Gdi::*, OpenGL::*},
-    System::LibraryLoader::*,
+    System::{DataExchange::*, LibraryLoader::*},
     UI::Input::{KeyboardAndMouse::*, *},
     UI::WindowsAndMessaging::*,
 };
@@ -16,6 +16,7 @@ use windows_sys::Win32::{
 pub enum Event {
     Size(i32, i32),
     Focus(bool),
+    Clipboard,
     Motion(i32, i32),
     RelativeMotion(i32, i32),
     RelativeMode(bool),
@@ -81,6 +82,7 @@ pub struct Window {
     relative_requested: AtomicBool,
     relative_anchor: Mutex<Option<(i32, i32)>>,
     has_focus: AtomicBool,
+    clipboard_pending: AtomicBool,
     input_state: Mutex<crate::core_input::State>,
     core_hotkeys: Mutex<Option<crate::core_hotkeys::Binding>>,
     mouse_clipped: AtomicBool,
@@ -213,6 +215,7 @@ impl Window {
             relative_requested: AtomicBool::new(false),
             relative_anchor: Mutex::new(None),
             has_focus: AtomicBool::new(false),
+            clipboard_pending: AtomicBool::new(false),
             input_state: Default::default(),
             core_hotkeys: Default::default(),
             mouse_clipped: AtomicBool::new(false),
@@ -705,6 +708,39 @@ impl Window {
                 .unwrap_or_else(|e| e.into_inner())
                 .detached
     }
+    pub fn clipboard_allowed(&self) -> bool {
+        // GetForegroundWindow is process-independent; GetFocus is UI-thread local.
+        self.online
+            && unsafe {
+                GetForegroundWindow() == self.handle()
+                    && IsIconic(self.handle()) == 0
+                    && IsClipboardFormatAvailable(13) != 0
+            }
+            && self.video_ready.load(Ordering::Acquire)
+            && self.video_visible.load(Ordering::Acquire)
+            && !self.settings_open()
+            && !self.input_suspended.load(Ordering::Acquire)
+            && !self.closing.load(Ordering::Acquire)
+            && !self
+                .input_state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .detached
+    }
+    unsafe fn queue_clipboard(&self) {
+        if self.clipboard_allowed()
+            // SetClipboardData called for an incoming host copy uses this HWND.
+            // Do not echo that notification back to the host.
+            && GetClipboardOwner() != self.handle()
+            && !self.clipboard_pending.swap(true, Ordering::AcqRel)
+            && !self.events.try_push(Event::Clipboard)
+        {
+            self.clipboard_pending.store(false, Ordering::Release);
+        }
+    }
+    pub fn take_clipboard_event(&self) {
+        self.clipboard_pending.store(false, Ordering::Release);
+    }
     unsafe fn apply_input_capture(&self) {
         let allowed = self.input_allowed();
         #[cfg(feature = "experimental-bud")]
@@ -1025,6 +1061,13 @@ unsafe fn create_window(state: &Arc<Window>, opengl_required: bool) -> Result<HW
     let mut rect: RECT = std::mem::zeroed();
     GetClientRect(hwnd, &mut rect);
     *state.dimensions.lock().unwrap_or_else(|e| e.into_inner()) = (rect.right, rect.bottom);
+    if state.online && AddClipboardFormatListener(hwnd) == 0 {
+        crate::event_log::record(
+            "WARN",
+            "clipboard_listener_failed",
+            serde_json::json!({"os_error":GetLastError()}),
+        );
+    }
     Ok(hwnd)
 }
 
@@ -1256,6 +1299,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             m if m == WM_APP + 6 => {
                 s.show_video_surface();
+                s.queue_clipboard();
                 return 0;
             }
             m if m == WM_APP + 7 => {
@@ -1268,6 +1312,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             m if m == WM_APP + 12 => {
                 s.apply_input_capture();
+                s.queue_clipboard();
                 return 0;
             }
             m if m == WM_APP + 14 => {
@@ -1421,6 +1466,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 PostMessageW(hwnd, WM_APP + 12, 0, 0);
                 s.push(Event::Focus(true));
             }
+            WM_CLIPBOARDUPDATE => {
+                s.queue_clipboard();
+                return 0;
+            }
             WM_ACTIVATE if wp & 0xffff != WA_INACTIVE as usize => {
                 PostMessageW(hwnd, WM_APP + 12, 0, 0);
             }
@@ -1525,6 +1574,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
             WM_DESTROY => {
+                if s.online {
+                    RemoveClipboardFormatListener(hwnd);
+                }
                 KillTimer(hwnd, crate::updater_ui::NOTIFY_TIMER);
                 s.input_suspended.store(true, Ordering::Release);
                 #[cfg(feature = "experimental-bud")]

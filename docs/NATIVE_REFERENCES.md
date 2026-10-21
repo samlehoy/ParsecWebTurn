@@ -9,6 +9,10 @@ Historical measurements below should be read alongside the current root README.
 
 ## lowlat
 
+See [native clipboard synchronization](clipboard-sync.md) for the comparison of
+the unchanged WASM's clipboard event, the stock host's Windows notification,
+and lowlat's ID-7 application messages.
+
 The opcode-35 diagnostic flags and opcode-34 replies were compared against the
 pinned WASM and installed stock host on 2026-10-20. The second flag selects
 audio timing in the inspected host. See [frame timing diagnostics](frame-timing-diagnostics.md)

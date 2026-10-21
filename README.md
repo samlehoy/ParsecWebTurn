@@ -224,8 +224,17 @@ experimental timing section shows reported values as latest/average/peak in
 milliseconds, sample counts and freshness. Missing reports stay unknown. These
 are host processing durations, not end-to-end latency or GPU execution timings;
 the uncertain audio intermediate field is not presented as encoder time. There
-is no per-frame file logging. The collector is covered by synthetic tests;
-live stock-host validation over BUD and WebRTC is still pending.
+is no per-frame file logging. The collector is covered by synthetic tests.
+Live BUD report reception has been observed; live WebRTC validation and unusual
+audio interval values still need investigation.
+
+## Clipboard
+
+Unicode text clipboard synchronization uses the original core in both directions.
+Local changes are forwarded while the streaming window is foreground, on return
+to the stream, and before Ctrl+V or Shift+Insert. The core's clipboard preference
+and host permissions remain in effect. Incoming host copies are not echoed back;
+clipboard contents are never written to the event log. Files/images are not transferred.
 
 ## Saved data and updates
 

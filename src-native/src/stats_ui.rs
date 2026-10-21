@@ -173,8 +173,8 @@ fn host_timing_rows(s: &crate::frame_timing::Snapshot) -> Vec<(String, String)> 
         for (i, label) in [
             "Video processing",
             "Capture segment",
-            "Video frame interval",
             "Host encode",
+            "Video frame interval",
         ]
         .into_iter()
         .enumerate()
@@ -854,7 +854,11 @@ mod tests {
             .any(|(k, v)| k == "Video timing" && v == "Not reported by host"));
         bus.receive(
             1,
-            &crate::frame_timing::tests::packet(0, 0, &[12., 2., 16., 4.]),
+            &crate::frame_timing::tests::packet(0, 0, &[12., 2., 4., 16.]),
+        );
+        bus.receive(
+            1,
+            &crate::frame_timing::tests::packet(0, 0, &[20., 3., 6., 32.]),
         );
         bus.receive(1, &crate::frame_timing::tests::packet(1, 0, &[8., 0., 20.]));
         let mut report = bus.snapshot(1);
@@ -863,7 +867,10 @@ mod tests {
         let rows = super::host_timing_rows(&report);
         assert!(rows
             .iter()
-            .any(|(k, v)| k == "Host encode" && v == "4.00 / 4.00 / 4.00"));
+            .any(|(k, v)| k == "Host encode" && v == "6.00 / 5.00 / 6.00"));
+        assert!(rows
+            .iter()
+            .any(|(k, v)| k == "Video frame interval" && v == "32.00 / 24.00 / 32.00"));
         assert!(rows
             .iter()
             .any(|(k, v)| k == "Video report age" && v.starts_with("Stale")));
@@ -1056,7 +1063,7 @@ mod tests {
             bus.host_timing.set_requested(generation, true);
             bus.host_timing.receive(
                 generation,
-                &crate::frame_timing::tests::packet(0, 0, &[12., 2., 16.7, 4.]),
+                &crate::frame_timing::tests::packet(0, 0, &[12., 2., 4., 16.7]),
             );
             bus.host_timing.receive(
                 generation,

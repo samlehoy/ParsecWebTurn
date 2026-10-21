@@ -1,8 +1,9 @@
 # Stock-host frame timing diagnostics
 
 Investigated on 2026-10-20; native diagnostic collector added on 2026-10-21.
-**The host research is static evidence only; a live stock-host diagnostic
-session has not been validated.** Neither proprietary binary was modified.
+The host field mapping was investigated statically. User screenshots on
+2026-10-21 confirm live BUD report reception; live WebRTC validation remains
+pending. Neither proprietary binary was modified.
 
 Inputs:
 
@@ -42,11 +43,23 @@ timer reads QueryPerformanceCounter and divides elapsed ticks by
 QueryPerformanceFrequency / 1000 before narrowing to floats for serialization.
 
 Video fields, in wire order, correspond to host loop total, capture/pre-encode
-segment, frame interval, and the host's encode-duration measurement. The capture
+segment, the host's encode-duration measurement, and frame interval. The capture
 segment includes the host's work/waits between its capture call and the encoder
 output stage; it must not be described as a pure GPU capture execution time.
 The interval uses successive processing-completion timestamps, not display
 presentation timestamps.
+
+The initial native UI incorrectly reversed the last two labels. Rechecking the
+producer and serializer on 2026-10-21 establishes that the third field comes from
+the same duration used by the host's smoothed opcode-21 encode report, while the
+fourth comes from the previous completion timestamp (updated each iteration).
+The serializer preserves this order. The timer divides ticks by frequency/1000;
+no factor-of-ten correction is needed. UI regression assertions now check both
+fields' latest, average and peak values independently.
+
+The live screenshot's stale audio report and very large audio interval peak are
+not explained by the video label correction. Audio startup/idle interval behavior
+still needs investigation; these values must not be called playback latency.
 
 The three audio producer values are a common audio-processing duration, a
 short timing span, and a successive-block interval. The matching WASM graph
@@ -141,7 +154,8 @@ Validation and interpretation constraints:
 - Automated tests cover byte order, both variants, aggregates, malformed/future
   reports, stale/missing UI values, generation isolation and 10,000-report bursts
   through both native transport adapters. These are synthetic tests, not proof
-  of live stock-host operation. Live BUD and WebRTC validation remains pending.
+  of live stock-host operation. The user's BUD screenshots confirm reception;
+  live WebRTC and audio interval behavior remain unverified.
 
 The telemetry could distinguish host timing spikes from smooth host operation
 followed by client-side stalls. It does not accelerate media or require a GPU

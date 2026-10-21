@@ -274,6 +274,13 @@ fn dispatch_input_event(
     app: i32,
     event: Event,
 ) -> Result<()> {
+    // Clipboard contents must arrive before a paste key on the same ordered
+    // control path, including when BUD translates keyboard input to USB HID.
+    if matches!(&event, Event::Key(true, "KeyV", mods) if mods & 14 == 2)
+        || matches!(&event, Event::Key(true, "Insert", mods) if mods & 15 == 1)
+    {
+        sync_clipboard(store, instance, app);
+    }
     #[cfg(feature = "experimental-bud")]
     if matches!(&event, Event::Focus(false) | Event::HidInputRelease) {
         // Explicit focus release also resets the USB devices' held input
@@ -312,6 +319,13 @@ fn dispatch_input_event(
         }
     }
     let (name, values, count) = match event {
+        Event::Clipboard => {
+            if let Some(window) = &store.data().window {
+                window.take_clipboard_event();
+            }
+            sync_clipboard(store, instance, app);
+            return Ok(());
+        }
         #[cfg(feature = "experimental-bud")]
         Event::HidInputRelease => return Ok(()),
         Event::Fullscreen(active) => (
@@ -376,6 +390,72 @@ fn dispatch_input_event(
     };
     let arguments = values.map(Val::I32);
     export(store, instance, name, &arguments[..count])
+}
+
+fn sync_clipboard(store: &mut Store<HostState>, instance: &Instance, app: i32) {
+    if !store
+        .data()
+        .window
+        .as_ref()
+        .is_some_and(|w| w.clipboard_allowed())
+        || store
+            .data()
+            .backend
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .status
+            != Some(0)
+    {
+        return;
+    }
+    if dispatch_clipboard_event(store, instance, app as u32).is_err() {
+        crate::event_log::record(
+            "WARN",
+            "clipboard_notification_failed",
+            serde_json::json!({}),
+        );
+    }
+}
+
+/// Native Matoya MTY_EVENT_CLIPBOARD (16), using the immutable 150-104a
+/// window-callback ABI, just as its exported mty_window_* shims do. No core
+/// memory structures or code are patched. The core checks client_clipboard
+/// and sends user-data ID 7 through the selected existing transport.
+pub(crate) fn dispatch_clipboard_event(
+    store: &mut Store<HostState>,
+    instance: &Instance,
+    app: u32,
+) -> Result<()> {
+    let memory = store.data().memory.clone();
+    let at = |offset| {
+        app.checked_add(offset)
+            .context("clipboard app address overflow")
+    };
+    let index = memory.u32(at(40)?)?;
+    let opaque = memory.u32(at(884)?)?;
+    let table = instance
+        .get_table(&mut *store, "__indirect_function_table")
+        .context("clipboard callback table missing")?;
+    let callback = match table.get(&mut *store, u64::from(index)) {
+        Some(wasmtime::Ref::Func(Some(f))) => f.typed::<(i32, i32), ()>(&*store)?,
+        _ => bail!("clipboard callback unavailable"),
+    };
+    let alloc = instance.get_typed_func::<(i32, i32), i32>(&mut *store, "mty_system_alloc")?;
+    let free = instance.get_typed_func::<i32, ()>(&mut *store, "mty_system_free")?;
+    let event = alloc.call(&mut *store, (216, 1))?;
+    if event == 0 {
+        bail!("clipboard event allocation failed");
+    }
+    let mut bytes = [0; 216];
+    bytes[..4].copy_from_slice(&16u32.to_le_bytes());
+    let outcome = memory.write(event as u32, &bytes).and_then(|()| {
+        let old = std::mem::replace(&mut store.data_mut().clipboard_notification, true);
+        let result = callback.call(&mut *store, (event, opaque as i32));
+        store.data_mut().clipboard_notification = old;
+        result
+    });
+    let released = free.call(&mut *store, event);
+    outcome.and(released)
 }
 
 fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> Result<()> {

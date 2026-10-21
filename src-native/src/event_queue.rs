@@ -31,11 +31,18 @@ impl<T> Default for Queue<T> {
 
 impl<T> Queue<T> {
     pub fn push(&self, event: T) {
+        self.try_push(event);
+    }
+
+    pub fn try_push(&self, event: T) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if !state.stopped && state.events.len() < CAPACITY {
             state.events.push_back(event);
             drop(state);
             self.changed.notify_one();
+            true
+        } else {
+            false
         }
     }
 
@@ -179,14 +186,14 @@ mod tests {
     fn capacity_order_and_idle_deadline_are_preserved() {
         let queue = Queue::default();
         for i in 0..300 {
-            queue.push(i);
+            assert_eq!(queue.try_push(i), i < 256);
         }
         assert_eq!(queue.drain(), (0..256).collect::<Vec<_>>());
         let deadline = Instant::now() + Duration::from_millis(10);
         queue.wait_until(deadline);
         assert!(Instant::now() >= deadline);
         queue.stop();
-        queue.push(42);
+        assert!(!queue.try_push(42));
         assert!(queue.drain().is_empty());
     }
 }

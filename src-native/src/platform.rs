@@ -50,6 +50,10 @@ impl Services {
     }
 
     pub fn read_text(&self) -> String {
+        self.try_read_text().unwrap_or_default()
+    }
+
+    pub fn try_read_text(&self) -> Option<String> {
         let text = self
             .desktop
             .as_ref()
@@ -58,7 +62,7 @@ impl Services {
         self.outcome(text.is_some(), |s| {
             s.clipboard_reads = s.clipboard_reads.saturating_add(1)
         });
-        text.unwrap_or_default()
+        text
     }
 
     pub fn write_text(&self, text: &str) {

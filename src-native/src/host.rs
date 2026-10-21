@@ -42,6 +42,8 @@ pub struct HostState {
     pub guest_worker: bool,
     pub title: Option<String>,
     pub app_pointer: Option<u32>,
+    #[serde(skip)]
+    pub clipboard_notification: bool,
     #[cfg(any(test, feature = "diagnostics"))]
     pub filesystem_requests: Vec<(String, String, i32)>,
     #[serde(skip)]
@@ -84,6 +86,7 @@ impl HostState {
             guest_worker: false,
             title: None,
             app_pointer: None,
+            clipboard_notification: false,
             #[cfg(any(test, feature = "diagnostics"))]
             filesystem_requests: Vec::new(),
             keys: BTreeMap::new(),
@@ -397,7 +400,17 @@ pub fn dispatch(
                 caller.data().platform.write_text(&text);
             }
             "web_get_clipboard" => {
-                let text = caller.data().platform.read_text();
+                let text = if caller.data().clipboard_notification {
+                    let Some(text) = caller.data().platform.try_read_text() else {
+                        // An unavailable/locked clipboard is not an empty copy.
+                        // The original clipboard-change handler skips a null read.
+                        result(results, 0);
+                        return Ok(());
+                    };
+                    text
+                } else {
+                    caller.data().platform.read_text()
+                };
                 let alloc = caller
                     .get_export("mty_system_alloc")
                     .and_then(|e| e.into_func())
