@@ -31,6 +31,11 @@ Present(0, DO_NOT_WAIT). The explicit modes request a documented waitable swap
 chain and maximum frame latency of one. The worker polls readiness with a zero
 timeout before conversion; it never waits for display refresh. A consumed slot
 is retained until a presentation is actually accepted. Resize retains flags.
+When the newest RGB output meets a busy display queue, its existing backbuffer
+is retained and only Present is retried while the input queue is idle. The
+worker uses its existing condition variable with a short retry timeout only
+while that output is pending; new input wakes it immediately. No decoded
+surface, extra RGB target, repeat conversion or new timer thread is needed.
 VSync uses Present(1, DO_NOT_WAIT); Low latency uses interval zero. No explicit
 tearing flag is enabled, and neither mode guarantees physical scanout behavior.
 Unsupported queue control falls back without failing decode, with a warning and
@@ -65,7 +70,7 @@ Unsupported GPU cases are explicitly reported, not treated as successful output.
 
 ## CPU and memory scope
 
-Six fixed-size duration accumulators and a 64-slot input-identity table replace
+Seven fixed-size duration accumulators and a 64-slot input-identity table replace
 unbounded histories. The identity table retains metadata only, no picture bytes
 or COM surfaces. Existing 32-message/8 MiB compressed queue and 8 MiB reuse-pool
 budgets remain; no larger picture buffers or extra worker is introduced.

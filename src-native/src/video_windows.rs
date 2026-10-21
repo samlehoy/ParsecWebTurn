@@ -349,7 +349,7 @@ fn run(
 ) -> Result<()> {
     let scheduling = crate::media_scheduling::Registration::video();
     update(shared, |s| s.mmcss_registered = scheduling.is_some());
-    let mut session = None;
+    let mut session: Option<Session> = None;
     let mut headers = Vec::new();
     let mut header_bytes = 0usize;
     let mut generation = 0;
@@ -364,6 +364,7 @@ fn run(
     #[cfg(not(feature = "vendor-video"))]
     let zero_requested = false;
     loop {
+        let retry_display = session.as_ref().is_some_and(Session::has_pending_display);
         let (next_generation, frame) = {
             let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
             while q.report.queue_depth == 0
@@ -374,10 +375,16 @@ fn run(
             {
                 q = shared
                     .1
-                    .wait_timeout(q, Duration::from_millis(100))
+                    .wait_timeout(
+                        q,
+                        Duration::from_millis(if retry_display { 2 } else { 100 }),
+                    )
                     .unwrap_or_else(|e| e.into_inner())
                     .0;
                 q.check_recovery(Instant::now());
+                if retry_display {
+                    break;
+                }
             }
             if q.stopped
                 || q.report.failure_stage.is_some()
@@ -414,6 +421,22 @@ fn run(
             }
         }
         let Some(mut frame) = frame else {
+            if let Some(session) = &mut session {
+                let refreshed = unsafe { session.retry_display(shared, window)? };
+                if refreshed {
+                    *window
+                        .video_report
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = Some(
+                        shared
+                            .0
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .report
+                            .clone(),
+                    );
+                }
+            }
             continue;
         };
         if frame.parameters {
@@ -776,6 +799,35 @@ struct Session {
     _runtime: Option<Runtime>,
 }
 impl Session {
+    fn has_pending_display(&self) -> bool {
+        self.renderer.as_ref().is_some_and(|r| r.pending_present)
+    }
+    unsafe fn retry_display(
+        &mut self,
+        shared: &Shared,
+        window: &crate::window::Window,
+    ) -> Result<bool> {
+        let Some(renderer) = &mut self.renderer else {
+            return Ok(false);
+        };
+        if !renderer.pending_present {
+            return Ok(false);
+        }
+        match renderer.try_present(shared)? {
+            Some(Presentation::Presented) => {
+                update(shared, |s| {
+                    s.frames_presented = s.frames_presented.saturating_add(1)
+                });
+                window.set_video_ready_for(self.surface_generation, true);
+                Ok(true)
+            }
+            Some(Presentation::NotVisible) => {
+                update(shared, |s| s.presentations_not_visible += 1);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
     fn renderer_name(&self) -> &'static str {
         #[cfg(feature = "vendor-video")]
         if self.display.is_some() {
@@ -1459,6 +1511,7 @@ struct Renderer {
     swap_flags: DXGI_SWAP_CHAIN_FLAG,
     latency_event: Option<LatencyEvent>,
     latency_slot: bool,
+    pending_present: bool,
     device: ID3D11Device,
     video_device: ID3D11VideoDevice,
     video_context: ID3D11VideoContext,
@@ -1634,6 +1687,7 @@ impl Renderer {
             swap_flags: DXGI_SWAP_CHAIN_FLAG(desc.Flags as i32),
             latency_event,
             latency_slot: false,
+            pending_present: false,
             device,
             video_device,
             video_context,
@@ -1769,7 +1823,7 @@ impl Renderer {
         ready: Instant,
     ) -> Result<Presentation> {
         let dispatched = Instant::now();
-        let skip = {
+        let (skip, more_input) = {
             let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
             q.report
                 .local_timing
@@ -1780,11 +1834,28 @@ impl Renderer {
             if skip {
                 q.report.display_updates_skipped += 1;
             }
-            skip
+            (skip, q.report.queue_depth > 0)
         };
         // Reference decoding continues. No conversion/output write for stale
         // display updates; no waiting for a monitor on the decoder worker.
-        if !skip && !self.latency_slot {
+        let slot_ready = skip || self.poll_slot(shared);
+        let result = if skip || (!slot_ready && more_input) {
+            Ok(Presentation::Busy)
+        } else {
+            // Preserve the newest RGB output even if the display slot is busy.
+            // Its later retry needs only Present, never another surface/copy.
+            self.present_with_fallback(texture, subresource, source, color, shared, window)
+        };
+        update(shared, |s| {
+            s.local_timing.output_service_ns = s
+                .local_timing
+                .output_service_ns
+                .saturating_add(ready.elapsed().as_nanos())
+        });
+        result
+    }
+    unsafe fn poll_slot(&mut self, shared: &Shared) -> bool {
+        if !self.latency_slot {
             if let Some(event) = &self.latency_event {
                 match WaitForSingleObject(event.0, 0) {
                     WAIT_OBJECT_0 => self.latency_slot = true,
@@ -1802,21 +1873,29 @@ impl Renderer {
                 }
             }
         }
-        let result = if skip || (self.latency_event.is_some() && !self.latency_slot) {
-            Ok(Presentation::Busy)
-        } else {
-            self.present_with_fallback(texture, subresource, source, color, shared, window)
-        };
-        if matches!(result, Ok(Presentation::Presented)) {
+        self.latency_event.is_none() || self.latency_slot
+    }
+    unsafe fn try_present(&mut self, shared: &Shared) -> Result<Option<Presentation>> {
+        if !self.poll_slot(shared) {
+            return Ok(None);
+        }
+        let started = Instant::now();
+        let status = self.swap.Present(
+            u32::from(self.mode == PresentationMode::Vsync),
+            DXGI_PRESENT_DO_NOT_WAIT,
+        );
+        update(shared, |s| {
+            s.local_timing.present_call.record(started.elapsed());
+            s.present_max_us = s
+                .present_max_us
+                .max(started.elapsed().as_micros().min(u64::MAX as u128) as u64);
+        });
+        let result = presentation_status(status)?;
+        if result == Presentation::Presented {
             self.latency_slot = false;
         }
-        update(shared, |s| {
-            s.local_timing.output_service_ns = s
-                .local_timing
-                .output_service_ns
-                .saturating_add(ready.elapsed().as_nanos())
-        });
-        result
+        self.pending_present = result == Presentation::Busy;
+        Ok(Some(result))
     }
     unsafe fn present_with_fallback(
         &mut self,
@@ -2140,23 +2219,15 @@ impl Renderer {
         if self.rgb10_ramp_levels.is_some() && self.output_format == DXGI_FORMAT_R10G10B10A2_UNORM {
             self.rgb10_ramp_levels = Some(self.count_rgb10_levels(&back)?);
         }
-        // Never pace reference-picture decoding against display refresh. A busy
-        // swap chain skips only this display submission, not encoded pictures.
-        let started = Instant::now();
-        let status = self.swap.Present(
-            u32::from(self.mode == PresentationMode::Vsync),
-            DXGI_PRESENT_DO_NOT_WAIT,
-        );
+        // The converted backbuffer can be retried while input is idle. Never
+        // retain a decoded surface or repeat conversion just for a busy Present.
+        self.pending_present = true;
         update(shared, |s| {
             s.local_timing
                 .presentation_prepare
-                .record(started.duration_since(prepare_started));
-            s.local_timing.present_call.record(started.elapsed());
-            s.present_max_us = s
-                .present_max_us
-                .max(started.elapsed().as_micros().min(u64::MAX as u128) as u64)
+                .record(prepare_started.elapsed());
         });
-        presentation_status(status)
+        Ok(self.try_present(shared)?.unwrap_or(Presentation::Busy))
     }
 }
 
@@ -2279,12 +2350,32 @@ pub fn probe_presentation_timing() -> anyhow::Result<serde_json::Value> {
                         )?;
                     }
                     let burst_ms = burst_started.elapsed().as_secs_f64() * 1000.;
+                    let prepared_before_retry = shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .report
+                        .local_timing
+                        .presentation_prepare
+                        .count;
+                    let until = Instant::now() + Duration::from_millis(500);
+                    let mut idle_retries = 0;
+                    while renderer.pending_present && Instant::now() < until {
+                        let _ = renderer.try_present(&shared)?;
+                        idle_retries += 1;
+                        if renderer.pending_present {
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                    }
                     let snapshot = shared
                         .0
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .report
                         .clone();
+                    if snapshot.local_timing.presentation_prepare.count != prepared_before_retry {
+                        return Err(unavailable("timing-fixture-repeated-conversion"));
+                    }
                     let display_work = snapshot.local_timing.presentation_prepare.count - before;
                     if mode == PresentationMode::Automatic
                         && display_work != if bud { 2 } else { 24 }
@@ -2294,6 +2385,7 @@ pub fn probe_presentation_timing() -> anyhow::Result<serde_json::Value> {
                     Ok(
                         serde_json::json!({"requested":mode,"effective":renderer.timing_status,
                     "bud_catch_up":bud,"burst_cpu_wall_ms":burst_ms,"burst_display_preparations":display_work,
+                    "idle_retries":idle_retries,"pending_after_idle_retry":renderer.pending_present,"idle_retry_extra_conversions":0,
                     "burst_input_messages_consumed":24,"synthetic_surface_not_decoder":true,
                     "queue_control":renderer.latency_event.is_some(),"presented":presented,"busy":busy,
                     "local_timing":snapshot.local_timing}),
@@ -2302,7 +2394,7 @@ pub fn probe_presentation_timing() -> anyhow::Result<serde_json::Value> {
             };
             cases.push(match result {
                 Ok(report) => report,
-                Err(error) if error.stage == "timing-fixture-burst-display-count" => {
+                Err(error) if matches!(error.stage, "timing-fixture-burst-display-count" | "timing-fixture-repeated-conversion") => {
                     anyhow::bail!("Synthetic display catch-up did not preserve its expected work count");
                 }
                 Err(error) => serde_json::json!({"requested":mode,"unavailable_stage":error.stage,"hresult":error.hresult}),
