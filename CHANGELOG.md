@@ -5,6 +5,8 @@ builds, not published stable releases.
 
 ## Unreleased
 
+- **HID desktop drag endpoint:** reassert the last absolute position after a real mouse-button release, keeping relative camera input unchanged. Regression tests cover report ordering and stationary releases; live confirmation of the reported post-drag cursor jump is pending.
+
 ## 0.9.4-dev.6 - Playback diagnostics and display timing (2026-10-21)
 
 Changes since v0.9.4-dev.5.
