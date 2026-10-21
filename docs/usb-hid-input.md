@@ -46,12 +46,6 @@ on the desktop. Switching axes therefore does not transfer a held camera
 button between Windows HID devices. Mouse-only uses PID F007, keyboard-only
 F005, and combined input F008 under the experimental VID FFFF.
 
-On a desktop button release, the last known absolute position is reasserted
-after the relative button report, even if its coordinates have not changed.
-Camera mode and focus/disconnect cleanup do not replay desktop coordinates.
-Report ordering is covered by regression tests; live confirmation that this
-resolves the reported post-drag cursor jump is pending.
-
 Compatible motion coalesces without reordering button/key edges: absolute
 coordinates replace earlier coordinates, while relative deltas add. Oversized
 deltas and wheel movement drain through subsequent reports without losing the

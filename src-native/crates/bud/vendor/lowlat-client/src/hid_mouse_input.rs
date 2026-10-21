@@ -136,7 +136,6 @@ impl Input {
             buttons: self.buttons,
             ..Default::default()
         };
-        let mut restore_position = None;
         match opcode {
             1 => {
                 let bit = match a {
@@ -154,9 +153,6 @@ impl Input {
                     self.buttons |= bit;
                 } else {
                     self.buttons &= !bit;
-                    if s.buttons & bit != 0 && !self.relative {
-                        restore_position = self.position;
-                    }
                 }
                 s.buttons = self.buttons;
                 s.edge = true;
@@ -197,17 +193,6 @@ impl Input {
             return;
         }
         self.enqueue(s);
-        // Desktop coordinates and buttons use different mouse collections.
-        // Finish a release with the known absolute endpoint, rather than a
-        // positionless relative button report. Do not deduplicate this replay:
-        // the intervening button report is precisely why it is needed.
-        if let Some(point) = restore_position {
-            self.enqueue(Sample {
-                buttons: self.buttons,
-                point: Some(point),
-                ..Default::default()
-            });
-        }
     }
     fn relative_packet(buttons: u8, x: i16, y: i16, vertical: u8, horizontal: u8) -> Report {
         let (x, y) = (x.to_le_bytes(), y.to_le_bytes());
@@ -285,28 +270,6 @@ mod tests {
         assert_eq!(bytes(&mut i, 8), [3, 1, 0, 0, 0, 0, 0, 0]);
         assert_eq!(bytes(&mut i, 12), [1, 48, 117, 255, 127]);
         assert_eq!(bytes(&mut i, 16), [3, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(bytes(&mut i, 20), [1, 48, 117, 255, 127]);
-        assert!(i.next(24).is_none());
-    }
-    #[test]
-    fn hid_mouse_release_reasserts_stationary_desktop_endpoint_only() {
-        let mut i = ready();
-        i.command(3, 2, 1234, 5678);
-        let _ = bytes(&mut i, 4);
-        i.command(1, 1, 1, 0);
-        let _ = bytes(&mut i, 8);
-        i.command(1, 1, 0, 0);
-        assert_eq!(bytes(&mut i, 12), [3, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(bytes(&mut i, 16), [1, 210, 4, 46, 22]);
-        i.command(1, 1, 0, 0); // Redundant release must not replay a position.
-        let _ = bytes(&mut i, 20);
-        assert!(i.next(24).is_none());
-        i.command(1, 1, 1, 0);
-        let _ = bytes(&mut i, 24);
-        i.command(3, 3, 1, 0);
-        i.command(1, 1, 0, 0);
-        assert_eq!(bytes(&mut i, 28), [3, 0, 0, 0, 0, 0, 0, 0]);
-        assert!(i.next(32).is_none()); // Camera mode never replays desktop XY.
     }
     #[test]
     fn hid_mouse_wheel_target_and_focus_release_discard_stale_motion() {
