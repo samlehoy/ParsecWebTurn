@@ -607,7 +607,7 @@ mod tests {
     #[test]
     fn promoted_settings_accept_old_keys_and_save_current_names() {
         let settings: Settings = serde_json::from_str(
-            r#"{"experimentalBud":true,"experimentalAudioBuffer":true,"experimentalRawAudio":true,"audioMinBufferMs":20,"audioMaxBufferMs":60,"experimentalSurroundAudio":true}"#,
+            r#"{"provider":"custom","experimentalBud":true,"experimentalAudioBuffer":true,"experimentalRawAudio":true,"audioMinBufferMs":20,"audioMaxBufferMs":60,"experimentalSurroundAudio":true}"#,
         )
         .unwrap();
         assert!(settings.bud && settings.custom_audio_buffer && settings.allow_raw_audio);
