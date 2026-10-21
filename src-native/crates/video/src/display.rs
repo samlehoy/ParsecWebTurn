@@ -8,7 +8,11 @@ use lowlat_drivers::{
     ffi::d3d11 as ffi,
 };
 use self_cell::self_cell;
-use std::{ffi::c_void, rc::Rc, time::{Duration, Instant}};
+use std::{
+    ffi::c_void,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 use windows::{
     Win32::{
         Foundation::{CloseHandle, HANDLE, HMODULE, HWND, RECT},
@@ -377,11 +381,21 @@ impl Session {
                     return Ok(None);
                 }
                 let dispatched = Instant::now();
-                let lease = state
-                    .presenter
-                    .present(texture, layout, client, target(layout)?, |prepare, present| {
-                        observe(sequence, ready, dispatched.duration_since(ready), prepare, present);
-                    })?;
+                let lease = state.presenter.present(
+                    texture,
+                    layout,
+                    client,
+                    target(layout)?,
+                    |prepare, present| {
+                        observe(
+                            sequence,
+                            ready,
+                            dispatched.duration_since(ready),
+                            prepare,
+                            present,
+                        );
+                    },
+                )?;
                 output.presented += 1;
                 Ok(Some(lease))
             })? {}

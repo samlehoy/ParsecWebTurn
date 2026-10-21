@@ -213,6 +213,8 @@ fn run_worker_callback(caller: &mut Caller<'_, HostState>, index: u32, opaque: i
     };
     let until = Instant::now() + Duration::from_secs(window.run_seconds);
     let mut first = true;
+    let memory_warmup_at = Instant::now() + Duration::from_secs(3);
+    let mut memory_warmup_recorded = false;
     while !window.closing.load(Ordering::Acquire) && (window.live || Instant::now() < until) {
         let started = Instant::now();
         caller.set_fuel(if first { 500_000_000 } else { 50_000_000 })?;
@@ -237,6 +239,21 @@ fn run_worker_callback(caller: &mut Caller<'_, HostState>, index: u32, opaque: i
         }
         if callback.call(&mut *caller, opaque)? == 0 {
             return Ok(());
+        }
+        if caller.data().graphics.is_some() {
+            if first {
+                crate::performance::record_memory(
+                    "first_graphics_callback",
+                    Some(caller.data().memory.0.data_size()),
+                );
+            }
+            if !memory_warmup_recorded && started >= memory_warmup_at {
+                memory_warmup_recorded = true;
+                crate::performance::record_memory(
+                    "graphics_warmup",
+                    Some(caller.data().memory.0.data_size()),
+                );
+            }
         }
         first = false;
         // Worker callbacks (including the pinned audio loop) already wait via

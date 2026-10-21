@@ -90,12 +90,16 @@ impl InFlight {
         timestamp: Option<i64>,
         now: Instant,
     ) -> Option<Duration> {
+        if let Some(sequence) = sequence {
+            let slot = &mut self.slots[sequence % 64];
+            if slot.is_some_and(|p| p.sequence == sequence) {
+                return now.checked_duration_since(slot.take()?.at);
+            }
+            return None;
+        }
         let mut found = None;
         for (index, value) in self.slots.iter().enumerate() {
-            if value.is_some_and(|p| {
-                sequence.is_some_and(|s| p.sequence == s)
-                    || timestamp.is_some_and(|t| p.timestamp == t)
-            }) {
+            if value.is_some_and(|p| timestamp.is_some_and(|t| p.timestamp == t)) {
                 if found.is_some() {
                     return None;
                 }
@@ -116,7 +120,7 @@ pub fn skip_display_for_backlog(bud: bool, queued: usize) -> bool {
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
     pub local_timing: LocalTiming,
-    pub presentation_mode: Option<String>,
+    pub presentation_mode: Option<&'static str>,
     pub display_updates_skipped: u64,
     pub decoded_bit_depth: Option<u8>,
     /// RGB swap-chain precision, not the monitor/link's physical bit depth.

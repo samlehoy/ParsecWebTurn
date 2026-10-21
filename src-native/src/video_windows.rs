@@ -485,10 +485,14 @@ fn run(
                     native.fallback.clone()
                 };
                 s.renderer = Some(native.renderer_name());
-                s.presentation_mode = Some(native.renderer.as_ref().map_or_else(
-                    || "Windows-managed (original surfaces)".into(),
-                    |renderer| renderer.timing_status.clone(),
-                ));
+                s.presentation_mode = Some(
+                    native
+                        .renderer
+                        .as_ref()
+                        .map_or("Windows-managed (original surfaces)", |renderer| {
+                            renderer.timing_status
+                        }),
+                );
                 s.display_rgb_bit_depth = None;
                 s.display_output_fallback = None;
                 s.adapter = Some(native.adapter_name());
@@ -1442,7 +1446,7 @@ impl Drop for ContextCleanup {
     }
 }
 struct Renderer {
-    timing_status: String,
+    timing_status: &'static str,
     mode: PresentationMode,
     swap_flags: DXGI_SWAP_CHAIN_FLAG,
     latency_event: Option<LatencyEvent>,
@@ -1587,7 +1591,7 @@ impl Renderer {
         let latency_event = if desc.Flags != 0 {
             swap.cast::<IDXGISwapChain2>().ok().and_then(|s| {
                 let handle = s.GetFrameLatencyWaitableObject();
-                let event = (!handle.is_invalid()).then_some(LatencyEvent(handle));
+                let event = (!handle.is_invalid()).then(|| LatencyEvent(handle));
                 if s.SetMaximumFrameLatency(1).is_ok() {
                     event
                 } else {
@@ -1604,8 +1608,7 @@ impl Renderer {
             (PresentationMode::Vsync, false) => "VSync; maximum queued presentations: 1",
             (PresentationMode::LowLatency, true) => "Low latency unavailable; automatic timing",
             (PresentationMode::Vsync, true) => "VSync; queue control unavailable",
-        }
-        .to_owned();
+        };
         if fallback {
             crate::event_log::record(
                 "WARN",
@@ -1780,10 +1783,8 @@ impl Renderer {
                     WAIT_TIMEOUT => {}
                     _ => {
                         self.latency_event = None;
-                        self.timing_status = "Presentation queue control unavailable".into();
-                        update(shared, |s| {
-                            s.presentation_mode = Some(self.timing_status.clone())
-                        });
+                        self.timing_status = "Presentation queue control unavailable";
+                        update(shared, |s| s.presentation_mode = Some(self.timing_status));
                         crate::event_log::record(
                             "WARN",
                             "video_presentation_readiness_failed",
@@ -2159,10 +2160,11 @@ pub fn probe_presentation_timing() -> anyhow::Result<serde_json::Value> {
     let outcome = (|| -> anyhow::Result<serde_json::Value> {
         let hwnd = window.ensure_video_surface()?;
         let mut cases = Vec::new();
-        for mode in [
-            PresentationMode::Automatic,
-            PresentationMode::LowLatency,
-            PresentationMode::Vsync,
+        for (mode, bud) in [
+            (PresentationMode::Automatic, false),
+            (PresentationMode::LowLatency, false),
+            (PresentationMode::Vsync, false),
+            (PresentationMode::Automatic, true),
         ] {
             let result = unsafe {
                 (|| -> Result<serde_json::Value> {
@@ -2230,10 +2232,63 @@ pub fn probe_presentation_timing() -> anyhow::Result<serde_json::Value> {
                         // Fixture cadence only; live decoder workers never sleep for display.
                         std::thread::sleep(Duration::from_millis(4));
                     }
+                    let before = shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .report
+                        .local_timing
+                        .presentation_prepare
+                        .count;
+                    {
+                        let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+                        q.bud_catch_up = bud;
+                        for index in 0..24 {
+                            q.submit_codec(
+                                vec![0],
+                                index == 0,
+                                false,
+                                index,
+                                crate::video_stream::Codec::H264,
+                            );
+                        }
+                    }
+                    let burst_started = Instant::now();
+                    for _ in 0..24 {
+                        let _ = shared.0.lock().unwrap_or_else(|e| e.into_inner()).pop();
+                        renderer.present(
+                            &texture,
+                            0,
+                            RECT {
+                                left: 0,
+                                top: 0,
+                                right: 64,
+                                bottom: 64,
+                            },
+                            crate::video_color::processor_color(Some(1), Some(2)),
+                            &shared,
+                            &window,
+                        )?;
+                    }
+                    let burst_ms = burst_started.elapsed().as_secs_f64() * 1000.;
+                    let snapshot = shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .report
+                        .clone();
+                    let display_work = snapshot.local_timing.presentation_prepare.count - before;
+                    if mode == PresentationMode::Automatic
+                        && display_work != if bud { 2 } else { 24 }
+                    {
+                        return Err(unavailable("timing-fixture-burst-display-count"));
+                    }
                     Ok(
                         serde_json::json!({"requested":mode,"effective":renderer.timing_status,
+                    "bud_catch_up":bud,"burst_cpu_wall_ms":burst_ms,"burst_display_preparations":display_work,
+                    "burst_input_messages_consumed":24,"synthetic_surface_not_decoder":true,
                     "queue_control":renderer.latency_event.is_some(),"presented":presented,"busy":busy,
-                    "local_timing":shared.0.lock().unwrap_or_else(|e|e.into_inner()).report.local_timing}),
+                    "local_timing":snapshot.local_timing}),
                     )
                 })()
             };

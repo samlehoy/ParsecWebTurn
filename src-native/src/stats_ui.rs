@@ -454,8 +454,8 @@ fn rows(
             .unwrap_or_else(|| "Not reported".into()),
     );
     if let Some(v) = video {
-        if let Some(mode) = &v.presentation_mode {
-            row("Display timing", mode.clone());
+        if let Some(mode) = v.presentation_mode {
+            row("Display timing", mode.into());
         }
         if v.local_timing.decoder_service.count > 0 {
             row("LOCAL VIDEO TIMING", String::new());
