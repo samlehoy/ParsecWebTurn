@@ -1,5 +1,6 @@
 //! Documented Media Foundation H.264/HEVC -> D3D11 NV12/P010 -> DXGI presentation.
 //! COM and all GPU objects are created, used and released on one worker thread.
+use crate::connection_settings::PresentationMode;
 use crate::video_output::{Frame, Queue, Snapshot};
 use std::{
     mem::ManuallyDrop,
@@ -9,7 +10,7 @@ use std::{
 use windows::{
     core::Interface,
     Win32::{
-        Foundation::{HMODULE, HWND, RECT},
+        Foundation::{CloseHandle, HANDLE, HMODULE, HWND, RECT, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Graphics::{
             Direct3D::*,
             Direct3D10::ID3D10Multithread,
@@ -17,7 +18,7 @@ use windows::{
             Dxgi::{Common::*, *},
         },
         Media::MediaFoundation::*,
-        System::{Com::*, Variant::*},
+        System::{Com::*, Threading::WaitForSingleObject, Variant::*},
     },
 };
 
@@ -208,6 +209,12 @@ impl Pipeline {
         let activity = Activity(window.clone());
         let error_state = shared.clone();
         let preferred_gpu = window.video_gpu();
+        let (presentation_mode, bud_catch_up) = window.video_policy();
+        shared
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .bud_catch_up = bud_catch_up;
         let spawned = std::thread::Builder::new()
             .name("native-video-d3d11".into())
             .spawn(move || {
@@ -218,6 +225,7 @@ impl Pipeline {
                         verify_synthetic_pixels,
                         preferred_gpu.as_ref(),
                         surface_generation,
+                        presentation_mode,
                     )
                 }));
                 let mut q = state.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -329,6 +337,7 @@ fn run(
     verify_synthetic_pixels: bool,
     preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
     surface_generation: u64,
+    presentation_mode: PresentationMode,
 ) -> Result<()> {
     let scheduling = crate::media_scheduling::Registration::video();
     update(shared, |s| s.mmcss_registered = scheduling.is_some());
@@ -387,6 +396,7 @@ fn run(
                     .ok_or_else(|| unavailable("video-recovery-codec-missing"))?;
                 header_bytes = bytes.len();
                 headers.push(Frame {
+                    queued_at: Instant::now(),
                     codec,
                     bytes,
                     idr: false,
@@ -448,6 +458,7 @@ fn run(
             let hwnd = window
                 .ensure_video_surface()
                 .map_err(|_| unavailable("video-surface-create"))?;
+            let setup_started = Instant::now();
             let native = unsafe {
                 Session::create(
                     HWND(hwnd as *mut _),
@@ -459,10 +470,12 @@ fn run(
                     (
                         !vendor_failed && !verify_synthetic_pixels,
                         zero_requested && !zero_failed,
+                        presentation_mode,
                     ),
                 )?
             };
             update(shared, |s| {
+                s.local_timing.decoder_setup.record(setup_started.elapsed());
                 s.decoder_initialized = true;
                 s.low_latency_request_accepted = native.low_latency_request_accepted;
                 s.decoder = Some(native.name(frame.codec));
@@ -472,6 +485,10 @@ fn run(
                     native.fallback.clone()
                 };
                 s.renderer = Some(native.renderer_name());
+                s.presentation_mode = Some(native.renderer.as_ref().map_or_else(
+                    || "Windows-managed (original surfaces)".into(),
+                    |renderer| renderer.timing_status.clone(),
+                ));
                 s.display_rgb_bit_depth = None;
                 s.display_output_fallback = None;
                 s.adapter = Some(native.adapter_name());
@@ -486,14 +503,23 @@ fn run(
         let mut failure = None;
         for frame in headers.drain(..).chain(std::iter::once(frame)) {
             let feed_started = Instant::now();
-            let decoded_before = shared
-                .0
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .report
-                .frames_decoded;
+            let (decoded_before, output_before) = {
+                let q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+                (
+                    q.report.frames_decoded,
+                    q.report.local_timing.output_service_ns,
+                )
+            };
             let result = unsafe { session.as_mut().unwrap().feed(&frame, shared, window) };
             update(shared, |s| {
+                let output_ns = s
+                    .local_timing
+                    .output_service_ns
+                    .saturating_sub(output_before);
+                let service_ns = feed_started.elapsed().as_nanos().saturating_sub(output_ns);
+                s.local_timing
+                    .decoder_service
+                    .record(Duration::from_nanos(service_ns.min(u64::MAX as u128) as u64));
                 s.decode_feed_max_us = s
                     .decode_feed_max_us
                     .max(feed_started.elapsed().as_micros().min(u64::MAX as u128) as u64)
@@ -721,6 +747,7 @@ impl OutputFormat {
 }
 
 struct Session {
+    in_flight: crate::video_output::InFlight,
     ten_bit: bool,
     surface_generation: u64,
     low_latency_request_accepted: bool,
@@ -758,9 +785,9 @@ impl Session {
         codec: crate::video_stream::Codec,
         hevc: Option<crate::video_stream::HevcConfiguration>,
         surface_generation: u64,
-        policy: (bool, bool),
+        policy: (bool, bool, PresentationMode),
     ) -> Result<Self> {
-        let (_allow_vendor, _zero_copy) = policy;
+        let (_allow_vendor, _zero_copy, presentation_mode) = policy;
         let mut fallback = None;
         let zero_copy_status =
             _zero_copy.then(|| "Unavailable: select a supported GPU and enable HEVC".into());
@@ -792,6 +819,7 @@ impl Session {
                     match parsec_gpu_video::display::Session::open(luid, hwnd) {
                         Ok(display) => {
                             return Ok(Some(Self {
+                                in_flight: Default::default(),
                                 ten_bit: false,
                                 surface_generation,
                                 low_latency_request_accepted: false,
@@ -815,9 +843,10 @@ impl Session {
                     parsec_gpu_video::Decoder::open(mode, luid, (config.width, config.height))?;
                 let device = vendor.native_device()?;
                 let context = device.GetImmediateContext()?;
-                let renderer = Renderer::create_on_device(hwnd, device, context)
+                let renderer = Renderer::create_on_device(hwnd, device, context, presentation_mode)
                     .map_err(|e| anyhow::anyhow!("{}", e.stage))?;
                 Ok(Some(Self {
+                    in_flight: Default::default(),
                     ten_bit: false,
                     surface_generation,
                     low_latency_request_accepted: vendor.low_latency_request_accepted(),
@@ -842,7 +871,7 @@ impl Session {
             fallback = Some("Using Media Foundation after vendor decoder recovery".into());
         }
         let runtime = Runtime::start()?;
-        let mut renderer = Renderer::create(hwnd, preferred_gpu)?;
+        let mut renderer = Renderer::create(hwnd, preferred_gpu, presentation_mode)?;
         renderer.verify_synthetic_pixels = verify_synthetic_pixels;
         let mut token = 0;
         let mut manager = None;
@@ -942,6 +971,7 @@ impl Session {
         }
         api("video-input-type", decoder.SetInputType(0, &input, 0))?;
         let mut result = Self {
+            in_flight: Default::default(),
             ten_bit,
             surface_generation,
             low_latency_request_accepted,
@@ -1043,8 +1073,13 @@ impl Session {
         shared: &Shared,
         window: &crate::window::Window,
     ) -> Result<()> {
+        self.in_flight.begin(frame.timestamp_100ns);
         #[cfg(feature = "vendor-video")]
         if let Some(display) = &mut self.display {
+            let catching_up = {
+                let q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+                crate::video_output::skip_display_for_backlog(q.bud_catch_up, q.report.queue_depth)
+            };
             let hwnd = window
                 .ensure_video_surface()
                 .map_err(|_| unavailable("video-surface-create"))?;
@@ -1059,7 +1094,7 @@ impl Session {
             );
             let result = display.feed(
                 &frame.bytes,
-                window.direct_presentation_allowed(),
+                window.direct_presentation_allowed() && !catching_up,
                 size,
                 |layout| {
                     crate::viewport::Viewport {
@@ -1068,6 +1103,20 @@ impl Session {
                     }
                     .rect()
                     .ok_or_else(|| anyhow::anyhow!("invalid viewport"))
+                },
+                |sequence, ready, dispatch, prepare, present| {
+                    update(shared, |s| {
+                        if let Some(age) = self.in_flight.ready(Some(sequence), None, ready) {
+                            s.local_timing.decoder_residence.record(age);
+                        }
+                        s.local_timing.surface_dispatch.record(dispatch);
+                        s.local_timing.presentation_prepare.record(prepare);
+                        s.local_timing.present_call.record(present);
+                        s.local_timing.output_service_ns = s
+                            .local_timing
+                            .output_service_ns
+                            .saturating_add(ready.elapsed().as_nanos());
+                    })
                 },
             );
             let output = result.map_err(|error| {
@@ -1080,6 +1129,9 @@ impl Session {
             update(shared, |s| {
                 s.frames_submitted += 1;
                 s.frames_decoded += output.decoded as u64;
+                if catching_up {
+                    s.display_updates_skipped += output.decoded as u64;
+                }
                 s.frames_presented += output.presented as u64;
                 s.presentations_busy += output.busy as u64;
                 if let Some(layout) = output.layout {
@@ -1109,6 +1161,10 @@ impl Session {
             let mut consumed = 0usize;
             return vendor
                 .feed(&frame.bytes, |picture| {
+                    let ready = Instant::now();
+                    if let Some(age) = self.in_flight.ready(Some(picture.sequence), None, ready) {
+                        update(shared, |s| s.local_timing.decoder_residence.record(age));
+                    }
                     consumed += 1;
                     let layout = picture.layout;
                     let source = RECT {
@@ -1133,13 +1189,14 @@ impl Session {
                         "cross-device vendor output refused"
                     );
                     let presented = renderer
-                        .present(
+                        .present_ready(
                             picture.texture,
                             picture.slice,
                             source,
                             color,
                             shared,
                             window,
+                            ready,
                         )
                         .map_err(|e| anyhow::anyhow!("{}", e.stage))?;
                     update(shared, |s| {
@@ -1255,6 +1312,13 @@ impl Session {
                 other => api("video-process-output", other)?,
             }
             let sample = sample.ok_or_else(|| unavailable("video-output-null-sample"))?;
+            let ready = Instant::now();
+            if let Some(age) = self
+                .in_flight
+                .ready(None, sample.GetSampleTime().ok(), ready)
+            {
+                update(shared, |s| s.local_timing.decoder_residence.record(age));
+            }
             let buffer = api("video-output-buffer", sample.GetBufferByIndex(0))?;
             let dxgi: IMFDXGIBuffer = api("video-output-not-dxgi", buffer.cast())?;
             let mut raw = std::ptr::null_mut();
@@ -1302,13 +1366,14 @@ impl Session {
                 s.color_matrix = matrix;
                 s.nominal_range = nominal;
             });
-            let presented = self.renderer.as_mut().unwrap().present(
+            let presented = self.renderer.as_mut().unwrap().present_ready(
                 &texture,
                 subresource,
                 source,
                 color,
                 shared,
                 window,
+                ready,
             )?;
             update(shared, |s| {
                 s.synthetic_pixel_variation_verified =
@@ -1377,6 +1442,11 @@ impl Drop for ContextCleanup {
     }
 }
 struct Renderer {
+    timing_status: String,
+    mode: PresentationMode,
+    swap_flags: DXGI_SWAP_CHAIN_FLAG,
+    latency_event: Option<LatencyEvent>,
+    latency_slot: bool,
     device: ID3D11Device,
     video_device: ID3D11VideoDevice,
     video_context: ID3D11VideoContext,
@@ -1396,6 +1466,15 @@ struct Renderer {
     overlay_failed: bool,
     // Fields drop in declaration order; keep the final flush after all views.
     cleanup: ContextCleanup,
+}
+
+struct LatencyEvent(HANDLE);
+impl Drop for LatencyEvent {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
 }
 
 fn rgb10_input_color(color: u32) -> DXGI_COLOR_SPACE_TYPE {
@@ -1450,14 +1529,16 @@ impl Renderer {
     unsafe fn create(
         hwnd: HWND,
         preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
+        mode: PresentationMode,
     ) -> Result<Self> {
         let (device, context) = create_device(preferred_gpu)?;
-        Self::create_on_device(hwnd, device, context)
+        Self::create_on_device(hwnd, device, context, mode)
     }
     unsafe fn create_on_device(
         hwnd: HWND,
         device: ID3D11Device,
         context: ID3D11DeviceContext,
+        mode: PresentationMode,
     ) -> Result<Self> {
         let multithread: ID3D10Multithread = api("video-d3d11-multithread", device.cast())?;
         // Return value is the previous protection state, not success/failure.
@@ -1472,7 +1553,7 @@ impl Renderer {
             .to_owned();
         let factory: IDXGIFactory2 = api("video-dxgi-factory", adapter.GetParent())?;
         let size = (1024, 720);
-        let desc = DXGI_SWAP_CHAIN_DESC1 {
+        let mut desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: size.0,
             Height: size.1,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -1485,17 +1566,63 @@ impl Renderer {
             Scaling: DXGI_SCALING_STRETCH,
             SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
             AlphaMode: DXGI_ALPHA_MODE_IGNORE,
+            Flags: if mode == PresentationMode::Automatic {
+                0
+            } else {
+                DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32
+            },
             ..Default::default()
         };
-        let swap = api(
-            "video-swapchain",
-            factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None),
-        )?;
+        let mut fallback = false;
+        let created = factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None);
+        // Optional timing control cannot make a previously working GPU fail.
+        let created = if created.is_err() && desc.Flags != 0 {
+            fallback = true;
+            desc.Flags = 0;
+            factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None)
+        } else {
+            created
+        };
+        let swap = api("video-swapchain", created)?;
+        let latency_event = if desc.Flags != 0 {
+            swap.cast::<IDXGISwapChain2>().ok().and_then(|s| {
+                let handle = s.GetFrameLatencyWaitableObject();
+                let event = (!handle.is_invalid()).then_some(LatencyEvent(handle));
+                if s.SetMaximumFrameLatency(1).is_ok() {
+                    event
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+        fallback |= mode != PresentationMode::Automatic && latency_event.is_none();
+        let timing_status = match (mode, fallback) {
+            (PresentationMode::Automatic, _) => "Automatic",
+            (PresentationMode::LowLatency, false) => "Low latency; maximum queued presentations: 1",
+            (PresentationMode::Vsync, false) => "VSync; maximum queued presentations: 1",
+            (PresentationMode::LowLatency, true) => "Low latency unavailable; automatic timing",
+            (PresentationMode::Vsync, true) => "VSync; queue control unavailable",
+        }
+        .to_owned();
+        if fallback {
+            crate::event_log::record(
+                "WARN",
+                "video_presentation_timing_fallback",
+                serde_json::json!({"requested":mode}),
+            );
+        }
         api(
             "video-disable-dxgi-alt-enter",
             factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER),
         )?;
         Ok(Self {
+            timing_status,
+            mode,
+            swap_flags: DXGI_SWAP_CHAIN_FLAG(desc.Flags as i32),
+            latency_event,
+            latency_slot: false,
             device,
             video_device,
             video_context,
@@ -1599,7 +1726,90 @@ impl Renderer {
         Ok(levels.len())
     }
 
+    #[cfg(any(test, feature = "diagnostics"))]
     unsafe fn present(
+        &mut self,
+        texture: &ID3D11Texture2D,
+        subresource: u32,
+        source: RECT,
+        color: u32,
+        shared: &Shared,
+        window: &crate::window::Window,
+    ) -> Result<Presentation> {
+        self.present_ready(
+            texture,
+            subresource,
+            source,
+            color,
+            shared,
+            window,
+            Instant::now(),
+        )
+    }
+    #[allow(clippy::too_many_arguments)] // GPU surface and its observed CPU-ready boundary.
+    unsafe fn present_ready(
+        &mut self,
+        texture: &ID3D11Texture2D,
+        subresource: u32,
+        source: RECT,
+        color: u32,
+        shared: &Shared,
+        window: &crate::window::Window,
+        ready: Instant,
+    ) -> Result<Presentation> {
+        let dispatched = Instant::now();
+        let skip = {
+            let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            q.report
+                .local_timing
+                .surface_dispatch
+                .record(dispatched.duration_since(ready));
+            let skip =
+                crate::video_output::skip_display_for_backlog(q.bud_catch_up, q.report.queue_depth);
+            if skip {
+                q.report.display_updates_skipped += 1;
+            }
+            skip
+        };
+        // Reference decoding continues. No conversion/output write for stale
+        // display updates; no waiting for a monitor on the decoder worker.
+        if !skip && !self.latency_slot {
+            if let Some(event) = &self.latency_event {
+                match WaitForSingleObject(event.0, 0) {
+                    WAIT_OBJECT_0 => self.latency_slot = true,
+                    WAIT_TIMEOUT => {}
+                    _ => {
+                        self.latency_event = None;
+                        self.timing_status = "Presentation queue control unavailable".into();
+                        update(shared, |s| {
+                            s.presentation_mode = Some(self.timing_status.clone())
+                        });
+                        crate::event_log::record(
+                            "WARN",
+                            "video_presentation_readiness_failed",
+                            serde_json::json!({}),
+                        );
+                    }
+                }
+            }
+        }
+        let result = if skip || (self.latency_event.is_some() && !self.latency_slot) {
+            Ok(Presentation::Busy)
+        } else {
+            self.present_with_fallback(texture, subresource, source, color, shared, window)
+        };
+        if matches!(result, Ok(Presentation::Presented)) {
+            self.latency_slot = false;
+        }
+        update(shared, |s| {
+            s.local_timing.output_service_ns = s
+                .local_timing
+                .output_service_ns
+                .saturating_add(ready.elapsed().as_nanos())
+        });
+        result
+    }
+    unsafe fn present_with_fallback(
         &mut self,
         texture: &ID3D11Texture2D,
         subresource: u32,
@@ -1639,6 +1849,7 @@ impl Renderer {
         shared: &Shared,
         window: &crate::window::Window,
     ) -> Result<Presentation> {
+        let prepare_started = Instant::now();
         let width = (source.right - source.left) as u32;
         let height = (source.bottom - source.top) as u32;
         let mut td = D3D11_TEXTURE2D_DESC::default();
@@ -1698,13 +1909,8 @@ impl Renderer {
                 self.cleanup.0.ClearState();
                 api(
                     "video-swapchain-resize",
-                    self.swap.ResizeBuffers(
-                        2,
-                        size.0,
-                        size.1,
-                        output_format,
-                        DXGI_SWAP_CHAIN_FLAG(0),
-                    ),
+                    self.swap
+                        .ResizeBuffers(2, size.0, size.1, output_format, self.swap_flags),
                 )?;
                 self.size = size;
                 self.output_format = output_format;
@@ -1928,14 +2134,123 @@ impl Renderer {
         // Never pace reference-picture decoding against display refresh. A busy
         // swap chain skips only this display submission, not encoded pictures.
         let started = Instant::now();
-        let status = self.swap.Present(0, DXGI_PRESENT_DO_NOT_WAIT);
+        let status = self.swap.Present(
+            u32::from(self.mode == PresentationMode::Vsync),
+            DXGI_PRESENT_DO_NOT_WAIT,
+        );
         update(shared, |s| {
+            s.local_timing
+                .presentation_prepare
+                .record(started.duration_since(prepare_started));
+            s.local_timing.present_call.record(started.elapsed());
             s.present_max_us = s
                 .present_max_us
                 .max(started.elapsed().as_micros().min(u64::MAX as u128) as u64)
         });
         presentation_status(status)
     }
+}
+
+/// Offline synthetic NV12 surfaces: exercise all timing modes and queue flags,
+/// including a resize. CPU timings cannot establish scanout latency gains.
+#[cfg(feature = "diagnostics")]
+pub fn probe_presentation_timing() -> anyhow::Result<serde_json::Value> {
+    let window = crate::window::Window::create_video_probe()?;
+    let outcome = (|| -> anyhow::Result<serde_json::Value> {
+        let hwnd = window.ensure_video_surface()?;
+        let mut cases = Vec::new();
+        for mode in [
+            PresentationMode::Automatic,
+            PresentationMode::LowLatency,
+            PresentationMode::Vsync,
+        ] {
+            let result = unsafe {
+                (|| -> Result<serde_json::Value> {
+                    let mut renderer = Renderer::create(HWND(hwnd as *mut _), None, mode)?;
+                    let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
+                    let data = [128u8; 64 * 96];
+                    let desc = D3D11_TEXTURE2D_DESC {
+                        Width: 64,
+                        Height: 64,
+                        MipLevels: 1,
+                        ArraySize: 1,
+                        Format: DXGI_FORMAT_NV12,
+                        SampleDesc: DXGI_SAMPLE_DESC {
+                            Count: 1,
+                            Quality: 0,
+                        },
+                        ..Default::default()
+                    };
+                    let initial = D3D11_SUBRESOURCE_DATA {
+                        pSysMem: data.as_ptr().cast(),
+                        SysMemPitch: 64,
+                        ..Default::default()
+                    };
+                    let mut texture = None;
+                    api(
+                        "timing-fixture-texture",
+                        renderer
+                            .device
+                            .CreateTexture2D(&desc, Some(&initial), Some(&mut texture)),
+                    )?;
+                    let texture = texture.ok_or_else(|| unavailable("timing-fixture-texture"))?;
+                    let mut presented = 0;
+                    let mut busy = 0;
+                    for index in 0..48 {
+                        if index == 24 {
+                            windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
+                                hwnd as _,
+                                std::ptr::null_mut(),
+                                0,
+                                0,
+                                800,
+                                600,
+                                windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOMOVE
+                                    | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOZORDER
+                                    | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE,
+                            );
+                        }
+                        match renderer.present(
+                            &texture,
+                            0,
+                            RECT {
+                                left: 0,
+                                top: 0,
+                                right: 64,
+                                bottom: 64,
+                            },
+                            crate::video_color::processor_color(Some(1), Some(2)),
+                            &shared,
+                            &window,
+                        )? {
+                            Presentation::Presented => presented += 1,
+                            Presentation::Busy => busy += 1,
+                            Presentation::NotVisible => {}
+                        }
+                        // Fixture cadence only; live decoder workers never sleep for display.
+                        std::thread::sleep(Duration::from_millis(4));
+                    }
+                    Ok(
+                        serde_json::json!({"requested":mode,"effective":renderer.timing_status,
+                    "queue_control":renderer.latency_event.is_some(),"presented":presented,"busy":busy,
+                    "local_timing":shared.0.lock().unwrap_or_else(|e|e.into_inner()).report.local_timing}),
+                    )
+                })()
+            };
+            cases.push(match result {
+                Ok(report) => report,
+                Err(error) => serde_json::json!({"requested":mode,"unavailable_stage":error.stage,"hresult":error.hresult}),
+            });
+        }
+        Ok(
+            serde_json::json!({"cases":cases,"cpu_readback":false,"live_video":false,
+            "instrumentation_cost":crate::video_output::timing_cost_probe(),
+            "gpu_execution_measured":false,"scanout_measured":false,"memory":crate::performance::own_memory()}),
+        )
+    })();
+    window.request_stop();
+    window.close();
+    outcome
 }
 
 /// Synthetic surfaces prove precision before Present and 8/10-bit transitions.
@@ -1946,8 +2261,9 @@ pub fn probe_rgb10_output() -> anyhow::Result<serde_json::Value> {
     let result = (|| -> anyhow::Result<serde_json::Value> {
         let hwnd = window.ensure_video_surface()?;
         unsafe {
-            let mut renderer = Renderer::create(HWND(hwnd as *mut _), None)
-                .map_err(|e| anyhow::anyhow!("GPU RGB output probe: {e:?}"))?;
+            let mut renderer =
+                Renderer::create(HWND(hwnd as *mut _), None, PresentationMode::Automatic)
+                    .map_err(|e| anyhow::anyhow!("GPU RGB output probe: {e:?}"))?;
             renderer.rgb10_ramp_levels = Some(0);
             let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
             let source = RECT {

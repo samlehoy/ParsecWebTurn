@@ -73,8 +73,10 @@ fn run() -> Result<()> {
     let profile = profile::Profile::user()?;
     let mut saved = profile.load()?;
     saved.profile = Some(profile.clone());
+    performance::record_memory("before_core_load", None);
     let engine = Engine::new(&core_config::config())?;
     let module = core_runtime::load(&engine)?;
+    performance::record_memory("core_loaded", None);
     let window = window::Window::create(false, true, true, false)?;
     window
         .software_overlay_enabled
@@ -110,6 +112,10 @@ fn run() -> Result<()> {
         backend.connection_settings = Some(connection_settings);
     }
     let outcome = (|| -> Result<()> {
+        performance::record_memory(
+            "before_guest_start",
+            Some(store.data().memory.0.data_size()),
+        );
         #[cfg(test)]
         {
             store.data_mut().execution_stage = Some("guest-start");

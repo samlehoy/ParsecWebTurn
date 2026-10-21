@@ -19,6 +19,15 @@ use webrtc::{
 pub const PARSEC_STUN: &str = "stun:stun.parsec.gg:3478";
 const MAX_FILE: usize = 65536;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PresentationMode {
+    #[default]
+    Automatic,
+    LowLatency,
+    Vsync,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GpuPreference {
@@ -55,6 +64,7 @@ pub struct Settings {
     #[cfg(feature = "experimental-bud")]
     pub experimental_hid_keyboard: bool,
     pub prefer_hevc: bool,
+    pub presentation_mode: PresentationMode,
     pub experimental_ten_bit: bool,
     pub event_logging: bool,
     pub experimental_audio_buffer: bool,
@@ -94,6 +104,7 @@ impl Default for Settings {
             #[cfg(feature = "experimental-bud")]
             experimental_hid_keyboard: false,
             prefer_hevc: false,
+            presentation_mode: PresentationMode::Automatic,
             experimental_ten_bit: false,
             event_logging: false,
             experimental_audio_buffer: false,
@@ -625,6 +636,28 @@ mod tests {
         assert!(settings.validate().is_err());
         settings.experimental_audio_buffer = false;
         assert!(settings.validate().is_ok());
+    }
+    #[test]
+    fn legacy_settings_keep_existing_presentation_and_modes_roundtrip() {
+        assert_eq!(
+            serde_json::from_str::<Settings>("{}")
+                .unwrap()
+                .presentation_mode,
+            PresentationMode::Automatic
+        );
+        for mode in [
+            PresentationMode::Automatic,
+            PresentationMode::LowLatency,
+            PresentationMode::Vsync,
+        ] {
+            let settings = Settings {
+                presentation_mode: mode,
+                ..Default::default()
+            };
+            let restored: Settings =
+                serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+            assert_eq!(restored.presentation_mode, mode);
+        }
     }
     use super::*;
 

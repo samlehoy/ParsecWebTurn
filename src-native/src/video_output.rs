@@ -7,8 +7,117 @@ use std::time::{Duration, Instant};
 pub const MAX_FRAMES: usize = 32;
 pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 
+/// CPU wall-clock durations only. No inference about GPU completion/scanout.
+#[derive(Clone, Default, Serialize)]
+pub struct Timing {
+    pub count: u64,
+    pub latest_ms: f64,
+    pub average_ms: f64,
+    pub peak_ms: f64,
+    pub total_ns: u128,
+}
+impl Timing {
+    pub fn record(&mut self, elapsed: Duration) {
+        let ms = elapsed.as_secs_f64() * 1000.;
+        self.count = self.count.saturating_add(1);
+        self.latest_ms = ms;
+        self.average_ms += (ms - self.average_ms) / self.count as f64;
+        self.peak_ms = self.peak_ms.max(ms);
+        self.total_ns = self.total_ns.saturating_add(elapsed.as_nanos());
+    }
+}
+
+#[derive(Clone, Default, Serialize)]
+pub struct LocalTiming {
+    pub decoder_setup: Timing,
+    pub compressed_wait: Timing,
+    pub decoder_service: Timing,
+    pub decoder_residence: Timing,
+    pub surface_dispatch: Timing,
+    pub presentation_prepare: Timing,
+    pub present_call: Timing,
+    /// Time spent servicing decoded output inside the decoder feed callback.
+    pub output_service_ns: u128,
+}
+
+#[cfg(feature = "diagnostics")]
+pub fn timing_cost_probe() -> serde_json::Value {
+    let mut timing = LocalTiming::default();
+    let started = Instant::now();
+    // Fixed memory, no output allocation until the final report.
+    for _ in 0..100_000 {
+        let at = Instant::now();
+        timing.decoder_service.record(at.elapsed());
+        std::hint::black_box(&timing);
+    }
+    serde_json::json!({"iterations":100_000,"wall_ns_per_iteration":started.elapsed().as_nanos() as f64 / 100_000.,
+        "accumulator_bytes":std::mem::size_of::<LocalTiming>(),"identity_table_bytes":std::mem::size_of::<InFlight>(),
+        "scope":"clock read and accumulator update only; not full pipeline overhead"})
+}
+
+#[derive(Clone, Copy)]
+struct PendingInput {
+    sequence: usize,
+    timestamp: i64,
+    at: Instant,
+}
+/// Correlate native decoder outputs without retaining compressed bytes/surfaces.
+/// Missing/evicted/ambiguous timestamps remain unknown, never FIFO guesses.
+pub struct InFlight {
+    slots: [Option<PendingInput>; 64],
+    next: usize,
+}
+impl Default for InFlight {
+    fn default() -> Self {
+        Self {
+            slots: [None; 64],
+            next: 0,
+        }
+    }
+}
+impl InFlight {
+    pub fn begin(&mut self, timestamp: i64) {
+        self.slots[self.next % 64] = Some(PendingInput {
+            sequence: self.next,
+            timestamp,
+            at: Instant::now(),
+        });
+        self.next = self.next.wrapping_add(1);
+    }
+    pub fn ready(
+        &mut self,
+        sequence: Option<usize>,
+        timestamp: Option<i64>,
+        now: Instant,
+    ) -> Option<Duration> {
+        let mut found = None;
+        for (index, value) in self.slots.iter().enumerate() {
+            if value.is_some_and(|p| {
+                sequence.is_some_and(|s| p.sequence == s)
+                    || timestamp.is_some_and(|t| p.timestamp == t)
+            }) {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(index);
+            }
+        }
+        let input = self.slots[found?].take()?;
+        now.checked_duration_since(input.at)
+    }
+}
+
+/// Do not discard compressed references. Only omit obsolete display updates
+/// when at least two later compressed messages already await decoding.
+pub fn skip_display_for_backlog(bud: bool, queued: usize) -> bool {
+    bud && queued >= 2
+}
+
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
+    pub local_timing: LocalTiming,
+    pub presentation_mode: Option<String>,
+    pub display_updates_skipped: u64,
     pub decoded_bit_depth: Option<u8>,
     /// RGB swap-chain precision, not the monitor/link's physical bit depth.
     pub display_rgb_bit_depth: Option<u8>,
@@ -67,6 +176,7 @@ impl Snapshot {
 }
 
 pub struct Frame {
+    pub queued_at: Instant,
     pub codec: crate::video_stream::Codec,
     pub bytes: Vec<u8>,
     pub idr: bool,
@@ -75,6 +185,7 @@ pub struct Frame {
 }
 
 pub struct Queue {
+    pub bud_catch_up: bool,
     pub report: Snapshot,
     pub stopped: bool,
     frames: VecDeque<Frame>,
@@ -90,6 +201,7 @@ pub struct Queue {
 impl Default for Queue {
     fn default() -> Self {
         Self {
+            bud_catch_up: false,
             report: Snapshot {
                 waiting_for_idr: true,
                 ..Default::default()
@@ -165,6 +277,7 @@ impl Queue {
         self.report.codec = Some(codec);
         self.report.queue_bytes += bytes.len();
         self.frames.push_back(Frame {
+            queued_at: Instant::now(),
             codec,
             bytes,
             idr,
@@ -180,6 +293,10 @@ impl Queue {
         let frame = self.frames.pop_front()?;
         self.report.queue_bytes -= frame.bytes.len();
         self.report.queue_depth = self.frames.len();
+        self.report
+            .local_timing
+            .compressed_wait
+            .record(frame.queued_at.elapsed());
         Some(frame)
     }
 
@@ -294,6 +411,76 @@ impl Queue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_timing_is_bounded_and_measures_queue_age_without_sleeping() {
+        let mut q = Queue::default();
+        assert!(q.submit(&[1], true, false, 0));
+        q.frames.front_mut().unwrap().queued_at = Instant::now() - Duration::from_millis(20);
+        q.pop().unwrap();
+        assert_eq!(q.report.local_timing.compressed_wait.count, 1);
+        assert!(q.report.local_timing.compressed_wait.latest_ms >= 20.);
+        let mut timing = Timing::default();
+        timing.record(Duration::from_millis(2));
+        timing.record(Duration::from_millis(6));
+        assert_eq!(
+            (timing.latest_ms, timing.average_ms, timing.peak_ms),
+            (6., 4., 6.)
+        );
+        assert_eq!(timing.total_ns, 8_000_000);
+        assert!(std::mem::size_of::<LocalTiming>() <= 512);
+        assert!(std::mem::size_of::<InFlight>() <= 4096);
+    }
+
+    #[test]
+    fn output_timing_matches_identity_not_fifo_and_forgets_old_slots() {
+        let mut pending = InFlight::default();
+        pending.begin(100);
+        pending.begin(200);
+        let now = Instant::now();
+        assert!(pending.ready(None, Some(200), now).is_some());
+        assert!(pending.ready(Some(0), None, now).is_some());
+        assert!(pending.ready(Some(0), None, now).is_none());
+        pending.begin(300);
+        pending.begin(300);
+        assert!(pending.ready(None, Some(300), Instant::now()).is_none());
+        for n in 0..1000 {
+            pending.begin(n);
+        }
+        assert!(pending.ready(None, Some(1), Instant::now()).is_none());
+        assert!(pending.ready(None, Some(999), Instant::now()).is_some());
+    }
+
+    #[test]
+    fn burst_catch_up_decodes_every_reference_but_reduces_display_work() {
+        fn model(bud: bool, count: usize, render_us: u64) -> (Vec<i64>, u64, usize) {
+            let mut q = Queue::default();
+            for index in 0..count {
+                assert!(q.submit(&[index as u8], index == 0, false, index as i64));
+            }
+            let mut decoded = Vec::new();
+            let mut elapsed = 0;
+            let mut displayed = 0;
+            while let Some(frame) = q.pop() {
+                decoded.push(frame.timestamp_100ns);
+                elapsed += 2_000; // Same modeled decode cost for every reference.
+                if !skip_display_for_backlog(bud, q.report.queue_depth) {
+                    elapsed += render_us;
+                    displayed += 1;
+                }
+            }
+            (decoded, elapsed, displayed)
+        }
+        let baseline = model(false, 24, 4_000);
+        let catch_up = model(true, 24, 4_000);
+        assert_eq!(baseline.0, catch_up.0);
+        assert_eq!((baseline.1, baseline.2), (144_000, 24));
+        assert_eq!((catch_up.1, catch_up.2), (56_000, 2));
+        // No claimed improvement when display work is free or no burst exists.
+        assert_eq!(model(false, 24, 0).1, model(true, 24, 0).1);
+        assert_eq!(model(false, 1, 4_000), model(true, 1, 4_000));
+        assert!(!skip_display_for_backlog(false, MAX_FRAMES));
+        eprintln!("synthetic burst: baseline={}us/{} display submissions; catch-up={}us/{}; all {} references decoded", baseline.1, baseline.2, catch_up.1, catch_up.2, catch_up.0.len());
+    }
     #[test]
     fn late_refresh_failures_cannot_stop_a_new_or_recovered_generation() {
         let now = Instant::now();

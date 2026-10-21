@@ -72,6 +72,7 @@ const AUDIO_MIN: usize = 4126;
 const AUDIO_MAX: usize = 4127;
 const AUDIO_RAW: usize = 4128;
 const AUDIO_SURROUND: usize = 4132;
+const PRESENTATION: usize = 4133;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Network,
@@ -555,6 +556,31 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         page.font,
     );
     check(hwnd, TEN_BIT, s.experimental_ten_bit);
+    row_label(hwnd, page, "Display timing", "Experimental: applies to normal GPU rendering.\nZero copy keeps Windows-managed timing. Reconnect to apply.", 626, 0, 48);
+    let timing = add(
+        hwnd,
+        page,
+        "COMBOBOX",
+        "",
+        CBS_DROPDOWNLIST as u32 | WS_VSCROLL | WS_TABSTOP,
+        [420, 626, 400, 180],
+        PRESENTATION,
+        0,
+        page.font,
+    );
+    for label in [
+        "Automatic (existing behavior)",
+        "Low latency (one queued presentation)",
+        "VSync (synchronize to display refresh)",
+    ] {
+        SendMessageW(timing, CB_ADDSTRING, 0, wide(label).as_ptr() as isize);
+    }
+    let selection = match s.presentation_mode {
+        crate::connection_settings::PresentationMode::Automatic => 0,
+        crate::connection_settings::PresentationMode::LowLatency => 1,
+        crate::connection_settings::PresentationMode::Vsync => 2,
+    };
+    SendMessageW(timing, CB_SETCURSEL, selection, 0);
     page.building_tab = Some(Tab::Network);
     row_label(
         hwnd,
@@ -836,13 +862,7 @@ unsafe fn layout(hwnd: HWND) {
         Tab::Network => 1056 + BUD_EXTRA,
         Tab::Audio => 750,
         Tab::Input => 570,
-        Tab::Video => {
-            if cfg!(feature = "vendor-video") {
-                626
-            } else {
-                532
-            }
-        }
+        Tab::Video => 728,
     };
     let height = footer + 122 + HEADER_EXTRA;
     page.scroll = page.scroll.clamp(0, (height - client.bottom).max(0));
@@ -1067,6 +1087,12 @@ unsafe fn update_enabled(hwnd: HWND) {
 unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
     let mut s = page.saved.clone();
     s.prefer_hevc = checked(hwnd, HEVC);
+    s.presentation_mode =
+        match SendMessageW(GetDlgItem(hwnd, PRESENTATION as i32), CB_GETCURSEL, 0, 0) {
+            1 => crate::connection_settings::PresentationMode::LowLatency,
+            2 => crate::connection_settings::PresentationMode::Vsync,
+            _ => crate::connection_settings::PresentationMode::Automatic,
+        };
     s.experimental_ten_bit = checked(hwnd, TEN_BIT);
     s.experimental_audio_buffer = checked(hwnd, AUDIO_CUSTOM);
     s.audio_min_buffer_ms = text(hwnd, AUDIO_MIN)
@@ -1562,10 +1588,15 @@ mod tests {
             );
             check(page, FORCE_RELAY, true);
             check(page, TEN_BIT, true);
+            SendMessageW(GetDlgItem(page, PRESENTATION as i32), CB_SETCURSEL, 2, 0);
             check(page, EVENT_LOG, true);
             SendMessageW(page, WM_COMMAND, SAVE, 0);
             assert!(manager.view().0.force_relay);
             assert!(manager.view().0.experimental_ten_bit);
+            assert_eq!(
+                manager.view().0.presentation_mode,
+                crate::connection_settings::PresentationMode::Vsync
+            );
             assert!(manager.view().0.event_logging);
             assert!(manager.view().0.experimental_audio_buffer);
             assert_eq!(manager.view().0.audio_min_buffer_ms, 20);

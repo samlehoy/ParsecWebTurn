@@ -26,6 +26,7 @@ struct Page {
     values: Values,
     resources: crate::performance::Sampler,
     usage: (Option<f64>, Option<f64>, Option<f64>),
+    memory_usage: Option<crate::performance::MemoryUsage>,
     scroll: i32,
     height: i32,
     font: HFONT,
@@ -77,6 +78,7 @@ pub unsafe fn open(parent: HWND, bus: Arc<Shared>) -> HWND {
         values: Values::default(),
         resources: Default::default(),
         usage: (None, None, None),
+        memory_usage: crate::performance::own_memory(),
         scroll: 0,
         height: 0,
         font: font(16),
@@ -451,6 +453,47 @@ fn rows(
             .map(|x| x.frames_dropped.to_string())
             .unwrap_or_else(|| "Not reported".into()),
     );
+    if let Some(v) = video {
+        if let Some(mode) = &v.presentation_mode {
+            row("Display timing", mode.clone());
+        }
+        if v.local_timing.decoder_service.count > 0 {
+            row("LOCAL VIDEO TIMING", String::new());
+            row("CPU timing values", "Latest / average / peak (ms)".into());
+            for (name, value) in [
+                ("Decoder/device setup", &v.local_timing.decoder_setup),
+                ("Compressed queue wait", &v.local_timing.compressed_wait),
+                ("Decoder API service", &v.local_timing.decoder_service),
+                ("Decoder input to output", &v.local_timing.decoder_residence),
+                ("Decoded surface handoff", &v.local_timing.surface_dispatch),
+                (
+                    "Presentation preparation",
+                    &v.local_timing.presentation_prepare,
+                ),
+                ("Present API call", &v.local_timing.present_call),
+            ] {
+                row(
+                    name,
+                    if value.count == 0 {
+                        "Not reported".into()
+                    } else {
+                        format!(
+                            "{:.2} / {:.2} / {:.2}",
+                            value.latest_ms, value.average_ms, value.peak_ms
+                        )
+                    },
+                );
+            }
+            row(
+                "Display updates skipped for catch-up",
+                v.display_updates_skipped.to_string(),
+            );
+            row(
+                "Timing scope",
+                "CPU wall time; excludes GPU completion and scanout".into(),
+            );
+        }
+    }
     row("AUDIO", String::new());
     for (name, value) in [
         ("Codec", s.audio_codec.unwrap_or("Opus")),
@@ -648,8 +691,27 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
     }
     y += (cards.len().div_ceil(2) * 100) as i32 + 18;
     let timing = page.bus.host_timing.snapshot(page.sample.generation);
+    let mut memory_rows = Vec::new();
+    if let Some(usage) = page.memory_usage {
+        for (label, bytes) in [
+            ("Memory resident (total)", Some(usage.working_set_bytes)),
+            ("Memory resident (private)", usage.private_working_set_bytes),
+            (
+                "Memory committed (private)",
+                Some(usage.private_committed_bytes),
+            ),
+        ] {
+            if let Some(bytes) = bytes {
+                memory_rows.push((
+                    label.into(),
+                    format!("{:.1} MiB", bytes as f64 / 1_048_576.),
+                ));
+            }
+        }
+    }
     for (label, value) in rows(&page.sample, &page.values, page.usage)
         .into_iter()
+        .chain(memory_rows)
         .chain(host_timing_rows(&timing))
     {
         let section = value.is_empty();
@@ -755,6 +817,7 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
                     }
                 }
                 let id = std::process::id();
+                page.memory_usage = crate::performance::own_memory();
                 page.usage = page.resources.sample(&crate::performance::Processes {
                     all: vec![id],
                     gpu: vec![id],

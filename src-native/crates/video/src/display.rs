@@ -8,7 +8,7 @@ use lowlat_drivers::{
     ffi::d3d11 as ffi,
 };
 use self_cell::self_cell;
-use std::{ffi::c_void, rc::Rc};
+use std::{ffi::c_void, rc::Rc, time::{Duration, Instant}};
 use windows::{
     Win32::{
         Foundation::{CloseHandle, HANDLE, HMODULE, HWND, RECT},
@@ -217,9 +217,11 @@ impl Presenter {
         layout: Layout,
         client: (u32, u32),
         target: [i32; 4],
+        mut observe: impl FnMut(Duration, Duration),
     ) -> Result<Rc<dyn direct::SurfaceLease>> {
         // SAFETY: live device, texture and HWND on the owning video thread.
         unsafe {
+            let prepare_started = Instant::now();
             let lease = if let Some((_, lease)) = self.buffers.iter().find(|(t, _)| t == texture) {
                 lease.clone()
             } else {
@@ -256,7 +258,9 @@ impl Presenter {
             // Immediate readiness, no target-time pacing and no CPU completion wait.
             self.manager
                 .SetTargetTime(SystemInterruptTime { value: 0 })?;
+            let started = Instant::now();
             self.manager.Present()?;
+            observe(started.duration_since(prepare_started), started.elapsed());
             Ok(lease)
         }
     }
@@ -339,6 +343,7 @@ impl Session {
         visible: bool,
         client: (u32, u32),
         target: impl Fn(Layout) -> Result<[i32; 4]>,
+        mut observe: impl FnMut(usize, Instant, Duration, Duration, Duration),
     ) -> Result<Output> {
         let stamp = self.sequence;
         self.sequence = self.sequence.wrapping_add(1);
@@ -354,7 +359,8 @@ impl Session {
             }
             let layout = state.decoder.layout()?;
             output.layout = Some(layout);
-            while state.decoder.take_leased(|raw, slice, _| {
+            while state.decoder.take_leased(|raw, slice, sequence| {
+                let ready = Instant::now();
                 ensure!(slice == 0, "array slice cannot be presented directly");
                 let raw = raw.cast();
                 // SAFETY: original DPB allocation, held through take_leased.
@@ -370,9 +376,12 @@ impl Session {
                     output.busy += 1;
                     return Ok(None);
                 }
+                let dispatched = Instant::now();
                 let lease = state
                     .presenter
-                    .present(texture, layout, client, target(layout)?)?;
+                    .present(texture, layout, client, target(layout)?, |prepare, present| {
+                        observe(sequence, ready, dispatched.duration_since(ready), prepare, present);
+                    })?;
                 output.presented += 1;
                 Ok(Some(lease))
             })? {}

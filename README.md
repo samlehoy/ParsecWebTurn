@@ -147,6 +147,28 @@ removes that application pass and adds no intermediate decoded-frame copy or
 CPU readback. It does not establish direct scanout or eliminate internal Windows/
 driver transfers; hybrid GPU/display configurations can still introduce them.
 
+### Local video timing and display timing (experimental)
+
+Connection stats shows bounded local CPU timing for the compressed queue,
+decoder setup/API service, input-to-output buffering, decoded-surface handoff,
+presentation preparation and Present calls. These are not GPU execution or
+monitor latency measurements. Missing output identities remain unknown.
+
+Video settings offers **Automatic** (existing behavior), **Low latency** and
+**VSync**. Explicit modes request a one-presentation DXGI queue without blocking
+reference decoding; unsupported queue control falls back. Save and reconnect.
+Zero copy retains Windows-managed original-surface timing.
+
+BUD additionally omits obsolete display updates during a decoded-input backlog,
+while decoding every reference picture. Synthetic scheduling tests demonstrate
+less display work; live latency improvement is not yet verified. WebRTC keeps
+its existing delivery behavior. No extra decoded-frame copy or CPU readback is
+introduced. See [measurement scope and validation](docs/local-video-timing.md).
+
+Stats also distinguishes resident memory from private committed memory. With
+event logging enabled before launch, a few startup memory snapshots help compare
+unusually large and small startups; no continuous memory logging is added.
+
 ### Audio (experimental)
 
 - **Multichannel audio (BUD):** disabled by default. Request the Windows default

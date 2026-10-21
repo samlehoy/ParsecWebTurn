@@ -137,7 +137,9 @@ fn run() -> Result<()> {
     if mode == "video-hardware-probe" {
         let report_path = args.next();
         let option = args.next();
-        let report = if option.as_deref() == Some("--rgb10") {
+        let report = if option.as_deref() == Some("--timing") {
+            video_windows::probe_presentation_timing()?
+        } else if option.as_deref() == Some("--rgb10") {
             video_windows::probe_rgb10_output()?
         } else if option.as_deref() == Some("--main10") {
             video_windows::probe_main10()?

@@ -53,6 +53,7 @@ pub fn dispatch(
                 bail!("GPU context already initialized");
             }
             caller.data_mut().graphics = Some(crate::graphics::Graphics::create(window)?);
+            crate::performance::record_memory("graphics_initialized", Some(m.0.data_size()));
         }
         "web_present" => caller
             .data_mut()
@@ -580,6 +581,16 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
                     ..Default::default()
                 });
                 window.set_input_state(state);
+            }
+            if first {
+                crate::performance::record_memory(
+                    if input {
+                        "first_input_callback"
+                    } else {
+                        "first_ui_callback"
+                    },
+                    Some(store.data().memory.0.data_size()),
+                );
             }
             first = false;
         }

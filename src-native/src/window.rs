@@ -353,6 +353,21 @@ impl Window {
             .as_ref()
             .and_then(|manager| manager.view().0.video_gpu)
     }
+    pub fn video_policy(&self) -> (crate::connection_settings::PresentationMode, bool) {
+        let settings = self
+            .connection_settings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(manager) = settings.as_ref() else {
+            return Default::default();
+        };
+        let s = manager.view().0;
+        #[cfg(feature = "experimental-bud")]
+        let bud = s.experimental_bud;
+        #[cfg(not(feature = "experimental-bud"))]
+        let bud = false;
+        (s.presentation_mode, bud)
+    }
     pub fn audio_buffer(&self) -> Option<(u32, u32)> {
         let settings = self
             .connection_settings
