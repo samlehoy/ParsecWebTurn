@@ -1737,7 +1737,7 @@ impl Renderer {
         Ok(levels.len())
     }
 
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(feature = "diagnostics")]
     unsafe fn present(
         &mut self,
         texture: &ID3D11Texture2D,
