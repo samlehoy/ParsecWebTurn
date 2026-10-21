@@ -415,7 +415,7 @@ unsafe fn render(
         s.report.low_latency_device = fast;
         s.report.device_capacity_frames = capacity;
     }
-    // The unchanged automatic path primes silence. The experimental path starts
+    // The unchanged automatic path primes silence. The custom-buffer path starts
     // only when real PCM is ready and never pads its queue with a silence reserve.
     if !custom {
         let _ = render.GetBuffer(capacity)?;
@@ -521,7 +521,7 @@ unsafe fn render(
 #[cfg(feature = "diagnostics")]
 pub fn probe() -> Result<serde_json::Value> {
     let mut baseline = probe_output(false, Layout::STEREO)?;
-    baseline["experimental"] = probe_output(true, Layout::STEREO)?;
+    baseline["custom"] = probe_output(true, Layout::STEREO)?;
     baseline["multichannel_inputs"] = serde_json::json!([
         probe_output(false, Layout::new(6, 0x60f)?)?,
         probe_output(false, Layout::new(8, 0x63f)?)?,
@@ -544,7 +544,7 @@ fn probe_output(custom: bool, layout: Layout) -> Result<serde_json::Value> {
         let manager = crate::connection_settings::Manager::open(root.join("settings.json"));
         let mut settings = manager.view().0;
         settings.provider = "custom".into();
-        settings.experimental_audio_buffer = true;
+        settings.custom_audio_buffer = true;
         settings.audio_min_buffer_ms = 20;
         settings.audio_max_buffer_ms = 60;
         manager.save(settings, "", "", false, false)?;
@@ -607,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn experimental_budget_keeps_newest_stereo_with_device_padding() {
+    fn budget_keeps_newest_stereo_with_device_padding() {
         let output = Playback {
             layout: Layout::STEREO,
             shared: Arc::new(Mutex::new(State::default())),

@@ -1,8 +1,9 @@
-# Experimental native audio options
+# Native audio options
 
 The Bluetooth delay reported on 2026-10-16 disappeared with wired output.
-These options are independent experiments, not a fix or measured reduction for
-that Bluetooth delay. All custom Audio options default off. The proprietary WASM stays unmodified.
+Custom buffering and raw PCM permission are optional controls, not a fix or measured
+reduction for that Bluetooth delay. Multichannel audio remains experimental.
+All custom Audio options default off. The proprietary WASM stays unmodified.
 
 ## Evidence and protocol boundaries
 
@@ -138,7 +139,7 @@ separate test requiring suitable speakers or a verified spatial-audio renderer.
 5. The pinned WASM audio polling/queue ABI and existing mute/overlay controls
    remain in place. Removing the PCM roundtrip would require a separate control
    integration and is not part of this change. Video/GPU work is unaffected.
-6. Automatic WASAPI playback retains the existing policy. Experimental custom
+6. Automatic WASAPI playback retains the existing policy. Optional custom
    playback tries `IAudioClient3::GetSharedModeEnginePeriod` and
    `InitializeSharedAudioStream` at the reported minimum. If unavailable or
    rejected, a fresh audio client uses the existing 20 ms initialization request.
@@ -166,7 +167,7 @@ Regression coverage checks safe automatic defaults and invalid limits, UI tab
 switch/save behavior, header-based PCM/Opus distinction, malformed stereo PCM,
 exact signed PCM extremes and an Opus fallback, output overflow with device
 padding and preservation of the original automatic queue policy. Diagnostics
-exercise automatic and experimental output with silent local PCM, isolated
+exercise automatic and custom-buffer output with silent local PCM, isolated
 settings and no account/network. Live host raw negotiation, audible stability
 and end-to-end delay still require user testing.
 

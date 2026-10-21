@@ -25,7 +25,7 @@ pub enum Event {
     Key(bool, &'static str, i32),
     Scroll(i32, i32),
     Fullscreen(bool),
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     HidInputRelease,
 }
 
@@ -72,11 +72,11 @@ pub struct Window {
     pub network_origin_audit: bool,
     pub stop: Arc<crate::lifecycle::StopSignal>,
     relative_mouse: AtomicBool,
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     hid_mouse_active: AtomicBool,
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     hid_keyboard_active: AtomicBool,
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     hid_input_acquired: AtomicBool,
     relative_pending: AtomicUsize,
     relative_requested: AtomicBool,
@@ -205,11 +205,11 @@ impl Window {
             network_origin_audit: _network_origin_audit,
             stop: Default::default(),
             relative_mouse: AtomicBool::new(false),
-            #[cfg(feature = "experimental-bud")]
+            #[cfg(feature = "bud")]
             hid_mouse_active: AtomicBool::new(false),
-            #[cfg(feature = "experimental-bud")]
+            #[cfg(feature = "bud")]
             hid_keyboard_active: AtomicBool::new(false),
-            #[cfg(feature = "experimental-bud")]
+            #[cfg(feature = "bud")]
             hid_input_acquired: AtomicBool::new(false),
             relative_pending: AtomicUsize::new(0),
             relative_requested: AtomicBool::new(false),
@@ -370,7 +370,7 @@ impl Window {
             .unwrap_or_else(|e| e.into_inner());
         settings.as_ref().and_then(|m| {
             let s = m.view().0;
-            (s.experimental_audio_buffer
+            (s.custom_audio_buffer
                 && s.audio_max_buffer_ms > 0
                 && s.audio_max_buffer_ms <= 500
                 && s.audio_min_buffer_ms <= s.audio_max_buffer_ms)
@@ -459,9 +459,9 @@ impl Window {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         *generation = generation.wrapping_add(1);
-        #[cfg(feature = "experimental-bud")]
+        #[cfg(feature = "bud")]
         self.hid_mouse_active.store(false, Ordering::Release);
-        #[cfg(feature = "experimental-bud")]
+        #[cfg(feature = "bud")]
         self.hid_keyboard_active.store(false, Ordering::Release);
         self.set_video_ready(false);
         *generation
@@ -482,9 +482,9 @@ impl Window {
             .unwrap_or_else(|e| e.into_inner());
         if *generation == expected {
             *generation = generation.wrapping_add(1);
-            #[cfg(feature = "experimental-bud")]
+            #[cfg(feature = "bud")]
             self.hid_mouse_active.store(false, Ordering::Release);
-            #[cfg(feature = "experimental-bud")]
+            #[cfg(feature = "bud")]
             self.hid_keyboard_active.store(false, Ordering::Release);
             self.set_video_ready(false);
         }
@@ -551,7 +551,7 @@ impl Window {
     }
 
     unsafe fn mouse_button(&self, down: bool, button: i32, x: i32, y: i32) {
-        #[cfg(feature = "experimental-bud")]
+        #[cfg(feature = "bud")]
         self.sync_absolute_pointer(x, y, false);
         let bit = 1usize << button;
         if down {
@@ -564,7 +564,7 @@ impl Window {
         }
         self.push(Event::Button(down, button, x, y));
     }
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     unsafe fn sync_absolute_pointer(&self, x: i32, y: i32, screen: bool) {
         if self.hid_mouse_active.load(Ordering::Acquire)
             && !self.relative_mouse.load(Ordering::Acquire)
@@ -653,7 +653,7 @@ impl Window {
         }
     }
     unsafe fn restore_host_cursor(&self) {
-        #[cfg(feature = "experimental-bud")]
+        #[cfg(feature = "bud")]
         if self.hid_mouse_active.load(Ordering::Acquire) {
             self.warp_pending.store(false, Ordering::Release);
             return;
@@ -753,7 +753,7 @@ impl Window {
     }
     unsafe fn apply_input_capture(&self) {
         let allowed = self.input_allowed();
-        #[cfg(feature = "experimental-bud")]
+        #[cfg(feature = "bud")]
         self.apply_hid_capture(allowed);
         self.keyboard_grab
             .lock()
@@ -809,14 +809,14 @@ impl Window {
         }
         false
     }
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     pub fn hid_input_generation(&self) -> u64 {
         *self
             .video_generation
             .lock()
             .unwrap_or_else(|e| e.into_inner())
     }
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     pub fn set_hid_input_active(&self, expected: u64, mouse: bool, keyboard: bool) {
         let generation = self
             .video_generation
@@ -844,7 +844,7 @@ impl Window {
             }
         }
     }
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     unsafe fn apply_hid_capture(&self, allowed: bool) {
         let acquired = allowed
             && (self.hid_mouse_active.load(Ordering::Acquire)
@@ -1184,7 +1184,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             WM_CLOSE => {
                 s.input_suspended.store(true, Ordering::Release);
-                #[cfg(feature = "experimental-bud")]
+                #[cfg(feature = "bud")]
                 s.apply_hid_capture(false);
                 s.keyboard_grab
                     .lock()
@@ -1235,7 +1235,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 s.cursor.lock().unwrap_or_else(|e| e.into_inner()).select();
                 return 1;
             }
-            #[cfg(feature = "experimental-bud")]
+            #[cfg(feature = "bud")]
             m if m == crate::hid_input::REFRESH => {
                 s.apply_input_capture();
                 return 0;
@@ -1485,7 +1485,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             WM_ENTERMENULOOP | WM_ENTERSIZEMOVE => {
                 s.input_suspended.store(true, Ordering::Release);
-                #[cfg(feature = "experimental-bud")]
+                #[cfg(feature = "bud")]
                 s.apply_hid_capture(false);
                 s.apply_input_capture();
             }
@@ -1495,7 +1495,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             WM_KILLFOCUS => {
                 s.has_focus.store(false, Ordering::Release);
-                #[cfg(feature = "experimental-bud")]
+                #[cfg(feature = "bud")]
                 s.apply_hid_capture(false);
                 s.keyboard_grab
                     .lock()
@@ -1572,13 +1572,13 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
             WM_MOUSEWHEEL => {
-                #[cfg(feature = "experimental-bud")]
+                #[cfg(feature = "bud")]
                 s.sync_absolute_pointer(lp as i16 as i32, (lp >> 16) as i16 as i32, true);
                 s.push(Event::Scroll(0, -((wp >> 16) as i16 as i32)));
                 return 0;
             }
             WM_MOUSEHWHEEL => {
-                #[cfg(feature = "experimental-bud")]
+                #[cfg(feature = "bud")]
                 s.sync_absolute_pointer(lp as i16 as i32, (lp >> 16) as i16 as i32, true);
                 s.push(Event::Scroll((wp >> 16) as i16 as i32, 0));
                 return 0;
@@ -1589,7 +1589,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 }
                 KillTimer(hwnd, crate::updater_ui::NOTIFY_TIMER);
                 s.input_suspended.store(true, Ordering::Release);
-                #[cfg(feature = "experimental-bud")]
+                #[cfg(feature = "bud")]
                 s.apply_hid_capture(false);
                 s.software_presenter
                     .lock()
@@ -1655,7 +1655,7 @@ unsafe extern "system" fn video_surface_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     #[test]
     fn hid_input_desktop_edges_and_local_menu_release() {
         struct Restore {

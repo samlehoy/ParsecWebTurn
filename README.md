@@ -17,8 +17,8 @@ features described below; check a release's notes for what its binary includes.
 The earlier Tauri/WebView2 client is preserved on the
 [legacy branch](https://github.com/vampywiz17/ParsecWebTurn/tree/legacy).
 
-**Development release:** BUD, vendor-specific HEVC decoding, Zero copy, 10-bit HEVC,
-custom Audio options and USB HID input are experimental. For stability-first use,
+**Development release:** vendor-specific HEVC decoding, Zero copy, 10-bit HEVC,
+display timing, multichannel audio and USB HID input are experimental. For stability-first use,
 select WebRTC with H.264 and leave experimental options disabled, or use the
 [latest stable release](https://github.com/vampywiz17/ParsecWebTurn/releases/latest).
 
@@ -27,13 +27,13 @@ select WebRTC with H.264 and leave experimental options disabled, or use the
 - Sign in, choose a computer and connect to a regular Parsec host.
 - H.264 and optional H.265 / HEVC Main, 8-bit 4:2:0 video.
 - Opus sound, keyboard/mouse input, immersive capture and relative mouse mode.
-- Optional experimental BUD USB HID mouse and keyboard through the stock host's
+- Optional experimental USB HID mouse and keyboard over BUD through the stock host's
   USB/Yubikey passthrough, with a dedicated Input settings tab.
 - The familiar Parsec overlay, drawn in software for compatibility while the
   streamed video stays on the GPU.
 - WebRTC with direct connections and custom STUN/TURN, including Cloudflare and
   TURN over UDP, TCP and TLS.
-- Optional **experimental BUD**, with direct UDP, automatic TURN fallback and
+- Optional **BUD**, with direct UDP, automatic TURN fallback and
   forced relay over UDP, TLS or TCP. It uses the existing native video/audio paths.
 - Live Connection stats: active route, RTT, incoming/outgoing traffic, decoded
   FPS, codec, decoder, GPU, host encode time when available, and app resource use.
@@ -57,7 +57,7 @@ Linux/Android clients and Vulkan/D3D12 renderers are future work.
    may contain fewer features than this development branch.
 2. Run **ParsecWebTurn.exe**, sign in and select your host.
 3. Choose the **web** launch option in the computer list. Native integration is
-   built around that core entry point, including when experimental BUD is selected.
+   built around that core entry point, including when BUD is selected.
 
 Windows x64, D3D11/OpenGL support and compatible GPU drivers are required.
 Original-surface presentation additionally needs Windows 11 and driver support.
@@ -83,13 +83,13 @@ tabs preserves unsaved edits. Changes apply to the next connection.
 - **Credential lifetime/cache:** control generated Cloudflare credentials.
 - **Force TURN relay:** use a configured relay even when a direct route exists.
   It cannot be combined with STUN only.
-- **Experimental BUD:** select BUD instead of the default WebRTC transport.
+- **BUD:** select BUD instead of the default WebRTC transport.
   Direct connections use UDP. TURN uses the same configured URLs as WebRTC,
   preferring UDP, then TLS, then plain TCP (port 80 first among TCP URLs).
   Failed connection attempts advance to the next configured relay URL; an
   established stream is not migrated automatically. TLS verifies the original
-  server identity. The relay-to-host leg remains UDP. TCP/TLS support is
-  experimental and can suffer TCP head-of-line blocking. There is no silent
+  server identity. The relay-to-host leg remains UDP. TCP/TLS can suffer
+  TCP head-of-line blocking. There is no silent
   switch to WebRTC and no separate BUD relay setting.
 - **Enable event logging:** write `client-events.jsonl` beside `settings.json`
   (also when using `--data-dir`). Logs connection/route changes, connection
@@ -157,6 +157,9 @@ monitor latency measurements. Missing output identities remain unknown.
 Video settings offers **Automatic** (existing behavior), **Low latency** and
 **VSync**. Explicit modes request a one-presentation DXGI queue without blocking
 reference decoding; unsupported queue control falls back. Save and reconnect.
+Automatic remains the default, as before this setting was introduced. Low latency
+checks readiness without waiting and uses presentation interval zero; VSync uses
+interval one and can add display delay. Lower live latency is not guaranteed.
 Zero copy retains Windows-managed original-surface timing.
 
 BUD additionally omits obsolete display updates during a decoded-input backlog,
@@ -169,9 +172,9 @@ Stats also distinguishes resident memory from private committed memory. With
 event logging enabled before launch, a few startup memory snapshots help compare
 unusually large and small startups; no continuous memory logging is added.
 
-### Audio (experimental)
+### Audio
 
-- **Multichannel audio (BUD):** disabled by default. Request the Windows default
+- **Multichannel audio (experimental, BUD):** disabled by default. Request the Windows default
   output's supported 5.1 or 7.1 speaker layout, with stereo for other endpoints.
   The host's capture layout must match; it may send stereo instead. BUD headers
   select the actual Opus/PCM decoder and channel mask. Native WASAPI receives the
@@ -189,7 +192,7 @@ unusually large and small startups; no continuous memory logging is added.
   prefilled silence, and keeps the newest staged stereo audio within the output
   budget including device padding. Smaller values can cause audible gaps.
   Limits must satisfy 0 <= minimum <= maximum <= 500 ms, with maximum above zero.
-- **Allow raw PCM audio:** experimental **BUD-only** permission, disabled by
+- **Allow raw PCM audio:** **BUD-only** permission, disabled by
   default. The host must also enable `network_raw_audio=1`; other guests can
   affect what the host sends. Both PCM and Opus remain accepted according to
   each BUD packet's codec header. PCM is 48 kHz stereo, signed 16-bit, about
@@ -212,7 +215,7 @@ See [audio-path audit and implementation](docs/native-audio-options.md).
   the host cursor mode and uses native Raw Input. Desktop input and camera
   control have been live-tested; game compatibility varies. Multi-monitor
   mapping is not supported. Local menus remain accessible.
-- **USB HID keyboard:** a separate experimental BUD option, also disabled by
+- **USB HID keyboard:** a separate experimental input option over BUD, also disabled by
   default. Uses the same USB transport/device lifecycle as the mouse. Physical
   key presses, releases and modifiers are forwarded; select the same active
   keyboard layout on host and client (for example Hungarian on both). The client
@@ -242,7 +245,7 @@ hardware execution, so uncertain hardware decoding is labelled **Likely**.
 
 Detailed host video/audio timing is requested automatically while Connection
 stats is visible or event logging is enabled, with no separate setting. The
-experimental timing section shows reported values as latest/average/peak in
+host timing section shows reported values as latest/average/peak in
 milliseconds, sample counts and freshness. Missing reports stay unknown. These
 are host processing durations, not end-to-end latency or GPU execution timings;
 the uncertain audio intermediate field is not presented as encoder time. There
@@ -290,8 +293,8 @@ Statuses below describe this branch, not necessarily the latest stable release.
 | HEVC: NVIDIA Direct D3D11, AMD AMF, Intel VPL | Experimental; live tested on selected GPUs |
 | HEVC Main 10 and 10-bit RGB SDR output | Experimental; live verified with NVIDIA host encoding and AMD 780M client decoding; tested AMD host sends 8-bit |
 | Original-surface HEVC presentation on NVIDIA/AMD/Intel | Experimental; live tested on selected GPUs |
-| Optional BUD direct UDP and TURN over UDP/TCP/TLS, automatic relay fallback | Experimental; direct/UDP/TLS live tested; TCP covered by isolated relay tests |
-| Custom audio buffering and BUD raw PCM permission | Experimental; Opus and automatic buffering remain default |
+| Optional BUD direct UDP and TURN over UDP/TCP/TLS, automatic relay fallback | Direct/UDP/TLS live tested; TCP covered by isolated relay tests |
+| Custom audio buffering and BUD raw PCM permission | Live tested; Opus and automatic buffering remain default |
 | USB HID mouse and keyboard through the stock host's USB/Yubikey passthrough (BUD) | Experimental; desktop input, relative camera control and simultaneous mouse/keyboard live tested; matching keyboard layouts required |
 | Transport-aware connection and playback statistics | Implemented |
 | Network/Video/Audio/Input settings tabs | Implemented |
@@ -341,7 +344,7 @@ distributed application; it is not an open-source component of this project.
 
 The Rust code provides the native runtime, platform services and integrations
 around that component. It does not constitute a rewrite of the original Parsec
-client. The experimental BUD adapter is a separate, lowlat-based protocol
+client. The BUD adapter is a separate, lowlat-based protocol
 implementation, not a modification of Parsec's WASM or proprietary source.
 
 The project's MIT license applies to its own code; it does not relicense the
@@ -359,7 +362,7 @@ open-source work and helpful technical feedback. Duy's suggestions and bug
 reports have also helped improve ParsecWebTurn.
 
 ParsecWebTurn reuses and adapts selected MIT-licensed lowlat components for its
-experimental BUD transport, TURN connectivity and vendor-specific GPU video
+BUD transport, TURN connectivity and vendor-specific GPU video
 backends. The reused code retains its license and attribution; pinned revisions,
 local adaptations and integration boundaries are documented in the backend
 crates' notices and [research references](docs/NATIVE_REFERENCES.md).

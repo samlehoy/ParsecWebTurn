@@ -28,7 +28,7 @@ pictures would require host/protocol changes and recovery behavior.
   unavailable MMCSS keeps normal scheduling. RAII guards restore each thread's
   original scheduling on every exit path. No process-wide realtime priority,
   registry edits, system timer-resolution changes or administrator rights.
-- Experimental custom audio buffering queries `IAudioClient3::GetSharedModeEnginePeriod` for the actual 48 kHz stereo
+- Optional custom audio buffering queries `IAudioClient3::GetSharedModeEnginePeriod` for the actual 48 kHz stereo
   PCM16 format. Request the shortest supported, fundamental-aligned shared-mode
   period with `InitializeSharedAudioStream(EVENTCALLBACK)`. Unsupported format,
   API or period initialization falls back to a fresh `IAudioClient` and the
@@ -41,7 +41,7 @@ pictures would require host/protocol changes and recovery behavior.
   limits, actual device capacity, queued PCM, padding, drops and underruns.
   Video snapshots record MMCSS registration separately from codec/GPU evidence.
   These are configuration/output observations, not measured end-to-end latency.
-  See [experimental audio controls and full-path audit](native-audio-options.md).
+  See [audio controls and full-path audit](native-audio-options.md).
 
 ## Already present and retained
 

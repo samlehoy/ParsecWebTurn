@@ -12,7 +12,7 @@ Current direction: retain Media Foundation/D3D11 and the existing Opus decoder.
 BUD changes transport only. AMD/NVIDIA comparisons resumed on 2026-10-14 in
 isolated probes; the live client still uses MF. See
 [8-bit GPU comparison](gpu-vendor-comparison.md).
-The optional native `experimental-bud` module now hands compressed
+The optional native `bud` module now hands compressed
 BUD payloads into those existing pipelines. Its optional test client now exposes
 account/UI selection; stock-host direct and UDP TURN playback were confirmed by
 the user. Automatic relay retry and native transport statistics are under test.
@@ -85,7 +85,7 @@ This work is separate from BUD: a vendor decoder can receive the same compressed
 WebRTC media without changing its network transport. Ten-bit and 4:4:4 remain
 outside this initial integration scope.
 
-## 2. Experimental BUD, including UDP TURN
+## 2. BUD, including UDP TURN
 
 **BUD is not limited to direct connections.** Lowlat's client allocates a standard
 UDP TURN relay itself, advertises its relayed address and wraps connectivity and
@@ -110,7 +110,7 @@ tests are encouraging, but do not prove our signaling or public relay setup.
 
 ### Required separation
 
-- WebRTC stays the default. BUD is explicit opt-in and labeled experimental.
+- WebRTC stays the default. BUD is explicit opt-in.
 - Keep `attempt.rs`, its SDP/ICE credentials, candidate gates, readiness rules,
   TURN tiers, renewal policy and SCTP ordering/reliability on the existing path.
   Add a separate BUD session/signaling adapter instead of injecting BUD conditions

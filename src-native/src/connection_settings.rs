@@ -57,20 +57,23 @@ impl GpuPreference {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
-    #[cfg(feature = "experimental-bud")]
-    pub experimental_bud: bool,
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
+    #[serde(alias = "experimentalBud")]
+    pub bud: bool,
+    #[cfg(feature = "bud")]
     pub experimental_hid_mouse: bool,
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     pub experimental_hid_keyboard: bool,
     pub prefer_hevc: bool,
     pub presentation_mode: PresentationMode,
     pub experimental_ten_bit: bool,
     pub event_logging: bool,
-    pub experimental_audio_buffer: bool,
+    #[serde(alias = "experimentalAudioBuffer")]
+    pub custom_audio_buffer: bool,
     pub audio_min_buffer_ms: u32,
     pub audio_max_buffer_ms: u32,
-    pub experimental_raw_audio: bool,
+    #[serde(alias = "experimentalRawAudio")]
+    pub allow_raw_audio: bool,
     pub experimental_surround_audio: bool,
     #[cfg(feature = "vendor-video")]
     pub experimental_zero_copy: bool,
@@ -97,20 +100,20 @@ impl Default for Settings {
     // Legacy defaults apply to existing JSON; a new native installation uses fresh().
     fn default() -> Self {
         Self {
-            #[cfg(feature = "experimental-bud")]
-            experimental_bud: false,
-            #[cfg(feature = "experimental-bud")]
+            #[cfg(feature = "bud")]
+            bud: false,
+            #[cfg(feature = "bud")]
             experimental_hid_mouse: false,
-            #[cfg(feature = "experimental-bud")]
+            #[cfg(feature = "bud")]
             experimental_hid_keyboard: false,
             prefer_hevc: false,
             presentation_mode: PresentationMode::Automatic,
             experimental_ten_bit: false,
             event_logging: false,
-            experimental_audio_buffer: false,
+            custom_audio_buffer: false,
             audio_min_buffer_ms: 75,
             audio_max_buffer_ms: 150,
-            experimental_raw_audio: false,
+            allow_raw_audio: false,
             experimental_surround_audio: false,
             #[cfg(feature = "vendor-video")]
             experimental_zero_copy: false,
@@ -133,14 +136,14 @@ impl Default for Settings {
     }
 }
 impl Settings {
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     pub fn hid_mouse_enabled(&self) -> bool {
-        self.experimental_bud && self.experimental_hid_mouse
+        self.bud && self.experimental_hid_mouse
     }
 
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     pub fn hid_keyboard_enabled(&self) -> bool {
-        self.experimental_bud && self.experimental_hid_keyboard
+        self.bud && self.experimental_hid_keyboard
     }
     #[cfg(any(test, windows, not(feature = "diagnostics")))]
     fn fresh() -> Self {
@@ -178,7 +181,7 @@ impl Settings {
         })
     }
     pub fn validate(&self) -> Result<()> {
-        if self.experimental_audio_buffer
+        if self.custom_audio_buffer
             && (self.audio_max_buffer_ms == 0
                 || self.audio_max_buffer_ms > 500
                 || self.audio_min_buffer_ms > self.audio_max_buffer_ms)
@@ -390,7 +393,7 @@ impl Manager {
         self.resolve_settings(&settings).await
     }
     /// Explicit BUD adapter: freeze preferences and credentials together.
-    #[cfg(all(windows, feature = "experimental-bud"))]
+    #[cfg(all(windows, feature = "bud"))]
     pub async fn resolve_bud(&self) -> Result<(Settings, Vec<RTCIceServer>)> {
         let (settings, error) = self.view();
         if error.is_some() {
@@ -404,7 +407,7 @@ impl Manager {
         Ok((settings, servers))
     }
 
-    #[cfg(all(windows, feature = "experimental-bud"))]
+    #[cfg(all(windows, feature = "bud"))]
     pub async fn resolve_bud_relay(&self, settings: &Settings) -> Result<Vec<RTCIceServer>> {
         if settings.stun_only {
             bail!("TURN is disabled by STUN-only settings");
@@ -600,7 +603,35 @@ fn atomic_write(path: &std::path::Path, raw: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
+    #[test]
+    fn promoted_settings_accept_old_keys_and_save_current_names() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"experimentalBud":true,"experimentalAudioBuffer":true,"experimentalRawAudio":true,"audioMinBufferMs":20,"audioMaxBufferMs":60,"experimentalSurroundAudio":true}"#,
+        )
+        .unwrap();
+        assert!(settings.bud && settings.custom_audio_buffer && settings.allow_raw_audio);
+        assert!(settings.experimental_surround_audio);
+        assert_eq!(
+            (settings.audio_min_buffer_ms, settings.audio_max_buffer_ms),
+            (20, 60)
+        );
+        settings.validate().unwrap();
+        let saved = serde_json::to_value(&settings).unwrap();
+        for key in ["bud", "customAudioBuffer", "allowRawAudio"] {
+            assert_eq!(saved[key], true);
+        }
+        for key in [
+            "experimentalBud",
+            "experimentalAudioBuffer",
+            "experimentalRawAudio",
+        ] {
+            assert!(saved.get(key).is_none());
+        }
+        let restored: Settings = serde_json::from_value(saved).unwrap();
+        assert!(restored.bud && restored.custom_audio_buffer && restored.allow_raw_audio);
+    }
+    #[cfg(feature = "bud")]
     #[test]
     fn hid_input_preference_roundtrips_without_enabling_webrtc_input() {
         let mut s: Settings = serde_json::from_str("{}").unwrap();
@@ -610,20 +641,20 @@ mod tests {
         let restored: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert!(restored.experimental_hid_mouse);
         assert!(!restored.hid_mouse_enabled());
-        s.experimental_bud = true;
+        s.bud = true;
         assert!(s.hid_mouse_enabled());
     }
 
     #[test]
     fn audio_defaults_and_limits_preserve_automatic_settings() {
         let mut settings = super::Settings::fresh();
-        assert!(!settings.experimental_audio_buffer);
-        assert!(!settings.experimental_raw_audio);
+        assert!(!settings.custom_audio_buffer);
+        assert!(!settings.allow_raw_audio);
         assert_eq!(
             (settings.audio_min_buffer_ms, settings.audio_max_buffer_ms),
             (75, 150)
         );
-        settings.experimental_audio_buffer = true;
+        settings.custom_audio_buffer = true;
         settings.audio_min_buffer_ms = 20;
         settings.audio_max_buffer_ms = 60;
         assert!(settings.validate().is_ok());
@@ -634,7 +665,7 @@ mod tests {
         assert!(settings.validate().is_err());
         settings.audio_max_buffer_ms = 501;
         assert!(settings.validate().is_err());
-        settings.experimental_audio_buffer = false;
+        settings.custom_audio_buffer = false;
         assert!(settings.validate().is_ok());
     }
     #[test]

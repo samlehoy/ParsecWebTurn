@@ -4,11 +4,11 @@
 )]
 #![warn(unused_crate_dependencies)]
 mod attempt;
-#[cfg(all(windows, feature = "experimental-bud"))]
+#[cfg(all(windows, feature = "bud"))]
 mod bud_attempt;
-#[cfg(all(windows, feature = "experimental-bud"))]
+#[cfg(all(windows, feature = "bud"))]
 pub mod bud_media;
-#[cfg(all(windows, feature = "experimental-bud"))]
+#[cfg(all(windows, feature = "bud"))]
 mod bud_trace;
 const APP_TITLE: &str = "ParsecWebTurn";
 const PARSEC_CORE_VERSION: &str = "150-104a";
@@ -60,7 +60,7 @@ mod gpu_windows;
 mod graphics;
 #[cfg(windows)]
 mod gui_visibility;
-#[cfg(all(windows, feature = "experimental-bud"))]
+#[cfg(all(windows, feature = "bud"))]
 mod hid_input;
 mod host;
 mod http;
@@ -579,7 +579,7 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].0, "Choose web mode");
         assert!(messages[0].1.contains("web/browser connection option"));
-        assert!(messages[0].1.contains("Experimental BUD"));
+        assert!(messages[0].1.contains("BUD"));
     }
 
     #[test]

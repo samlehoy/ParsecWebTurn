@@ -109,7 +109,7 @@ The optional `vendor-video` native build feature therefore selects **AMD AMF
 for AMD HEVC** and **direct D3D11 for NVIDIA HEVC**. H.264, Intel and other GPUs
 retain MF. The GPU module is independent of BUD/WebRTC and feeds the existing
 single video-processor/DXGI path. Normal builds keep the original MF decoder.
-The experimental BUD test artifact enables both optional features so either
+The BUD test artifact enables both optional features so either
 transport can be tested with the new HEVC paths.
 
 Initialization failures retain MF. A live vendor failure or unsupported format

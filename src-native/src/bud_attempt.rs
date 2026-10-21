@@ -1,4 +1,4 @@
-//! Explicit experimental BUD lifecycle. RTC attempts never enter this adapter.
+//! Explicit BUD lifecycle. RTC attempts never enter this adapter.
 use anyhow::{ensure, Context, Result};
 use parsec_native_bud::{
     bud::{Event, Outcome, Route, Session},
@@ -54,7 +54,7 @@ impl Statistics {
             generation,
             crate::stats::Sample {
                 bud: Some(Default::default()),
-                state: "Connecting (experimental BUD)".into(),
+                state: "Connecting (BUD)".into(),
                 ..Default::default()
             },
         );
@@ -68,7 +68,7 @@ impl Drop for Statistics {
             self.generation,
             crate::stats::Sample {
                 bud: Some(Default::default()),
-                state: "Disconnected (experimental BUD)".into(),
+                state: "Disconnected (BUD)".into(),
                 ..Default::default()
             },
         );
@@ -604,7 +604,7 @@ fn run(
             window.clone(),
             hevc_available,
             ten_bit,
-            settings.experimental_raw_audio,
+            settings.allow_raw_audio,
             settings.experimental_surround_audio,
         )?;
         {
@@ -881,9 +881,9 @@ fn run(
                 statistics.generation,
                 crate::stats::Sample {
                     state: if established {
-                        "Connected (experimental BUD)"
+                        "Connected (BUD)"
                     } else {
-                        "Connecting (experimental BUD)"
+                        "Connecting (BUD)"
                     }
                     .into(),
                     bud: Some(transport.clone()),
@@ -965,7 +965,7 @@ fn run(
             let mut next = crate::bud_media::session(
                 hevc_available,
                 ten_bit,
-                settings.experimental_raw_audio,
+                settings.allow_raw_audio,
                 media.audio_layout(),
             )?;
             next.enable_hid_input(hid_mouse, hid_keyboard);
@@ -1356,10 +1356,10 @@ mod tests {
     #[test]
     fn bud_is_explicit_and_default_settings_remain_webrtc() {
         let settings: crate::connection_settings::Settings = serde_json::from_str("{}").unwrap();
-        assert!(!settings.experimental_bud);
+        assert!(!settings.bud);
         let settings: crate::connection_settings::Settings =
-            serde_json::from_str(r#"{"experimentalBud":true}"#).unwrap();
-        assert!(settings.experimental_bud);
+            serde_json::from_str(r#"{"bud":true}"#).unwrap();
+        assert!(settings.bud);
     }
 
     #[test]

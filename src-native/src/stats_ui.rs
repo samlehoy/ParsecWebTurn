@@ -128,7 +128,7 @@ fn host_timing_rows(s: &crate::frame_timing::Snapshot) -> Vec<(String, String)> 
     if !s.requested && !s.request_failed {
         return rows;
     }
-    rows.push(("HOST TIMING (EXPERIMENTAL)".into(), String::new()));
+    rows.push(("HOST TIMING".into(), String::new()));
     if s.request_failed {
         rows.push(("Host timing".into(), "Unavailable (request failed)".into()));
         return rows;
@@ -255,7 +255,7 @@ fn rows(
 ) -> Vec<(String, String)> {
     let mut rows = Vec::new();
     let mut row = |a: &str, b: String| rows.push((a.into(), b));
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     if let Some(bud) = &s.bud {
         row("NETWORK", String::new());
         row("Transport", "BUD / UDP".into());
@@ -308,7 +308,7 @@ fn rows(
     } else {
         webrtc_network_rows(s, &mut row);
     }
-    #[cfg(not(feature = "experimental-bud"))]
+    #[cfg(not(feature = "bud"))]
     webrtc_network_rows(s, &mut row);
     row("VIDEO", String::new());
     let video = s.video.as_ref();
@@ -485,7 +485,7 @@ fn rows(
                 );
             }
             row(
-                "Display updates skipped for catch-up",
+                "Display catch-up skips",
                 v.display_updates_skipped.to_string(),
             );
             row(
@@ -545,7 +545,7 @@ fn rows(
                 audio.minimum_ms,
                 audio.maximum_ms,
                 if audio.custom_buffer {
-                    " (experimental)"
+                    " (custom)"
                 } else {
                     " (automatic)"
                 }
@@ -560,7 +560,7 @@ fn rows(
     if let Some(ms) = s.audio_decoded_queue_ms {
         row("Decoded audio waiting", number(Some(ms), "ms"));
     }
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     if let Some(bud) = &s.bud {
         if let Some(cipher) = bud.cipher {
             row("SECURITY", String::new());
@@ -569,12 +569,12 @@ fn rows(
     } else {
         webrtc_security_rows(s, &mut row);
     }
-    #[cfg(not(feature = "experimental-bud"))]
+    #[cfg(not(feature = "bud"))]
     webrtc_security_rows(s, &mut row);
     row("APP PERFORMANCE", String::new());
     row("CPU (all cores)", number(cpu.0, "%"));
     row("GPU (busiest engine)", number(cpu.1, "%"));
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     if s.bud.is_some() {
         rows.retain(|(_, value)| value != "Not reported" && value != "—");
     }
@@ -591,6 +591,21 @@ unsafe fn text(dc: HDC, font: HFONT, color: u32, s: &str, mut rect: RECT) {
         &mut rect,
         DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
     );
+}
+unsafe fn wrapped_height(dc: HDC, font: HFONT, s: &str, width: i32) -> i32 {
+    SelectObject(dc, font);
+    let mut rect = RECT {
+        right: width.max(1),
+        ..std::mem::zeroed()
+    };
+    DrawTextW(
+        dc,
+        wide(s).as_ptr(),
+        -1,
+        &mut rect,
+        DT_LEFT | DT_WORDBREAK | DT_NOPREFIX | DT_CALCRECT,
+    );
+    rect.bottom - rect.top
 }
 unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
     let mut client: RECT = std::mem::zeroed();
@@ -642,7 +657,7 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
         ("Incoming traffic", number(page.values.incoming, "Mbps")),
         ("Outgoing traffic", number(page.values.outgoing, "Mbps")),
     ];
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     let cards = if page.sample.bud.is_some() {
         cards
             .into_iter()
@@ -715,7 +730,14 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
         .chain(host_timing_rows(&timing))
     {
         let section = value.is_empty();
-        let h = if section { 48 } else { 44 };
+        let label_width = if section { right - left } else { 210 };
+        let label_height = wrapped_height(memory, page.font, &label, label_width);
+        let value_height = if section {
+            0
+        } else {
+            wrapped_height(memory, page.font, &value, right - left - 220)
+        };
+        let h = (label_height.max(value_height) + 16).max(if section { 48 } else { 44 });
         text(
             memory,
             page.font,
@@ -745,13 +767,13 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
         y += h;
     }
     y += 14;
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     let footer = if page.sample.bud.is_some() {
         "Traffic counts UDP payload bytes or TURN stream plaintext accepted for send or received, including BUD/crypto/TURN control and retransmissions. Stream framing padding is included; TLS, IP and TCP/UDP headers and account HTTPS/WSS traffic are excluded. RTT is the native transport estimate. Host encode time keeps the last available report. Late fragments indicate reordering or retransmission, not proven packet loss. NACKs request missing fragments. Compressed backlog is before decoding; no GPU timings are inferred."
     } else {
         "Traffic is measured usage, not available bandwidth. RTT is the active ICE path's round-trip time, not ICMP ping. Local dropped frames are not network packet loss. Missing values remain unknown."
     };
-    #[cfg(not(feature = "experimental-bud"))]
+    #[cfg(not(feature = "bud"))]
     let footer = "Traffic is measured usage, not available bandwidth. RTT is the active ICE path's round-trip time, not ICMP ping. Local dropped frames are not network packet loss. Missing values remain unknown.";
     let footer = if timing.requested {
         format!("{footer} Host timing averages and peaks cover the current diagnostic collection. These are host durations, not capture-to-display latency or GPU execution times.")
@@ -1016,7 +1038,7 @@ mod tests {
                 && v == "Unavailable; using normal GPU rendering"));
     }
 
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     #[test]
     fn bud_statistics_use_native_counters_and_hide_ice_dtls_and_unknowns() {
         let mut native = parsec_native_bud::bud::Snapshot {
@@ -1082,6 +1104,10 @@ mod tests {
             assert!(!parent.is_null());
             let bus = Arc::new(Shared::default());
             let generation = bus.begin();
+            let mut local_timing = crate::video_output::LocalTiming::default();
+            local_timing
+                .decoder_service
+                .record(std::time::Duration::from_micros(330));
             bus.publish(
                 generation,
                 Sample {
@@ -1098,6 +1124,8 @@ mod tests {
                     profile: Some(100),
                     codec: Some(crate::video_stream::Codec::H264),
                     video: Some(crate::video_output::Snapshot {
+                        local_timing,
+                        presentation_mode: Some("Low latency; maximum queued presentations: 1"),
                         decoder_initialized: true,
                         decoder: Some("Media Foundation H.264"),
                         renderer: Some("D3D11"),
@@ -1135,7 +1163,7 @@ mod tests {
             RedrawWindow(hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_UPDATENOW);
             SendMessageW(hwnd, WM_VSCROLL, SB_BOTTOM as usize, 0);
             capture(hwnd, "stats-host-timing-bottom");
-            #[cfg(feature = "experimental-bud")]
+            #[cfg(feature = "bud")]
             {
                 let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Page;
                 (*state).sample.bud = Some(parsec_native_bud::bud::Snapshot::default());
@@ -1155,6 +1183,9 @@ mod tests {
             );
             SendMessageW(hwnd, WM_VSCROLL, SB_TOP as usize, 0);
             capture(hwnd, "stats-narrow");
+            let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Page;
+            (*state).scroll = 700;
+            capture(hwnd, "stats-local-timing-narrow");
             SendMessageW(hwnd, WM_SIZE, SIZE_MINIMIZED as usize, 0);
             assert!(!bus.requested());
             SendMessageW(hwnd, WM_SIZE, SIZE_RESTORED as usize, 0);

@@ -18,11 +18,11 @@ The previous Tauri/WebView2 client is preserved on `legacy` and in v0.7.0.
   the existing GPU conversion/DXGI path; optional original-surface presentation
   uses Direct D3D11 and Windows Presentation API on all three supported vendors.
   No application intermediate decoded-frame copy or live CPU readback is added.
-- Explicit experimental BUD selection, with direct UDP and automatic/forced UDP
+- Explicit BUD selection, with direct UDP and automatic/forced UDP
   TURN. It reuses native decoding, audio and input. WebRTC stays the default and
   retains TURN over UDP/TCP/TLS; there is no silent transport switch.
 - Opus audio, 48 kHz stereo, through shared-mode Windows WASAPI.
-- Experimental Audio settings provide optional playback buffering and BUD-only
+- Audio settings provide optional playback buffering and BUD-only
   raw PCM permission. Received BUD headers select PCM or Opus per packet; the
   current headerless WebRTC audio contract remains Opus. See the
   [audio-path audit](native-audio-options.md) for defaults and limitations.

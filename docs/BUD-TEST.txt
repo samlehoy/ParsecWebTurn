@@ -1,4 +1,4 @@
-Experimental BUD test client (Windows x64)
+BUD test client (Windows x64)
 
 The default is still WebRTC. The embedded WASM core and the MF/D3D11 video
 and Opus audio paths remain in use. This test build additionally enables
@@ -21,7 +21,7 @@ Relay retries now mint a fresh native attempt identifier (six random 8-digit
 hex groups, matching the lowlat client example), instead of suffixing the old
 identifier. Service acceptance still needs a stock-host live test.
 
-Settings -> Experimental BUD (UDP only) -> Save settings.
+Settings -> BUD (UDP only) -> Save settings.
 Connect to a stock Parsec host using the normal computer picker.
 BUD without Force TURN first tries direct UDP with STUN discovery. If the host
 answers but direct connectivity fails (or has not established after 4 seconds),
@@ -35,9 +35,9 @@ Force TURN. These are maximum waits, not delays added to successful connects.
 BUD with Force TURN selects the first configured UDP TURN endpoint. The
 Cloudflare provider can generate temporary credentials as before.
 BUD does not support TURN TCP/TLS and does not silently fall back to WebRTC.
-Uncheck Experimental BUD, save and reconnect to return to WebRTC.
+Uncheck BUD, save and reconnect to return to WebRTC.
 
-Check Connection stats: it must say experimental BUD, show actual codec,
+Check Connection stats: it must say BUD, show actual codec,
 resolution, the actual decoder and D3D11 decoder surface once playing.
 Test H.264 first; then test HEVC if it already works on this GPU/driver.
 Also check audio, cursor, immersive mode and disconnect/reconnect.

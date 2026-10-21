@@ -7,9 +7,9 @@ publish = false
 
 # Independent crate: neither Tauri nor WebView2 is linked.
 [features]
-default = ["vendor-video", "experimental-bud"]
+default = ["vendor-video", "bud"]
 vendor-video = ["dep:parsec-gpu-video"]
-experimental-bud = ["dep:parsec-native-bud"]
+bud = ["dep:parsec-native-bud"]
 diagnostics = ["dep:log", "dep:rcgen", "dep:ring", "dep:rustls", "dep:tokio-rustls", "wasmtime/wat", "wasmtime/cranelift"]
 
 [dependencies]

@@ -129,7 +129,7 @@ pub fn dispatch(
                             args.get(1)
                                 .and_then(Val::i32)
                                 .context("missing audio PCM")? as u32;
-                        #[cfg(feature = "experimental-bud")]
+                        #[cfg(feature = "bud")]
                         let pipeline = caller
                             .data()
                             .backend
@@ -138,7 +138,7 @@ pub fn dispatch(
                             .bud_attempt
                             .as_ref()
                             .and_then(|attempt| attempt.audio_pipeline());
-                        #[cfg(not(feature = "experimental-bud"))]
+                        #[cfg(not(feature = "bud"))]
                         let pipeline: Option<
                             std::sync::Arc<crate::audio_stream::Pipeline>,
                         > = None;

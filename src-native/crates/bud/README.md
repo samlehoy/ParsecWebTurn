@@ -1,6 +1,6 @@
 # Native BUD transport adapter
 
-Session, signaling and compressed media parsing for the explicit experimental
+Session, signaling and compressed media parsing for the explicit
 BUD setting. WebRTC remains the default transport. This crate has no decoder,
 renderer, GPU exporter, audio device or account UI; the application supplies them.
 

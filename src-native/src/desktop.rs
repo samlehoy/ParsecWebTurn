@@ -299,7 +299,7 @@ fn dispatch_input_event(
     {
         sync_clipboard(store, instance, app);
     }
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     if matches!(&event, Event::Focus(false) | Event::HidInputRelease) {
         // Explicit focus release also resets the USB devices' held input
         // and queued movement. The core's own focus/UI path still runs below.
@@ -317,7 +317,7 @@ fn dispatch_input_event(
             }
         }
     }
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     if let Event::RelativeMode(active) = &event {
         let backend = store
             .data()
@@ -344,7 +344,7 @@ fn dispatch_input_event(
             sync_clipboard(store, instance, app);
             return Ok(());
         }
-        #[cfg(feature = "experimental-bud")]
+        #[cfg(feature = "bud")]
         Event::HidInputRelease => return Ok(()),
         Event::Fullscreen(active) => (
             "mty_window_update_fullscreen",

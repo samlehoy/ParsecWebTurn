@@ -191,7 +191,7 @@ impl Pipeline {
     pub fn start(window: Arc<crate::window::Window>) -> Self {
         Self::start_mode(window, false, false)
     }
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     pub fn start_bud(window: Arc<crate::window::Window>) -> Self {
         Self::start_mode(window, false, true)
     }

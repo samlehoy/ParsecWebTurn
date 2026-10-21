@@ -10,7 +10,7 @@ use std::{
 use webrtc::{peer_connection::RTCPeerConnection, stats::StatsReportType};
 #[derive(Clone)]
 pub struct Sample {
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     pub bud: Option<parsec_native_bud::bud::Snapshot>,
     pub at: Instant,
     pub generation: u64,
@@ -40,7 +40,7 @@ pub struct Sample {
 impl Default for Sample {
     fn default() -> Self {
         Self {
-            #[cfg(feature = "experimental-bud")]
+            #[cfg(feature = "bud")]
             bud: None,
             at: Instant::now(),
             generation: 0,
@@ -291,7 +291,7 @@ pub async fn network(peer: &RTCPeerConnection) -> Sample {
 }
 impl Sample {
     fn connected(&self) -> bool {
-        #[cfg(feature = "experimental-bud")]
+        #[cfg(feature = "bud")]
         if let Some(bud) = &self.bud {
             return bud.connected;
         }
@@ -385,13 +385,13 @@ mod tests {
         s.received = Some(1000);
         assert!(rates.update(&s).incoming.is_none());
     }
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     #[test]
     fn bud_rates_use_native_connection_state_and_existing_decoder_counters() {
         let mut rates = Rates::default();
         let mut sample = Sample {
             generation: 1,
-            state: "Connected (experimental BUD)".into(),
+            state: "Connected (BUD)".into(),
             bud: Some(parsec_native_bud::bud::Snapshot {
                 connected: true,
                 ..Default::default()

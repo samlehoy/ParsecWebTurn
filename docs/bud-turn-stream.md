@@ -1,4 +1,4 @@
-# Experimental BUD TURN TCP/TLS
+# BUD TURN TCP/TLS
 
 Transport-only port of [lowlat PR #2](https://github.com/nomi-san/lowlat/pull/2),
 revision `befd5a29c7a331111f11378c0b5623de788e9769` (draft when reviewed).

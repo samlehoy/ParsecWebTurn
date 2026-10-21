@@ -383,7 +383,7 @@ pub fn dispatch(
                 // Its host identifier is deliberately neither read nor logged.
                 caller.data().platform.alert(
                     "Choose web mode",
-                    "ParsecWebTurn uses the Parsec web core. Choose the web/browser connection option in the computer picker. This also applies when Experimental BUD is enabled.",
+                    "ParsecWebTurn uses the Parsec web core. Choose the web/browser connection option in the computer picker. This also applies when BUD is enabled.",
                 );
             }
             "MTY_HandleProtocol" => {
@@ -740,10 +740,10 @@ fn backend_call(
                         ptr(args, 5)?,
                         ptr(args, 6)?,
                     )?;
-                    #[cfg(all(windows, feature = "experimental-bud"))]
+                    #[cfg(all(windows, feature = "bud"))]
                     if b.connection_settings
                         .as_ref()
-                        .is_some_and(|m| m.view().0.experimental_bud)
+                        .is_some_and(|m| m.view().0.bud)
                     {
                         if b.status != Some(-3)
                             || b.bud_attempt.is_some()
@@ -913,7 +913,7 @@ fn backend_call(
                         #[cfg(not(windows))]
                         let viewport = None;
                         if let Some(frame) = b.prepare_input_with_viewport(&message, viewport)? {
-                            #[cfg(all(windows, feature = "experimental-bud"))]
+                            #[cfg(all(windows, feature = "bud"))]
                             if let Some(attempt) = &b.bud_attempt {
                                 let normalized = if attempt.hid_mouse_enabled() {
                                     crate::hid_input::absolute_motion(&frame, viewport)?
@@ -942,7 +942,7 @@ fn backend_call(
                     let text = m.string(ptr(args, 1)?, 1024 * 1024)?;
                     b.pump_native_events()?;
                     if b.status == Some(0) {
-                        #[cfg(all(windows, feature = "experimental-bud"))]
+                        #[cfg(all(windows, feature = "bud"))]
                         if let Some(attempt) = &b.bud_attempt {
                             if attempt
                                 .send(&crate::control::text(17, int(args, 0)?, &text)?)
@@ -1063,7 +1063,7 @@ fn backend_call(
                     if capacity > 1024 * 1024 {
                         bail!("audio poll capacity exceeds limit");
                     }
-                    #[cfg(all(windows, feature = "experimental-bud"))]
+                    #[cfg(all(windows, feature = "bud"))]
                     if let Some(attempt) = &b.bud_attempt {
                         result(
                             results,

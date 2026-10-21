@@ -42,13 +42,9 @@ const STATUS: usize = 4115;
 const GPU: usize = 4116;
 const HEVC: usize = 4117;
 const FORCE_RELAY: usize = 4118;
-#[cfg(feature = "experimental-bud")]
+#[cfg(feature = "bud")]
 const BUD: usize = 4119;
-const BUD_EXTRA: i32 = if cfg!(feature = "experimental-bud") {
-    94
-} else {
-    0
-};
+const BUD_EXTRA: i32 = if cfg!(feature = "bud") { 94 } else { 0 };
 #[cfg(feature = "vendor-video")]
 const ZERO_COPY: usize = 4120;
 const BG: u32 = 0x00282828;
@@ -603,21 +599,21 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         page.font,
     );
     check(hwnd, FORCE_RELAY, s.force_relay);
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     {
-        row_label(hwnd, page, "Transport", "Experimental BUD: direct UDP or TURN over UDP/TLS/TCP.\nUses the TURN URLs above. Reconnect after changing.", 938, 0, 40);
+        row_label(hwnd, page, "Transport", "BUD: direct UDP or TURN over UDP/TLS/TCP.\nUses the TURN URLs above. Reconnect after changing.", 938, 0, 40);
         add(
             hwnd,
             page,
             "BUTTON",
-            "Experimental BUD",
+            "BUD",
             BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
             [420, 938, 400, 36],
             BUD,
             0,
             page.font,
         );
-        check(hwnd, BUD, s.experimental_bud);
+        check(hwnd, BUD, s.bud);
     }
     #[cfg(feature = "vendor-video")]
     {
@@ -653,36 +649,36 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     );
     check(hwnd, EVENT_LOG, s.event_logging);
     page.building_tab = Some(Tab::Audio);
-    row_label(hwnd, page, "Playback buffer", "Experimental: custom limits apply only when enabled.\nOff uses the core's limits (normally 75 / 150 ms).", 242, 0, 48);
+    row_label(hwnd, page, "Playback buffer", "Custom limits apply only when enabled.\nOff uses the core's limits (normally 75 / 150 ms).", 242, 0, 48);
     add(
         hwnd,
         page,
         "BUTTON",
-        "Custom audio buffer (experimental)",
+        "Custom audio buffer",
         BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
         [420, 242, 400, 36],
         AUDIO_CUSTOM,
         0,
         page.font,
     );
-    check(hwnd, AUDIO_CUSTOM, s.experimental_audio_buffer);
+    check(hwnd, AUDIO_CUSTOM, s.custom_audio_buffer);
     row(hwnd, page, "Minimum buffer (ms)", "PCM reserve before starting or refilling playback.\nSmaller values can increase audible gaps.", AUDIO_MIN,
         &s.audio_min_buffer_ms.to_string(), 344, 36, 0, ES_NUMBER as u32);
     row(hwnd, page, "Maximum buffer (ms)", "Local PCM plus audio queued on the Windows device.\n0 <= minimum <= maximum <= 500; maximum above zero.", AUDIO_MAX,
         &s.audio_max_buffer_ms.to_string(), 438, 36, 0, ES_NUMBER as u32);
-    row_label(hwnd, page, "Audio format", "Experimental RAW: BUD only; host must also enable RAW.\n48 kHz stereo PCM uses about 1.54 Mbps before overhead.\nThe actual codec is shown in Connection stats.", 532, 0, 60);
+    row_label(hwnd, page, "Audio format", "RAW: BUD only; host must also enable RAW.\n48 kHz stereo PCM uses about 1.54 Mbps before overhead.\nThe actual codec is shown in Connection stats.", 532, 0, 60);
     add(
         hwnd,
         page,
         "BUTTON",
-        "Allow raw PCM audio (experimental, BUD)",
+        "Allow raw PCM audio (BUD)",
         BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
         [420, 532, 400, 36],
         AUDIO_RAW,
         0,
         page.font,
     );
-    check(hwnd, AUDIO_RAW, s.experimental_raw_audio);
+    check(hwnd, AUDIO_RAW, s.allow_raw_audio);
     row_label(hwnd, page, "Speaker layout", "Experimental: match the Windows output's 5.1 or 7.1 layout.\nSynthetic tests only; no live host/client validation.\nBUD only; stereo fallback. Reconnect to apply.", 630, 0, 68);
     add(
         hwnd,
@@ -709,7 +705,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         0,
         page.font,
     );
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     check(hwnd, HID_MOUSE, s.experimental_hid_mouse);
     row_label(hwnd,page,"Keyboard","Experimental physical keyboard over BUD.\nUse the same keyboard layout on host and client.\nFor example: Hungarian on both computers.",354,0,64);
     add(
@@ -723,7 +719,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         0,
         page.font,
     );
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     check(hwnd, HID_KEYBOARD, s.experimental_hid_keyboard);
     row_label(hwnd,page,"Compatibility","Absolute desktop and relative camera movement.\nCamera mode follows the host cursor state.\nKeyboard layout is not switched automatically.",466,0,64);
 
@@ -1019,20 +1015,20 @@ unsafe fn checked(hwnd: HWND, id: usize) -> bool {
     SendMessageW(GetDlgItem(hwnd, id as i32), BM_GETCHECK, 0, 0) == 1
 }
 unsafe fn update_enabled(hwnd: HWND) {
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     EnableWindow(
         GetDlgItem(hwnd, HID_KEYBOARD as i32),
         checked(hwnd, BUD) as i32,
     );
-    #[cfg(not(feature = "experimental-bud"))]
+    #[cfg(not(feature = "bud"))]
     EnableWindow(GetDlgItem(hwnd, HID_KEYBOARD as i32), 0);
 
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     EnableWindow(
         GetDlgItem(hwnd, HID_MOUSE as i32),
         checked(hwnd, BUD) as i32,
     );
-    #[cfg(not(feature = "experimental-bud"))]
+    #[cfg(not(feature = "bud"))]
     EnableWindow(GetDlgItem(hwnd, HID_MOUSE as i32), 0);
 
     for id in [AUDIO_MIN, AUDIO_MAX] {
@@ -1041,19 +1037,19 @@ unsafe fn update_enabled(hwnd: HWND) {
             checked(hwnd, AUDIO_CUSTOM) as i32,
         );
     }
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     EnableWindow(
         GetDlgItem(hwnd, AUDIO_RAW as i32),
         checked(hwnd, BUD) as i32,
     );
-    #[cfg(not(feature = "experimental-bud"))]
+    #[cfg(not(feature = "bud"))]
     EnableWindow(GetDlgItem(hwnd, AUDIO_RAW as i32), 0);
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     EnableWindow(
         GetDlgItem(hwnd, AUDIO_SURROUND as i32),
         checked(hwnd, BUD) as i32,
     );
-    #[cfg(not(feature = "experimental-bud"))]
+    #[cfg(not(feature = "bud"))]
     EnableWindow(GetDlgItem(hwnd, AUDIO_SURROUND as i32), 0);
     let hevc = checked(hwnd, HEVC) as i32;
     EnableWindow(GetDlgItem(hwnd, TEN_BIT as i32), hevc);
@@ -1094,23 +1090,23 @@ unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
             _ => crate::connection_settings::PresentationMode::Automatic,
         };
     s.experimental_ten_bit = checked(hwnd, TEN_BIT);
-    s.experimental_audio_buffer = checked(hwnd, AUDIO_CUSTOM);
+    s.custom_audio_buffer = checked(hwnd, AUDIO_CUSTOM);
     s.audio_min_buffer_ms = text(hwnd, AUDIO_MIN)
         .parse()
         .map_err(|_| anyhow::anyhow!("Enter an audio minimum in milliseconds"))?;
     s.audio_max_buffer_ms = text(hwnd, AUDIO_MAX)
         .parse()
         .map_err(|_| anyhow::anyhow!("Enter an audio maximum in milliseconds"))?;
-    s.experimental_raw_audio = checked(hwnd, AUDIO_RAW);
+    s.allow_raw_audio = checked(hwnd, AUDIO_RAW);
     s.experimental_surround_audio = checked(hwnd, AUDIO_SURROUND);
     s.event_logging = checked(hwnd, EVENT_LOG);
     #[cfg(feature = "vendor-video")]
     {
         s.experimental_zero_copy = checked(hwnd, ZERO_COPY);
     }
-    #[cfg(feature = "experimental-bud")]
+    #[cfg(feature = "bud")]
     {
-        s.experimental_bud = checked(hwnd, BUD);
+        s.bud = checked(hwnd, BUD);
         s.experimental_hid_mouse = checked(hwnd, HID_MOUSE);
         s.experimental_hid_keyboard = checked(hwnd, HID_KEYBOARD);
     }
@@ -1345,7 +1341,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     } else if page.active_tab == Tab::Input {
                         "Enable BUD on the Network tab to use HID input.\nInput changes apply to your next connection."
                     } else if page.active_tab == Tab::Audio {
-                        "Experimental audio changes apply on your next connection."
+                        "Audio changes apply on your next connection."
                     } else {
                         "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection."
                     }).as_ptr());
@@ -1376,7 +1372,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     update_enabled(hwnd);
                     return 0;
                 }
-                #[cfg(feature = "experimental-bud")]
+                #[cfg(feature = "bud")]
                 BUD if (wp >> 16) as u32 == BN_CLICKED => {
                     update_enabled(hwnd);
                     return 0;
@@ -1523,7 +1519,7 @@ mod tests {
                 GetDlgItem(page, TOKEN as i32),
                 wide("fixture-token").as_ptr(),
             );
-            #[cfg(feature = "experimental-bud")]
+            #[cfg(feature = "bud")]
             check(page, BUD, true);
             SendMessageW(page, WM_COMMAND, VIDEO_TAB, 0);
             assert_eq!(IsWindowVisible(GetDlgItem(page, PROVIDER as i32)), 0);
@@ -1547,7 +1543,7 @@ mod tests {
             SendMessageW(page, WM_COMMAND, INPUT_TAB, 0);
             assert_ne!(IsWindowVisible(GetDlgItem(page, HID_MOUSE as i32)), 0);
             assert_eq!(IsWindowVisible(GetDlgItem(page, GPU as i32)), 0);
-            #[cfg(feature = "experimental-bud")]
+            #[cfg(feature = "bud")]
             {
                 update_enabled(page);
                 assert_ne!(IsWindowEnabled(GetDlgItem(page, HID_MOUSE as i32)), 0);
@@ -1598,14 +1594,14 @@ mod tests {
                 crate::connection_settings::PresentationMode::Vsync
             );
             assert!(manager.view().0.event_logging);
-            assert!(manager.view().0.experimental_audio_buffer);
+            assert!(manager.view().0.custom_audio_buffer);
             assert_eq!(manager.view().0.audio_min_buffer_ms, 20);
             assert_eq!(manager.view().0.audio_max_buffer_ms, 60);
-            assert!(manager.view().0.experimental_raw_audio);
+            assert!(manager.view().0.allow_raw_audio);
             assert!(manager.view().0.experimental_surround_audio);
-            #[cfg(feature = "experimental-bud")]
-            assert!(manager.view().0.experimental_bud);
-            #[cfg(feature = "experimental-bud")]
+            #[cfg(feature = "bud")]
+            assert!(manager.view().0.bud);
+            #[cfg(feature = "bud")]
             assert!(manager.view().0.hid_mouse_enabled());
             assert_eq!(manager.view().0.stun_urls.len(), 2);
             assert_eq!(manager.view().0.turn_urls.len(), 2);
@@ -1646,7 +1642,7 @@ mod tests {
             #[cfg(feature = "vendor-video")]
             assert!(checked(page, ZERO_COPY));
             assert!(checked(page, HEVC));
-            #[cfg(feature = "experimental-bud")]
+            #[cfg(feature = "bud")]
             assert!(checked(page, HID_MOUSE));
             assert_eq!(
                 SendMessageW(GetDlgItem(page, GPU as i32), CB_GETCURSEL, 0, 0),
