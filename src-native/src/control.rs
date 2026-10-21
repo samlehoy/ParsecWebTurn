@@ -93,6 +93,31 @@ pub enum Message {
     Ignored,
 }
 
+fn cursor_payload(bytes: &[u8]) -> Result<(usize, usize)> {
+    if !(34..=LIMIT).contains(&bytes.len()) {
+        bail!("invalid cursor header size");
+    }
+    let size = usize::try_from(i32::from_be_bytes(bytes[16..20].try_into().unwrap()))
+        .context("negative cursor image length")?;
+    let end = 34usize
+        .checked_add(size)
+        .context("cursor image length overflow")?;
+    if end > bytes.len() {
+        bail!("truncated cursor image");
+    }
+    Ok((size, end))
+}
+
+/// A scheduling hint from validated host metadata, never from button state.
+#[cfg(all(windows, feature = "bud"))]
+pub(crate) fn cursor_capture(bytes: &[u8]) -> Option<bool> {
+    if bytes.get(12) != Some(&9) {
+        return None;
+    }
+    cursor_payload(bytes).ok()?;
+    Some(u16::from_be_bytes([bytes[32], bytes[33]]) & 0x300 != 0)
+}
+
 pub fn decode(bytes: &[u8]) -> Result<Message> {
     if !(13..=LIMIT).contains(&bytes.len()) {
         bail!("invalid control frame size");
@@ -136,16 +161,7 @@ pub fn decode(bytes: &[u8]) -> Result<Message> {
             }
         }
         9 => {
-            if bytes.len() < 34 {
-                bail!("truncated cursor header");
-            }
-            let size = usize::try_from(number(16)).context("negative cursor image length")?;
-            let end = 34usize
-                .checked_add(size)
-                .context("cursor image length overflow")?;
-            if end > bytes.len() {
-                bail!("truncated cursor image");
-            }
+            let (size, end) = cursor_payload(bytes)?;
             let short = |offset| i16::from_be_bytes(bytes[offset..offset + 2].try_into().unwrap());
             let flags = short(32);
             Message::Buffer {
@@ -431,5 +447,24 @@ mod tests {
         assert!(
             matches!(decode(&header(17,0,7,0)).unwrap(),Message::Buffer {payload:Some(range),..} if range.is_empty())
         );
+    }
+
+    #[cfg(all(windows, feature = "bud"))]
+    #[test]
+    fn cursor_wakeup_uses_validated_host_capture_flags_only() {
+        let mut frame = vec![0; 34];
+        frame[12] = 9;
+        for (flags, capture) in [(0u16, false), (0x100, true), (0x200, true), (0x300, true)] {
+            frame[32..34].copy_from_slice(&flags.to_be_bytes());
+            assert_eq!(cursor_capture(&frame), Some(capture));
+        }
+        for length in 0..34 {
+            assert_eq!(cursor_capture(&frame[..length]), None);
+        }
+        frame[16..20].copy_from_slice(&1i32.to_be_bytes());
+        assert_eq!(cursor_capture(&frame), None);
+        frame[16..20].copy_from_slice(&(-1i32).to_be_bytes());
+        assert_eq!(cursor_capture(&frame), None);
+        assert_eq!(cursor_capture(&header(1, 0, 0, 0)), None);
     }
 }

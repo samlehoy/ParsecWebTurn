@@ -37,6 +37,8 @@ pub fn record(stage: &'static str, values: [i32; 4]) {
             | "cursor_worker_poll"
             | "cursor_control_queued"
             | "cursor_backend_decode"
+            | "cursor_callback_wake"
+            | "cursor_callback_run"
             | "win_button"
             | "win_capture_changed"
             | "relative_request"
@@ -78,7 +80,7 @@ impl Drop for Guard {
         let Some(trace) = TRACE.get() else { return };
         let state = trace.lock().unwrap_or_else(|e| e.into_inner());
         let report = serde_json::json!({
-            "schema":3,"commit":"cursor-pipeline-diagnostics",
+            "schema":4,"commit":"cursor-callback-wakeup-candidate",
             "capacity":CAPACITY,"omitted":state.omitted,"records":state.records,
         });
         if let Ok(bytes) = serde_json::to_vec(&report) {
