@@ -70,7 +70,7 @@ impl Media {
         let audio_sender = audio
             .sender()
             .ok_or_else(|| anyhow::anyhow!("native audio sender unavailable"))?;
-        let video = crate::video_windows::Pipeline::start(window);
+        let video = crate::video_windows::Pipeline::start_bud(window);
         let mut inspector = crate::video_stream::Inspector::default();
         inspector.enable_hevc(hevc_available);
         Ok((

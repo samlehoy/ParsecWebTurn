@@ -189,9 +189,17 @@ pub struct Pipeline {
 }
 impl Pipeline {
     pub fn start(window: Arc<crate::window::Window>) -> Self {
-        Self::start_mode(window, false)
+        Self::start_mode(window, false, false)
     }
-    fn start_mode(window: Arc<crate::window::Window>, verify_synthetic_pixels: bool) -> Self {
+    #[cfg(feature = "experimental-bud")]
+    pub fn start_bud(window: Arc<crate::window::Window>) -> Self {
+        Self::start_mode(window, false, true)
+    }
+    fn start_mode(
+        window: Arc<crate::window::Window>,
+        verify_synthetic_pixels: bool,
+        bud_catch_up: bool,
+    ) -> Self {
         let surface_generation = window.begin_video();
         let surface_window = window.clone();
         let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
@@ -209,7 +217,7 @@ impl Pipeline {
         let activity = Activity(window.clone());
         let error_state = shared.clone();
         let preferred_gpu = window.video_gpu();
-        let (presentation_mode, bud_catch_up) = window.video_policy();
+        let presentation_mode = window.presentation_mode();
         shared
             .0
             .lock()
@@ -2294,6 +2302,9 @@ pub fn probe_presentation_timing() -> anyhow::Result<serde_json::Value> {
             };
             cases.push(match result {
                 Ok(report) => report,
+                Err(error) if error.stage == "timing-fixture-burst-display-count" => {
+                    anyhow::bail!("Synthetic display catch-up did not preserve its expected work count");
+                }
                 Err(error) => serde_json::json!({"requested":mode,"unavailable_stage":error.stage,"hresult":error.hresult}),
             });
         }
@@ -2477,7 +2488,7 @@ pub fn probe(sustained: bool) -> anyhow::Result<serde_json::Value> {
             clip: [0, 0, client.0, client.1],
         }],
     });
-    let pipeline = Pipeline::start_mode(window.clone(), true);
+    let pipeline = Pipeline::start_mode(window.clone(), true, false);
     let fixture = include_bytes!("../fixtures/synthetic-1920x1080.h264");
     let mut starts = Vec::new();
     for i in 0..fixture.len().saturating_sub(4) {
