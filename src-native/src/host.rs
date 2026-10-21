@@ -401,7 +401,7 @@ pub fn dispatch(
             }
             "web_get_clipboard" => {
                 let text = if caller.data().clipboard_notification {
-                    let Some(text) = caller.data().platform.try_read_text() else {
+                    let Some(text) = caller.data().platform.read_notification_text() else {
                         // An unavailable/locked clipboard is not an empty copy.
                         // The original clipboard-change handler skips a null read.
                         result(results, 0);

@@ -13,6 +13,8 @@ and sends user-data ID 7 through `parsec_web_send_user_data`. Its outgoing text
 is bounded to the core's 102400-byte buffer. The incoming clipboard path also
 uses the existing local platform import. Synthetic keyboard/hotkey events are
 not required to request clipboard synchronization.
+The native notification read limits text to 102399 UTF-8 bytes at a character
+boundary, avoiding a partial multibyte character in the core's byte truncation.
 
 The native window previously forwarded focus, keys and pointer events, but
 never delivered this clipboard-change event. The fix registers a documented

@@ -4,6 +4,19 @@ use serde::Serialize;
 use std::sync::Mutex;
 
 pub const MAX_TEXT: usize = 1024 * 1024;
+// The pinned core's remote clipboard buffer includes one trailing NUL byte.
+const REMOTE_TEXT: usize = 102399;
+
+fn remote_text(mut text: String) -> String {
+    if text.len() > REMOTE_TEXT {
+        let mut end = REMOTE_TEXT;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    text
+}
 
 pub trait Desktop: Send + Sync {
     fn read_text(&self) -> Option<String>;
@@ -65,6 +78,11 @@ impl Services {
         text
     }
 
+    pub fn read_notification_text(&self) -> Option<String> {
+        // Keep the core's byte-oriented truncation from cutting a UTF-8 character.
+        self.try_read_text().map(remote_text)
+    }
+
     pub fn write_text(&self, text: &str) {
         let ok = text.len() <= MAX_TEXT
             && !text.contains('\0')
@@ -111,6 +129,13 @@ impl Services {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn remote_clipboard_limit_preserves_complete_utf8_characters() {
+        assert_eq!(remote_text("á".repeat(60000)).len(), 102398);
+        assert_eq!(remote_text("x".repeat(110000)).len(), REMOTE_TEXT);
+        assert_eq!(remote_text(String::new()), "");
+        assert_eq!(remote_text("Árvíztűrő 🦀".into()), "Árvíztűrő 🦀");
+    }
     struct Fixture;
     impl Desktop for Fixture {
         fn read_text(&self) -> Option<String> {
