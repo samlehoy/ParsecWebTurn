@@ -5,6 +5,7 @@ builds, not published stable releases.
 
 ## Unreleased
 
+- **Cursor transition visibility:** keep the pointer hidden until its return position is restored, for normal and HID input. Replace an active cursor image before freeing the old handle to avoid a temporary system-arrow selection. No frame wait or video-path change is added; elimination of the reported flash still needs live confirmation.
 - **HID cursor after dragging:** restore the local pointer to the host-reported endpoint when leaving relative/hidden-cursor capture, preventing the old capture anchor from being sent back as the next absolute HID position. Relative camera input is unchanged. The supplied live trace identifies the transition; native regression coverage is added, with live confirmation of the fix pending.
 
 ## 0.9.4-dev.6 - Playback diagnostics and display timing (2026-10-21)

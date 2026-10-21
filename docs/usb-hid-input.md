@@ -22,6 +22,11 @@ Without the restoration, the old local capture anchor can be sent back as an
 absolute HID move after release. Ordinary visible cursor reports do not warp
 the pointer; relative Raw Input and camera HID reports are unchanged. Focus,
 local-menu and Disable Cursor Warp safeguards remain in effect.
+The common normal/HID cursor path keeps the pointer hidden until that return
+position is restored. Cursor image replacement selects the new active handle
+before retiring the old one, without a temporary system-arrow selection or
+an additional display-frame wait. Live confirmation of the reported flash
+being eliminated is still pending.
 
 Keyboard events carry physical HID usages and modifiers. Select the same
 active layout on host and client, for example Hungarian on both computers.
