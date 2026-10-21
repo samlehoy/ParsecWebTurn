@@ -60,6 +60,8 @@ mod graphics;
 mod gui_visibility;
 #[cfg(all(windows, feature = "bud"))]
 mod hid_input;
+#[cfg(all(windows, feature = "hid-input-trace"))]
+mod hid_input_trace;
 mod host;
 mod http;
 #[cfg(any(test, feature = "diagnostics"))]

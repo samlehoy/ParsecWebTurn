@@ -12,6 +12,7 @@ authors = ["Nguyen Duy"]
 default = []
 external-video = []
 usb-hid-input = []
+input-trace = []
 turn-stream = ["lowlat-net/turn-stream"]
 
 [dependencies]

@@ -913,6 +913,36 @@ fn backend_call(
                         #[cfg(not(windows))]
                         let viewport = None;
                         if let Some(frame) = b.prepare_input_with_viewport(&message, viewport)? {
+                            #[cfg(all(windows, feature = "hid-input-trace"))]
+                            if b.bud_attempt
+                                .as_ref()
+                                .is_some_and(|a| a.hid_mouse_enabled())
+                                && matches!(message["type"].as_i64(), Some(2 | 3 | 4 | 7))
+                            {
+                                let number = |key: &str| message[key].as_i64().unwrap_or(0) as i32;
+                                crate::hid_input_trace::record(
+                                    "core_mouse",
+                                    if message["type"].as_i64() == Some(2) {
+                                        [
+                                            2,
+                                            number("button"),
+                                            i32::from(
+                                                message["pressed"].as_bool().unwrap_or(false),
+                                            ),
+                                            0,
+                                        ]
+                                    } else {
+                                        [
+                                            number("type"),
+                                            number("x"),
+                                            number("y"),
+                                            i32::from(
+                                                message["relative"].as_bool().unwrap_or(false),
+                                            ),
+                                        ]
+                                    },
+                                );
+                            }
                             #[cfg(all(windows, feature = "bud"))]
                             if let Some(attempt) = &b.bud_attempt {
                                 let normalized = if attempt.hid_mouse_enabled() {

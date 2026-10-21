@@ -33,6 +33,8 @@ pub mod config;
 pub mod driver;
 pub mod event;
 pub mod input;
+#[cfg(feature = "input-trace")]
+pub mod input_trace;
 pub mod seam;
 mod shell;
 pub mod sound;

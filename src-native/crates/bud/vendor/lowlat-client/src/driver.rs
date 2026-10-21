@@ -736,6 +736,20 @@ impl Driver {
     fn route_hid_input(&mut self, message: &Control<'_>) -> bool {
         let selected = (crate::usb_hid::mouse_opcode(message.opcode) && self.hid_mouse_enabled)
             || (message.opcode == op::KEYBOARD && self.hid_keyboard_enabled);
+        #[cfg(feature = "input-trace")]
+        if self.hid_mouse_enabled
+            && (crate::usb_hid::mouse_opcode(message.opcode) || message.opcode == op::RELEASE)
+        {
+            crate::input_trace::record(
+                "adapter_command",
+                [
+                    i32::from(message.opcode),
+                    message.a0 as i32,
+                    message.a1 as i32,
+                    message.a2 as i32,
+                ],
+            );
+        }
         if selected || message.opcode == op::RELEASE {
             if let Some(device) = &mut self.hid_device {
                 device.external_input(message.opcode, message.a0, message.a1, message.a2);
@@ -748,6 +762,8 @@ impl Driver {
         if let Some(frame) = frame {
             let (header, body) = frame.split_at(13);
             let success = session.send_message(CONTROL_CHANNEL, header, body).is_ok();
+            #[cfg(feature = "input-trace")]
+            crate::input_trace::sent_frame(success, &frame);
             let error = if let Some(device) = self.hid_device.as_mut() {
                 device.sent(success);
                 device.error()

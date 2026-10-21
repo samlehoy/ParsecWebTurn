@@ -81,6 +81,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
           cargo clippy --locked --manifest-path src-native/Cargo.toml --features diagnostics --all-targets -- -D warnings
           if ($LASTEXITCODE -ne 0) { throw 'Diagnostic Clippy failed' }
+          cargo test --locked --manifest-path src-native/Cargo.toml --features hid-input-trace -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Mouse trace build tests failed' }
+          cargo clippy --locked --manifest-path src-native/Cargo.toml --features hid-input-trace --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Mouse trace build Clippy failed' }
+          cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml -p lowlat-client --features input-trace,usb-hid-input --lib input_trace
+          if ($LASTEXITCODE -ne 0) { throw 'Mouse-only trace filter tests failed' }
       - name: Package optional hardware GUI regression harness
         if: github.event_name == 'workflow_dispatch' && inputs.gui_harness
         shell: pwsh
@@ -110,7 +116,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $buildMessages = cargo build --locked --release --manifest-path src-native/Cargo.toml --message-format=json-render-diagnostics
+          $buildMessages = cargo build --locked --release --features hid-input-trace --manifest-path src-native/Cargo.toml --message-format=json-render-diagnostics
           if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
           # Inspect actual target artifacts, not Cargo tree's feature-unified
           # view, which can include compiler features needed only by build.rs.

@@ -10,6 +10,7 @@ publish = false
 default = ["vendor-video", "bud"]
 vendor-video = ["dep:parsec-gpu-video"]
 bud = ["dep:parsec-native-bud"]
+hid-input-trace = ["bud", "parsec-native-bud/input-trace"]
 diagnostics = ["dep:log", "dep:rcgen", "dep:ring", "dep:rustls", "dep:tokio-rustls", "wasmtime/wat", "wasmtime/cranelift"]
 
 [dependencies]

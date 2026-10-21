@@ -551,6 +551,22 @@ impl Window {
     }
 
     unsafe fn mouse_button(&self, down: bool, button: i32, x: i32, y: i32) {
+        #[cfg(feature = "hid-input-trace")]
+        if self.hid_mouse_active.load(Ordering::Acquire) {
+            crate::hid_input_trace::record("win_button", [i32::from(down), button, x, y]);
+            let mut point = POINT::default();
+            if GetCursorPos(&mut point) != 0 && ScreenToClient(self.handle(), &mut point) != 0 {
+                crate::hid_input_trace::record(
+                    "win_pointer",
+                    [
+                        point.x,
+                        point.y,
+                        i32::from(self.relative_mouse.load(Ordering::Acquire)),
+                        0,
+                    ],
+                );
+            }
+        }
         #[cfg(feature = "bud")]
         self.sync_absolute_pointer(x, y, false);
         let bit = 1usize << button;
@@ -641,6 +657,13 @@ impl Window {
         }
     }
     fn set_host_cursor(&self, x: i32, y: i32, relative: bool, hidden: bool) {
+        #[cfg(feature = "hid-input-trace")]
+        if self.hid_mouse_active.load(Ordering::Acquire) {
+            crate::hid_input_trace::record(
+                "host_cursor",
+                [x, y, i32::from(relative), i32::from(hidden)],
+            );
+        }
         // Parsec SDK cursor_func and lowlat both use OR. A hidden-only event
         // must acquire native relative input too; button state is not evidence.
         let relative = relative || hidden;
@@ -1510,8 +1533,21 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 s.push(Event::Focus(false));
                 *s.text_decoder.lock().unwrap_or_else(|e| e.into_inner()) = Default::default();
             }
-            WM_CAPTURECHANGED => s.release_buttons(),
+            WM_CAPTURECHANGED => {
+                #[cfg(feature = "hid-input-trace")]
+                if s.hid_mouse_active.load(Ordering::Acquire) {
+                    crate::hid_input_trace::record(
+                        "win_capture_changed",
+                        [s.pressed_buttons.load(Ordering::Acquire) as i32, 0, 0, 0],
+                    );
+                }
+                s.release_buttons();
+            }
             WM_MOUSEMOVE if !s.relative_mouse.load(Ordering::Acquire) => {
+                #[cfg(feature = "hid-input-trace")]
+                if s.hid_mouse_active.load(Ordering::Acquire) {
+                    crate::hid_input_trace::record("win_motion", [x, y, 0, 0]);
+                }
                 let echo = s.warp_echo.swap(0, Ordering::AcqRel);
                 if echo == 0 || echo - 1 != (u64::from(x as u32) << 32 | u64::from(y as u32)) {
                     s.push(Event::Motion(x, y));

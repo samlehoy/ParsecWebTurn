@@ -52,6 +52,8 @@ fn run() -> Result<()> {
     } else {
         bail!("Unsupported argument");
     };
+    #[cfg(feature = "hid-input-trace")]
+    let _hid_trace = hid_input_trace::start(root.join("hid-drag-trace.json"));
     let connection_settings = connection_settings::Manager::open(root.join("settings.json"));
     if event_log::initialize(
         root.join("client-events.jsonl"),
