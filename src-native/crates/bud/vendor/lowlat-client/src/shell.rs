@@ -248,35 +248,63 @@ pub(crate) fn run(args: Attached, mut wake: Wake, running: &Running) {
         let driving = &mut driver;
         let mut leaving = false;
         let mut ended: Option<Outcome> = None;
-        let turn = match shell.turn(|endpoint| {
-            while let Ok(arrival) = arrivals.try_recv() {
-                match arrival {
-                    Arrival::Candidate(addr, kind) => {
-                        let _ = endpoint.add_candidate(addr, kind);
+        let turn = match shell
+            .turn(|endpoint| {
+                while let Ok(arrival) = arrivals.try_recv() {
+                    match arrival {
+                        Arrival::Candidate(addr, kind) => {
+                            let _ = endpoint.add_candidate(addr, kind);
+                        }
+                        Arrival::PeerReady => endpoint.conn().set_peer_ready(),
                     }
-                    Arrival::PeerReady => endpoint.conn().set_peer_ready(),
                 }
-            }
-            // Asks need the session, which is only here.
-            while let Ok(ask) = asked.try_recv() {
-                match ask {
-                    Ask::UserData(id, text) => {
-                        driving.send_user_data(endpoint.session(), id, &text);
+                // Asks need the session, which is only here.
+                while let Ok(ask) = asked.try_recv() {
+                    match ask {
+                        Ask::UserData(id, text) => {
+                            driving.send_user_data(endpoint.session(), id, &text);
+                        }
+                        Ask::Leave => leaving = true,
                     }
-                    Ask::Leave => leaving = true,
                 }
-            }
-            // Application input is already framed by the retained UI.
-            while let Some(request) = requests.pop() {
-                driving.send_external(
-                    endpoint.session(),
-                    request
-                        .bytes
-                        .get(..usize::from(request.len))
-                        .unwrap_or_default(),
-                );
-            }
-        }) {
+                // Application input is already framed by the retained UI.
+                while let Some(request) = requests.pop() {
+                    driving.send_external(
+                        endpoint.session(),
+                        request
+                            .bytes
+                            .get(..usize::from(request.len))
+                            .unwrap_or_default(),
+                    );
+                }
+            })
+            .and_then(|turn| {
+                // Input submitted in the application callback was already drained.
+                driver.take_output_queued();
+                #[cfg(all(feature = "usb-hid-input", feature = "input-trace"))]
+                driver.take_traced_button_output();
+                ended = driver.turn(shell.endpoint(), turn.now);
+                // HID replies/reports and control replies produced after that drain
+                // must not wait for the next ACK deadline. Reuse the carrier's
+                // bounded, nonblocking drain; do not add a wake or a timer.
+                if ended.is_none() && driver.take_output_queued() {
+                    #[cfg(all(feature = "usb-hid-input", feature = "input-trace"))]
+                    let trace_button = driver.take_traced_button_output();
+                    #[cfg(all(feature = "usb-hid-input", feature = "input-trace"))]
+                    if trace_button {
+                        crate::input_trace::record("button_flush_begin", [0; 4]);
+                    }
+                    let _sent = shell.flush_output()?;
+                    #[cfg(all(feature = "usb-hid-input", feature = "input-trace"))]
+                    if trace_button {
+                        crate::input_trace::record(
+                            "button_flush_end",
+                            [i32::try_from(_sent).unwrap_or(i32::MAX), 0, 0, 0],
+                        );
+                    }
+                }
+                Ok(turn)
+            }) {
             Ok(turn) => turn,
             Err(error) => {
                 lowlat_common::log_warn!("client: the transport stopped, err={error}");
@@ -296,9 +324,6 @@ pub(crate) fn run(args: Attached, mut wake: Wake, running: &Running) {
         telemetry.udp_received.store(io.bytes_in, Ordering::Relaxed);
         telemetry.udp_sent.store(io.bytes_out, Ordering::Relaxed);
         let now = turn.now;
-        if let Some(outcome) = driver.turn(shell.endpoint(), now) {
-            ended = Some(outcome);
-        }
         if let Some(consumer) = &external_consumer {
             consumer.unpark();
         }

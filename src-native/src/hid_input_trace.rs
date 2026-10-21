@@ -46,6 +46,8 @@ pub fn record(stage: &'static str, values: [i32; 4]) {
             | "hid_read_pool"
             | "hid_read_pool_refilled"
             | "hid_button_report"
+            | "button_flush_begin"
+            | "button_flush_end"
             | "control_pressure_out"
             | "control_pressure_in"
             | "cursor_transport"
@@ -95,7 +97,7 @@ impl Drop for Guard {
         let Some(trace) = TRACE.get() else { return };
         let state = trace.lock().unwrap_or_else(|e| e.into_inner());
         let report = serde_json::json!({
-            "schema":5,"commit":"cursor-outbound-button-diagnostics",
+            "schema":6,"commit":"cursor-post-turn-output-flush",
             "capacity":CAPACITY,"omitted":state.omitted,"records":state.records,
         });
         if let Ok(bytes) = serde_json::to_vec(&report) {

@@ -104,3 +104,27 @@ schema-4 live trace showed average BUD delivery-to-native-cursor time fall from
 changed between runs, so this does not establish end-to-end improvement of that
 size. Schema 5 adds observation only and does not change the mouse, camera,
 HID pacing/read pool, retransmissions, transport waits, audio or video behavior.
+
+## Candidate post-turn output drain (schema 6)
+
+The client driver can enqueue HID reports and control replies after the network
+shell has drained its output. Previously the next shell pass waited before
+draining those messages, potentially until a protocol deadline. The candidate
+conditionally drains again after the driver successfully queues output, using
+the existing UDP batch or native TCP/TLS carrier and its backpressure rules.
+It does not wait, receive, add a wake, change ACK/retransmission deadlines or
+change the HID report cadence. Idle passes do not perform this extra drain.
+The initial drain stays ahead of the driver's media handoff work.
+
+`button_flush_begin` and `button_flush_end` bracket this additional drain only
+when it contains a newly queued mouse-button state change. The end record's
+first value counts carrier submissions in that drain, including any other
+ready protocol output; it is not a per-button send completion or host receipt.
+Motion-only output does not generate these records. The filename, bounded
+capacity and normal event-log behavior remain unchanged.
+
+A real loopback regression queues ordered messages after a completed shell
+turn, flushes without another sender turn and checks delivery and accounting
+without an added wake. A driver regression distinguishes accepted enqueues
+from missing-channel and oversized-message rejection. Live cursor improvement
+and camera behavior still require verification with the test executable.

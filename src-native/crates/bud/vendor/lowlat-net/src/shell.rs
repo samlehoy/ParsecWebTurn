@@ -253,18 +253,32 @@ impl<'a, M: Media> Shell<'a, M> {
         };
 
         self.stats.datagrams_in += received as u64;
-        self.stats.datagrams_out += sent as u64;
-        self.stats.bytes_out = self.outbound.sent_bytes();
-        #[cfg(feature = "turn-stream")]
-        if let Io::Stream { stream, .. } = &self.io {
-            self.stats.bytes_out = stream.sent_bytes();
-        }
+        self.account_output(sent);
         Ok(Turn {
             woke,
             received,
             sent,
             now: now_ms,
         })
+    }
+
+    /// Submit output queued after `turn` without another wait or receive pass.
+    /// Uses the same bounded carrier drain, including TCP/TLS backpressure.
+    /// Acceptance by the carrier does not imply delivery to the peer.
+    pub fn flush_output(&mut self) -> io::Result<usize> {
+        let now_ms = lowlat_common::clock::elapsed_ms(self.base);
+        let sent = self.drain(now_ms)?;
+        self.account_output(sent);
+        Ok(sent)
+    }
+
+    fn account_output(&mut self, sent: usize) {
+        self.stats.datagrams_out += sent as u64;
+        self.stats.bytes_out = self.outbound.sent_bytes();
+        #[cfg(feature = "turn-stream")]
+        if let Io::Stream { stream, .. } = &self.io {
+            self.stats.bytes_out = stream.sent_bytes();
+        }
     }
 
     /// Mark the established path, where the platform asks per destination
@@ -459,6 +473,64 @@ mod tests {
 
     const LEFT: (&str, &str) = ("aaaa", "passwordforaaaa");
     const RIGHT: (&str, &str) = ("bbbb", "passwordforbbbb");
+
+    /// Reproduces application output queued after the normal send pass.
+    /// The sender must not enter another wait to deliver it, and accounting
+    /// must include the extra drain without inventing a loop wake.
+    #[test]
+    fn post_turn_output_is_delivered_without_another_sender_turn() {
+        let mut left_arena = Arena::new();
+        let mut right_arena = Arena::new();
+        let mut left = shell(&mut left_arena, LEFT, RIGHT, 0xA1);
+        let mut right = shell(&mut right_arena, RIGHT, LEFT, 0xB2);
+        let left_addr = loopback_of(&left);
+        let right_addr = loopback_of(&right);
+        left.endpoint()
+            .conn()
+            .add_candidate(right_addr, Kind::Reflexive)
+            .unwrap();
+        right
+            .endpoint()
+            .conn()
+            .add_candidate(left_addr, Kind::Reflexive)
+            .unwrap();
+        left.endpoint().conn().set_peer_ready();
+        right.endpoint().conn().set_peer_ready();
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(4)
+            && (left.endpoint().path().is_none() || right.endpoint().path().is_none())
+        {
+            left.turn(|_| {}).unwrap();
+            right.turn(|_| {}).unwrap();
+        }
+        assert_eq!(left.endpoint().path(), Some(right_addr));
+        assert_eq!(right.endpoint().path(), Some(left_addr));
+        left.turn(|_| {}).unwrap();
+        let before = left.stats();
+        for body in [b"press", b"release".as_slice()] {
+            left.endpoint()
+                .session()
+                .send_message(CHANNEL, b"hid:", body)
+                .unwrap();
+        }
+        // No wake, wait, or sender turn follows these enqueues.
+        let sent = left.flush_output().unwrap();
+        let after = left.stats();
+        assert!(sent > 0);
+        assert_eq!(after.wakes(), before.wakes());
+        assert_eq!(after.datagrams_out, before.datagrams_out + sent as u64);
+        assert!(after.bytes_out > before.bytes_out);
+        let mut messages = Vec::new();
+        let mut out = [0u8; 512];
+        while started.elapsed() < std::time::Duration::from_secs(4) && messages.len() < 2 {
+            right.turn(|_| {}).unwrap();
+            while let Some(Ok(len)) = right.endpoint().session().take_message(CHANNEL, &mut out) {
+                messages.push(out[..len].to_vec());
+            }
+        }
+        assert_eq!(messages, [b"hid:press".to_vec(), b"hid:release".to_vec()]);
+        assert_eq!(left.stats().wakes(), before.wakes());
+    }
 
     /// The shell drives a real punch over real sockets and then carries a
     /// message, which is the whole loop end to end.
