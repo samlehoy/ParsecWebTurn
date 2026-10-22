@@ -249,10 +249,10 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         page.font,
     );
     for (id, label, rect) in [
-        (NETWORK_TAB, "Network", [0, 142, 128, 40]),
-        (VIDEO_TAB, "Video", [140, 142, 128, 40]),
-        (AUDIO_TAB, "Audio", [280, 142, 128, 40]),
-        (INPUT_TAB, "Input", [420, 142, 128, 40]),
+        (NETWORK_TAB, "Network", [0, 142, 120, 40]),
+        (VIDEO_TAB, "Video", [132, 142, 120, 40]),
+        (AUDIO_TAB, "Audio", [264, 142, 120, 40]),
+        (INPUT_TAB, "Input", [396, 142, 120, 40]),
         (BACK, "Back", [550, 142, 110, 40]),
         (SAVE, "Save settings", [676, 142, 144, 40]),
     ] {
