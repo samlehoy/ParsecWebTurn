@@ -74,3 +74,9 @@ counterparts. Protocol/control, descriptor, relative/absolute mouse and physical
 keyboard state are isolated from media and crypto. No new dependency, host
 patch, probe launcher or per-input-event logging is introduced. See
 ../../../../../../docs/usb-hid-input.md for behavior, scope and validation.
+
+On 2026-10-22, the shell also drains successfully queued control/HID output
+produced after its normal IO pass, before entering another wait. The driver
+tracks only successful enqueues; the same carrier handles UDP batching and
+TCP/TLS backpressure. No protocol deadline, HID report cadence or transport
+ordering is changed. Temporary input-trace instrumentation is not retained.

@@ -5,12 +5,12 @@ revision 5f8db5689e55de0d396b0520824caa9fc053dd86, crates/net/src.
 Original copyright and license are retained in LICENSE.
 
 This copy keeps native socket IO, batching/offload, wakeups, interface discovery
-and the BUD shell unchanged. Unused browser/SCTP and standalone NAT-probe modules
+and the BUD shell with the local changes below. Unused browser/SCTP and standalone NAT-probe modules
 and their dependencies are omitted. The normal WebRTC client does not use it.
 The unused direct lowlat-crypto dependency is omitted; the client seam retains
 the required cryptography. Unused direct dependencies are checked by a crate lint.
 
-The only data-path addition is byte accounting: Batch increments a plain u64
+The initial data-path addition was byte accounting: Batch increments a plain u64
 only after a successful OS send, by the existing buffer length (or datagram
 length on the fallback path). Failed sends and empty flushes do not count.
 Shell counts each received UDP payload before parsing/authentication. Successful
@@ -48,3 +48,9 @@ overlapped completion; it is ciphertext for TLS, not a decoded-frame copy. A
 pending overlapped send retains the carrier's pending state and original age.
 Cancellation drains outstanding completions before releasing their storage.
 Tests cover both Windows completion notification modes and cancellation.
+
+Post-turn application output can be drained without a second wait/receive
+pass. This reuses the existing carrier drain and shared output accounting;
+TCP/TLS backpressure is unchanged. The real loopback regression checks
+ordered delivery and byte/datagram accounting without an added sender wake.
+Carrier acceptance is not proof of peer receipt. No new dependency is added.

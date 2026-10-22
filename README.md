@@ -9,7 +9,7 @@ installer is needed: run **ParsecWebTurn.exe**.
 **The Parsec WASM core is unmodified. Rust provides the surrounding runtime and
 platform integrations; this is not a rewrite of the proprietary Parsec client.**
 
-[Download v0.9.4-dev.6](https://github.com/vampywiz17/ParsecWebTurn/releases/tag/v0.9.4-dev.6)
+[Download v0.9.4-dev.7](https://github.com/vampywiz17/ParsecWebTurn/releases/tag/v0.9.4-dev.7)
 · [Latest stable release](https://github.com/vampywiz17/ParsecWebTurn/releases/latest)
 · [Changelog](CHANGELOG.md)
 
@@ -173,6 +173,11 @@ BUD, custom audio buffering, raw PCM permission and host timing no longer carry
 an experimental label as of **v0.9.4-dev.6**. Vendor HEVC, Zero copy, 10-bit HEVC,
 display timing, multichannel audio and USB HID input remain experimental, with
 the validation limits above.
+
+Extensive Intel/AMD/NVIDIA testing now focuses on normal rendering, Zero copy
+and H.265/HEVC, including 10-bit. The next stable release is targeted for the
+second half of next week (October 29-November 1, 2026), provided the supported
+combinations prove stable and any blocking issues are resolved.
 
 HID mouse/keyboard are implemented; gamepad verification and further native menu
 integration remain pending. Vulkan/Linux are planned; D3D12 and Android/Android TV

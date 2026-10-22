@@ -35,7 +35,7 @@ try {
         $taskImport += 20
     }
     $taskBinaryText = [Text.Encoding]::Latin1.GetString($taskBinary)
-    foreach ($taskMarker in @('video-hardware-probe', 'login-audit', 'synthetic-session-value', 'private-password-token-url', 'PARSEC_BUD_DIAGNOSTICS')) {
+    foreach ($taskMarker in @('video-hardware-probe', 'login-audit', 'synthetic-session-value', 'private-password-token-url', 'PARSEC_BUD_DIAGNOSTICS', 'cursor-visibility-trace.json', 'cursor-post-turn-output-flush', 'hid_button_report')) {
         if ($taskBinaryText.Contains($taskMarker)) { throw "Diagnostic marker in normal executable: $taskMarker" }
     }
     $taskFixture = [IO.File]::ReadAllBytes((Join-Path $taskRoot 'src-native/fixtures/synthetic-1920x1080.h264'))

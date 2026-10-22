@@ -5,8 +5,23 @@ builds, not published stable releases.
 
 ## Unreleased
 
-- **Cursor transition visibility:** keep the pointer hidden until its return position is restored, for normal and HID input. Replace an active cursor image before freeing the old handle to avoid a temporary system-arrow selection. No frame wait or video-path change is added; elimination of the reported flash still needs live confirmation.
-- **HID cursor after dragging:** restore the local pointer to the host-reported endpoint when leaving relative/hidden-cursor capture, preventing the old capture anchor from being sent back as the next absolute HID position. Relative camera input is unchanged. The supplied live trace identifies the transition; native regression coverage is added, with live confirmation of the fix pending.
+## 0.9.4-dev.7 - Input and low-latency presentation fixes (2026-10-22)
+
+Changes since v0.9.4-dev.6. Existing defaults and experimental feature labels
+are unchanged; this is a Windows x64 development release.
+
+- **HID dragging:** restore the local pointer to the host-reported endpoint on leaving relative/hidden capture, preventing a stale anchor from overwriting the next absolute HID position. Preserve native relative camera input, focus handling and local controls.
+- **Cursor transitions:** retain cursor hiding through position restoration and select a replacement image before freeing the old handle. BUD host capture-state changes wake the existing input callback promptly, keeping FIFO ordering and normal callback cadence. Live testing reported substantially reduced flicker; delayed host cursor responses can still be visible.
+- **BUD output scheduling:** drain newly queued HID reports and control replies through the existing UDP/TCP/TLS carrier before waiting again. Preserve bounded backpressure, ordering, ACK/retransmission timers and WebRTC behavior. No fixed end-to-end latency gain is claimed.
+- **Low latency presentation:** interruptible DXGI/input readiness waits replace regular idle readiness polling where available. Feed fresh input before retrying a pending picture, preserve the one-presentation limit and BUD burst catch-up, and add no decoded-frame copy, RGB target or worker thread. Reported stutter was resolved in live testing on the tested 60 FPS / 59.95 Hz DXGI setup; this is not a universal smoothness or measured scanout-latency claim. Automatic, VSync and original-surface Zero copy retain their presentation policies.
+- **Connection stats:** add latest/average/peak Present submission interval. This is CPU-observed DXGI submission cadence, including idle periods, not GPU or physical display timing.
+- **Settings and documentation:** make the four tabs equal-width with consistent spacing and a clearer gap before Back/Save. Shorten the README and update current feature/validation descriptions.
+- **Maintenance:** remove temporary HID/cursor trace capture and build switches; retain focused regression coverage. No new runtime dependency or continuous input-event logging.
+
+Extensive Intel/AMD/NVIDIA validation now covers normal rendering, Zero copy
+and H.265/HEVC, including 10-bit, across supported combinations. The next stable
+release is targeted for the second half of next week (October 29-November 1,
+2026), after those combinations prove stable and blocking issues are resolved.
 
 ## 0.9.4-dev.6 - Playback diagnostics and display timing (2026-10-21)
 
