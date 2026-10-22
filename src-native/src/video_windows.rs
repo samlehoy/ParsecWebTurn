@@ -405,6 +405,18 @@ impl Drop for Activity {
 fn update(shared: &Shared, f: impl FnOnce(&mut Snapshot)) {
     f(&mut shared.0.lock().unwrap_or_else(|e| e.into_inner()).report);
 }
+fn publish_report(shared: &Shared, window: &crate::window::Window) {
+    let report = shared
+        .0
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .report
+        .clone();
+    *window
+        .video_report
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(report);
+}
 fn run(
     shared: &Shared,
     window: &Arc<crate::window::Window>,
@@ -431,7 +443,7 @@ fn run(
     let zero_requested = false;
     loop {
         let retry_display = session.as_ref().is_some_and(Session::has_pending_display);
-        let (next_generation, frame, retry_pending) = {
+        let (next_generation, frame) = {
             let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
             while q.report.queue_depth == 0
                 && !q.stopped
@@ -478,12 +490,7 @@ fn run(
             {
                 break;
             }
-            let frame = q.pop();
-            let retry_pending = !crate::video_output::skip_display_for_backlog(
-                q.bud_catch_up,
-                q.report.queue_depth,
-            );
-            (q.reset_generation, frame, retry_pending)
+            (q.reset_generation, q.pop())
         };
         if next_generation != generation {
             generation = next_generation;
@@ -511,12 +518,12 @@ fn run(
                 });
             }
         }
-        // After stop/reset checks, service a ready backbuffer even with more
-        // input queued. This attempt never waits for the monitor or the GPU.
-        if (presentation_mode == PresentationMode::LowLatency && retry_pending) || frame.is_none() {
+        if frame.is_none() {
             if let Some(session) = &mut session {
                 unsafe {
-                    session.retry_display(shared, window)?;
+                    if session.retry_display(shared, window)? {
+                        publish_report(shared, window);
+                    }
                 }
             }
         }
@@ -620,6 +627,7 @@ fn run(
             session = Some(native);
         }
         let mut failure = None;
+        let mut retry_pending = false;
         for frame in headers.drain(..).chain(std::iter::once(frame)) {
             let feed_started = Instant::now();
             let (decoded_before, output_before) = {
@@ -659,6 +667,13 @@ fn run(
             {
                 q.recovered();
             }
+            retry_pending = q.reset_generation == generation
+                && !q.stopped
+                && q.report.failure_stage.is_none()
+                && !crate::video_output::skip_display_for_backlog(
+                    q.bud_catch_up,
+                    q.report.queue_depth,
+                );
         }
         header_bytes = 0;
         if let Some(error) = failure {
@@ -705,17 +720,15 @@ fn run(
             }
             continue;
         }
-        *window
-            .video_report
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(
-            shared
-                .0
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .report
-                .clone(),
-        );
+        // Offer fresh input first: never present an older pending backbuffer
+        // ahead of a newer decoded output. Still service pending output when
+        // this feed produced no picture, without waiting for an empty queue.
+        if presentation_mode == PresentationMode::LowLatency && retry_pending {
+            unsafe {
+                session.as_mut().unwrap().retry_display(shared, window)?;
+            }
+        }
+        publish_report(shared, window);
     }
     // Release the transform before the device manager, renderer and MF runtime.
     drop(session);
@@ -921,19 +934,6 @@ impl Session {
             }
             _ => false,
         };
-        if refreshed {
-            *window
-                .video_report
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(
-                shared
-                    .0
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .report
-                    .clone(),
-            );
-        }
         Ok(refreshed)
     }
     fn renderer_name(&self) -> &'static str {

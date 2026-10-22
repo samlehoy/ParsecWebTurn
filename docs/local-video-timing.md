@@ -36,7 +36,9 @@ is retained until a presentation is actually accepted. Resize retains flags.
 When the newest RGB output meets a busy display queue, its existing backbuffer
 is retained and only Present is retried. In Low latency mode, ready pending
 output is serviced even while more compressed input is available, after stop
-and generation-reset checks. When input is empty, the worker waits on both
+and generation-reset checks. Fresh compressed input is fed first, so a stale
+pending backbuffer cannot take the presentation slot ahead of a newer decoded
+output. BUD display catch-up still suppresses stale pending output during a burst. When input is empty, the worker waits on both
 the documented DXGI readiness handle and one queue event; new input, recovery
 or stop interrupts this wait. The queue event is reset under the queue lock
 to avoid lost wakes, and a consumed DXGI signal is cached until Present.
