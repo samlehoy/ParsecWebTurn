@@ -431,7 +431,7 @@ fn run(
     let zero_requested = false;
     loop {
         let retry_display = session.as_ref().is_some_and(Session::has_pending_display);
-        let (next_generation, frame) = {
+        let (next_generation, frame, retry_pending) = {
             let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
             while q.report.queue_depth == 0
                 && !q.stopped
@@ -478,7 +478,12 @@ fn run(
             {
                 break;
             }
-            (q.reset_generation, q.pop())
+            let frame = q.pop();
+            let retry_pending = !crate::video_output::skip_display_for_backlog(
+                q.bud_catch_up,
+                q.report.queue_depth,
+            );
+            (q.reset_generation, frame, retry_pending)
         };
         if next_generation != generation {
             generation = next_generation;
@@ -508,7 +513,7 @@ fn run(
         }
         // After stop/reset checks, service a ready backbuffer even with more
         // input queued. This attempt never waits for the monitor or the GPU.
-        if presentation_mode == PresentationMode::LowLatency || frame.is_none() {
+        if (presentation_mode == PresentationMode::LowLatency && retry_pending) || frame.is_none() {
             if let Some(session) = &mut session {
                 unsafe {
                     session.retry_display(shared, window)?;
