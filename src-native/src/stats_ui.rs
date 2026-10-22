@@ -471,6 +471,10 @@ fn rows(
                     &v.local_timing.presentation_prepare,
                 ),
                 ("Present API call", &v.local_timing.present_call),
+                (
+                    "Present submission interval",
+                    &v.local_timing.present_interval,
+                ),
             ] {
                 row(
                     name,

@@ -18,7 +18,13 @@ use windows::{
             Dxgi::{Common::*, *},
         },
         Media::MediaFoundation::*,
-        System::{Com::*, Threading::WaitForSingleObject, Variant::*},
+        System::{
+            Com::*,
+            Threading::{
+                CreateEventW, ResetEvent, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
+            },
+            Variant::*,
+        },
     },
 };
 
@@ -180,7 +186,53 @@ pub fn hevc_ten_bit_available(
     }
 }
 
-type Shared = Arc<(Mutex<Queue>, Condvar)>;
+// A queue wake can interrupt the DXGI wait: never hold up new decode work
+// waiting for the monitor. The Arc keeps this handle alive for every waiter.
+struct WorkerWake(HANDLE);
+#[derive(Debug, PartialEq, Eq)]
+enum DisplayWake {
+    Input,
+    Display,
+    Timeout,
+}
+// SAFETY: Win32 event operations are thread-safe; the final Arc owns CloseHandle.
+unsafe impl Send for WorkerWake {}
+unsafe impl Sync for WorkerWake {}
+impl WorkerWake {
+    fn create() -> Option<Self> {
+        unsafe { CreateEventW(None, true, false, None).ok().map(Self) }
+    }
+    fn notify(&self) {
+        unsafe {
+            let _ = SetEvent(self.0);
+        }
+    }
+    fn arm(&self) -> bool {
+        unsafe { ResetEvent(self.0).is_ok() }
+    }
+    unsafe fn wait(&self, display: HANDLE) -> windows::core::Result<DisplayWake> {
+        // Queue first: if both are ready, service input and let poll_slot take
+        // the DXGI signal later. Auto-reset DXGI signals must be consumed once.
+        let status = WaitForMultipleObjects(&[self.0, display], false, 100);
+        if status == WAIT_OBJECT_0 {
+            Ok(DisplayWake::Input)
+        } else if status == WAIT_TIMEOUT {
+            Ok(DisplayWake::Timeout)
+        } else if status.0 == WAIT_OBJECT_0.0 + 1 {
+            Ok(DisplayWake::Display)
+        } else {
+            Err(windows::core::Error::from_win32())
+        }
+    }
+}
+impl Drop for WorkerWake {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+type Shared = Arc<(Mutex<Queue>, Condvar, Option<WorkerWake>)>;
 pub struct Pipeline {
     shared: Shared,
     started: Instant,
@@ -202,7 +254,11 @@ impl Pipeline {
     ) -> Self {
         let surface_generation = window.begin_video();
         let surface_window = window.clone();
-        let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
+        let presentation_mode = window.presentation_mode();
+        let wake = (presentation_mode == PresentationMode::LowLatency)
+            .then(WorkerWake::create)
+            .flatten();
+        let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new(), wake));
         shared
             .0
             .lock()
@@ -217,7 +273,6 @@ impl Pipeline {
         let activity = Activity(window.clone());
         let error_state = shared.clone();
         let preferred_gpu = window.video_gpu();
-        let presentation_mode = window.presentation_mode();
         shared
             .0
             .lock()
@@ -291,6 +346,9 @@ impl Pipeline {
             }
         };
         self.shared.1.notify_one();
+        if let Some(wake) = &self.shared.2 {
+            wake.notify();
+        }
         accepted
     }
     pub fn take_keyframe_request(&self) -> Option<u64> {
@@ -305,6 +363,9 @@ impl Pipeline {
             .unwrap_or_else(|e| e.into_inner())
             .request_failed(generation);
         self.shared.1.notify_one();
+        if let Some(wake) = &self.shared.2 {
+            wake.notify();
+        }
     }
     pub fn snapshot(&self) -> Snapshot {
         self.shared
@@ -322,6 +383,9 @@ impl Pipeline {
             .unwrap_or_else(|e| e.into_inner())
             .stopped = true;
         self.shared.1.notify_all();
+        if let Some(wake) = &self.shared.2 {
+            wake.notify();
+        }
     }
 }
 impl Drop for Pipeline {
@@ -375,6 +439,26 @@ fn run(
                 && q.reset_generation == generation
                 && !window.closing.load(std::sync::atomic::Ordering::Acquire)
             {
+                let display_wait = session.as_ref().and_then(Session::pending_wait_handle);
+                if let (Some(display), Some(wake)) = (display_wait, &shared.2) {
+                    // Reset while holding the queue lock, then release it before
+                    // waiting. A producer publishing afterward sets the event;
+                    // an already queued frame bypasses this wait altogether.
+                    if wake.arm() {
+                        drop(q);
+                        let ready = unsafe { wake.wait(display) };
+                        if let Some(renderer) = session.as_mut().and_then(|s| s.renderer.as_mut()) {
+                            match ready {
+                                Ok(DisplayWake::Display) => renderer.latency_slot = true,
+                                Ok(DisplayWake::Input | DisplayWake::Timeout) => {}
+                                Err(_) => renderer.disable_queue_control(shared),
+                            }
+                        }
+                        q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+                        q.check_recovery(Instant::now());
+                        break;
+                    }
+                }
                 q = shared
                     .1
                     .wait_timeout(
@@ -422,23 +506,16 @@ fn run(
                 });
             }
         }
-        let Some(mut frame) = frame else {
+        // After stop/reset checks, service a ready backbuffer even with more
+        // input queued. This attempt never waits for the monitor or the GPU.
+        if presentation_mode == PresentationMode::LowLatency || frame.is_none() {
             if let Some(session) = &mut session {
-                let refreshed = unsafe { session.retry_display(shared, window)? };
-                if refreshed {
-                    *window
-                        .video_report
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()) = Some(
-                        shared
-                            .0
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .report
-                            .clone(),
-                    );
+                unsafe {
+                    session.retry_display(shared, window)?;
                 }
             }
+        }
+        let Some(mut frame) = frame else {
             continue;
         };
         if frame.parameters {
@@ -801,6 +878,16 @@ struct Session {
     _runtime: Option<Runtime>,
 }
 impl Session {
+    fn pending_wait_handle(&self) -> Option<HANDLE> {
+        let renderer = self.renderer.as_ref()?;
+        if renderer.mode != PresentationMode::LowLatency
+            || !renderer.pending_present
+            || renderer.latency_slot
+        {
+            return None;
+        }
+        renderer.latency_event.as_ref().map(|event| event.0)
+    }
     fn has_pending_display(&self) -> bool {
         self.renderer.as_ref().is_some_and(|r| r.pending_present)
     }
@@ -815,20 +902,34 @@ impl Session {
         if !renderer.pending_present {
             return Ok(false);
         }
-        match renderer.try_present(shared)? {
+        let refreshed = match renderer.try_present(shared)? {
             Some(Presentation::Presented) => {
                 update(shared, |s| {
                     s.frames_presented = s.frames_presented.saturating_add(1)
                 });
                 window.set_video_ready_for(self.surface_generation, true);
-                Ok(true)
+                true
             }
             Some(Presentation::NotVisible) => {
                 update(shared, |s| s.presentations_not_visible += 1);
-                Ok(true)
+                true
             }
-            _ => Ok(false),
+            _ => false,
+        };
+        if refreshed {
+            *window
+                .video_report
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(
+                shared
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .report
+                    .clone(),
+            );
         }
+        Ok(refreshed)
     }
     fn renderer_name(&self) -> &'static str {
         #[cfg(feature = "vendor-video")]
@@ -1514,6 +1615,7 @@ struct Renderer {
     latency_event: Option<LatencyEvent>,
     latency_slot: bool,
     pending_present: bool,
+    last_present: Option<Instant>,
     device: ID3D11Device,
     video_device: ID3D11VideoDevice,
     video_context: ID3D11VideoContext,
@@ -1690,6 +1792,7 @@ impl Renderer {
             latency_event,
             latency_slot: false,
             pending_present: false,
+            last_present: None,
             device,
             video_device,
             video_context,
@@ -1862,20 +1965,21 @@ impl Renderer {
                 match WaitForSingleObject(event.0, 0) {
                     WAIT_OBJECT_0 => self.latency_slot = true,
                     WAIT_TIMEOUT => {}
-                    _ => {
-                        self.latency_event = None;
-                        self.timing_status = "Presentation queue control unavailable";
-                        update(shared, |s| s.presentation_mode = Some(self.timing_status));
-                        crate::event_log::record(
-                            "WARN",
-                            "video_presentation_readiness_failed",
-                            serde_json::json!({}),
-                        );
-                    }
+                    _ => self.disable_queue_control(shared),
                 }
             }
         }
         self.latency_event.is_none() || self.latency_slot
+    }
+    fn disable_queue_control(&mut self, shared: &Shared) {
+        self.latency_event = None;
+        self.timing_status = "Presentation queue control unavailable";
+        update(shared, |s| s.presentation_mode = Some(self.timing_status));
+        crate::event_log::record(
+            "WARN",
+            "video_presentation_readiness_failed",
+            serde_json::json!({}),
+        );
     }
     unsafe fn try_present(&mut self, shared: &Shared) -> Result<Option<Presentation>> {
         if !self.poll_slot(shared) {
@@ -1895,6 +1999,14 @@ impl Renderer {
         let result = presentation_status(status)?;
         if result == Presentation::Presented {
             self.latency_slot = false;
+            let now = Instant::now();
+            if let Some(previous) = self.last_present.replace(now) {
+                update(shared, |s| {
+                    s.local_timing
+                        .present_interval
+                        .record(now.duration_since(previous))
+                });
+            }
         }
         self.pending_present = result == Presentation::Busy;
         Ok(Some(result))
@@ -2250,7 +2362,7 @@ pub fn probe_presentation_timing() -> anyhow::Result<serde_json::Value> {
             let result = unsafe {
                 (|| -> Result<serde_json::Value> {
                     let mut renderer = Renderer::create(HWND(hwnd as *mut _), None, mode)?;
-                    let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
+                    let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new(), None));
                     let data = [128u8; 64 * 96];
                     let desc = D3D11_TEXTURE2D_DESC {
                         Width: 64,
@@ -2425,7 +2537,7 @@ pub fn probe_rgb10_output() -> anyhow::Result<serde_json::Value> {
                 Renderer::create(HWND(hwnd as *mut _), None, PresentationMode::Automatic)
                     .map_err(|e| anyhow::anyhow!("GPU RGB output probe: {e:?}"))?;
             renderer.rgb10_ramp_levels = Some(0);
-            let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
+            let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new(), None));
             let source = RECT {
                 left: 0,
                 top: 0,
@@ -2841,6 +2953,34 @@ pub fn probe_main10() -> anyhow::Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn display_wait_prioritizes_input_without_consuming_the_display_signal() {
+        let wake = WorkerWake::create().expect("input event");
+        let display = LatencyEvent(unsafe { CreateEventW(None, false, false, None).unwrap() });
+        assert!(wake.arm());
+        wake.notify();
+        unsafe {
+            SetEvent(display.0).unwrap();
+            assert_eq!(wake.wait(display.0).unwrap(), DisplayWake::Input);
+            assert!(wake.arm());
+            assert_eq!(wake.wait(display.0).unwrap(), DisplayWake::Display);
+            // The worker caches this consumed signal in latency_slot instead
+            // of polling the auto-reset object a second time and losing it.
+            assert_eq!(WaitForSingleObject(display.0, 0), WAIT_TIMEOUT);
+        }
+    }
+    #[test]
+    fn new_input_interrupts_an_unsignalled_display_wait() {
+        let wake = Arc::new(WorkerWake::create().expect("input event"));
+        let display = LatencyEvent(unsafe { CreateEventW(None, false, false, None).unwrap() });
+        assert!(wake.arm());
+        let producer = wake.clone();
+        let thread = std::thread::spawn(move || producer.notify());
+        // The typed result distinguishes a queue wake from the safety timeout.
+        assert_eq!(unsafe { wake.wait(display.0).unwrap() }, DisplayWake::Input);
+        thread.join().unwrap();
+        assert_eq!(unsafe { WaitForSingleObject(display.0, 0) }, WAIT_TIMEOUT);
+    }
     #[test]
     fn rgb10_fallback_never_swallows_device_loss_or_decoder_errors() {
         let rejected = api::<()>(

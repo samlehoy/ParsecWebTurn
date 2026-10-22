@@ -36,6 +36,8 @@ pub struct LocalTiming {
     pub surface_dispatch: Timing,
     pub presentation_prepare: Timing,
     pub present_call: Timing,
+    /// Interval between accepted Present calls; not GPU/scanout timing.
+    pub present_interval: Timing,
     /// Time spent servicing decoded output inside the decoder feed callback.
     pub output_service_ns: u128,
 }

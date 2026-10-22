@@ -17,6 +17,8 @@ surface copy, per-frame logging, timer thread or dependency is added.
 - **Presentation preparation:** CPU submission of the existing conversion,
   scaling and overlay work, or original-surface registration/configuration.
 - **Present API call:** CPU wall time inside DXGI/Presentation API Present.
+- **Present submission interval:** time between accepted DXGI Present calls,
+  including idle periods. This is submission cadence, not measured scanout.
 
 Decoder service is per compressed message; output metrics are per observed
 output. These averages have different denominators and must not be summed as
@@ -29,13 +31,19 @@ Video settings offers Automatic (existing behavior), Low latency and VSync.
 Reconnect to apply. Automatic keeps the original flip-discard swap chain and
 Present(0, DO_NOT_WAIT). The explicit modes request a documented waitable swap
 chain and maximum frame latency of one. The worker polls readiness with a zero
-timeout before conversion; it never waits for display refresh. A consumed slot
+timeout before conversion. A consumed slot
 is retained until a presentation is actually accepted. Resize retains flags.
 When the newest RGB output meets a busy display queue, its existing backbuffer
-is retained and only Present is retried while the input queue is idle. The
-worker uses its existing condition variable with a short retry timeout only
-while that output is pending; new input wakes it immediately. No decoded
-surface, extra RGB target, repeat conversion or new timer thread is needed.
+is retained and only Present is retried. In Low latency mode, ready pending
+output is serviced even while more compressed input is available, after stop
+and generation-reset checks. When input is empty, the worker waits on both
+the documented DXGI readiness handle and one queue event; new input, recovery
+or stop interrupts this wait. The queue event is reset under the queue lock
+to avoid lost wakes, and a consumed DXGI signal is cached until Present.
+No queued input waits for monitor readiness. Automatic and VSync retain their
+previous wake policy. A short retry timeout remains for unsupported event
+control or a busy Present after readiness. No decoded surface, extra RGB
+target, repeat conversion or new timer thread is needed.
 VSync uses Present(1, DO_NOT_WAIT); Low latency uses interval zero. No explicit
 tearing flag is enabled, and neither mode guarantees physical scanout behavior.
 Unsupported queue control falls back without failing decode, with a warning and
@@ -70,7 +78,7 @@ Unsupported GPU cases are explicitly reported, not treated as successful output.
 
 ## CPU and memory scope
 
-Seven fixed-size duration accumulators and a 64-slot input-identity table are
+Eight fixed-size duration accumulators and a 64-slot input-identity table are
 used instead of storing per-frame histories. The identity table retains metadata only, no picture bytes
 or COM surfaces. Existing 32-message/8 MiB compressed queue and 8 MiB reuse-pool
 budgets remain; no larger picture buffers or extra worker is introduced.
@@ -92,3 +100,9 @@ An intermittent 200–250 MB versus 38–40 MB has been reported, with later
 observation of memory decreasing while the process remains open. Its cause and
 a lower steady-state target are not established; compare resident and committed
 values over time before changing allocation policy.
+
+The Low latency scheduling candidate addresses idle retry quantization and
+pending-output starvation. Win32 event tests verify input interruption,
+simultaneous-signal priority and one-time readiness consumption without GPU
+readback. These tests do not prove smooth physical presentation; compare live
+Automatic/Low latency on the same stream and monitor before claiming a gain.
