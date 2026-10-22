@@ -103,8 +103,10 @@ observation of memory decreasing while the process remains open. Its cause and
 a lower steady-state target are not established; compare resident and committed
 values over time before changing allocation policy.
 
-The Low latency scheduling candidate addresses idle retry quantization and
+The Low latency scheduling fix addresses idle retry quantization and
 pending-output starvation. Win32 event tests verify input interruption,
 simultaneous-signal priority and one-time readiness consumption without GPU
-readback. These tests do not prove smooth physical presentation; compare live
-Automatic/Low latency on the same stream and monitor before claiming a gain.
+readback. On 2026-10-22 the user confirmed that the reported stutter was resolved
+in a live DXGI test (Zero copy off, stream set to 60 FPS, client display reported
+as 59.95 Hz). This is validation on that setup, not a measured scanout-latency
+gain or a guarantee for every GPU, stream and refresh-rate combination.
