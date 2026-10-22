@@ -221,7 +221,7 @@ impl WorkerWake {
         } else if status.0 == WAIT_OBJECT_0.0 + 1 {
             Ok(DisplayWake::Display)
         } else {
-            Err(windows::core::Error::from_win32())
+            Err(windows::core::Error::from_thread())
         }
     }
 }
