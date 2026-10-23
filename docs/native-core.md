@@ -51,7 +51,9 @@ lowlat revision `e548d48c81ae50937940b2b47f700557cd9d50a4` (MIT):
 `scripts/kessel-login.py` provides the auth request, 200/201 response, email
 confirmation, optional 2FA and logout contracts. They are adapted to Rust using
 our existing reqwest/TLS stack. `examples/client/signaling.cc` supplies the
-authenticated WebSocket URL contract; our existing BUD adapter constructs the
+authenticated WebSocket fields; `crates/kessel/src/url.rs` supplies the Rust
+root-path requirement (the C++ demo's slash workaround is Matoya-specific).
+Our existing BUD adapter constructs the
 wire offers and candidates. `crates/core/src/cursor.rs` and the cache portion
 of `crates/client/src/cursor.rs` supply cursor flags, cached-image and forget
 semantics. No upstream PNG decoder, SDK/C ABI, daemon, installer, renderer or
@@ -75,3 +77,7 @@ code has not been converted into a WASM-independent signaling implementation.
 
 ParsecWebTurn remains independent of lowlat. This work does not change the
 stock host or turn it into an open-source server.
+
+Signaling upgrade errors show a bounded stage and HTTP status when available.
+If event logging is enabled, `native_signaling_upgrade_failed` records the same
+safe fields; request URLs, account tokens and server response bodies are excluded.
