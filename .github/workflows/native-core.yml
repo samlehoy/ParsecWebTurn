@@ -17,6 +17,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-native
+          cache-on-failure: true
       - name: Verify native-only build without a proprietary core file
         shell: pwsh
         run: |
@@ -32,6 +33,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Shared BUD lifecycle regressions failed' }
           cargo test --locked --manifest-path src-native/Cargo.toml --features native-core audio_stream::tests:: -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw 'Audio handoff regressions failed' }
+          cargo test --locked --manifest-path src-native/Cargo.toml --features native-core event_queue::tests:: -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Native input wake regressions failed' }
           cargo build --locked --release --manifest-path src-native/Cargo.toml --features native-core
           if ($LASTEXITCODE -ne 0) { throw 'Native core build failed' }
           New-Item -ItemType Directory -Path dist/native-core -Force | Out-Null

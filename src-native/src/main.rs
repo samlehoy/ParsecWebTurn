@@ -8,7 +8,10 @@ mod attempt;
 mod bud_attempt;
 #[cfg(all(windows, feature = "bud"))]
 pub mod bud_media;
+#[cfg(not(feature = "native-core"))]
 const APP_TITLE: &str = "ParsecWebTurn";
+#[cfg(feature = "native-core")]
+const APP_TITLE: &str = "ParsecWebTurn - native core";
 const PARSEC_CORE_VERSION: &str = "150-104a";
 #[cfg(any(test, feature = "diagnostics"))]
 mod attempt_probe;

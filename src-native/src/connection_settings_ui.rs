@@ -614,6 +614,8 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
             page.font,
         );
         check(hwnd, BUD, s.bud);
+        #[cfg(feature = "native-core")]
+        EnableWindow(GetDlgItem(hwnd, BUD as i32), 0);
     }
     #[cfg(feature = "vendor-video")]
     {

@@ -360,6 +360,20 @@ impl Window {
     pub fn settings_open(&self) -> bool {
         self.settings_active.load(Ordering::Acquire)
     }
+    #[cfg(feature = "native-core")]
+    pub fn native_input_allowed(&self) -> bool {
+        self.has_focus.load(Ordering::Acquire)
+            && self.video_ready.load(Ordering::Acquire)
+            && self.video_visible.load(Ordering::Acquire)
+            && !self.settings_open()
+            && !self.input_suspended.load(Ordering::Acquire)
+            && !self.closing.load(Ordering::Acquire)
+            && !self
+                .input_state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .detached
+    }
     pub fn repaint_settings_after_gl_pause(&self) {
         // The GL worker has passed its last swap. Queue one final native paint
         // on the UI thread in case that in-flight swap covered initial paint.
@@ -1530,6 +1544,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             WM_ENTERMENULOOP | WM_ENTERSIZEMOVE => {
                 s.input_suspended.store(true, Ordering::Release);
+                #[cfg(feature = "native-core")]
+                s.push(Event::HidInputRelease);
                 #[cfg(feature = "bud")]
                 s.apply_hid_capture(false);
                 s.apply_input_capture();

@@ -22,7 +22,7 @@ is needed on the client.
 
 Only BUD is used. Retain your ordinary Network settings for direct/TURN routing;
 the existing UDP -> TLS -> TCP policy, rustls verification and Force TURN option
-are reused. Enable BUD in Network settings for the existing HID preferences.
+are reused. BUD is fixed on in this build's Network tab, including for the existing HID preferences.
 Settings and Connection stats remain available from the native window menu.
 Save and reconnect after changing connection/video/audio settings.
 
@@ -60,7 +60,9 @@ used directly for the new password/2FA/session owners.
 
 ## Validation limits and remaining scope
 
-First live interoperability is pending. Compilation and fixture tests cannot
+The first live target is an owner connection to an **unmodified stock Parsec
+host**, not a lowlat host. Friend/invitation authorization is not wired into
+this bootstrap UI. First live interoperability is pending. Compilation and fixture tests cannot
 prove successful account login, current stock-host behavior, audio sync, GPU
 performance or HID behavior on a real connection. Existing experimental labels
 and hardware limitations still apply.

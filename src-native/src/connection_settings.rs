@@ -348,7 +348,16 @@ impl Manager {
         })
     }
     pub fn view(&self) -> (Settings, Option<String>) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        #[cfg(feature = "native-core")]
+        let state = {
+            let (mut settings, error) = state;
+            // This separately selected build has exactly one transport. Reflect
+            // that in the UI/HID policy without rewriting the source file on load.
+            settings.bud = true;
+            (settings, error)
+        };
+        state
     }
     pub fn save(
         &self,

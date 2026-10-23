@@ -134,8 +134,8 @@ mod tests {
         };
         assert!(body(&login).get("tfa").is_none());
         assert_eq!(body(&login)["email"], "user@example.invalid");
-        login.tfa = zeroize::Zeroizing::new("123456".into());
-        assert_eq!(body(&login)["tfa"], "123456");
+        login.tfa = zeroize::Zeroizing::new("012345".into());
+        assert_eq!(body(&login)["tfa"], "012345");
         let e = accepted(403, json!({"codes":[{"type":"ip_unverified"}]}))
             .err()
             .unwrap();

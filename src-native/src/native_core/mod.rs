@@ -15,16 +15,12 @@ use std::{
 
 pub fn main() {
     if let Err(error) = run() {
-        crate::event_log::record(
-            "ERROR",
-            "native_core_failed",
-            serde_json::json!({"stage":"account_or_session"}),
-        );
         // Every error crossing this entry is an application-authored message;
         // raw HTTP/WebSocket errors must never display their credential URL.
         unsafe {
             ui::message_box(std::ptr::null_mut(), &error.to_string());
         }
+        std::process::exit(1);
     }
 }
 
@@ -53,10 +49,21 @@ fn run() -> Result<()> {
         settings.view().0.event_logging,
     )?;
     let _log = crate::event_log::Guard;
+    crate::event_log::record(
+        "INFO",
+        "native_core_started",
+        serde_json::json!({"transport":"BUD","wasm":false}),
+    );
     let Some(login) = ui::login()? else {
         return Ok(());
     };
-    let session = account::login(&login)?;
+    let session = account::login(&login).inspect_err(|_| {
+        crate::event_log::record(
+            "ERROR",
+            "native_account_login_failed",
+            serde_json::json!({}),
+        );
+    })?;
     let peer = login.peer.clone();
     drop(login); // Password is not retained with the stream or written to disk.
     let result = (|| {
@@ -70,6 +77,13 @@ fn run() -> Result<()> {
         result
     })();
     session.revoke();
+    if result.is_err() {
+        crate::event_log::record(
+            "ERROR",
+            "native_core_failed",
+            serde_json::json!({"stage":"signaling_or_session"}),
+        );
+    }
     result
 }
 
@@ -92,7 +106,8 @@ fn stream(
     ));
     let mut batch = VecDeque::new();
     let mut pointer = pointer::Pointer::default();
-    let mut output: Option<crate::audio_windows::Playback> = None;
+    let mut input = input::Input::default();
+    let mut output: Option<Arc<crate::audio_windows::Playback>> = None;
     let mut established = false;
     let mut audio_source = None;
     let mut local_keys = std::collections::BTreeSet::new();
@@ -165,12 +180,14 @@ fn stream(
                     if let Some(old) = output.take() {
                         old.stop();
                     }
-                    output = Some(crate::audio_windows::Playback::create_layout(
+                    let playback = Arc::new(crate::audio_windows::Playback::create_layout(
                         window.clone(),
                         75,
                         150,
                         block.layout,
                     )?);
+                    window.stats.set_audio(Arc::downgrade(&playback));
+                    output = Some(playback);
                 }
                 if let Some(playback) = &output {
                     playback.queue(&block.pcm);
@@ -195,6 +212,9 @@ fn stream(
                     continue;
                 }
                 if mods & 3 == 3 && *code == "KeyR" {
+                    if established {
+                        attempt.send(&crate::control::header(24, 0, 0, 0))?;
+                    }
                     detached = !detached;
                     window.set_input_state(crate::core_input::State {
                         detached,
@@ -222,7 +242,7 @@ fn stream(
                 }
             }
             if established {
-                input::send(&attempt, window, &event)?;
+                input.send(&attempt, window, &event)?;
             }
         }
         // Existing FIFO wakes immediately for input; media decoding and presentation

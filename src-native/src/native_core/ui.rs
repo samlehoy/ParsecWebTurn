@@ -43,10 +43,13 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
                 });
                 // Clear the password control before its native storage is freed.
                 SetWindowTextW(form.fields[1], wide("").as_ptr());
+                SetWindowTextW(form.fields[2], wide("").as_ptr());
                 DestroyWindow(hwnd);
                 return 0;
             }
             WM_CLOSE => {
+                SetWindowTextW(form.fields[1], wide("").as_ptr());
+                SetWindowTextW(form.fields[2], wide("").as_ptr());
                 DestroyWindow(hwnd);
                 return 0;
             }

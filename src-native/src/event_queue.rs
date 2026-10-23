@@ -130,7 +130,9 @@ mod tests {
         let worker = std::thread::spawn(move || {
             q.set_consumer(std::thread::current());
             ready.send(()).unwrap();
-            std::thread::park();
+            let started = Instant::now();
+            std::thread::park_timeout(Duration::from_secs(1));
+            assert!(started.elapsed() < Duration::from_millis(500));
             q.drain()
         });
         started.recv_timeout(Duration::from_secs(1)).unwrap();

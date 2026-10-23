@@ -89,32 +89,80 @@ fn usage(code: &str) -> Option<i32> {
     })
 }
 
-pub fn send(attempt: &Attempt, window: &Window, event: &Event) -> Result<()> {
-    use crate::control::header;
-    let viewport = window.presented_viewport();
-    let packet = match event {
-        Event::Key(down, code, mods) => {
-            let Some(usage) = usage(code) else {
-                return Ok(());
-            };
-            header(0, usage, *mods, i32::from(*down))
+// Side-specific modifier bits from lowlat.h, not the browser's compact mask.
+#[derive(Default)]
+pub struct Input {
+    modifiers: i32,
+}
+impl Input {
+    fn frame(
+        &mut self,
+        event: &Event,
+        viewport: Option<crate::viewport::Viewport>,
+    ) -> Option<bytes::Bytes> {
+        use crate::control::header;
+        Some(match event {
+            Event::Key(down, code, compact) => {
+                let key = usage(code)?;
+                if (224..=231).contains(&key) {
+                    let bit = [64, 1, 256, 1024, 128, 2, 512, 2048][(key - 224) as usize];
+                    if *down {
+                        self.modifiers |= bit;
+                    } else {
+                        self.modifiers &= !bit;
+                    }
+                }
+                let mut mods = self.modifiers;
+                // A modifier may already be held when focus/session starts.
+                for (source, bits, fallback) in
+                    [(1, 3, 1), (2, 192, 64), (4, 768, 256), (8, 3072, 1024)]
+                {
+                    if compact & source != 0 && mods & bits == 0 {
+                        mods |= fallback;
+                    }
+                }
+                if compact & 16 != 0 {
+                    mods |= 8192;
+                }
+                if compact & 32 != 0 {
+                    mods |= 4096;
+                }
+                header(0, key, mods, i32::from(*down))
+            }
+            Event::Button(down, button, ..) if (0..=4).contains(button) => {
+                header(1, *button + 1, i32::from(*down), 0)
+            }
+            // Window's vertical sign matches its browser callback; the native
+            // lowlat/stock-host contract is Win32's wheel sign instead.
+            Event::Scroll(x, y) => header(2, *x, y.saturating_neg(), 0),
+            Event::Motion(x, y) => {
+                let (x, y) = viewport?.map(*x, *y)?;
+                header(3, 0, x, y)
+            }
+            Event::RelativeMotion(x, y) => header(3, 1, *x, *y),
+            Event::RelativeMode(active) => header(3, 3, i32::from(*active), 0),
+            Event::Focus(false) | Event::HidInputRelease => {
+                self.modifiers = 0;
+                header(24, 0, 0, 0)
+            }
+            _ => return None,
+        })
+    }
+    pub fn send(&mut self, attempt: &Attempt, window: &Window, event: &Event) -> Result<()> {
+        if matches!(event, Event::RelativeMode(_)) && !attempt.hid_mouse_enabled() {
+            return Ok(());
         }
-        Event::Button(down, button, ..) => header(1, *button, i32::from(*down), 0),
-        Event::Scroll(x, y) => header(2, *x, *y, 0),
-        Event::Motion(x, y) => {
-            let Some((x, y)) = viewport.and_then(|v| v.map(*x, *y)) else {
-                return Ok(());
-            };
-            header(3, 0, x, y)
+        let viewport = window.presented_viewport();
+        let Some(packet) = self.frame(event, viewport) else {
+            return Ok(());
+        };
+        if window.native_input_allowed()
+            || matches!(event, Event::Focus(false) | Event::HidInputRelease)
+        {
+            attempt.native_input(&packet, viewport)?;
         }
-        Event::RelativeMotion(x, y) => header(3, 1, *x, *y),
-        Event::RelativeMode(active) if attempt.hid_mouse_enabled() => {
-            header(3, 3, i32::from(*active), 0)
-        }
-        Event::Focus(false) | Event::HidInputRelease => header(24, 0, 0, 0),
-        _ => return Ok(()),
-    };
-    attempt.native_input(&packet, viewport)
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -134,5 +182,36 @@ mod tests {
             assert_eq!(usage(code), Some(expected));
         }
         assert_eq!(usage("unrecognized"), None);
+    }
+    #[test]
+    fn native_buttons_wheel_and_modifiers_match_lowlat_wire_values() {
+        let mut input = Input::default();
+        assert_eq!(
+            input.frame(&Event::Button(true, 0, 0, 0), None).unwrap(),
+            crate::control::header(1, 1, 1, 0)
+        );
+        assert_eq!(
+            input.frame(&Event::Button(false, 2, 0, 0), None).unwrap(),
+            crate::control::header(1, 3, 0, 0)
+        );
+        assert_eq!(
+            input.frame(&Event::Scroll(120, -120), None).unwrap(),
+            crate::control::header(2, 120, 120, 0)
+        );
+        assert_eq!(
+            input
+                .frame(&Event::Key(true, "ControlRight", 2), None)
+                .unwrap(),
+            crate::control::header(0, 228, 128, 1)
+        );
+        assert_eq!(
+            input.frame(&Event::Key(true, "KeyA", 18), None).unwrap(),
+            crate::control::header(0, 4, 128 | 8192, 1)
+        );
+        assert_eq!(
+            input.frame(&Event::Focus(false), None).unwrap(),
+            crate::control::header(24, 0, 0, 0)
+        );
+        assert_eq!(input.modifiers, 0);
     }
 }
