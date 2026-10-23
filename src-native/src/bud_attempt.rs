@@ -84,6 +84,8 @@ pub struct Attempt {
     cancel: Arc<AtomicBool>,
     thread: std::thread::Thread,
     hid_input: (bool, bool),
+    #[cfg(feature = "native-core")]
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Attempt {
@@ -174,6 +176,7 @@ impl Attempt {
         })?;
         let thread = worker.thread().clone();
         // The worker owns its shutdown. Never join it under Backend/UI locks.
+        #[cfg(not(feature = "native-core"))]
         drop(worker);
         Ok(Self {
             id: id.into(),
@@ -184,6 +187,8 @@ impl Attempt {
             cancel,
             thread,
             hid_input,
+            #[cfg(feature = "native-core")]
+            worker: Some(worker),
         })
     }
 
@@ -380,9 +385,26 @@ impl Attempt {
 }
 impl Drop for Attempt {
     fn drop(&mut self) {
-        let _state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        self.cancel.store(true, Ordering::Release);
-        self.thread.unpark();
+        {
+            let _state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            self.cancel.store(true, Ordering::Release);
+            self.thread.unpark();
+        }
+        #[cfg(feature = "native-core")]
+        if let Some(worker) = self.worker.take() {
+            // Native bootstrap has no guest threads keeping the process alive.
+            // Allow authenticated departure/HID removal before process exit,
+            // outside every state/session lock, with a bounded startup-cancel wait.
+            let until = Instant::now() + Duration::from_secs(2);
+            while !worker.is_finished() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if worker.is_finished() {
+                let _ = worker.join();
+            } else {
+                crate::event_log::record("WARN", "native_bud_shutdown_pending", json!({}));
+            }
+        }
     }
 }
 
@@ -1207,6 +1229,8 @@ mod tests {
                 cancel: Default::default(),
                 thread: std::thread::current(),
                 hid_input: (false, false),
+                #[cfg(feature = "native-core")]
+                worker: None,
             },
             receiver,
         )
@@ -1439,6 +1463,42 @@ mod tests {
         let settings: crate::connection_settings::Settings =
             serde_json::from_str(r#"{"bud":true}"#).unwrap();
         assert!(settings.bud);
+    }
+
+    #[cfg(feature = "native-core")]
+    #[test]
+    fn native_offer_uses_existing_account_envelope_without_guest_memory() {
+        let writes = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let captured = writes.clone();
+        let writer: SignalingWrite = Arc::new(move |text| {
+            captured
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(&text).unwrap());
+            true
+        });
+        let state = Mutex::new(State {
+            writer: Some(writer),
+            template: Some(json!({"version":1,"action":"offer","payload":{
+                "to":"fixture-host","attempt_id":"fixture-attempt","secret":"","data":{}}})),
+            ..Default::default()
+        });
+        let cancel = AtomicBool::new(false);
+        assert!(complete_offer(
+            &state,
+            &cancel,
+            &None,
+            json!({"mode":1,"creds":{"fixture":true}}),
+            ["unused"; 3]
+        )
+        .unwrap());
+        let sent = writes.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["payload"]["to"], "fixture-host");
+        assert_eq!(sent[0]["payload"]["data"]["mode"], 1);
+        assert!(sent[0]["payload"]["data"]["creds"]["fixture"]
+            .as_bool()
+            .unwrap());
     }
 
     #[test]

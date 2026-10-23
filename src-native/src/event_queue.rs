@@ -121,6 +121,24 @@ mod tests {
         sync::{mpsc, Arc},
         time::Duration,
     };
+    #[cfg(feature = "native-core")]
+    #[test]
+    fn native_consumer_is_woken_for_input_and_stop_without_polling() {
+        let queue = Arc::new(Queue::<u8>::default());
+        let (ready, started) = mpsc::channel();
+        let q = queue.clone();
+        let worker = std::thread::spawn(move || {
+            q.set_consumer(std::thread::current());
+            ready.send(()).unwrap();
+            std::thread::park();
+            q.drain()
+        });
+        started.recv_timeout(Duration::from_secs(1)).unwrap();
+        queue.push(7);
+        assert_eq!(worker.join().unwrap(), vec![7]);
+        queue.stop();
+        assert!(!queue.try_push(9));
+    }
 
     #[test]
     fn repeated_full_batches_reuse_two_allocations_and_preserve_fifo() {

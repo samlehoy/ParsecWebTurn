@@ -517,6 +517,35 @@ impl Drop for Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "native-core")]
+    #[test]
+    fn native_pcm_handoff_keeps_layout_and_recycles_without_guest_memory() {
+        let layout = Layout::new(6, 0x60f).unwrap();
+        let pipeline = Pipeline::start_with_layout(Some(100), layout);
+        pipeline.set_native_consumer(std::thread::current());
+        let samples: Vec<i16> = (0..60).collect();
+        let bytes: Vec<u8> = samples.iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert!(pipeline
+            .sender()
+            .unwrap()
+            .submit_layout(&bytes, true, layout));
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let block = loop {
+            if let Some(block) = pipeline.take_native_pcm() {
+                break block;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "PCM decoder did not wake its consumer"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(20));
+        };
+        assert_eq!(block.layout, layout);
+        assert_eq!(block.pcm, samples);
+        assert_eq!(pipeline.snapshot().queued_frames, 0);
+        pipeline.recycle_handoff(block);
+        assert!(pipeline.take_native_pcm().is_none());
+    }
     fn shared_memory() -> crate::memory::GuestMemory {
         let mut config = wasmtime::Config::new();
         config.wasm_threads(true);
