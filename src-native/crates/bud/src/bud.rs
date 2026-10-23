@@ -4,6 +4,8 @@ use std::net::SocketAddr;
 use anyhow::{Result, anyhow, ensure};
 pub use lowlat_client::config::RelayTransport;
 use lowlat_client::config::{Port, Relay};
+#[cfg(feature = "native-core")]
+pub use lowlat_client::cursor::{Cache as CursorCache, Shape as CursorShape};
 use lowlat_client::driver::Units;
 use lowlat_client::{Client, Config, Peer, Transport};
 pub use lowlat_client::{Event, Outcome};
@@ -432,3 +434,12 @@ mod tests {
         );
     }
 }
+
+#[cfg(feature = "native-core")]
+pub fn cursor_message(bytes: &[u8]) -> Result<lowlat_core::cursor::Message<'_>> {
+    let control =
+        lowlat_core::control::parse(bytes).map_err(|_| anyhow!("Invalid cursor control"))?;
+    lowlat_core::cursor::parse(&control).map_err(|_| anyhow!("Invalid host cursor"))
+}
+#[cfg(feature = "native-core")]
+pub use lowlat_core::cursor::Flags as CursorFlags;

@@ -30,6 +30,8 @@
 )]
 
 pub mod config;
+#[cfg(feature = "cursor-cache")]
+pub mod cursor;
 pub mod driver;
 pub mod event;
 pub mod input;

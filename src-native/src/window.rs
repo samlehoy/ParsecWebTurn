@@ -109,30 +109,58 @@ pub struct Window {
 
 impl Window {
     unsafe fn open_about(&self) {
-        self.core_version.check();
-        let existing = self.about_page.load(Ordering::Acquire) as HWND;
-        if !existing.is_null() {
-            ShowWindow(existing, SW_RESTORE);
-            SetForegroundWindow(existing);
+        #[cfg(feature = "native-core")]
+        {
+            MessageBoxW(
+                self.handle(),
+                "Experimental independent Rust core. BUD only.\0"
+                    .encode_utf16()
+                    .collect::<Vec<_>>()
+                    .as_ptr(),
+                "ParsecWebTurn - native core\0"
+                    .encode_utf16()
+                    .collect::<Vec<_>>()
+                    .as_ptr(),
+                MB_OK,
+            );
             return;
         }
-        let page = crate::updater_ui::open_about(self.handle(), self.core_version.clone());
-        self.about_page.store(page as usize, Ordering::Release);
-    }
-    unsafe fn open_updates(&self, check: bool, activate: bool) {
-        if check {
-            self.updates.check(false);
-        }
-        let existing = self.updates_page.load(Ordering::Acquire) as HWND;
-        if !existing.is_null() {
-            if activate {
+        #[cfg(not(feature = "native-core"))]
+        {
+            self.core_version.check();
+            let existing = self.about_page.load(Ordering::Acquire) as HWND;
+            if !existing.is_null() {
                 ShowWindow(existing, SW_RESTORE);
                 SetForegroundWindow(existing);
+                return;
             }
+            let page = crate::updater_ui::open_about(self.handle(), self.core_version.clone());
+            self.about_page.store(page as usize, Ordering::Release);
+        }
+    }
+    unsafe fn open_updates(&self, check: bool, activate: bool) {
+        #[cfg(feature = "native-core")]
+        {
+            let _ = (check, activate);
+            self.open_about();
             return;
         }
-        let page = crate::updater_ui::open(self.handle(), self.updates.clone(), activate);
-        self.updates_page.store(page as usize, Ordering::Release);
+        #[cfg(not(feature = "native-core"))]
+        {
+            if check {
+                self.updates.check(false);
+            }
+            let existing = self.updates_page.load(Ordering::Acquire) as HWND;
+            if !existing.is_null() {
+                if activate {
+                    ShowWindow(existing, SW_RESTORE);
+                    SetForegroundWindow(existing);
+                }
+                return;
+            }
+            let page = crate::updater_ui::open(self.handle(), self.updates.clone(), activate);
+            self.updates_page.store(page as usize, Ordering::Release);
+        }
     }
     unsafe fn open_stats(&self) {
         let existing = self.stats_page.load(Ordering::Acquire) as HWND;
@@ -157,6 +185,11 @@ impl Window {
     #[cfg(feature = "diagnostics")]
     pub fn create_video_probe() -> Result<Arc<Self>> {
         Self::create_mode(false, true, false, false, false)
+    }
+
+    #[cfg(feature = "native-core")]
+    pub fn create_native() -> Result<Arc<Self>> {
+        Self::create_mode(false, true, true, false, false)
     }
 
     fn create_mode(
@@ -1801,6 +1834,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires an accelerated OpenGL desktop; run the isolated GUI harness explicitly"]
+    #[cfg(not(feature = "native-core"))]
     fn idle_core_gui_presents_after_back_without_extra_input() {
         let mut nonce = [0; 16];
         getrandom::fill(&mut nonce).unwrap();

@@ -43,6 +43,7 @@ pub mod channel;
 pub mod congestion;
 pub mod conn;
 pub mod control;
+pub mod cursor;
 pub mod crc32;
 pub mod demux;
 pub mod endpoint;

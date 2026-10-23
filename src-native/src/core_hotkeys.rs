@@ -70,6 +70,7 @@ impl Binding {
 mod tests {
     use super::*;
     #[test]
+    #[cfg(not(feature = "native-core"))]
     fn original_core_dispatches_custom_hotkeys_and_consumes_their_release() {
         std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)

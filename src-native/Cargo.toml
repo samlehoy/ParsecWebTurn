@@ -10,6 +10,7 @@ publish = false
 default = ["vendor-video", "bud"]
 vendor-video = ["dep:parsec-gpu-video"]
 bud = ["dep:parsec-native-bud"]
+native-core = ["bud", "parsec-native-bud/native-core", "dep:zeroize"]
 diagnostics = ["dep:log", "dep:rcgen", "dep:ring", "dep:rustls", "dep:tokio-rustls", "wasmtime/wat", "wasmtime/cranelift"]
 
 [dependencies]
@@ -19,6 +20,7 @@ serde_json = "1"
 sha2 = "0.10"
 getrandom = "0.3"
 bytes = "1"
+zeroize = { version = "1", optional = true }
 base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }

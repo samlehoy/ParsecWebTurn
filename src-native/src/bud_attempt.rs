@@ -93,12 +93,51 @@ impl Attempt {
         window: Arc<crate::window::Window>,
         manager: Arc<crate::connection_settings::Manager>,
     ) -> Result<Self> {
+        Self::spawn_inner(id, Some(output), window, manager, State::default())
+    }
+
+    #[cfg(feature = "native-core")]
+    pub fn spawn_native(
+        id: &str,
+        peer: &str,
+        writer: SignalingWrite,
+        window: Arc<crate::window::Window>,
+        manager: Arc<crate::connection_settings::Manager>,
+    ) -> Result<Self> {
+        // Same offer/candidate/retry worker as the WASM-backed client. Only
+        // the owner of the initial account envelope changes.
+        ensure!(
+            !peer.is_empty() && peer.len() <= 256,
+            "invalid native peer id"
+        );
+        let template = json!({"version":1,"action":"offer","payload":{
+            "to":peer,"attempt_id":id,"secret":"","data":{}}});
+        Self::spawn_inner(
+            id,
+            None,
+            window,
+            manager,
+            State {
+                template: Some(template),
+                writer: Some(writer),
+                ..Default::default()
+            },
+        )
+    }
+
+    fn spawn_inner(
+        id: &str,
+        output: Option<crate::attempt::Output>,
+        window: Arc<crate::window::Window>,
+        manager: Arc<crate::connection_settings::Manager>,
+        initial: State,
+    ) -> Result<Self> {
         let settings = manager.view().0;
         let hid_input = (
             settings.hid_mouse_enabled(),
             settings.hid_keyboard_enabled(),
         );
-        let state = Arc::new(Mutex::new(State::default()));
+        let state = Arc::new(Mutex::new(initial));
         let session = Arc::new(Mutex::new(None));
         let audio = Arc::new(Mutex::new(None));
         let cancel = Arc::new(AtomicBool::new(false));
@@ -125,7 +164,7 @@ impl Attempt {
                 state.events.clear();
                 state.controls.clear();
                 state.events.push_back(json!({"type":7,"status":-6200,"state":4,"attemptID":attempt_id,"duration":0}));
-                if !state.output_finished { state.output_finished = true; let _ = output.finish_values(None); }
+                if !state.output_finished { state.output_finished = true; if let Some(output) = &output { let _ = output.finish_values(None); } }
                 }
             }
             withdraw_pending(&worker_state);
@@ -150,6 +189,14 @@ impl Attempt {
 
     pub fn hid_mouse_enabled(&self) -> bool {
         self.hid_input.0
+    }
+
+    #[cfg(feature = "native-core")]
+    pub fn native_connected(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .established
     }
 
     pub fn hid_input_enabled(&self) -> bool {
@@ -273,6 +320,20 @@ impl Attempt {
         }
         session.send_control(frame)
     }
+    #[cfg(feature = "native-core")]
+    pub fn native_input(
+        &self,
+        packet: &[u8],
+        viewport: Option<crate::viewport::Viewport>,
+    ) -> Result<()> {
+        let absolute = if self.hid_mouse_enabled() {
+            crate::hid_input::absolute_motion(packet, viewport)?
+        } else {
+            None
+        };
+        self.send(absolute.as_deref().unwrap_or(packet))
+    }
+
     pub fn poll_audio(
         &self,
         memory: &crate::memory::GuestMemory,
@@ -407,7 +468,7 @@ fn withdraw_pending(state: &Mutex<State>) {
 fn complete_offer(
     state: &Mutex<State>,
     cancel: &AtomicBool,
-    output: &crate::attempt::Output,
+    output: &Option<crate::attempt::Output>,
     offer: Value,
     values: [&str; 3],
 ) -> Result<bool> {
@@ -417,11 +478,30 @@ fn complete_offer(
     }
     ensure!(!state.output_finished, "BUD offer already completed");
     state.output_finished = true;
-    ensure!(
-        output.finish_values(Some(values))?,
-        "BUD credential output too small"
-    );
+    if let Some(output) = output {
+        ensure!(
+            output.finish_values(Some(values))?,
+            "BUD credential output too small"
+        );
+        state.offer = Some(offer);
+        return Ok(true);
+    }
+    let mut message = state
+        .template
+        .clone()
+        .context("native account destination missing")?;
+    message["payload"]["data"] = offer.clone();
+    state.template = Some(message.clone());
     state.offer = Some(offer);
+    let writer = state
+        .writer
+        .clone()
+        .context("native account writer missing")?;
+    drop(state);
+    ensure!(
+        writer(message.to_string()),
+        "native account offer send failed"
+    );
     Ok(true)
 }
 
@@ -553,7 +633,7 @@ fn log_route_attempt(route: &Route) {
 #[allow(clippy::too_many_arguments)]
 fn run(
     id: &str,
-    output: &crate::attempt::Output,
+    output: &Option<crate::attempt::Output>,
     window: &Arc<crate::window::Window>,
     manager: &crate::connection_settings::Manager,
     state: &Arc<Mutex<State>>,
@@ -910,7 +990,13 @@ fn run(
             );
             last_stats = Instant::now();
         }
+        #[cfg(feature = "native-core")]
+        let native_pending = !shared.controls.is_empty() || !shared.events.is_empty();
         drop(shared);
+        #[cfg(feature = "native-core")]
+        if native_pending {
+            window.events.wake_consumer();
+        }
         if cursor_ready {
             // Wake only after the unchanged FIFO contains the host event and
             // after releasing the worker state lock. The WASM still consumes
@@ -1010,7 +1096,7 @@ fn native_close(text: &str, attempt: &str) -> bool {
     })
 }
 
-fn native_attempt_id() -> Result<String> {
+pub(crate) fn native_attempt_id() -> Result<String> {
     let mut random = [0u8; 24];
     getrandom::fill(&mut random).map_err(|_| anyhow::anyhow!("BUD attempt entropy unavailable"))?;
     Ok(random
@@ -1318,7 +1404,7 @@ mod tests {
         assert!(!complete_offer(
             &state,
             &cancelled,
-            &output,
+            &Some(output.clone()),
             json!({"mode":1}),
             ["old", "old", "old"]
         )
@@ -1329,7 +1415,7 @@ mod tests {
         assert!(complete_offer(
             &state,
             &cancelled,
-            &output,
+            &Some(output.clone()),
             json!({"mode":1}),
             ["new", "pwd", "fp"]
         )
@@ -1338,7 +1424,7 @@ mod tests {
         assert!(complete_offer(
             &state,
             &cancelled,
-            &output,
+            &Some(output.clone()),
             json!({"mode":1}),
             ["duplicate", "pwd", "fp"]
         )

@@ -30,7 +30,7 @@ mod core_config;
 mod core_hotkeys;
 #[cfg(windows)]
 mod core_input;
-#[cfg(any(windows, feature = "diagnostics"))]
+#[cfg(all(any(windows, feature = "diagnostics"), not(feature = "native-core")))]
 mod core_runtime;
 #[cfg(windows)]
 mod core_version;
@@ -148,15 +148,21 @@ use {
 const PINNED_SHA256: &str = "d663dd96df477c65479fb93eb88756c7fcafff581cc93be563625cd195a4b4a6";
 #[cfg(feature = "diagnostics")]
 include!("diagnostic_entry.rs");
-#[cfg(all(windows, not(feature = "diagnostics")))]
+#[cfg(all(windows, not(feature = "diagnostics"), not(feature = "native-core")))]
 mod client;
+#[cfg(all(windows, feature = "native-core"))]
+mod native_core;
+#[cfg(all(feature = "native-core", feature = "diagnostics"))]
+compile_error!("Build native-core and the WASM diagnostics separately");
 #[cfg(all(windows, any(test, not(feature = "diagnostics"))))]
 mod profile;
 fn main() {
     #[cfg(feature = "diagnostics")]
     diagnostic_main();
-    #[cfg(all(windows, not(feature = "diagnostics")))]
+    #[cfg(all(windows, not(feature = "diagnostics"), not(feature = "native-core")))]
     client::main();
+    #[cfg(all(windows, feature = "native-core"))]
+    native_core::main();
 }
 #[cfg(any(test, feature = "diagnostics"))]
 fn instantiate(engine: &Engine, module: &Module) -> Result<(Store<HostState>, Instance)> {

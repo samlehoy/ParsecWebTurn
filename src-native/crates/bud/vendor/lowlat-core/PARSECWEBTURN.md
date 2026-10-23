@@ -21,3 +21,11 @@ bound their deadlines, preserve nonce/authentication recovery and frame TURN
 STUN/ChannelData on streams. Allocation and peer traffic remain UDP. The existing
 240-second permission/channel renewal policy is retained. Tests cover both modes.
 No SDK ABI, decoder, host encoder, renderer or account API is imported.
+
+## Native core branch (2026-10-24)
+
+The receive-only cursor parser/cache is adapted from upstream revision
+`e548d48c81ae50937940b2b47f700557cd9d50a4` (MIT). The cursor cache is
+only enabled by the native-core feature; no upstream PNG decoder, SDK, renderer,
+host-side cursor encoder or extra dependency is imported. Existing Win32 cursor
+creation and PNG decoding remain the application's.

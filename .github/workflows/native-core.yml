@@ -1,0 +1,50 @@
+name: Experimental native BUD core
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/native-core]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-native
+      - name: Verify native-only build without a proprietary core file
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path -LiteralPath src-native/vendor/parsecd.wasm) {
+            Remove-Item -LiteralPath src-native/vendor/parsecd.wasm
+          }
+          cargo fmt --manifest-path src-native/Cargo.toml -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
+          cargo test --locked --manifest-path src-native/Cargo.toml --features native-core native_core:: -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Native account/input tests failed' }
+          cargo test --locked --manifest-path src-native/Cargo.toml --features native-core bud_attempt::tests:: -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Shared BUD lifecycle regressions failed' }
+          cargo test --locked --manifest-path src-native/Cargo.toml --features native-core audio_stream::tests:: -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Audio handoff regressions failed' }
+          cargo build --locked --release --manifest-path src-native/Cargo.toml --features native-core
+          if ($LASTEXITCODE -ne 0) { throw 'Native core build failed' }
+          New-Item -ItemType Directory -Path dist/native-core -Force | Out-Null
+          Copy-Item -LiteralPath src-native/target/x86_64-pc-windows-msvc/release/parsec-web-turn.exe -Destination dist/native-core/ParsecWebTurn-native-core.exe
+          & ./dist/native-core/ParsecWebTurn-native-core.exe --version
+          if ($LASTEXITCODE -ne 0) { throw 'Native version probe failed' }
+          Copy-Item -LiteralPath docs/native-core.md -Destination dist/native-core/README.md
+          Copy-Item -LiteralPath LICENSE -Destination dist/native-core/LICENSE
+          Copy-Item -LiteralPath src-native/crates/bud/vendor/lowlat-client/LICENSE -Destination dist/native-core/LOWLAT-LICENSE.txt
+          git rev-parse HEAD | Set-Content -LiteralPath dist/native-core/SOURCE.txt -Encoding ascii
+          Get-FileHash -Algorithm SHA256 dist/native-core/ParsecWebTurn-native-core.exe | Format-List | Out-String | Set-Content -LiteralPath dist/native-core/SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ParsecWebTurn-native-core-win64
+          path: dist/native-core/*
+          if-no-files-found: error

@@ -32,6 +32,8 @@ struct State {
     free_packets: Vec<Vec<u8>>,
     stopped: bool,
     pending: Option<Handoff>,
+    #[cfg(feature = "native-core")]
+    native_consumer: Option<std::thread::Thread>,
 }
 pub struct Handoff {
     pointer: u32,
@@ -56,6 +58,10 @@ fn stage_pcm(state: &mut State, mut pcm: Vec<i16>, max_samples: usize) {
     }
     state.report.queued_samples += pcm.len();
     state.pcm.push_back(pcm);
+    #[cfg(feature = "native-core")]
+    if let Some(consumer) = &state.native_consumer {
+        consumer.unpark();
+    }
 }
 #[derive(Clone)]
 pub(crate) struct Sender {
@@ -456,6 +462,27 @@ impl Pipeline {
         if !state.stopped && state.free_pcm.len() < RECYCLED_BUFFERS {
             state.free_pcm.push(block.pcm);
         }
+    }
+    /// Native consumer of the same decoded PCM queue. No guest-memory roundtrip.
+    #[cfg(feature = "native-core")]
+    pub fn set_native_consumer(&self, thread: std::thread::Thread) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .native_consumer = Some(thread);
+    }
+    #[cfg(feature = "native-core")]
+    pub fn take_native_pcm(&self) -> Option<Handoff> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let pcm = state.pcm.pop_front()?;
+        let layout = state.report.layout.unwrap_or(Layout::STEREO);
+        state.report.queued_samples -= pcm.len();
+        state.report.pcm_frames_polled += (pcm.len() / usize::from(layout.channels)) as u64;
+        Some(Handoff {
+            pointer: 0,
+            layout,
+            pcm,
+        })
     }
     pub fn snapshot(&self) -> Snapshot {
         let mut report = self

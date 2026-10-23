@@ -6,7 +6,7 @@ fn main() {
     println!("cargo:rerun-if-changed=vendor/parsecd.wasm");
     println!("cargo:rerun-if-changed=src/core_config.rs");
     // Compile once for the portable target, never the build machine CPU.
-    {
+    if env::var_os("CARGO_FEATURE_NATIVE_CORE").is_none() {
         use sha2::{Digest, Sha256};
         let bytes = fs::read("vendor/parsecd.wasm").expect("Fetch the pinned core first");
         assert_eq!(

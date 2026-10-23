@@ -207,6 +207,7 @@ mod tests {
         assert!(mode(&m).is_err());
     }
     #[test]
+    #[cfg(not(feature = "native-core"))]
     fn pinned_core_initializes_the_audited_immersive_schema() {
         std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)

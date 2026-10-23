@@ -80,3 +80,11 @@ produced after its normal IO pass, before entering another wait. The driver
 tracks only successful enqueues; the same carrier handles UDP batching and
 TCP/TLS backpressure. No protocol deadline, HID report cadence or transport
 ordering is changed. Temporary input-trace instrumentation is not retained.
+
+## Native core branch (2026-10-24)
+
+The receive-only cursor parser/cache is adapted from upstream revision
+`e548d48c81ae50937940b2b47f700557cd9d50a4` (MIT). The cursor cache is
+only enabled by the native-core feature; no upstream PNG decoder, SDK, renderer,
+host-side cursor encoder or extra dependency is imported. Existing Win32 cursor
+creation and PNG decoding remain the application's.

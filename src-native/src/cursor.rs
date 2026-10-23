@@ -15,6 +15,10 @@ pub struct Frame {
     rgba: Vec<u8>,
 }
 impl Frame {
+    #[cfg(feature = "native-core")]
+    pub fn native_png(bytes: &[u8], x: i32, y: i32) -> Result<Self> {
+        Self::png(bytes.to_vec(), x, y)
+    }
     fn rgba(bytes: Vec<u8>, width: u32, height: u32, x: i32, y: i32) -> Result<Self> {
         let size = Self::size(width, height)?;
         if bytes.len() != size {
