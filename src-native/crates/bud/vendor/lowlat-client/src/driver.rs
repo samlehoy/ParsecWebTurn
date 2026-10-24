@@ -1312,6 +1312,7 @@ mod tests {
     fn external_encoder_requests_keep_initial_depth_and_range() {
         for external in [0, 1, 2, 8, 16, 0x1b] {
             assert_eq!(negotiated_encoder_flags(external, 0x19), 0x19);
+            assert_eq!(negotiated_encoder_flags(external, 0x09), 0x09);
             assert_eq!(negotiated_encoder_flags(external, 8), 8);
         }
         assert_eq!(negotiated_encoder_flags(0x40, 0x19), 0x59);

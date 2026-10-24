@@ -195,3 +195,10 @@ status and the existing error handling.
 In the native build, Connection stats is an independent top-level window so
 normal activation can place it in front of or behind the stream. Session stays
 owned by the stream. Closing the stream explicitly closes its stats window.
+
+HEVC format changes are handled before compressed input reaches the old GPU
+decoder. The client rebuilds the selected decode/presentation path, retains
+current parameter sets and the arriving keyframe, and requests a new keyframe
+only when needed. A size change alone does not disable vendor decoding or
+zero-copy, and does not consume the decoder-error retry limit. Live validation
+with remote hosts and the affected GPU paths is still required.

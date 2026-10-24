@@ -354,6 +354,19 @@ impl Queue {
         true
     }
 
+    /// A valid stream format change is not a decoder failure. Preserve queued
+    /// compressed frames, especially an already received random-access picture,
+    /// and keep the existing keyframe deadline/rate limit if one is needed.
+    pub fn begin_format_change(&mut self, now: Instant, needs_keyframe: bool) {
+        self.report.decoder_initialized = false;
+        if needs_keyframe {
+            self.report.waiting_for_idr = true;
+            self.report.recovering = true;
+            self.recovery_started = Some(now);
+            self.request_pending = true;
+        }
+    }
+
     pub fn check_recovery(&mut self, now: Instant) {
         if self
             .recovery_started
@@ -381,6 +394,7 @@ impl Queue {
     }
 
     pub fn recovered(&mut self) {
+        self.report.waiting_for_idr = false;
         self.recovery_started = None;
         self.request_pending = false;
         self.report.recovering = false;
@@ -518,6 +532,30 @@ mod tests {
             Some("video-recovery-request-failed")
         );
     }
+    #[test]
+    fn format_changes_keep_queued_keys_and_do_not_spend_error_retries() {
+        let mut queue = Queue::default();
+        let now = Instant::now();
+        assert!(queue.submit(&[1], true, true, 0));
+        for _ in 0..8 {
+            queue.begin_format_change(now, false);
+        }
+        assert!(queue.pop().unwrap().idr);
+        assert_eq!(queue.reset_generation, 0);
+        assert_eq!(queue.recovery_attempts, 0);
+        assert!(queue.submit(&[2], true, true, 1));
+        queue.begin_format_change(now, true);
+        assert!(queue.take_keyframe_request(now).is_some());
+        assert!(queue.pop().unwrap().idr);
+        queue.recovered();
+        assert!(queue.submit(&[3], false, false, 2));
+        queue.begin_format_change(now, true);
+        // A second boundary still respects the existing keyframe rate limit.
+        assert!(queue.take_keyframe_request(now).is_none());
+        queue.check_recovery(now + Duration::from_secs(5));
+        assert_eq!(queue.report.failure_stage, Some("video-recovery-timeout"));
+    }
+
     #[test]
     fn recovery_is_rate_limited_bounded_and_stops_on_timeout_or_cancellation() {
         let now = Instant::now();

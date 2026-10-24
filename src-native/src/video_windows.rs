@@ -619,6 +619,51 @@ fn run(
         }
         if frame.parameters {
             parameters.observe(&frame.bytes, frame.codec);
+            if frame.codec == crate::video_stream::Codec::Hevc {
+                if let (Some(previous), Some(next)) = (
+                    session.as_ref().and_then(|session| session.hevc),
+                    crate::video_stream::hevc_configuration(&frame.bytes),
+                ) {
+                    if previous != next {
+                        // Retire the old GPU pools before feeding the new SPS.
+                        // Keep this packet and its IDR: no extra frame copy,
+                        // network round trip, or decoder fallback is needed.
+                        session = None;
+                        awaiting_random_access = true;
+                        parameters.retain_hevc_configuration(next);
+                        headers.clear();
+                        header_bytes = 0;
+                        if let Some(bytes) = parameters.bytes() {
+                            header_bytes = bytes.len();
+                            headers.push(Frame {
+                                rotation: frame.rotation,
+                                queued_at: Instant::now(),
+                                codec: frame.codec,
+                                bytes,
+                                idr: false,
+                                parameters: true,
+                                timestamp_100ns: 0,
+                            });
+                        }
+                        shared
+                            .0
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .begin_format_change(Instant::now(), !frame.idr);
+                        window.set_video_ready_for(surface_generation, false);
+                        crate::event_log::record(
+                            "INFO",
+                            "video_format_changed",
+                            serde_json::json!({
+                                "previous_width":previous.width,"previous_height":previous.height,
+                                "width":next.width,"height":next.height,
+                                "bit_depth":next.bit_depth,"chroma":next.chroma,
+                                "keyframe_in_packet":frame.idr,
+                            }),
+                        );
+                    }
+                }
+            }
         }
         if awaiting_random_access && !frame.idr {
             // A parameter-bearing packet may also contain delta pictures. Only
@@ -974,6 +1019,7 @@ impl OutputFormat {
 }
 
 struct Session {
+    hevc: Option<crate::video_stream::HevcConfiguration>,
     rotation: u8,
     in_flight: crate::video_output::InFlight,
     ten_bit: bool,
@@ -1098,6 +1144,7 @@ impl Session {
                     match parsec_gpu_video::display::Session::open(luid, hwnd) {
                         Ok(display) => {
                             return Ok(Some(Self {
+                                hevc,
                                 rotation: 0,
                                 in_flight: Default::default(),
                                 ten_bit: false,
@@ -1126,6 +1173,7 @@ impl Session {
                 let renderer = Renderer::create_on_device(hwnd, device, context, presentation_mode)
                     .map_err(|e| anyhow::anyhow!("{}", e.stage))?;
                 Ok(Some(Self {
+                    hevc,
                     rotation: 0,
                     in_flight: Default::default(),
                     ten_bit: false,
@@ -1252,6 +1300,7 @@ impl Session {
         }
         api("video-input-type", decoder.SetInputType(0, &input, 0))?;
         let mut result = Self {
+            hevc,
             rotation: 0,
             in_flight: Default::default(),
             ten_bit,

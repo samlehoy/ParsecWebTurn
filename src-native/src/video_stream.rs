@@ -224,6 +224,18 @@ impl ParameterCache {
             offset = end;
         }
     }
+    /// A restarted decoder must not see an older SPS geometry first. Keep
+    /// VPS/PPS history (including their IDs), but retire SPS configurations
+    /// that cannot describe the new stream. Only used at a format boundary.
+    pub fn retain_hevc_configuration(&mut self, config: HevcConfiguration) {
+        self.units.retain(|unit| {
+            if (unit[0] >> 1) & 63 != 33 {
+                return true;
+            }
+            hevc_sps(unit).is_none_or(|previous| previous == config)
+        });
+        self.bytes = self.units.iter().map(|unit| unit.len() + 4).sum();
+    }
     pub fn bytes(&self) -> Option<Vec<u8>> {
         if self.overflowed || self.units.is_empty() {
             return None;
@@ -521,6 +533,32 @@ mod tests {
         let huge = [sps.as_slice(), vec![2; 256 * 1024].as_slice()].concat();
         cache.observe(&huge, Codec::H264);
         assert!(cache.bytes().is_none());
+    }
+    #[test]
+    fn format_restart_keeps_new_sps_and_parameter_dependencies() {
+        let old = sps_fixture(1920, 1200, 0, 8);
+        let next = sps_fixture(1920, 1080, 0, 8);
+        let vps = [0, 0, 1, 0x40, 1, 7];
+        let pps = [0, 0, 1, 0x44, 1, 8];
+        let mut cache = ParameterCache::default();
+        for unit in [&vps[..], &old, &pps, &next] {
+            cache.observe(unit, Codec::Hevc);
+        }
+        cache.retain_hevc_configuration(hevc_configuration(&next).unwrap());
+        let bytes = cache.bytes().unwrap();
+        assert_eq!(hevc_configuration(&bytes), hevc_configuration(&next));
+        let mut expected = ParameterCache::default();
+        for unit in [&vps[..], &pps, &next] {
+            expected.observe(unit, Codec::Hevc);
+        }
+        assert_eq!(bytes, expected.bytes().unwrap());
+        // Repeated size changes cannot resurrect a retired SPS.
+        cache.observe(&old, Codec::Hevc);
+        cache.retain_hevc_configuration(hevc_configuration(&old).unwrap());
+        assert_eq!(
+            hevc_configuration(&cache.bytes().unwrap()),
+            hevc_configuration(&old)
+        );
     }
     fn sps_fixture(width: u32, height: u32, layers: u32, depth: u32) -> Vec<u8> {
         fn put(bits: &mut Vec<u8>, value: u32, count: u32) {
