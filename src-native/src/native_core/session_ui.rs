@@ -1096,13 +1096,13 @@ mod tests {
                     .filter(|(x, y, _)| *x > 2 && *x < 46 && *y > 2 && *y < 46)
                     .map(|(_, _, p)| p.0)
                     .collect();
+                let icon_pixels = interior
+                    .iter()
+                    .filter(|p| p[2] > 160 && p[1] > 70 && p[2] > p[0].saturating_add(40))
+                    .count();
                 assert!(
-                    interior
-                        .iter()
-                        .filter(|p| p.iter().all(|v| *v > 180))
-                        .count()
-                        > 15,
-                    "Session icon was not painted"
+                    icon_pixels > 60,
+                    "Session icon was not painted: {icon_pixels} blue pixels"
                 );
                 assert!(
                     interior
