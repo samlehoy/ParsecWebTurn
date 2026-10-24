@@ -225,8 +225,8 @@ impl ParameterCache {
         }
     }
     /// A restarted decoder must not see an older SPS geometry first. Keep
-    /// VPS/PPS history (including their IDs), but retire SPS configurations
-    /// that cannot describe the new stream. Only used at a format boundary.
+    /// VPS/PPS dependencies by ID, but retire incompatible SPS configurations
+    /// and their orphaned PPS entries. Only used at a format boundary.
     pub fn retain_hevc_configuration(&mut self, config: HevcConfiguration) {
         self.units.retain(|unit| {
             if (unit[0] >> 1) & 63 != 33 {
@@ -234,6 +234,28 @@ impl ParameterCache {
             }
             hevc_sps(unit).is_none_or(|previous| previous == config)
         });
+        let sps_ids = self
+            .units
+            .iter()
+            .filter(|unit| (unit[0] >> 1) & 63 == 33)
+            .filter_map(|unit| hevc_sps_with_id(unit).map(|(id, _)| 1u16 << id))
+            .fold(0, |mask, bit| mask | bit);
+        self.units.retain(|unit| {
+            if (unit[0] >> 1) & 63 != 34 {
+                return true;
+            }
+            let mut bits = HevcBits {
+                bytes: &unit[2..],
+                offset: 0,
+                zeros: 0,
+                byte: 0,
+                left: 0,
+            };
+            let referenced = bits.ue().and_then(|_| bits.ue());
+            referenced.is_none_or(|id| id < 16 && sps_ids & (1u16 << id) != 0)
+        });
+        // PPS parsing can reference SPS metadata even in a header-only packet.
+        self.units.sort_by_key(|unit| (unit[0] >> 1) & 63);
         self.bytes = self.units.iter().map(|unit| unit.len() + 4).sum();
     }
     pub fn bytes(&self) -> Option<Vec<u8>> {
@@ -324,64 +346,68 @@ pub fn hevc_configuration(bytes: &[u8]) -> Option<HevcConfiguration> {
 
 // H.265 SPS syntax through bit_depth_chroma_minus8. Read only bounded metadata;
 // emulation-prevention bytes are removed as bits are read, without copying NALs.
-fn hevc_sps(nal: &[u8]) -> Option<HevcConfiguration> {
-    struct Bits<'a> {
-        bytes: &'a [u8],
-        offset: usize,
-        zeros: u8,
-        byte: u8,
-        left: u8,
-    }
-    impl Bits<'_> {
-        fn read(&mut self, count: u32) -> Option<u32> {
-            if count > 32 {
-                return None;
-            }
-            let mut value = 0;
-            for _ in 0..count {
-                if self.left == 0 {
+struct HevcBits<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+    zeros: u8,
+    byte: u8,
+    left: u8,
+}
+impl HevcBits<'_> {
+    fn read(&mut self, count: u32) -> Option<u32> {
+        if count > 32 {
+            return None;
+        }
+        let mut value = 0;
+        for _ in 0..count {
+            if self.left == 0 {
+                self.byte = *self.bytes.get(self.offset)?;
+                self.offset += 1;
+                if self.zeros == 2 && self.byte == 3 {
                     self.byte = *self.bytes.get(self.offset)?;
                     self.offset += 1;
-                    if self.zeros == 2 && self.byte == 3 {
-                        self.byte = *self.bytes.get(self.offset)?;
-                        self.offset += 1;
-                        if self.byte > 3 {
-                            return None;
-                        }
-                        self.zeros = 0;
+                    if self.byte > 3 {
+                        return None;
                     }
-                    self.zeros = if self.byte == 0 {
-                        (self.zeros + 1).min(2)
-                    } else {
-                        0
-                    };
-                    self.left = 8;
+                    self.zeros = 0;
                 }
-                self.left -= 1;
-                value = (value << 1) | u32::from((self.byte >> self.left) & 1);
+                self.zeros = if self.byte == 0 {
+                    (self.zeros + 1).min(2)
+                } else {
+                    0
+                };
+                self.left = 8;
             }
-            Some(value)
+            self.left -= 1;
+            value = (value << 1) | u32::from((self.byte >> self.left) & 1);
         }
-        fn skip(&mut self, mut count: u32) -> Option<()> {
-            while count != 0 {
-                let step = count.min(32);
-                self.read(step)?;
-                count -= step;
-            }
-            Some(())
-        }
-        fn ue(&mut self) -> Option<u32> {
-            let mut zeros = 0;
-            while self.read(1)? == 0 {
-                zeros += 1;
-                if zeros > 30 {
-                    return None;
-                }
-            }
-            Some(((1u32 << zeros) - 1) + self.read(zeros)?)
-        }
+        Some(value)
     }
-    let mut bits = Bits {
+    fn skip(&mut self, mut count: u32) -> Option<()> {
+        while count != 0 {
+            let step = count.min(32);
+            self.read(step)?;
+            count -= step;
+        }
+        Some(())
+    }
+    fn ue(&mut self) -> Option<u32> {
+        let mut zeros = 0;
+        while self.read(1)? == 0 {
+            zeros += 1;
+            if zeros > 30 {
+                return None;
+            }
+        }
+        Some(((1u32 << zeros) - 1) + self.read(zeros)?)
+    }
+}
+fn hevc_sps(nal: &[u8]) -> Option<HevcConfiguration> {
+    hevc_sps_with_id(nal).map(|(_, config)| config)
+}
+
+fn hevc_sps_with_id(nal: &[u8]) -> Option<(u32, HevcConfiguration)> {
+    let mut bits = HevcBits {
         bytes: nal.get(2..)?,
         offset: 0,
         zeros: 0,
@@ -411,7 +437,8 @@ fn hevc_sps(nal: &[u8]) -> Option<HevcConfiguration> {
             bits.skip(8)?;
         }
     }
-    if bits.ue()? > 15 {
+    let id = bits.ue()?;
+    if id > 15 {
         return None;
     }
     let chroma = bits.ue()?;
@@ -444,13 +471,16 @@ fn hevc_sps(nal: &[u8]) -> Option<HevcConfiguration> {
     if bit_depth > 16 || bit_depth != chroma_depth {
         return None;
     }
-    Some(HevcConfiguration {
-        width,
-        height,
-        profile,
-        chroma,
-        bit_depth,
-    })
+    Some((
+        id,
+        HevcConfiguration {
+            width,
+            height,
+            profile,
+            chroma,
+            bit_depth,
+        },
+    ))
 }
 
 // No allocation or payload retention. A bounded linear scan accepts 3/4-byte
@@ -539,7 +569,7 @@ mod tests {
         let old = sps_fixture(1920, 1200, 0, 8);
         let next = sps_fixture(1920, 1080, 0, 8);
         let vps = [0, 0, 1, 0x40, 1, 7];
-        let pps = [0, 0, 1, 0x44, 1, 8];
+        let pps = [0, 0, 1, 0x44, 1, 0xc0];
         let mut cache = ParameterCache::default();
         for unit in [&vps[..], &old, &pps, &next] {
             cache.observe(unit, Codec::Hevc);
@@ -548,7 +578,7 @@ mod tests {
         let bytes = cache.bytes().unwrap();
         assert_eq!(hevc_configuration(&bytes), hevc_configuration(&next));
         let mut expected = ParameterCache::default();
-        for unit in [&vps[..], &pps, &next] {
+        for unit in [&vps[..], &next, &pps] {
             expected.observe(unit, Codec::Hevc);
         }
         assert_eq!(bytes, expected.bytes().unwrap());
@@ -560,7 +590,28 @@ mod tests {
             hevc_configuration(&old)
         );
     }
+    #[test]
+    fn format_restart_retires_only_pps_referencing_retired_sps_ids() {
+        let old = sps_fixture_with_id(1920, 1200, 0, 8, 1);
+        let next = sps_fixture(1920, 1080, 0, 8);
+        let old_pps = [0, 0, 1, 0x44, 1, 0x4a]; // PPS 1 -> SPS 1
+        let next_pps = [0, 0, 1, 0x44, 1, 0xc0]; // PPS 0 -> SPS 0
+        let mut cache = ParameterCache::default();
+        for unit in [&old[..], &old_pps, &next, &next_pps] {
+            cache.observe(unit, Codec::Hevc);
+        }
+        cache.retain_hevc_configuration(hevc_configuration(&next).unwrap());
+        let mut expected = ParameterCache::default();
+        for unit in [&next[..], &next_pps] {
+            expected.observe(unit, Codec::Hevc);
+        }
+        assert_eq!(cache.bytes(), expected.bytes());
+    }
+
     fn sps_fixture(width: u32, height: u32, layers: u32, depth: u32) -> Vec<u8> {
+        sps_fixture_with_id(width, height, layers, depth, 0)
+    }
+    fn sps_fixture_with_id(width: u32, height: u32, layers: u32, depth: u32, id: u32) -> Vec<u8> {
         fn put(bits: &mut Vec<u8>, value: u32, count: u32) {
             for shift in (0..count).rev() {
                 bits.push(((value >> shift) & 1) as u8);
@@ -588,7 +639,7 @@ mod tests {
         for _ in 0..layers {
             bits.extend([0; 96]);
         }
-        ue(&mut bits, 0);
+        ue(&mut bits, id);
         ue(&mut bits, 1); // SPS id, 4:2:0
         ue(&mut bits, width);
         ue(&mut bits, height);
