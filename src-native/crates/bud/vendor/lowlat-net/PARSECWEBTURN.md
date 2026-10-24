@@ -38,9 +38,9 @@ until the previous frame drains through both framing and TLS. The original
 frame age survives plaintext acceptance and partial socket progress; poll waits
 are capped by write deadlines, and TLS control records after idle get a fresh
 deadline. The 32 KiB TLS cap is retained. Four upstream regression tests are
-included; ParsecWebTurn byte accounting and pending-connect handling are retained.
+included; EvoParseq byte accounting and pending-connect handling are retained.
 
-ParsecWebTurn's native stream IO adaptation (2026-10-17) replaces the direct Mio
+EvoParseq's native stream IO adaptation (2026-10-17) replaces the direct Mio
 dependency with Linux poll/eventfd and Windows ConnectEx/WSARecv/WSASend on the
 existing wake completion port. Rustls, framing, deadlines, ordering and UDP
 remain unchanged. Windows owns one reusable 32 KiB network send buffer until its
@@ -54,3 +54,6 @@ pass. This reuses the existing carrier drain and shared output accounting;
 TCP/TLS backpressure is unchanged. The real loopback regression checks
 ordered delivery and byte/datagram accounting without an added sender wake.
 Carrier acceptance is not proof of peer receipt. No new dependency is added.
+
+The native client is now named EvoParseq. This notice retains its historical
+filename so existing provenance links remain valid.

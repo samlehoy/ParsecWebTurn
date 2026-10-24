@@ -61,7 +61,7 @@ unsafe fn font(size: i32) -> HFONT {
     )
 }
 pub unsafe fn open(parent: HWND, bus: Arc<Shared>) -> HWND {
-    let class = wide("ParsecWebTurnStats");
+    let class = wide("EvoParseqStats");
     let instance = GetModuleHandleW(null());
     RegisterClassW(&WNDCLASSW {
         lpfnWndProc: Some(proc),

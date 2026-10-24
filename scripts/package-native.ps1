@@ -7,7 +7,7 @@ try {
     if ($taskVersion -notmatch '^\d+\.\d+\.\d+(?:-dev\.[1-9]\d*)?$') { throw 'Invalid VERSION' }
     $taskManifestVersion = [regex]::Match((Get-Content src-native/Cargo.toml -Raw), '(?m)^version = "([^"]+)"\r?$').Groups[1].Value
     if ($taskManifestVersion -ne $taskVersion) { throw 'Native version mismatch' }
-    $taskBinary = [IO.File]::ReadAllBytes((Join-Path $taskRoot 'src-native/target/x86_64-pc-windows-msvc/release/parsec-web-turn.exe'))
+    $taskBinary = [IO.File]::ReadAllBytes((Join-Path $taskRoot 'src-native/target/x86_64-pc-windows-msvc/release/evoparseq.exe'))
     $taskPeOffset = [BitConverter]::ToInt32($taskBinary, 0x3c)
     if ([BitConverter]::ToUInt16($taskBinary, $taskPeOffset + 24 + 68) -ne 2) { throw 'Only the normal Windows GUI executable may be packaged' }
     # Read the documented PE32+ import table, rather than searching incidental strings.
@@ -42,7 +42,7 @@ try {
     if ($taskBinaryText.Contains([Text.Encoding]::Latin1.GetString($taskFixture))) { throw 'Synthetic video fixture in normal executable' }
     # build.rs verifies the original WASM hash before compiling. The normal
     # EXE now embeds its build-generated native artifact, not the raw WASM.
-    $taskCompiledCores = @(Get-ChildItem -Path (Join-Path $taskRoot 'src-native/target/x86_64-pc-windows-msvc/release/build/parsec-web-turn-*/out/parsecd.cwasm') -File)
+    $taskCompiledCores = @(Get-ChildItem -Path (Join-Path $taskRoot 'src-native/target/x86_64-pc-windows-msvc/release/build/evoparseq-*/out/parsecd.cwasm') -File)
     $taskEmbeddedCore = $false
     foreach ($taskCompiledCore in $taskCompiledCores) {
         $taskCore = [IO.File]::ReadAllBytes($taskCompiledCore.FullName)
@@ -52,12 +52,12 @@ try {
         }
     }
     if (!$taskEmbeddedCore) { throw 'Build-generated precompiled Parsec core is not embedded in the executable' }
-    Copy-Item src-native/target/x86_64-pc-windows-msvc/release/parsec-web-turn.exe ParsecWebTurn.exe -Force
+    Copy-Item src-native/target/x86_64-pc-windows-msvc/release/evoparseq.exe EvoParseq.exe -Force
     $taskStaging = Join-Path $taskRoot ('dist/native-package-' + [guid]::NewGuid().ToString('N'))
-    $taskPackageName = "ParsecWebTurn-v$taskVersion-win64"
+    $taskPackageName = "EvoParseq-v$taskVersion-win64"
     $taskPackage = Join-Path $taskStaging $taskPackageName
     New-Item -ItemType Directory -Path $taskPackage -Force | Out-Null
-    foreach ($taskFile in @('ParsecWebTurn.exe','README.md','LICENSE','CHANGELOG.md')) { Copy-Item -LiteralPath $taskFile -Destination $taskPackage }
+    foreach ($taskFile in @('EvoParseq.exe','README.md','LICENSE','CHANGELOG.md')) { Copy-Item -LiteralPath $taskFile -Destination $taskPackage }
     Copy-Item src-native/vendor/webrtc-0.14.0/LICENSE-MIT (Join-Path $taskPackage 'WEBRTC-LICENSE-MIT.txt')
     Copy-Item src-native/vendor/webrtc-0.14.0/LICENSE-APACHE (Join-Path $taskPackage 'WEBRTC-LICENSE-APACHE.txt')
     Copy-Item src-native/vendor/webrtc-0.14.0/LOCAL-CHANGES.md (Join-Path $taskPackage 'WEBRTC-LOCAL-CHANGES.md')
@@ -79,7 +79,7 @@ try {
     $taskZip = "dist/$taskPackageName.zip"
     Compress-Archive -LiteralPath $taskPackage -DestinationPath $taskZip -Force
     @(
-        "$((Get-FileHash ParsecWebTurn.exe -Algorithm SHA256).Hash.ToLowerInvariant())  ParsecWebTurn.exe"
+        "$((Get-FileHash EvoParseq.exe -Algorithm SHA256).Hash.ToLowerInvariant())  EvoParseq.exe"
         "$((Get-FileHash $taskZip -Algorithm SHA256).Hash.ToLowerInvariant())  $taskPackageName.zip"
     ) | Set-Content dist/SHA256SUMS.txt -Encoding ascii
 } finally { Pop-Location }

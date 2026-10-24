@@ -395,7 +395,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     .store(false, Ordering::Release);
                 (&*p.window).native_panel.store(0, Ordering::Release);
                 #[cfg(test)]
-                RemovePropW(hwnd, wide("ParsecWebTurn.SessionPanel.Ready").as_ptr());
+                RemovePropW(hwnd, wide("EvoParseq.SessionPanel.Ready").as_ptr());
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 if p.window_owned {
                     drop(Box::from_raw(pointer));
@@ -614,7 +614,7 @@ pub unsafe fn toggle(
         field: CreateSolidBrush(FIELD),
         rates: Default::default(),
     });
-    let name = wide("ParsecWebTurn.NativeCore.SessionPanel");
+    let name = wide("EvoParseq.NativeCore.SessionPanel");
     let instance = GetModuleHandleW(null());
     RegisterClassW(&WNDCLASSW {
         lpfnWndProc: Some(proc),
@@ -812,7 +812,7 @@ pub unsafe fn toggle(
     #[cfg(test)]
     SetPropW(
         hwnd,
-        wide("ParsecWebTurn.SessionPanel.Ready").as_ptr(),
+        wide("EvoParseq.SessionPanel.Ready").as_ptr(),
         1usize as HANDLE,
     );
 }
@@ -1023,7 +1023,7 @@ mod tests {
         let panel = loop {
             let panel = unsafe { panel(&window) };
             if !panel.is_null()
-                && !unsafe { GetPropW(panel, wide("ParsecWebTurn.SessionPanel.Ready").as_ptr()) }
+                && !unsafe { GetPropW(panel, wide("EvoParseq.SessionPanel.Ready").as_ptr()) }
                     .is_null()
             {
                 break panel;

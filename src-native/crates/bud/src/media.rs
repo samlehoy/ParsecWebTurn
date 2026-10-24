@@ -195,7 +195,10 @@ mod tests {
         };
         video::encode_metadata(&mut packet, &header, &metadata).unwrap();
         #[cfg(not(feature = "native-core"))]
-        assert!(video(&packet).is_err(), "legacy 4:4:4 must remain unsupported");
+        assert!(
+            video(&packet).is_err(),
+            "legacy 4:4:4 must remain unsupported"
+        );
         #[cfg(feature = "native-core")]
         assert!(matches!(video(&packet), Ok(Video::Metadata(m)) if m.chroma_444));
         assert!(video(&packet[..video::METADATA_LEN - 1]).is_err());

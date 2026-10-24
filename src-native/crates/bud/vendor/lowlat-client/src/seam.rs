@@ -1,4 +1,4 @@
-//! Transport-only ParsecWebTurn seam derived from the pinned lowlat client.
+//! Transport-only EvoParseq seam derived from the pinned lowlat client.
 //! Media stays compressed until the application's existing decoders consume it.
 use crate::config::{Caps, Config, Port};
 use crate::driver::{Telemetry, Units};

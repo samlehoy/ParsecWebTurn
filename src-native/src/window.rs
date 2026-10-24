@@ -1211,7 +1211,7 @@ impl Window {
 
 unsafe fn create_window(state: &Arc<Window>, opengl_required: bool) -> Result<HWND> {
     let instance = GetModuleHandleW(std::ptr::null());
-    let name: Vec<u16> = "ParsecWebTurnNative\0".encode_utf16().collect();
+    let name: Vec<u16> = "EvoParseqNative\0".encode_utf16().collect();
     let class = WNDCLASSW {
         style: CS_OWNDC | CS_HREDRAW | CS_VREDRAW,
         lpfnWndProc: Some(window_proc),

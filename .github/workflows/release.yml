@@ -40,5 +40,5 @@ jobs:
           $tag = $env:GITHUB_REF_NAME
           $releaseOptions = @()
           if ($tag.Contains('-')) { $releaseOptions = @('--prerelease', '--latest=false') }
-          gh release create $tag ParsecWebTurn.exe "dist/ParsecWebTurn-$tag-win64.zip" dist/SHA256SUMS.txt --verify-tag --title "ParsecWebTurn $tag" --notes-file RELEASE_NOTES.md @releaseOptions
+          gh release create $tag EvoParseq.exe "dist/EvoParseq-$tag-win64.zip" dist/SHA256SUMS.txt --verify-tag --title "EvoParseq $tag" --notes-file RELEASE_NOTES.md @releaseOptions
           if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }

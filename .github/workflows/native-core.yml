@@ -1,4 +1,4 @@
-name: Experimental native BUD core
+name: EvoParseq native client
 
 on:
   workflow_dispatch:
@@ -41,22 +41,24 @@ jobs:
           cargo clean --manifest-path src-native/Cargo.toml --release -p libopus_sys
           if ($LASTEXITCODE -ne 0) { throw 'Release Opus cache reset failed' }
           $env:PWT_NATIVE_UI_CAPTURE = Join-Path (Get-Location) "dist/native-core/session-panel.png"
+          cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml -p lowlat-client --features external-video,turn-stream,usb-hid-input hid_ -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'HID device regression tests failed' }
           cargo test --locked --manifest-path src-native/Cargo.toml --no-default-features --features native-core,vendor-video -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw 'Native core and shared regression tests failed' }
           cargo build --locked --release --manifest-path src-native/Cargo.toml --no-default-features --features native-core,vendor-video
           if ($LASTEXITCODE -ne 0) { throw 'Native core build failed' }
           New-Item -ItemType Directory -Path dist/native-core -Force | Out-Null
           $nativeTree | Set-Content -LiteralPath dist/native-core/dependencies.txt -Encoding utf8
-          Copy-Item -LiteralPath src-native/target/x86_64-pc-windows-msvc/release/parsec-web-turn.exe -Destination dist/native-core/ParsecWebTurn-native-core.exe
-          & ./dist/native-core/ParsecWebTurn-native-core.exe --version
+          Copy-Item -LiteralPath src-native/target/x86_64-pc-windows-msvc/release/evoparseq.exe -Destination dist/native-core/EvoParseq.exe
+          & ./dist/native-core/EvoParseq.exe --version
           if ($LASTEXITCODE -ne 0) { throw 'Native version probe failed' }
           Copy-Item -LiteralPath docs/native-core.md -Destination dist/native-core/README.md
           Copy-Item -LiteralPath LICENSE -Destination dist/native-core/LICENSE
           Copy-Item -LiteralPath src-native/crates/bud/vendor/lowlat-client/LICENSE -Destination dist/native-core/LOWLAT-LICENSE.txt
           git rev-parse HEAD | Set-Content -LiteralPath dist/native-core/SOURCE.txt -Encoding ascii
-          Get-FileHash -Algorithm SHA256 dist/native-core/ParsecWebTurn-native-core.exe | Format-List | Out-String | Set-Content -LiteralPath dist/native-core/SHA256.txt
+          Get-FileHash -Algorithm SHA256 dist/native-core/EvoParseq.exe | Format-List | Out-String | Set-Content -LiteralPath dist/native-core/SHA256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: ParsecWebTurn-native-core-win64
+          name: EvoParseq-win64
           path: dist/native-core/*
           if-no-files-found: error

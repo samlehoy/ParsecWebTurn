@@ -3,7 +3,7 @@ settings.json
 ice.json
 
 # Build output
-ParsecWebTurn.exe
+EvoParseq.exe
 *.exe
 dist/
 **/target/
@@ -22,7 +22,7 @@ WebView2Profile/
 extension/
 .launcher.lock
 .turn-cache.json
-.parsecwebturn-*.tmp
+.evoparseq-*.tmp
 settings-cloudflare.png
 settings-custom.png
 tauri-settings.png

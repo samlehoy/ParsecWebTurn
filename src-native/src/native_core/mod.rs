@@ -35,7 +35,7 @@ fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--version"] {
         println!(
-            "ParsecWebTurn {} / native Rust core (BUD/WebRTC)",
+            "EvoParseq {} / native Rust core (BUD/WebRTC)",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());

@@ -101,7 +101,7 @@ unsafe fn open_page(
     core: Option<Arc<crate::core_version::State>>,
 ) -> HWND {
     let about = core.is_some();
-    let class = wide("ParsecWebTurnUpdates");
+    let class = wide("EvoParseqUpdates");
     let instance = GetModuleHandleW(null());
     RegisterClassW(&WNDCLASSW {
         lpfnWndProc: Some(proc),
@@ -127,9 +127,9 @@ unsafe fn open_page(
         WS_EX_CONTROLPARENT,
         class.as_ptr(),
         wide(if about {
-            "About ParsecWebTurn"
+            "About EvoParseq"
         } else {
-            "ParsecWebTurn - Updates"
+            "EvoParseq - Updates"
         })
         .as_ptr(),
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
@@ -150,11 +150,7 @@ unsafe fn open_page(
     add(
         hwnd,
         "STATIC",
-        if about {
-            "About ParsecWebTurn"
-        } else {
-            "Updates"
-        },
+        if about { "About EvoParseq" } else { "Updates" },
         1,
         0,
         page.heading,

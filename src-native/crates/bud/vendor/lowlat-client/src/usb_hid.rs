@@ -9,7 +9,7 @@ mod input;
 mod keyboard;
 pub(crate) const FRAME: usize = 1945;
 const RECORD: usize = 1570;
-const MAKER: &str = "ParsecWebTurn";
+const MAKER: &str = "EvoParseq";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     Mouse,

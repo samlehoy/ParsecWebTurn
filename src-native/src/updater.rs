@@ -1,3 +1,4 @@
+// Historical ParsecWebTurn stable assets are intentional: this updater is not used by native-core.
 //! Metadata-only stable release checks, following the main branch updater.
 //! Downloads and installation are performed by the user through their browser.
 use serde::Deserialize;
@@ -211,7 +212,7 @@ fn select(bytes: &[u8], installed: &str) -> Result<Option<Available>, &'static s
 }
 fn latest() -> Result<Option<Available>, &'static str> {
     let client = reqwest::blocking::Client::builder()
-        .user_agent(concat!("ParsecWebTurn/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("EvoParseq/", env!("CARGO_PKG_VERSION")))
         .https_only(true)
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(20))

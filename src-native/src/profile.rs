@@ -1,3 +1,4 @@
+// The legacy WASM-only profile path is retained for compatibility; EvoParseq uses settings.json.
 //! Bounded guest profile, protected for the current Windows user with DPAPI.
 //! Guest paths remain virtual; no guest-controlled string becomes a host path.
 use crate::secure_storage::protect;

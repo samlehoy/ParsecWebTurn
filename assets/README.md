@@ -1,19 +1,19 @@
-# Application icon
+# EvoParseq branding
 
-`parsecwebturn.svg` is the editable source for the project's original blue
-linked-portals mark. It is independent of Parsec's logo. `parsecwebturn.png`
-contains a 512 px transparent preview; `parsecwebturn.ico` includes 16, 20, 24,
-32, 40, 48, 64, 128 and 256 px Windows resources. These assets use the project's
-root license. The previous third-party favicon has been replaced.
+`evoparseq-wordmark.svg` is the editable white **EVO** / blue **PARSEQ** wordmark,
+matching the maintainer's supplied direction. The dark backing keeps it legible
+in both light and dark README themes. The native launcher uses matching text
+and colors rendered by standard Win32 controls.
 
-Windows builds embed the ICO directly. No image conversion, extra asset files
-or network access is required on the user's machine. SVG/PNG are source/export
-assets only, not runtime dependencies. The shared resource supplies the EXE,
-taskbar/title bars, native launcher, Session button, stats, updates and About.
+`evoparseq.svg` is the project's original blue linked-portals icon, independent
+of Parsec's logo. `evoparseq.png` is its 512 px transparent preview;
+`evoparseq.ico` includes 16, 20, 24, 32, 40, 48, 64, 128 and 256 px resources.
+The icon artwork is retained; its source/resource names now use EvoParseq.
+These assets use the project's root license.
 
-## Client comparison illustration
+Windows builds embed the ICO directly. No asset downloads, image conversion or
+extra runtime files are needed. The embedded resource is shared by the EXE,
+taskbar, native launcher, session icon, settings, statistics and About dialogs.
 
-`native-client-comparison.png` is the comparison infographic supplied by the
-project maintainer for the native client's README. It is included unchanged.
-It illustrates both existing and proposed capabilities; the README roadmap,
-rather than the image, defines the native dev client's current feature status.
+`native-client-comparison-v2.png` is a historical comparison illustration; it
+may include proposed capabilities and does not define the current feature list.

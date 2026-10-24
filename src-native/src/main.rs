@@ -11,9 +11,9 @@ mod bud_attempt;
 #[cfg(all(windows, feature = "bud"))]
 pub mod bud_media;
 #[cfg(not(feature = "native-core"))]
-const APP_TITLE: &str = "ParsecWebTurn";
+const APP_TITLE: &str = "EvoParseq";
 #[cfg(feature = "native-core")]
-const APP_TITLE: &str = "ParsecWebTurn - native core";
+const APP_TITLE: &str = "EvoParseq";
 const PARSEC_CORE_VERSION: &str = "150-104a";
 #[cfg(any(test, feature = "diagnostics"))]
 mod attempt_probe;

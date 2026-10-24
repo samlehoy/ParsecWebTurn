@@ -12,7 +12,7 @@ foreach ($taskLaunch in 1..2) {
     # This launches the client UI under test, not a background helper/service.
     $taskInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Normal
     $taskInfo.Environment['LOCALAPPDATA'] = $taskProfile
-    $taskInfo.Environment['PARSECWEBTURN_NO_UPDATE_CHECK'] = '1'
+    $taskInfo.Environment['EVOPARSEQ_NO_UPDATE_CHECK'] = '1'
     $taskProcess = [Diagnostics.Process]::Start($taskInfo)
     try {
         $taskUntil = [DateTime]::UtcNow.AddSeconds(180)
@@ -24,7 +24,7 @@ foreach ($taskLaunch in 1..2) {
         if ($taskProcess.MainWindowHandle -eq [IntPtr]::Zero) { throw 'Normal native window did not appear' }
         Start-Sleep -Seconds 5
         $taskProcess.Refresh()
-        if ($taskProcess.MainWindowTitle -ne 'ParsecWebTurn') { throw 'Guest overwrote the application identity' }
+        if ($taskProcess.MainWindowTitle -ne 'EvoParseq') { throw 'Guest overwrote the application identity' }
         if (!$taskProcess.CloseMainWindow()) { throw 'Native window did not accept close request' }
         if (!$taskProcess.WaitForExit(20000)) { throw 'Normal client did not finish shutdown' }
         if ($taskProcess.ExitCode -ne 0) { throw "Normal client shutdown failed: $($taskProcess.ExitCode)" }

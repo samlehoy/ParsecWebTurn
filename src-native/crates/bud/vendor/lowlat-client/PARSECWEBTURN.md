@@ -5,7 +5,7 @@ MIT-licensed source derived from nomi-san/lowlat `feat/win-seams`, revision
 Copyright (c) 2026 Nguyen Duy; original license in `LICENSE`.
 Common/crypto remain pinned to that revision; local net/core copies carry the
 isolated TURN stream additions described below.
-This is a ParsecWebTurn-specific subset, not the upstream SDK's complete API.
+This is a EvoParseq-specific subset, not the upstream SDK's complete API.
 
 The application may supply a validated audio channel count/mask in the existing
 initialization contract. Stereo remains the default. This adds no SDK decoder,
@@ -30,7 +30,7 @@ Input already framed by the retained WASM UI enters a fixed-size bounded ring.
 A full ring refuses input explicitly; session initialization/reports remain
 transport-owned. Native AES keys never enter the WASM guest.
 
-Removed because ParsecWebTurn supplies these functions already: SDK decoder
+Removed because EvoParseq supplies these functions already: SDK decoder
 selection and threads, vendor/software video backends, decoded frame exporters,
 CPU plane/readback paths, SDK audio decode and PCM staging, input remapping,
 controller report conversion, cursor cache/PNG decode, semantic UI events and
@@ -66,7 +66,7 @@ core is the sibling pinned copy with TURN stream additions and unused host-only
 modules omitted, as recorded in its PARSECWEBTURN.md. See
 ../../../../../../docs/bud-turn-stream.md for scope and verification.
 
-ParsecWebTurn's optional USB HID input is local adapter code, not an imported
+EvoParseq's optional USB HID input is local adapter code, not an imported
 lowlat SDK input implementation. One device lifecycle and bounded interrupt
 queue serve mouse-only, keyboard-only or combined collections. The application
 retains local UI routing; selected HID inputs suppress their normal Parsec
@@ -88,3 +88,6 @@ The receive-only cursor parser/cache is adapted from upstream revision
 only enabled by the native-core feature; no upstream PNG decoder, SDK, renderer,
 host-side cursor encoder or extra dependency is imported. Existing Win32 cursor
 creation and PNG decoding remain the application's.
+
+The native client is now named EvoParseq. This notice retains its historical
+filename so existing provenance links remain valid.

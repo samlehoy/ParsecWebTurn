@@ -1,4 +1,4 @@
-//! Cursor cache only, from lowlat e548d48 (MIT). PNG decoding stays in ParsecWebTurn.
+//! Cursor cache only, from lowlat e548d48 (MIT). PNG decoding stays in EvoParseq.
 use lowlat_core::crc32;
 
 /// Pictures the cache holds, which is the number a host sends before it

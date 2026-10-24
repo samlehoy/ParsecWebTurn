@@ -3,7 +3,7 @@ use std::{env, fs, path::PathBuf, process::Command};
 #[path = "src/core_config.rs"]
 mod core_config;
 fn main() {
-    println!("cargo:rerun-if-changed=../assets/parsecwebturn.ico");
+    println!("cargo:rerun-if-changed=../assets/evoparseq.ico");
     println!("cargo:rerun-if-changed=vendor/parsecd.wasm");
     println!("cargo:rerun-if-changed=src/core_config.rs");
     // Compile once for the portable target, never the build machine CPU.
@@ -35,7 +35,7 @@ fn main() {
         return;
     }
     let output = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    let icon = fs::canonicalize("../assets/parsecwebturn.ico").expect("Application icon missing");
+    let icon = fs::canonicalize("../assets/evoparseq.ico").expect("Application icon missing");
     let icon = icon
         .display()
         .to_string()
@@ -59,8 +59,8 @@ BEGIN
  BEGIN
   BLOCK "040904B0"
   BEGIN
-   VALUE "FileDescription", "ParsecWebTurn native client\0"
-   VALUE "ProductName", "ParsecWebTurn\0"
+   VALUE "FileDescription", "EvoParseq native client\0"
+   VALUE "ProductName", "EvoParseq\0"
    VALUE "FileVersion", "{version}\0"
    VALUE "ProductVersion", "{version}\0"
   END

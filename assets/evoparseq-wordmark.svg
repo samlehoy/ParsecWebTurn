@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="88" viewBox="0 0 360 88" role="img" aria-labelledby="title desc">
+<title id="title">EvoParseq</title>
+<desc id="desc">EVO in white and PARSEQ in blue on a dark background.</desc>
+<rect width="360" height="88" rx="12" fill="#1d1d1d"/>
+<text x="22" y="59" font-family="Segoe UI, Arial, sans-serif" font-size="46"><tspan fill="#f5f5f5" font-weight="700">EVO</tspan><tspan fill="#2f80ed" font-weight="400">PARSEQ</tspan></text>
+</svg>

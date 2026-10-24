@@ -1,5 +1,5 @@
 [package]
-name = "parsec-web-turn"
+name = "evoparseq"
 version = "0.9.4-dev.7"
 edition = "2021"
 rust-version = "1.90"

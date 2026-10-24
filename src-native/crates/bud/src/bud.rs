@@ -107,7 +107,11 @@ impl Session {
     pub fn external_video_depth(hevc_available: bool, ten_bit: bool) -> Result<Self> {
         Self::external_video_format(hevc_available, ten_bit, false)
     }
-    pub fn external_video_format(hevc_available: bool, ten_bit: bool, chroma_444: bool) -> Result<Self> {
+    pub fn external_video_format(
+        hevc_available: bool,
+        ten_bit: bool,
+        chroma_444: bool,
+    ) -> Result<Self> {
         let client = Client::new_external_video(
             lowlat_client::config::Caps {
                 h264: true,

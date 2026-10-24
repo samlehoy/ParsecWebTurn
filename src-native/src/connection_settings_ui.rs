@@ -151,7 +151,7 @@ pub unsafe fn install_menu(parent: HWND) {
         wide("Connection stats").as_ptr(),
     );
     let help = CreatePopupMenu();
-    AppendMenuW(help, MF_STRING, ABOUT, wide("About ParsecWebTurn").as_ptr());
+    AppendMenuW(help, MF_STRING, ABOUT, wide("About EvoParseq").as_ptr());
     AppendMenuW(
         help,
         MF_STRING,
@@ -163,7 +163,7 @@ pub unsafe fn install_menu(parent: HWND) {
     DrawMenuBar(parent);
 }
 pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
-    let name = wide("ParsecWebTurnSettings");
+    let name = wide("EvoParseqSettings");
     let instance = GetModuleHandleW(null());
     let class = WNDCLASSW {
         lpfnWndProc: Some(page_proc),
@@ -432,7 +432,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         hwnd,
         page,
         "Credential cache",
-        "Reuse valid credentials until you close ParsecWebTurn.",
+        "Reuse valid credentials until you close EvoParseq.",
         758,
         CLOUDFLARE,
         24,

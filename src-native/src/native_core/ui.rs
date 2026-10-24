@@ -22,6 +22,7 @@ const REMEMBER: usize = 6;
 const SETTINGS: usize = 7;
 const DONE: usize = 0x6e01;
 const AUTO_REFRESH: usize = 0x6e02;
+const WORDMARK_BLUE: usize = 0x6e03;
 #[cfg(test)]
 thread_local! {static UI_FIXTURE:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
 
@@ -292,7 +293,14 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 }
             }
             WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX | WM_CTLCOLORBTN => {
-                SetTextColor(wp as HDC, FG);
+                SetTextColor(
+                    wp as HDC,
+                    if GetDlgCtrlID(lp as HWND) == WORDMARK_BLUE as i32 {
+                        crate::branding::BLUE
+                    } else {
+                        FG
+                    },
+                );
                 SetBkColor(wp as HDC, if msg == WM_CTLCOLORSTATIC { BG } else { FIELD });
                 return if msg == WM_CTLCOLORSTATIC {
                     f.brush
@@ -461,7 +469,7 @@ pub unsafe fn message_box(owner: HWND, message: &str) {
     MessageBoxW(
         owner,
         wide(message).as_ptr(),
-        wide("ParsecWebTurn - native core").as_ptr(),
+        wide("EvoParseq").as_ptr(),
         MB_OK | MB_ICONINFORMATION,
     );
 }
@@ -507,7 +515,7 @@ pub fn choose(
             done: false,
             result: None,
         });
-        let name = wide("ParsecWebTurn.NativeCore.Launcher");
+        let name = wide("EvoParseq.NativeCore.Launcher");
         let instance = GetModuleHandleW(null());
         RegisterClassW(&WNDCLASSW {
             lpfnWndProc: Some(proc),
@@ -520,7 +528,7 @@ pub fn choose(
         let hwnd = CreateWindowExW(
             WS_EX_CONTROLPARENT,
             name.as_ptr(),
-            wide("ParsecWebTurn - native core").as_ptr(),
+            wide("EvoParseq").as_ptr(),
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -535,9 +543,14 @@ pub fn choose(
         let mark = add(hwnd, &f, "STATIC", "", 8, SS_ICON, [32, 28, 40, 40]);
         SendMessageW(mark, STM_SETICON, crate::branding::icon() as usize, 0);
         f.common_controls.push(mark);
-        let heading = add(hwnd, &f, "STATIC", "ParsecWebTurn", 0, 0, [84, 24, 490, 46]);
-        SendMessageW(heading, WM_SETFONT, f.heading as usize, 0);
-        f.common_controls.push(heading);
+        for (label, id, rect) in [
+            ("EVO", 0, [84, 24, 68, 46]),
+            ("PARSEQ", WORDMARK_BLUE, [152, 24, 180, 46]),
+        ] {
+            let heading = add(hwnd, &f, "STATIC", label, id, 0, rect);
+            SendMessageW(heading, WM_SETFONT, f.heading as usize, 0);
+            f.common_controls.push(heading);
+        }
         let settings = add(
             hwnd,
             &f,

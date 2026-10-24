@@ -38,9 +38,11 @@ impl State {
             .clone()
     }
     pub fn check(self: &Arc<Self>) {
-        if std::env::var_os("PARSECWEBTURN_NO_UPDATE_CHECK").is_some() {
+        if std::env::var_os("EVOPARSEQ_NO_UPDATE_CHECK").is_some()
+            || std::env::var_os("PARSECWEBTURN_NO_UPDATE_CHECK").is_some()
+        {
             self.0.lock().unwrap_or_else(|e| e.into_inner()).view =
-                View::Unavailable("Online checks are disabled by PARSECWEBTURN_NO_UPDATE_CHECK.");
+                View::Unavailable("Online checks are disabled by EVOPARSEQ_NO_UPDATE_CHECK.");
             return;
         }
         self.check_with(latest);
@@ -167,7 +169,7 @@ fn inspect(mut reader: impl Read) -> Result<String, &'static str> {
 }
 fn latest() -> Result<String, &'static str> {
     let client = reqwest::blocking::Client::builder()
-        .user_agent(concat!("ParsecWebTurn/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("EvoParseq/", env!("CARGO_PKG_VERSION")))
         .https_only(true)
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(10))

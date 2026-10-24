@@ -14,8 +14,8 @@ pub fn main() {
         .and_then(|result| result);
     if result.is_err() {
         // Never display guest errors, URLs, tokens or profile contents.
-        let text:Vec<u16> = "ParsecWebTurn could not start or finish safely. Your saved profile was preserved. Check that another instance is not running and that the profile directory is accessible.\0".encode_utf16().collect();
-        let title: Vec<u16> = "ParsecWebTurn\0".encode_utf16().collect();
+        let text:Vec<u16> = "EvoParseq could not start or finish safely. Your saved profile was preserved. Check that another instance is not running and that the profile directory is accessible.\0".encode_utf16().collect();
+        let title: Vec<u16> = "EvoParseq\0".encode_utf16().collect();
         unsafe {
             windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
                 std::ptr::null_mut(),
@@ -34,7 +34,7 @@ fn run() -> Result<()> {
     args.retain(|arg| arg != "--software-overlay" && arg != "--d3d-overlay");
     if args == ["--version"] {
         println!(
-            "ParsecWebTurn {} / Parsec WASM {}",
+            "EvoParseq {} / Parsec WASM {}",
             env!("CARGO_PKG_VERSION"),
             PARSEC_CORE_VERSION
         );
@@ -64,7 +64,7 @@ fn run() -> Result<()> {
             windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
                 std::ptr::null_mut(),
                 "Event logging could not be started. The client will continue without it. Check the data directory.\0".encode_utf16().collect::<Vec<_>>().as_ptr(),
-                "ParsecWebTurn\0".encode_utf16().collect::<Vec<_>>().as_ptr(),
+                "EvoParseq\0".encode_utf16().collect::<Vec<_>>().as_ptr(),
                 windows_sys::Win32::UI::WindowsAndMessaging::MB_OK | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONWARNING,
             );
         }
@@ -82,7 +82,9 @@ fn run() -> Result<()> {
         .software_overlay_enabled
         .store(software_overlay, Ordering::Release);
     window.install_connection_settings(connection_settings.clone());
-    if std::env::var_os("PARSECWEBTURN_NO_UPDATE_CHECK").is_none() {
+    if std::env::var_os("EVOPARSEQ_NO_UPDATE_CHECK").is_none()
+        && std::env::var_os("PARSECWEBTURN_NO_UPDATE_CHECK").is_none()
+    {
         window.updates.check(true);
         unsafe {
             windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(

@@ -534,7 +534,7 @@ async fn cloudflare_request(endpoint: &str, token: &str, ttl: u32) -> Result<Vec
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::none())
-        .user_agent(concat!("ParsecWebTurn/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("EvoParseq/", env!("CARGO_PKG_VERSION")))
         .build()?;
     let mut response = client
         .post(endpoint)

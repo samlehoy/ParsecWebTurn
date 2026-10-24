@@ -16,7 +16,7 @@ native release. See [cleanup audit](native-core-cleanup.md).
 
 ## First live check
 
-Run `ParsecWebTurn-native-core.exe` beside a copy of your usual `settings.json`,
+Run `EvoParseq.exe` beside a copy of your usual `settings.json`,
 preferably in a separate test folder. Sign in with your Parsec email/password and
 optional 2FA code, then choose an available computer. Refresh updates the list;
 manual peer-ID entry remains available if discovery returns no recognized hosts.
@@ -108,7 +108,7 @@ changes, rotated input, immersive mode and reopening connections. No GPU
 performance improvement or physical monitor bit depth is inferred from fixtures.
 WebRTC now has a native account adapter in this branch; the normal WASM client remains separate.
 
-ParsecWebTurn remains independent of lowlat. This work does not change the
+EvoParseq remains independent of lowlat. This work does not change the
 stock host or turn it into an open-source server.
 
 The picker refreshes in the background every 30 seconds without disabling its

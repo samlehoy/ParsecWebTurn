@@ -137,7 +137,7 @@ pub(super) unsafe fn install(window: &crate::window::Window) {
     if window.native_session_button.load(Ordering::Acquire) != 0 {
         return;
     }
-    let class = wide("ParsecWebTurn.NativeSessionBadge");
+    let class = wide("EvoParseq.NativeSessionBadge");
     RegisterClassW(&WNDCLASSW {
         lpfnWndProc: Some(proc),
         hInstance: GetModuleHandleW(null()),
