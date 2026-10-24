@@ -1683,7 +1683,9 @@ struct Renderer {
     ten_bit_attempted: bool,
     ten_bit_fallback: Option<String>,
     processor: Option<ProcessorCache>,
+    #[cfg(any(test, not(feature = "native-core")))]
     overlay: Option<crate::overlay_windows::Renderer>,
+    #[cfg(any(test, not(feature = "native-core")))]
     overlay_failed: bool,
     // Fields drop in declaration order; keep the final flush after all views.
     cleanup: ContextCleanup,
@@ -1862,7 +1864,9 @@ impl Renderer {
             ten_bit_attempted: false,
             ten_bit_fallback: None,
             processor: None,
+            #[cfg(any(test, not(feature = "native-core")))]
             overlay: None,
+            #[cfg(any(test, not(feature = "native-core")))]
             overlay_failed: false,
             cleanup: ContextCleanup(context),
         })
@@ -2370,6 +2374,7 @@ impl Renderer {
                 None
             };
         });
+        #[cfg(any(test, not(feature = "native-core")))]
         if !self.overlay_failed
             && !window
                 .software_overlay_enabled
