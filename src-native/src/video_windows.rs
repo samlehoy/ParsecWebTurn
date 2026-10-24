@@ -254,6 +254,27 @@ pub fn hevc_444_available(
     }
 }
 
+// Validate decoder surfaces before creating a processor view. AYUV is the
+// packed 8-bit 4:4:4 path; it uses the same conversion/output pass as NV12.
+fn validate_processor_texture(
+    desc: &D3D11_TEXTURE2D_DESC,
+    subresource: u32,
+    visible: (u32, u32),
+) -> Result<()> {
+    if !matches!(
+        desc.Format,
+        DXGI_FORMAT_NV12 | DXGI_FORMAT_P010 | DXGI_FORMAT_AYUV
+    ) || desc.MipLevels != 1
+        || desc.ArraySize == 0
+        || subresource >= desc.ArraySize
+        || visible.0 > desc.Width
+        || visible.1 > desc.Height
+    {
+        return Err(unavailable("video-output-texture-layout"));
+    }
+    Ok(())
+}
+
 // A queue wake can interrupt the DXGI wait: never hold up new decode work
 // waiting for the monitor. The Arc keeps this handle alive for every waiter.
 struct WorkerWake(HANDLE);
@@ -824,11 +845,19 @@ fn run(
         }
         header_bytes = 0;
         if let Some(error) = failure {
+            let fallback = shared
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .report
+                .decoder_fallback
+                .clone();
             crate::event_log::record(
                 "WARN",
                 "video_decode_or_presentation_error",
                 serde_json::json!({
                     "stage":error.stage,"hresult":error.hresult,"surface_generation":surface_generation,
+                    "decoder_fallback":fallback,
                 }),
             );
             if !matches!(
@@ -2250,15 +2279,7 @@ impl Renderer {
         let height = (source.bottom - source.top) as u32;
         let mut td = D3D11_TEXTURE2D_DESC::default();
         texture.GetDesc(&mut td);
-        if !matches!(td.Format, DXGI_FORMAT_NV12 | DXGI_FORMAT_P010)
-            || td.MipLevels != 1
-            || td.ArraySize == 0
-            || subresource >= td.ArraySize
-            || width > td.Width
-            || height > td.Height
-        {
-            return Err(unavailable("video-output-texture-layout"));
-        }
+        validate_processor_texture(&td, subresource, (width, height))?;
         let mut rect = windows_sys::Win32::Foundation::RECT::default();
         if windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(self.hwnd.0, &mut rect) == 0 {
             return Err(unavailable("video-surface-size"));
@@ -3251,6 +3272,29 @@ mod tests {
         assert_eq!(report["video"]["frames_decoded"], 16);
         assert_eq!(report["video"]["recovering"], false);
     }
+    #[test]
+    fn processor_accepts_decoder_ayuv_surfaces_without_a_repacking_step() {
+        let mut desc = D3D11_TEXTURE2D_DESC {
+            Width: 1920,
+            Height: 1088,
+            MipLevels: 1,
+            ArraySize: 4,
+            ..Default::default()
+        };
+        for format in [DXGI_FORMAT_AYUV, DXGI_FORMAT_NV12, DXGI_FORMAT_P010] {
+            desc.Format = format;
+            assert!(validate_processor_texture(&desc, 3, (1920, 1080)).is_ok());
+        }
+        desc.Format = DXGI_FORMAT_AYUV;
+        assert!(validate_processor_texture(&desc, 4, (1920, 1080)).is_err());
+        assert!(validate_processor_texture(&desc, 0, (1921, 1080)).is_err());
+        desc.MipLevels = 2;
+        assert!(validate_processor_texture(&desc, 0, (1920, 1080)).is_err());
+        desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        assert!(validate_processor_texture(&desc, 0, (1920, 1080)).is_err());
+    }
+
     #[test]
     fn busy_or_occluded_presentation_is_not_a_decoder_failure() {
         assert_eq!(

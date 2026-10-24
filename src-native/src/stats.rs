@@ -204,6 +204,7 @@ impl Shared {
                     serde_json::json!({
                         "generation":generation,"decoder":v.decoder,"fallback":v.decoder_fallback.is_some(),
                         "gpu_adapter":v.adapter,"decoded_chroma":v.decoded_chroma,
+                        "fallback_reason":v.decoder_fallback,
                         "stage":v.failure_stage,"hresult":v.failure_hresult,"decoded_bit_depth":v.decoded_bit_depth,
                         "display_rgb_bit_depth":v.display_rgb_bit_depth,"display_output_fallback":v.display_output_fallback,
                     }),

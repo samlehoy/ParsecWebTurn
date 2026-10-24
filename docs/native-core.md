@@ -209,3 +209,11 @@ initialization and native keyframe requests. Capability logs distinguish
 requested AYUV path is unavailable, `video_chroma_444_unavailable` records the
 bounded GPU probe stage/result. Decoder state logs include the actual adapter,
 decoded chroma and bit depth; no media data or continuous input is recorded.
+
+The common video processor accepts AYUV decoder textures directly, alongside
+NV12/P010. This fixes an initial 4:4:4 integration bug where the renderer's old
+texture guard rejected otherwise accepted packed 4:4:4 input. No CPU repacking,
+intermediate decoded texture or additional color conversion pass is introduced.
+The regression test validates the format/array/geometry boundary without
+claiming successful hardware 4:4:4 decoding. Actual GPU/driver output still needs
+live confirmation. Failures record the vendor fallback reason for diagnosis.
