@@ -122,6 +122,10 @@ confirmation and cannot be used for another concurrent edit. Bandwidth, FPS,
 frame pacing and orientation have concrete menu choices; only resolution offers
 Keep host. Missing preferences in older profiles use current host values where
 usable, otherwise 10 Mbps / 60 FPS / adaptive / default orientation.
+The session button is more translucent than the panel. An open panel stays
+visible when the client loses focus, while retaining normal owned-window
+ordering (never system-wide topmost). The native stream window paints black
+until video is available; this adds no decoded-frame operation or startup delay.
 This contract was rechecked against the pinned core's native UI and lowlat's
 daemon app.rs. The installed stock Windows host (150-105c) additionally confirms
 that its serializer and reader support five video slots; all five are preserved,

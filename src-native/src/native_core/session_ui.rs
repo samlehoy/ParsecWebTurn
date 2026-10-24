@@ -435,8 +435,7 @@ pub unsafe fn raise(window: &crate::window::Window) {
     let foreground = GetForegroundWindow();
     let active = foreground == parent
         || (!foreground.is_null() && GetAncestor(foreground, GA_ROOTOWNER) == parent);
-    let visible = active
-        && !window.settings_open()
+    let visible = !window.settings_open()
         && !window.closing.load(Ordering::Acquire)
         && IsIconic(parent) == 0
         && IsWindowVisible(parent) != 0;
@@ -453,7 +452,14 @@ pub unsafe fn raise(window: &crate::window::Window) {
             34,
             SWP_NOACTIVATE | SWP_NOOWNERZORDER,
         );
-        ShowWindow(button, if visible { SW_SHOWNA } else { SW_HIDE });
+        ShowWindow(
+            button,
+            if visible && active {
+                SW_SHOWNA
+            } else {
+                SW_HIDE
+            },
+        );
     }
     let panel = panel(window);
     if !panel.is_null() {
@@ -818,6 +824,17 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         };
         unsafe {
+            if let Some(path) = std::env::var_os("PWT_NATIVE_UI_CAPTURE") {
+                let path = std::path::PathBuf::from(path).with_file_name("stream-waiting.png");
+                super::super::ui::capture_fixture(window.handle(), &path).unwrap();
+                let waiting = image::open(path).unwrap().to_rgb8();
+                assert_eq!(
+                    waiting
+                        .get_pixel(waiting.width() / 2, waiting.height() / 2)
+                        .0,
+                    [0, 0, 0]
+                );
+            }
             SendMessageW(button, BM_CLICK, 0, 0);
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

@@ -1158,6 +1158,10 @@ unsafe fn create_window(state: &Arc<Window>, opengl_required: bool) -> Result<HW
         hInstance: instance,
         hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
         hIcon: LoadIconW(instance, std::ptr::without_provenance(1)),
+        // The native core has no WASM UI repainting this background while
+        // signaling and the first decoder frame are still pending.
+        #[cfg(feature = "native-core")]
+        hbrBackground: GetStockObject(BLACK_BRUSH) as HBRUSH,
         lpszClassName: name.as_ptr(),
         ..std::mem::zeroed()
     };
@@ -1233,6 +1237,21 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
         let x = lp as i16 as i32;
         let y = (lp >> 16) as i16 as i32;
         match message {
+            #[cfg(feature = "native-core")]
+            WM_ERASEBKGND => {
+                let mut rect = std::mem::zeroed();
+                GetClientRect(hwnd, &mut rect);
+                FillRect(wp as HDC, &rect, GetStockObject(BLACK_BRUSH) as HBRUSH);
+                return 1;
+            }
+            #[cfg(feature = "native-core")]
+            WM_PAINT => {
+                let mut paint: PAINTSTRUCT = std::mem::zeroed();
+                let dc = BeginPaint(hwnd, &mut paint);
+                FillRect(dc, &paint.rcPaint, GetStockObject(BLACK_BRUSH) as HBRUSH);
+                EndPaint(hwnd, &paint);
+                return 0;
+            }
             crate::updater_ui::CLOSED => {
                 let _ = s
                     .about_page
