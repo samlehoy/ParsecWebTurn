@@ -41,7 +41,6 @@ struct State {
     ingress: crate::media_ingress::Ingress,
     failure: Option<&'static str>,
     host_status: Option<i32>,
-    disable_ten_bit: bool,
 }
 
 // Keep BUD identity through connecting/disconnected states too. An old worker
@@ -122,7 +121,6 @@ impl Attempt {
         writer: SignalingWrite,
         window: Arc<crate::window::Window>,
         manager: Arc<crate::connection_settings::Manager>,
-        allow_ten_bit: bool,
     ) -> Result<Self> {
         // Same offer/candidate/retry worker as the WASM-backed client. Only
         // the owner of the initial account envelope changes.
@@ -140,7 +138,6 @@ impl Attempt {
             State {
                 template: Some(template),
                 writer: Some(writer),
-                disable_ten_bit: !allow_ten_bit,
                 ..Default::default()
             },
         )
@@ -695,13 +692,9 @@ fn run(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let (route, mut relay_routes, mut settings) = runtime.block_on(async {
+    let (route, mut relay_routes, settings) = runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(15), route(manager)).await
     })??;
-    settings.experimental_ten_bit &= !state
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .disable_ten_bit;
     *stage = if settings.force_relay {
         "initial_relay_selected"
     } else {

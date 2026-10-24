@@ -67,44 +67,22 @@ fn run() -> Result<()> {
             return Ok(());
         };
         let preferences = settings.view().0;
-        let retry_main10 = preferences.prefer_hevc
+        let requested_main10 = preferences.prefer_hevc
             && preferences.experimental_ten_bit
             && !preferences.experimental_chroma_444;
-        let mut policy = transport::Policy {
+        let policy = transport::Policy {
             bud: preferences.bud,
-            allow_ten_bit: true,
         };
-        let result = loop {
-            let result = (|| {
-                let socket = signaling::Socket::open(&selection.session)?;
-                let window = crate::window::Window::create_native()?;
-                window.install_connection_settings(settings.clone());
-                let result = stream(&selection.peer, &socket, &window, settings.clone(), policy);
-                window.end_session();
-                window.request_stop();
-                window.close();
-                result
-            })();
-            if policy.allow_ten_bit
-                && retry_main10
-                && result
-                    .as_ref()
-                    .err()
-                    .and_then(|error| error.downcast_ref::<transport::HostStatus>())
-                    .is_some_and(|status| status.permits_8bit_retry())
-            {
-                policy.allow_ten_bit = false;
-                crate::event_log::record(
-                    "INFO",
-                    "native_video_8bit_retry",
-                    serde_json::json!({
-                        "host_status":-15002,"transport":if policy.bud {"BUD"} else {"WebRTC"},"settings_preserved":true
-                    }),
-                );
-                continue;
-            }
-            break result;
-        };
+        let result = (|| {
+            let socket = signaling::Socket::open(&selection.session)?;
+            let window = crate::window::Window::create_native()?;
+            window.install_connection_settings(settings.clone());
+            let result = stream(&selection.peer, &socket, &window, settings.clone(), policy);
+            window.end_session();
+            window.request_stop();
+            window.close();
+            result
+        })();
         if let Err(error) = result {
             crate::event_log::record(
                 "ERROR",
@@ -112,7 +90,11 @@ fn run() -> Result<()> {
                 serde_json::json!({"stage":"signaling_or_session"}),
             );
             unsafe {
-                ui::message_box(std::ptr::null_mut(), &error.to_string());
+                let message = error
+                    .downcast_ref::<transport::HostStatus>()
+                    .map(|status| status.user_message(requested_main10))
+                    .unwrap_or_else(|| error.to_string());
+                ui::message_box(std::ptr::null_mut(), &message);
             }
         }
         session = Some(selection.session);

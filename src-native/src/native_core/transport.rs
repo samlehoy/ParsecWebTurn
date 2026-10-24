@@ -11,7 +11,6 @@ use std::sync::{
 #[derive(Clone, Copy)]
 pub(super) struct Policy {
     pub bud: bool,
-    pub allow_ten_bit: bool,
 }
 #[derive(Debug)]
 pub(super) struct HostStatus {
@@ -34,8 +33,11 @@ impl HostStatus {
             .is_none_or(|video| video.frames_decoded == 0);
         Self { code, before_video }
     }
-    pub fn permits_8bit_retry(&self) -> bool {
-        self.code == -15002 && self.before_video
+    pub fn user_message(&self, requested_main10: bool) -> String {
+        if self.code == -15002 && self.before_video && requested_main10 {
+            return "The host encoder failed (status -15002) while 10-bit HEVC was requested. Disable 10-bit HEVC in Settings > Video, then connect again. The client has not retried in 8-bit or changed your settings.".into();
+        }
+        self.to_string()
     }
 }
 
@@ -81,15 +83,8 @@ impl Attempt {
             "Invalid host peer ID"
         );
         if policy.bud {
-            return crate::bud_attempt::Attempt::spawn_native(
-                id,
-                peer,
-                writer,
-                window,
-                manager,
-                policy.allow_ten_bit,
-            )
-            .map(Self::Bud);
+            return crate::bud_attempt::Attempt::spawn_native(id, peer, writer, window, manager)
+                .map(Self::Bud);
         }
         let settings = manager.view().0;
         let (target, attempt_id, publish) = (peer.to_owned(), id.to_owned(), writer.clone());
@@ -109,7 +104,7 @@ impl Attempt {
                     flag_offset: 4,
                 },
                 allow_hevc: settings.prefer_hevc,
-                ten_bit: settings.experimental_ten_bit && policy.allow_ten_bit,
+                ten_bit: settings.experimental_ten_bit,
                 chroma_444: settings.experimental_chroma_444,
             }),
             crate::attempt::StunProvider::Parsec,
@@ -282,14 +277,16 @@ impl Drop for WebRtc {
 mod tests {
     use super::*;
     #[test]
-    fn only_initial_host_encoder_failure_can_downgrade_the_preference() {
-        assert!(HostStatus {
+    fn initial_main10_encoder_failure_explains_manual_recovery() {
+        let status = HostStatus {
             code: -15002,
-            before_video: true
-        }
-        .permits_8bit_retry());
+            before_video: true,
+        };
+        assert!(status.user_message(true).contains("Disable 10-bit HEVC"));
+        assert_eq!(status.user_message(false), status.to_string());
         for (code, before_video) in [(-15002, false), (-6200, true), (0, true), (-15000, true)] {
-            assert!(!HostStatus { code, before_video }.permits_8bit_retry());
+            let status = HostStatus { code, before_video };
+            assert_eq!(status.user_message(true), status.to_string());
         }
     }
     #[test]

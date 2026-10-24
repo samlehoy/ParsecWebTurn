@@ -187,10 +187,10 @@ See [stock settings comparison](native-settings-comparison.md) for existing
 features and possible future additions; unimplemented options were not added.
 
 For a requested Main 10 connection, a host encoder error `-15002` before the
-first decoded frame permits one fresh 8-bit attempt to the same host over the
-same selected transport. Saved preferences are retained. Other failures and
-errors after playback starts do not trigger this retry. The host's numeric
-status and the one-time retry are recorded without credentials.
+first decoded frame displays a message asking the user to disable 10-bit HEVC
+in Settings > Video and reconnect. The client does not automatically retry
+in 8-bit or change saved preferences. Other host errors retain their numeric
+status and the existing error handling.
 
 In the native build, Connection stats is an independent top-level window so
 normal activation can place it in front of or behind the stream. Session stays
