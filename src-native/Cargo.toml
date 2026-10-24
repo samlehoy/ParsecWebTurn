@@ -10,7 +10,7 @@ publish = false
 default = ["vendor-video", "bud"]
 vendor-video = ["dep:parsec-gpu-video"]
 bud = ["dep:parsec-native-bud"]
-native-core = ["bud", "parsec-native-bud/native-core", "dep:zeroize"]
+native-core = ["windows-sys/Win32_System_SystemServices", "bud", "parsec-native-bud/native-core", "dep:zeroize"]
 diagnostics = ["dep:log", "dep:rcgen", "dep:ring", "dep:rustls", "dep:tokio-rustls", "wasmtime/wat", "wasmtime/cranelift"]
 
 [dependencies]
