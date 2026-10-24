@@ -219,8 +219,10 @@ pub fn hevc_444_available(
             let (device, _) = create_device(preferred_gpu)?;
             let dxgi: IDXGIDevice = api("video-444-adapter", device.cast())?;
             let adapter = api("video-444-adapter", dxgi.GetAdapter())?;
-            if api("video-444-adapter", adapter.GetDesc())?.VendorId != 0x10de {
-                return Err(unavailable("video-444-nvidia-only"));
+            if !crate::gpu_windows::full_chroma_vendor_allowed(
+                api("video-444-adapter", adapter.GetDesc())?.VendorId,
+            ) {
+                return Err(unavailable("video-444-vendor-unavailable"));
             }
             let format = if ten_bit {
                 DXGI_FORMAT_Y410

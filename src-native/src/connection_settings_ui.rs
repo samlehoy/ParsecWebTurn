@@ -585,12 +585,12 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     SendMessageW(timing, CB_SETCURSEL, selection, 0);
     #[cfg(feature = "native-core")]
     {
-        row_label(hwnd, page, "Chroma", "NVIDIA client GPUs only (experimental HEVC, 8/10-bit).\nRequires compatible host encoding and client AYUV support.\nUses normal GPU rendering; host may send 4:2:0 instead.", 720, 0, 64);
+        row_label(hwnd, page, "Chroma", "NVIDIA tested; Intel not live-validated. AMD unavailable.\nHEVC 8/10-bit; requires compatible host and GPU.\nNormal GPU rendering; host may send 4:2:0 instead.", 720, 0, 64);
         add(
             hwnd,
             page,
             "BUTTON",
-            "Prefer 4:4:4 (NVIDIA only, experimental)",
+            "Prefer 4:4:4 (experimental)",
             BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
             [420, 720, 400, 36],
             CHROMA_444,
@@ -1131,7 +1131,7 @@ unsafe fn update_enabled(hwnd: HWND) {
                     .map(|g| g.vendor_id)
                     .or(page.default_gpu_vendor)
             });
-        let allowed = vendor == Some(0x10de);
+        let allowed = vendor.is_some_and(crate::gpu_windows::full_chroma_vendor_allowed);
         if !allowed {
             check(hwnd, CHROMA_444, false);
         }
@@ -1652,14 +1652,14 @@ mod tests {
                     update_enabled(page);
                     assert_eq!(
                         IsWindowEnabled(GetDlgItem(page, CHROMA_444 as i32)) != 0,
-                        vendor == 0x10de
+                        matches!(vendor, 0x10de | 0x8086)
                     );
-                    assert_eq!(checked(page, CHROMA_444), vendor == 0x10de);
+                    assert_eq!(checked(page, CHROMA_444), matches!(vendor, 0x10de | 0x8086));
                     assert_ne!(IsWindowEnabled(GetDlgItem(page, TEN_BIT as i32)), 0);
                     #[cfg(feature = "vendor-video")]
                     assert_eq!(
                         IsWindowEnabled(GetDlgItem(page, ZERO_COPY as i32)) != 0,
-                        vendor != 0x10de
+                        !matches!(vendor, 0x10de | 0x8086)
                     );
                 }
                 state.default_gpu_vendor = default_vendor;

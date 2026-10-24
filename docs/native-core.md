@@ -174,7 +174,10 @@ engine and its pinned channel/initialization contract, without the WASM core.
 It still needs live direct, TURN/UDP, TURN/TLS and TURN/TCP verification in this
 independent build. BUD-only HID and raw/multichannel audio stay BUD-only.
 
-Prefer 4:4:4 is currently supported on NVIDIA client GPUs only (experimental).
+Prefer 4:4:4 is available on NVIDIA and Intel client GPUs (experimental).
+Intel 8-bit and combined 10-bit 4:4:4 playback are not live-validated. Intel
+uses the same direct D3D11 AYUV/Y410 path as NVIDIA; the existing Intel VPL
+4:2:0 path is unchanged. No extra decoded-frame copy or dependency is added.
 It offers 8-bit HEVC after selected-GPU Main444/AYUV decoding and processor
 input checks. With 10-bit HEVC also enabled, it checks Main10 4:4:4/Y410 decode,
 Y410-to-RGB10 conversion and the existing Main/Main10 4:2:0 fallback rows. Existing pinned lowlat DXVA range-extension
@@ -194,11 +197,12 @@ conversion is an error, rather than a silent retry in RGB8. The host can still s
 8-bit 4:4:4 decoding/presentation has been confirmed on NVIDIA GeForce RTX 3060.
 The tested AMD Radeon 780M driver rejects the Main444 profile query with
 `0x80070057`, so that configuration advertises 4:2:0 only. This is not a blanket
-claim about all AMD hardware or APIs. AMD and Intel 4:4:4 client configurations
-are not currently supported; Settings disables and clears the 4:4:4 checkbox
-for non-NVIDIA adapters, including Automatic when Windows selects one. The
+claim about all AMD hardware or APIs. AMD 4:4:4 remains disabled; Settings
+clears and disables the checkbox for AMD/unknown adapters, including Automatic
+when Windows selects one. NVIDIA and Intel still need actual decoder and
+processor support; vendor eligibility alone does not advertise 4:4:4. The
 connection capability check independently enforces this policy. Other NVIDIA
-configurations remain unverified.
+configurations and all Intel configurations remain unverified by live tests.
 
 See [stock settings comparison](native-settings-comparison.md) for existing
 features and possible future additions; unimplemented options were not added.

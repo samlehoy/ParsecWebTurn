@@ -84,8 +84,9 @@ experimental options disabled for the most conservative configuration.
   Main 10 host encoding has been confirmed with NVIDIA; AMD configurations have
   not consistently worked in testing. This is not HDR. An initial host encoder
   error asks you to disable 10-bit and reconnect; no automatic 8-bit retry occurs.
-- **HEVC 4:4:4 (NVIDIA only):** currently supported only on compatible NVIDIA
-  client GPUs, with compatible host encoding. The 8-bit GPU path
+- **HEVC 4:4:4:** available experimentally on compatible NVIDIA and Intel
+  client GPUs, with compatible host encoding. **Intel is not live-validated**;
+  its decoder and output support must pass runtime checks. The 8-bit GPU path
   has been confirmed live over BUD on NVIDIA RTX 3060; other configurations
   remain unverified. Combining 4:4:4 with 10-bit HEVC is implemented
   experimentally with direct Y410-to-RGB10 GPU conversion; live 1920x1080
