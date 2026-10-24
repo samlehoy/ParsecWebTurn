@@ -182,6 +182,8 @@ impl Snapshot {
 }
 
 pub struct Frame {
+    /// Clockwise display quarter-turns, carried with compressed-frame identity.
+    pub rotation: u8,
     pub queued_at: Instant,
     pub codec: crate::video_stream::Codec,
     pub bytes: Vec<u8>,
@@ -283,6 +285,7 @@ impl Queue {
         self.report.codec = Some(codec);
         self.report.queue_bytes += bytes.len();
         self.frames.push_back(Frame {
+            rotation: 0,
             queued_at: Instant::now(),
             codec,
             bytes,
@@ -293,6 +296,13 @@ impl Queue {
         self.report.queue_depth = self.frames.len();
         self.report.queue_peak_depth = self.report.queue_peak_depth.max(self.frames.len());
         true
+    }
+
+    #[cfg(feature = "native-core")]
+    pub fn set_last_rotation(&mut self, rotation: u8) {
+        if let Some(frame) = self.frames.back_mut() {
+            frame.rotation = rotation;
+        }
     }
 
     pub fn pop(&mut self) -> Option<Frame> {

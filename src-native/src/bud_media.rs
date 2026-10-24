@@ -120,6 +120,7 @@ impl Media {
                 Ok(false)
             }
             Video::AccessUnit { header, annex_b } => {
+                #[cfg(not(feature = "native-core"))]
                 ensure!(
                     matches!(header.rotation, Rotation::None | Rotation::Unknown),
                     "rotated BUD presentation is not connected yet"
@@ -136,6 +137,18 @@ impl Media {
                 if self.waiting_for_keyframe && !info.idr && !info.parameters {
                     return Ok(false);
                 }
+                #[cfg(feature = "native-core")]
+                let accepted = self.video.submit_oriented(
+                    annex_b,
+                    info,
+                    match header.rotation {
+                        Rotation::Deg90 => 1,
+                        Rotation::Deg180 => 2,
+                        Rotation::Deg270 => 3,
+                        _ => 0,
+                    },
+                );
+                #[cfg(not(feature = "native-core"))]
                 let accepted = self.video.submit(annex_b, info);
                 if accepted && info.idr {
                     self.waiting_for_keyframe = false;

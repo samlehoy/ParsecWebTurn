@@ -57,6 +57,8 @@ impl GpuPreference {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
+    #[cfg(feature = "native-core")]
+    pub native_core: crate::native_core::profile::Profile,
     #[cfg(feature = "bud")]
     #[serde(alias = "experimentalBud")]
     pub bud: bool,
@@ -100,6 +102,8 @@ impl Default for Settings {
     // Legacy defaults apply to existing JSON; a new native installation uses fresh().
     fn default() -> Self {
         Self {
+            #[cfg(feature = "native-core")]
+            native_core: Default::default(),
             #[cfg(feature = "bud")]
             bud: false,
             #[cfg(feature = "bud")]
@@ -381,16 +385,48 @@ impl Manager {
             settings.encrypted_api_token = protect(token)?;
         }
         settings.validate()?;
+        #[cfg(feature = "native-core")]
+        let mut current = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(feature = "native-core")]
+        {
+            settings.native_core = current.0.native_core.clone();
+        }
         let raw = serde_json::to_vec_pretty(&settings)?;
         if raw.len() > MAX_FILE {
             bail!("Settings exceed 64 KiB");
         }
         atomic_write(&self.path, &raw)?;
         let logging = settings.event_logging;
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = (settings, None);
+        #[cfg(feature = "native-core")]
+        {
+            *current = (settings, None);
+        }
+        #[cfg(not(feature = "native-core"))]
+        {
+            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = (settings, None);
+        }
         *self.cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
         crate::event_log::configure(logging)
             .context("Settings saved, but the event log could not be opened")?;
+        Ok(())
+    }
+    #[cfg(feature = "native-core")]
+    pub fn update_native(
+        &self,
+        update: impl FnOnce(&mut crate::native_core::profile::Profile),
+    ) -> Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        anyhow::ensure!(
+            state.1.is_none(),
+            "Fix settings.json before saving the native profile"
+        );
+        let mut settings = state.0.clone();
+        update(&mut settings.native_core);
+        settings.native_core.video.validate()?;
+        let raw = serde_json::to_vec_pretty(&settings)?;
+        anyhow::ensure!(raw.len() <= MAX_FILE, "Settings exceed 64 KiB");
+        atomic_write(&self.path, &raw)?;
+        state.0 = settings;
         Ok(())
     }
     #[cfg(test)]

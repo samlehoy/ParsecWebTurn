@@ -14,6 +14,8 @@ use windows_sys::Win32::{
 
 #[derive(Clone, Debug)]
 pub enum Event {
+    #[cfg(feature = "native-core")]
+    NativeSession(crate::native_core::session_ui::Action),
     Size(i32, i32),
     Focus(bool),
     Clipboard,
@@ -285,6 +287,11 @@ impl Window {
                     unsafe {
                         let mut msg: MSG = std::mem::zeroed();
                         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                            #[cfg(feature = "native-core")]
+                            if crate::native_core::session_ui::dialog(hwnd, &msg) {
+                                continue;
+                            }
+
                             if msg.message == WM_KEYDOWN
                                 && msg.wParam == b'S' as usize
                                 && GetKeyState(VK_CONTROL as i32) < 0
@@ -578,6 +585,8 @@ impl Window {
                     .hide();
             }
         }
+        #[cfg(feature = "native-core")]
+        crate::native_core::session_ui::raise(self);
         self.apply_input_capture();
     }
 
@@ -1012,6 +1021,42 @@ impl Window {
             }
         }
     }
+    #[cfg(feature = "native-core")]
+    pub fn native_fullscreen(&self) -> bool {
+        self.fullscreen_active.load(Ordering::Acquire)
+    }
+    #[cfg(feature = "native-core")]
+    pub fn native_toggle_overlay(&self) {
+        unsafe {
+            PostMessageW(
+                self.handle(),
+                WM_COMMAND,
+                crate::native_core::session_ui::OPEN,
+                0,
+            );
+        }
+    }
+    #[cfg(feature = "native-core")]
+    pub fn native_display_size(&self) -> (u32, u32) {
+        unsafe {
+            let monitor = MonitorFromWindow(self.handle(), MONITOR_DEFAULTTONEAREST);
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..std::mem::zeroed()
+            };
+            if GetMonitorInfoW(monitor, &mut info) != 0 {
+                (
+                    (info.rcMonitor.right - info.rcMonitor.left).max(1) as u32,
+                    (info.rcMonitor.bottom - info.rcMonitor.top).max(1) as u32,
+                )
+            } else {
+                (
+                    GetSystemMetrics(SM_CXSCREEN).max(1) as u32,
+                    GetSystemMetrics(SM_CYSCREEN).max(1) as u32,
+                )
+            }
+        }
+    }
     pub fn set_fullscreen(&self, enable: bool) {
         if self.closing.load(Ordering::Acquire) {
             return;
@@ -1174,6 +1219,22 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 }
                 return 0;
             }
+            #[cfg(feature = "native-core")]
+            WM_DRAWITEM if crate::native_core::ui::draw_button(lp) => {
+                return 1;
+            }
+            #[cfg(feature = "native-core")]
+            WM_COMMAND if wp & 0xffff == crate::native_core::session_ui::OPEN => {
+                let manager = s
+                    .connection_settings
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                if let Some(manager) = manager {
+                    crate::native_core::session_ui::toggle(s, manager);
+                }
+                return 0;
+            }
             WM_COMMAND if wp & 0xffff == crate::updater_ui::OPEN => {
                 s.open_updates(true, true);
                 return 0;
@@ -1190,6 +1251,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             m if m == WM_APP + 8 => {
                 crate::connection_settings_ui::install_menu(hwnd);
+                #[cfg(feature = "native-core")]
+                crate::native_core::session_ui::install(s);
                 return 0;
             }
             m if m == WM_APP + 9 => {
@@ -1518,6 +1581,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                         SWP_NOACTIVATE | SWP_NOZORDER,
                     );
                 }
+                #[cfg(feature = "native-core")]
+                crate::native_core::session_ui::raise(s);
                 s.push(Event::Size(w, h));
                 s.apply_input_capture();
             }

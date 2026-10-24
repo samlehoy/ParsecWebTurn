@@ -1,0 +1,188 @@
+//! Native-only preferences. Session protection uses existing CurrentUser DPAPI.
+use anyhow::{ensure, Result};
+use base64::{engine::general_purpose::STANDARD, Engine};
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Profile {
+    pub email: String,
+    pub encrypted_session: String,
+    pub last_peer: String,
+    pub video: Video,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Resolution {
+    #[default]
+    Host,
+    Client,
+    Fixed(u32, u32),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Video {
+    pub resolution: Resolution,
+    /// None preserves the current host setting; Some is a request, not telemetry.
+    pub bandwidth_mbps: Option<u32>,
+    pub fps: Option<u32>,
+    pub constant_fps: Option<bool>,
+    pub rotated: Option<bool>,
+    pub immersive: u8,
+    pub fullscreen: bool,
+}
+impl Default for Video {
+    fn default() -> Self {
+        Self {
+            resolution: Resolution::Host,
+            bandwidth_mbps: None,
+            fps: None,
+            constant_fps: None,
+            rotated: None,
+            immersive: 0,
+            fullscreen: false,
+        }
+    }
+}
+impl Video {
+    pub fn validate(&self) -> Result<()> {
+        if let Resolution::Fixed(w, h) = self.resolution {
+            ensure!(
+                (320..=8192).contains(&w) && (200..=8192).contains(&h),
+                "Resolution is outside supported limits"
+            );
+        }
+        ensure!(
+            self.bandwidth_mbps.is_none_or(|n| (1..=100).contains(&n)),
+            "Bandwidth must be 1–100 Mbps"
+        );
+        ensure!(
+            self.fps.is_none_or(|n| (1..=240).contains(&n)),
+            "FPS must be 1–240"
+        );
+        ensure!(self.immersive <= 3, "Invalid immersive mode");
+        Ok(())
+    }
+    pub fn mode(&self) -> crate::core_input::Mode {
+        crate::core_input::Mode {
+            mouse: matches!(self.immersive, 1 | 3),
+            keyboard: matches!(self.immersive, 1 | 2),
+        }
+    }
+    pub fn request(&self, client_size: (u32, u32)) -> Result<bytes::Bytes> {
+        self.validate()?;
+        let mut values = serde_json::Map::new();
+        let (w, h) = match self.resolution {
+            Resolution::Host => (0, 0),
+            Resolution::Client => client_size,
+            Resolution::Fixed(w, h) => (w, h),
+        };
+        ensure!(
+            w <= 16384 && h <= 16384,
+            "Client display dimensions exceed limit"
+        );
+        values.insert("resolutionX".into(), w.into());
+        values.insert("resolutionY".into(), h.into());
+        if let Some(n) = self.bandwidth_mbps {
+            values.insert("encoderMaxBitrate".into(), n.into());
+        }
+        if let Some(n) = self.fps {
+            values.insert("encoderFPS".into(), n.into());
+        }
+        if let Some(n) = self.constant_fps {
+            values.insert("fullFPS".into(), n.into());
+        }
+        if let Some(n) = self.rotated {
+            values.insert("rotated".into(), n.into());
+        }
+        // Same owner-video contract used by the existing core and lowlat daemon.
+        // No codec flags here: the BUD adapter preserves its negotiated capability.
+        crate::control::text(17, 11, &serde_json::json!([values]).to_string())
+    }
+}
+
+impl Profile {
+    pub fn session(&self) -> Result<Option<super::account::Session>> {
+        if self.encrypted_session.is_empty() {
+            return Ok(None);
+        }
+        ensure!(
+            self.encrypted_session.len() <= 32768,
+            "Stored session exceeds limit"
+        );
+        let raw = STANDARD.decode(&self.encrypted_session)?;
+        let plain = zeroize::Zeroizing::new(crate::secure_storage::protect(&raw, false)?);
+        super::account::Session::from_token(std::str::from_utf8(&plain)?).map(Some)
+    }
+    pub fn encrypted(token: &str) -> Result<String> {
+        Ok(STANDARD.encode(crate::secure_storage::protect(token.as_bytes(), true)?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn protected_session_and_video_requests_do_not_store_passwords() {
+        let token = "fixture-session-not-a-real-account";
+        let p = Profile {
+            encrypted_session: Profile::encrypted(token).unwrap(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains(token));
+        assert!(!json.contains("password"));
+        assert_eq!(p.session().unwrap().unwrap().token(), token);
+        assert!(Profile {
+            encrypted_session: "not-base64".into(),
+            ..Default::default()
+        }
+        .session()
+        .is_err());
+        let v = Video {
+            resolution: Resolution::Client,
+            fps: Some(60),
+            constant_fps: Some(true),
+            bandwidth_mbps: Some(20),
+            ..Default::default()
+        };
+        let bytes = v.request((2560, 1440)).unwrap();
+        assert_eq!(&bytes[4..8], &11i32.to_be_bytes());
+        let value: serde_json::Value = serde_json::from_slice(&bytes[13..bytes.len() - 1]).unwrap();
+        assert_eq!(value[0]["resolutionX"], 2560);
+        assert_eq!(value[0]["encoderMaxBitrate"], 20);
+        assert_eq!(value[0]["fullFPS"], true);
+        let preserve = Video::default().request((1, 1)).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&preserve[13..preserve.len() - 1]).unwrap();
+        assert_eq!(value[0]["resolutionX"], 0);
+        assert!(value[0].get("encoderFPS").is_none());
+        assert!(Video {
+            fps: Some(241),
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn rotation_stays_with_compressed_frame_and_uses_oriented_input_extents() {
+        let mut queue = crate::video_output::Queue::default();
+        assert!(queue.submit(&[1, 2, 3], true, false, 42));
+        queue.set_last_rotation(1);
+        let frame = queue.pop().unwrap();
+        assert_eq!((frame.timestamp_100ns, frame.rotation), (42, 1));
+        let source = crate::video_windows::display_extents(1920, 1080, frame.rotation);
+        assert_eq!(source, (1080, 1920));
+        let viewport = crate::viewport::Viewport {
+            source,
+            client: (540, 960),
+        };
+        assert_eq!(viewport.map(270, 480), Some((540, 960)));
+        assert_eq!(
+            crate::video_windows::display_extents(1920, 1080, 2),
+            (1920, 1080)
+        );
+    }
+}

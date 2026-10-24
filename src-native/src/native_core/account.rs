@@ -9,16 +9,29 @@ pub struct Login {
     pub email: String,
     pub password: zeroize::Zeroizing<String>,
     pub tfa: zeroize::Zeroizing<String>,
-    pub peer: String,
 }
 
 // Deliberately no Debug/Serialize: neither token nor password belongs in logs.
-pub struct Session(zeroize::Zeroizing<String>);
+pub struct Session(zeroize::Zeroizing<String>, std::sync::atomic::AtomicBool);
 impl Session {
+    pub fn from_token(token: &str) -> Result<Self> {
+        ensure!(
+            !token.is_empty() && token.len() <= 4096 && !token.chars().any(char::is_control),
+            "Invalid account session"
+        );
+        Ok(Self(
+            zeroize::Zeroizing::new(token.into()),
+            std::sync::atomic::AtomicBool::new(false),
+        ))
+    }
     pub fn token(&self) -> &str {
         &self.0
     }
+    pub fn remembered(&self) {
+        self.1.store(false, std::sync::atomic::Ordering::Release);
+    }
     pub fn revoke(&self) {
+        self.remembered();
         // Same DELETE contract as lowlat's --logout. Never log a server body.
         let result = reqwest::blocking::Client::builder()
             .https_only(true)
@@ -97,7 +110,9 @@ pub fn login(login: &Login) -> Result<Session> {
     ensure!(bytes.len() <= 131072, "Sign-in response exceeds limit");
     let value =
         serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("Invalid sign-in response."))?;
-    accepted(status, value)
+    let session = accepted(status, value)?;
+    session.1.store(true, std::sync::atomic::Ordering::Release);
+    Ok(session)
 }
 
 #[cfg(test)]
@@ -130,7 +145,6 @@ mod tests {
             email: " user@example.invalid ".into(),
             password: zeroize::Zeroizing::new("fixture".into()),
             tfa: zeroize::Zeroizing::new(String::new()),
-            peer: "1".into(),
         };
         assert!(body(&login).get("tfa").is_none());
         assert_eq!(body(&login)["email"], "user@example.invalid");
@@ -140,5 +154,104 @@ mod tests {
             .err()
             .unwrap();
         assert!(e.to_string().contains("Confirm"));
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Host {
+    pub peer: String,
+    pub name: String,
+}
+#[derive(Debug)]
+pub struct ExpiredSession;
+impl std::fmt::Display for ExpiredSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Your saved sign-in has expired. Sign in again.")
+    }
+}
+impl std::error::Error for ExpiredSession {}
+
+pub fn hosts(session: &Session) -> Result<Vec<Host>> {
+    // Audited pinned core's desktop discovery endpoint; no credentials in URL.
+    let client = reqwest::blocking::Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(20))
+        .build()?;
+    let response = client
+        .get("https://kessel-api.parsec.app/v2/hosts?mode=desktop")
+        .bearer_auth(session.token())
+        .send()
+        .map_err(|_| anyhow::anyhow!("Could not securely refresh the computer list."))?;
+    if matches!(response.status().as_u16(), 401 | 403) {
+        return Err(ExpiredSession.into());
+    }
+    ensure!(
+        response.status().is_success(),
+        "Computer list request refused (HTTP {}).",
+        response.status().as_u16()
+    );
+    let mut bytes = Vec::new();
+    response
+        .take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| anyhow::anyhow!("Could not read the computer list."))?;
+    ensure!(bytes.len() <= 1024 * 1024, "Computer list exceeds limit");
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| anyhow::anyhow!("Invalid computer list response."))?;
+    parse_hosts(&value)
+}
+fn parse_hosts(value: &Value) -> Result<Vec<Host>> {
+    let data = value["data"]
+        .as_array()
+        .context("Computer list format is not supported; use a peer ID instead.")?;
+    ensure!(
+        data.len() <= 1024,
+        "Too many computers in discovery response"
+    );
+    let mut hosts = Vec::new();
+    for host in data {
+        let Some(peer) = host["peer_id"].as_str().or_else(|| host["id"].as_str()) else {
+            continue;
+        };
+        if peer.is_empty() || peer.len() > 256 || peer.chars().any(char::is_control) {
+            continue;
+        }
+        let name = host["name"].as_str().unwrap_or(peer);
+        let name: String = name.chars().filter(|c| !c.is_control()).take(128).collect();
+        if !hosts.iter().any(|h: &Host| h.peer == peer) {
+            hosts.push(Host {
+                peer: peer.into(),
+                name,
+            });
+        }
+    }
+    ensure!(
+        data.is_empty() || !hosts.is_empty(),
+        "Computer identifiers were not recognized; use a peer ID instead."
+    );
+    hosts.sort_by_cached_key(|h| h.name.to_lowercase());
+    Ok(hosts)
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    #[test]
+    fn bounded_discovery_uses_host_identity_not_account_identity() {
+        let h = parse_hosts(&json!({"data":[{"peer_id":"peer","name":"My PC","user_id":123},{"peer_id":"peer"},{"id":"other","name":"Laptop"}]})).unwrap();
+        assert_eq!(h.len(), 2);
+        assert!(h.iter().any(|h| h.peer == "peer"));
+        assert!(parse_hosts(&json!({"data":[{"user_id":123}]})).is_err());
+        assert!(parse_hosts(&json!({"session_id":"secret"})).is_err());
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if self.1.load(std::sync::atomic::Ordering::Acquire) {
+            self.revoke();
+        }
     }
 }

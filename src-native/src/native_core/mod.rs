@@ -3,8 +3,10 @@
 mod account;
 mod input;
 mod pointer;
+pub(crate) mod profile;
+pub(crate) mod session_ui;
 mod signaling;
-mod ui;
+pub(crate) mod ui;
 
 use anyhow::{ensure, Context, Result};
 use std::{
@@ -54,37 +56,33 @@ fn run() -> Result<()> {
         "native_core_started",
         serde_json::json!({"transport":"BUD","wasm":false}),
     );
-    let Some(login) = ui::login()? else {
-        return Ok(());
-    };
-    let session = account::login(&login).inspect_err(|_| {
-        crate::event_log::record(
-            "ERROR",
-            "native_account_login_failed",
-            serde_json::json!({}),
-        );
-    })?;
-    let peer = login.peer.clone();
-    drop(login); // Password is not retained with the stream or written to disk.
-    let result = (|| {
-        let socket = signaling::Socket::open(&session)?;
-        let window = crate::window::Window::create_native()?;
-        window.install_connection_settings(settings.clone());
-        let result = stream(&peer, &socket, &window, settings);
-        window.end_session();
-        window.request_stop();
-        window.close();
-        result
-    })();
-    session.revoke();
-    if result.is_err() {
-        crate::event_log::record(
-            "ERROR",
-            "native_core_failed",
-            serde_json::json!({"stage":"signaling_or_session"}),
-        );
+    let mut session = None;
+    loop {
+        let Some(selection) = ui::choose(settings.clone(), session.take())? else {
+            return Ok(());
+        };
+        let result = (|| {
+            let socket = signaling::Socket::open(&selection.session)?;
+            let window = crate::window::Window::create_native()?;
+            window.install_connection_settings(settings.clone());
+            let result = stream(&selection.peer, &socket, &window, settings.clone());
+            window.end_session();
+            window.request_stop();
+            window.close();
+            result
+        })();
+        if let Err(error) = result {
+            crate::event_log::record(
+                "ERROR",
+                "native_core_failed",
+                serde_json::json!({"stage":"signaling_or_session"}),
+            );
+            unsafe {
+                ui::message_box(std::ptr::null_mut(), &error.to_string());
+            }
+        }
+        session = Some(selection.session);
     }
-    result
 }
 
 fn stream(
@@ -99,7 +97,7 @@ fn stream(
         peer,
         socket.writer.clone(),
         window.clone(),
-        manager,
+        manager.clone(),
     )?;
     let services = crate::platform::Services::new(Box::new(
         crate::platform_windows::NativeDesktop(window.handle() as usize),
@@ -112,7 +110,15 @@ fn stream(
     let mut audio_source = None;
     let mut local_keys = std::collections::BTreeSet::new();
     window.events.set_consumer(std::thread::current());
-    let mut fullscreen = false;
+    let mut video = manager.view().0.native_core.video;
+    video.validate()?;
+    let mut fullscreen = video.fullscreen;
+    window.set_fullscreen(fullscreen);
+    window.set_input_state(crate::core_input::State {
+        mode: video.mode(),
+        ..Default::default()
+    });
+    let mut requested_display = None;
     let mut detached = false;
     let mut last_clipboard = String::new();
     while !window.closing.load(Ordering::Acquire) && !window.stop.stopped() {
@@ -130,6 +136,11 @@ fn stream(
         while let Some(event) = attempt.pop_event() {
             if event["type"] == 7 {
                 ensure!(event["status"] == 0, "The BUD connection ended.");
+                if !established {
+                    let size = window.native_display_size();
+                    attempt.send(&video.request(size)?)?;
+                    requested_display = Some(size);
+                }
                 established = true;
                 window.set_wake_lock(true);
             }
@@ -199,8 +210,12 @@ fn stream(
         for event in batch.drain(..) {
             use crate::window::Event;
             if let Event::Key(true, code, mods) = &event {
-                if mods & 3 == 3 && matches!(*code, "KeyQ" | "KeyW" | "KeyR") {
+                if mods & 3 == 3 && matches!(*code, "KeyQ" | "KeyW" | "KeyR" | "KeyO") {
                     local_keys.insert(*code);
+                }
+                if mods & 3 == 3 && *code == "KeyO" {
+                    window.native_toggle_overlay();
+                    continue;
                 }
                 if mods & 3 == 3 && *code == "KeyQ" {
                     window.request_stop();
@@ -218,6 +233,7 @@ fn stream(
                     detached = !detached;
                     window.set_input_state(crate::core_input::State {
                         detached,
+                        mode: video.mode(),
                         ..Default::default()
                     });
                     continue;
@@ -239,6 +255,54 @@ fn stream(
                             last_clipboard = text;
                         }
                     }
+                }
+            }
+            if let Event::NativeSession(action) = &event {
+                match action {
+                    session_ui::Action::Disconnect => window.request_stop(),
+                    session_ui::Action::Apply(next) => {
+                        let result = (|| -> Result<()> {
+                            ensure!(established, "BUD is not connected yet");
+                            let size = window.native_display_size();
+                            attempt.send(&next.request(size)?)?;
+                            manager.update_native(|p| p.video = next.clone())?;
+                            video = next.clone();
+                            fullscreen = video.fullscreen;
+                            requested_display = Some(size);
+                            attempt.send(&crate::control::header(24, 0, 0, 0))?;
+                            window.set_input_state(crate::core_input::State {
+                                mode: video.mode(),
+                                detached,
+                                ..Default::default()
+                            });
+                            window.set_fullscreen(fullscreen);
+                            Ok(())
+                        })();
+                        if result.is_err() {
+                            crate::event_log::record(
+                                "WARN",
+                                "native_session_settings_failed",
+                                serde_json::json!({}),
+                            );
+                        }
+                        session_ui::result(window, result.is_ok());
+                    }
+                }
+                continue;
+            }
+            if let Event::Fullscreen(active) = &event {
+                fullscreen = *active;
+                video.fullscreen = *active;
+                let _ = manager.update_native(|p| p.video.fullscreen = *active);
+            }
+            if matches!(event, Event::Size(..))
+                && established
+                && video.resolution == profile::Resolution::Client
+            {
+                let size = window.native_display_size();
+                if requested_display != Some(size) {
+                    attempt.send(&video.request(size)?)?;
+                    requested_display = Some(size);
                 }
             }
             if established {

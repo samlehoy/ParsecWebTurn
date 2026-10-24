@@ -12,25 +12,50 @@ removing that compile-time coupling is not yet completed.
 ## First live check
 
 Run `ParsecWebTurn-native-core.exe` beside a copy of your usual `settings.json`,
-preferably in a separate test folder. Enter your Parsec email/password, optional
-2FA code and the host's peer ID. The peer ID is what lowlat's client demo also
-takes; no new machine-list endpoint is guessed. Passwords and account tokens
-are not written to settings or logs. This initial client signs in on each run
-and attempts to revoke that session when it exits. Failed revocation is logged
-without the credential. No Python, launcher, additional SDK or Parsec install
-is needed on the client.
+preferably in a separate test folder. Sign in with your Parsec email/password and
+optional 2FA code, then choose an available computer. Refresh updates the list;
+manual peer-ID entry remains available if discovery returns no recognized hosts.
+The discovery endpoint is the pinned core's `GET /v2/hosts?mode=desktop`. Discovery
+UI/schema interoperability still needs a live check; no device list is fabricated.
+The bootstrap connection authorization remains for your own stock Parsec hosts.
 
-Only BUD is used. Retain your ordinary Network settings for direct/TURN routing;
-the existing UDP -> TLS -> TCP policy, rustls verification and Force TURN option
-are reused. BUD is fixed on in this build's Network tab, including for the existing HID preferences.
-Settings and Connection stats remain available from the native window menu.
+**Remember sign-in** stores only the session token, encrypted using Windows
+CurrentUser DPAPI, in `nativeCore.encryptedSession` in `settings.json`. Passwords
+and 2FA codes are never saved. No extra account database, launcher or helper file
+is required. Moving the file to another Windows user does not make the session
+usable there. Expired/rejected saved sessions return to sign-in. **Sign out**
+removes the saved token and attempts server-side revocation. A remembered session
+is retained on ordinary exit; an ephemeral session is revoked when its final
+owner exits. Revocation errors are logged without credentials.
+
+Only BUD is used. The existing direct/TURN UDP -> TLS -> TCP policy, rustls
+verification and Force TURN option are reused. BUD is fixed on in Network settings.
+Settings and Connection stats are available from the native window menu.
 Save and reconnect after changing connection/video/audio settings.
 
-Stream shortcuts: Ctrl+Shift+W toggles fullscreen, Ctrl+Shift+R releases or
-reacquires the remote pointer, Ctrl+Shift+Q disconnects and exits. Closing the
-window exits too. Physical key usages follow the existing lowlat/USB contract;
-the host keyboard layout interprets them. Camera motion, absolute HID input,
-focus-release and local Settings use the existing Win32 input owner.
+The **Session** button or **Ctrl+Shift+O** opens a small native control panel over
+the video. It offers Keep host / Match client display / editable fixed resolution,
+a host bandwidth limit in Mbps, requested FPS and Constant FPS, Default / Rotated
+host orientation, mouse/keyboard/both immersive capture, and fullscreen. Apply
+saves preferences for later connections. Host video values are requests and remain
+subject to host permissions, supported display modes and encoder capacity.
+Constant FPS does not duplicate frames or add pacing on the client. Keep host
+leaves unset bitrate/FPS/pacing/orientation fields absent from the request.
+
+The panel uses event-driven Win32/GDI controls; it does not read back or copy
+video pixels. Local controls release remote held input while focused. BUD rotation
+metadata selects a D3D11 VideoProcessor rotation in the existing conversion pass;
+no extra intermediate frame is introduced. Rotated streams use normal GPU
+presentation, with an explicit Zero copy status, because original-surface rotation
+is not wired. Rotation changes use the existing keyframe/decoder recovery path.
+The input extents follow the rotated display, matching lowlat's mapper contract.
+Hardware rotation support and real pointer alignment still require live testing.
+
+Ctrl+Shift+W toggles fullscreen, Ctrl+Shift+R releases/reacquires remote input,
+and Ctrl+Shift+Q disconnects. Disconnecting or closing the stream returns to the
+computer picker; closing the picker exits. Physical keys use the existing USB
+usage mapping and host layout. Existing HID camera capture remains on the same
+Win32 input owner; no continuous input logging is added.
 
 ## Reused components
 
@@ -62,18 +87,18 @@ used directly for the new password/2FA/session owners.
 
 ## Validation limits and remaining scope
 
-The first live target is an owner connection to an **unmodified stock Parsec
-host**, not a lowlat host. Friend/invitation authorization is not wired into
-this bootstrap UI. First live interoperability is pending. Compilation and fixture tests cannot
-prove successful account login, current stock-host behavior, audio sync, GPU
-performance or HID behavior on a real connection. Existing experimental labels
-and hardware limitations still apply.
+Owner connections to an **unmodified stock Parsec host** were confirmed live on
+2026-10-24 using the earlier bootstrap build: two TURN/UDP and one direct BUD
+session, H.264 8-bit and stereo Opus. Those tests do not establish HEVC, 10-bit,
+TURN TCP/TLS, the new picker/persistence/panel or rotated-display behavior.
+Friend/invitation authorization, gamepads, account recovery and native updater
+integration are outside this version. Existing experimental labels apply.
 
-There is no machine-list UI, saved account session, account recovery flow,
-gamepad integration, host video-settings overlay or native updater integration
-in this first version. WebRTC is deliberately outside this branch's first scope.
-The lowlat native client also rejects its web transport; our existing WebRTC
-code has not been converted into a WASM-independent signaling implementation.
+The newer UI/control code has synthetic regression coverage; live validation is
+still needed for host discovery, saved-session resume/expiry, requested display
+changes, rotated input, immersive mode and reopening connections. No GPU
+performance improvement or physical monitor bit depth is inferred from fixtures.
+WebRTC remains outside this branch's first scope; the normal client is unchanged.
 
 ParsecWebTurn remains independent of lowlat. This work does not change the
 stock host or turn it into an open-source server.
@@ -81,3 +106,8 @@ stock host or turn it into an open-source server.
 Signaling upgrade errors show a bounded stage and HTTP status when available.
 If event logging is enabled, `native_signaling_upgrade_failed` records the same
 safe fields; request URLs, account tokens and server response bodies are excluded.
+
+The owner video configuration uses the same opcode-17 application sub-ID 11 as
+the original core, and the field names corroborated by lowlat's daemon app.rs:
+`resolutionX`, `resolutionY`, `encoderFPS`, `encoderMaxBitrate`, `fullFPS`,
+`rotated`. No original code or proprietary core file is imported by this work.

@@ -325,6 +325,14 @@ impl Pipeline {
         }
     }
     pub fn submit(&self, bytes: &[u8], info: crate::video_stream::PacketInfo) -> bool {
+        self.submit_oriented(bytes, info, 0)
+    }
+    pub fn submit_oriented(
+        &self,
+        bytes: &[u8],
+        info: crate::video_stream::PacketInfo,
+        _rotation: u8,
+    ) -> bool {
         let timestamp = i64::try_from(self.started.elapsed().as_nanos() / 100).unwrap_or(i64::MAX);
         let (mut buffer, generation) = {
             let mut q = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -342,7 +350,13 @@ impl Pipeline {
                 q.recycle(buffer);
                 false
             } else {
-                q.submit_codec(buffer, info.idr, info.parameters, timestamp, info.codec)
+                let accepted =
+                    q.submit_codec(buffer, info.idr, info.parameters, timestamp, info.codec);
+                #[cfg(feature = "native-core")]
+                if accepted {
+                    q.set_last_rotation(_rotation);
+                }
+                accepted
             }
         };
         self.shared.1.notify_one();
@@ -509,6 +523,7 @@ fn run(
                     .ok_or_else(|| unavailable("video-recovery-codec-missing"))?;
                 header_bytes = bytes.len();
                 headers.push(Frame {
+                    rotation: 0,
                     queued_at: Instant::now(),
                     codec,
                     bytes,
@@ -530,6 +545,17 @@ fn run(
         let Some(mut frame) = frame else {
             continue;
         };
+        // A display-mode transition retires the decoder through the existing
+        // keyframe recovery path. Never mix old and new orientation on outputs.
+        if session
+            .as_ref()
+            .is_some_and(|s| s.rotation != frame.rotation)
+        {
+            let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            q.recover(Instant::now());
+            q.recycle(frame.bytes);
+            continue;
+        }
         if frame.parameters {
             parameters.observe(&frame.bytes, frame.codec);
         }
@@ -581,7 +607,7 @@ fn run(
                 .ensure_video_surface()
                 .map_err(|_| unavailable("video-surface-create"))?;
             let setup_started = Instant::now();
-            let native = unsafe {
+            let mut native = unsafe {
                 Session::create(
                     HWND(hwnd as *mut _),
                     verify_synthetic_pixels,
@@ -591,11 +617,19 @@ fn run(
                     surface_generation,
                     (
                         !vendor_failed && !verify_synthetic_pixels,
-                        zero_requested && !zero_failed,
+                        zero_requested && !zero_failed && frame.rotation == 0,
                         presentation_mode,
                     ),
                 )?
             };
+            native.rotation = frame.rotation;
+            if let Some(renderer) = &mut native.renderer {
+                renderer.rotation = frame.rotation;
+            }
+            if zero_requested && frame.rotation != 0 {
+                native.zero_copy_status =
+                    Some("Rotated display uses the normal GPU conversion path".into());
+            }
             update(shared, |s| {
                 s.local_timing.decoder_setup.record(setup_started.elapsed());
                 s.decoder_initialized = true;
@@ -879,6 +913,7 @@ impl OutputFormat {
 }
 
 struct Session {
+    rotation: u8,
     in_flight: crate::video_output::InFlight,
     ten_bit: bool,
     surface_generation: u64,
@@ -991,6 +1026,7 @@ impl Session {
                     match parsec_gpu_video::display::Session::open(luid, hwnd) {
                         Ok(display) => {
                             return Ok(Some(Self {
+                                rotation: 0,
                                 in_flight: Default::default(),
                                 ten_bit: false,
                                 surface_generation,
@@ -1018,6 +1054,7 @@ impl Session {
                 let renderer = Renderer::create_on_device(hwnd, device, context, presentation_mode)
                     .map_err(|e| anyhow::anyhow!("{}", e.stage))?;
                 Ok(Some(Self {
+                    rotation: 0,
                     in_flight: Default::default(),
                     ten_bit: false,
                     surface_generation,
@@ -1143,6 +1180,7 @@ impl Session {
         }
         api("video-input-type", decoder.SetInputType(0, &input, 0))?;
         let mut result = Self {
+            rotation: 0,
             in_flight: Default::default(),
             ten_bit,
             surface_generation,
@@ -1376,8 +1414,9 @@ impl Session {
                         s.gpu_surface_output = true;
                         s.d3d11_decoder_surface =
                             Some(desc.BindFlags & D3D11_BIND_DECODER.0 as u32 != 0);
-                        s.width = Some(layout.width);
-                        s.height = Some(layout.height);
+                        let (w, h) = display_extents(layout.width, layout.height, self.rotation);
+                        s.width = Some(w);
+                        s.height = Some(h);
                         s.nominal_range = Some(if layout.full_range { 1 } else { 2 });
                         s.decoded_bit_depth = Some(8);
                         match presented {
@@ -1533,8 +1572,13 @@ impl Session {
                 } else {
                     8
                 });
-                s.width = Some((source.right - source.left) as u32);
-                s.height = Some((source.bottom - source.top) as u32);
+                let (w, h) = display_extents(
+                    (source.right - source.left) as u32,
+                    (source.bottom - source.top) as u32,
+                    self.rotation,
+                );
+                s.width = Some(w);
+                s.height = Some(h);
                 s.color_matrix = matrix;
                 s.nominal_range = nominal;
             });
@@ -1596,6 +1640,7 @@ fn presentation_status(status: windows::core::HRESULT) -> Result<Presentation> {
 }
 
 struct ProcessorCache {
+    rotation_set: bool,
     enumeration: ID3D11VideoProcessorEnumerator,
     processor: ID3D11VideoProcessor,
     key: (u32, u32, u32, u32, DXGI_FORMAT, u32),
@@ -1614,6 +1659,8 @@ impl Drop for ContextCleanup {
     }
 }
 struct Renderer {
+    rotation: u8,
+    rotation_context: Option<ID3D11VideoContext1>,
     timing_status: &'static str,
     mode: PresentationMode,
     swap_flags: DXGI_SWAP_CHAIN_FLAG,
@@ -1791,6 +1838,8 @@ impl Renderer {
             factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER),
         )?;
         Ok(Self {
+            rotation: 0,
+            rotation_context: None,
             timing_status,
             mode,
             swap_flags: DXGI_SWAP_CHAIN_FLAG(desc.Flags as i32),
@@ -2151,6 +2200,7 @@ impl Renderer {
                     .as_bool();
             });
             self.processor = Some(ProcessorCache {
+                rotation_set: false,
                 enumeration,
                 processor,
                 key,
@@ -2234,7 +2284,7 @@ impl Renderer {
         };
         // Preserve aspect ratio and letterbox on the GPU, without CPU pixels.
         let [left, top, right, bottom] = crate::viewport::Viewport {
-            source: (width, height),
+            source: display_extents(width, height, self.rotation),
             client: size,
         }
         .rect()
@@ -2257,6 +2307,28 @@ impl Renderer {
             .VideoProcessorSetStreamSourceRect(processor, 0, true, Some(&source));
         self.video_context
             .VideoProcessorSetStreamDestRect(processor, 0, true, Some(&target));
+        if self.rotation != 0 && !cached.rotation_set {
+            if self.rotation_context.is_none() {
+                self.rotation_context =
+                    Some(api("video-rotation-interface", self.video_context.cast())?);
+            }
+            let context = self.rotation_context.as_ref().unwrap();
+            let mut caps = D3D11_VIDEO_PROCESSOR_CAPS::default();
+            api(
+                "video-rotation-capabilities",
+                enumeration.GetVideoProcessorCaps(&mut caps),
+            )?;
+            if caps.FeatureCaps & D3D11_VIDEO_PROCESSOR_FEATURE_CAPS_ROTATION.0 as u32 == 0 {
+                return Err(unavailable("video-rotation-unsupported"));
+            }
+            let turn = match self.rotation {
+                1 => D3D11_VIDEO_PROCESSOR_ROTATION_90,
+                2 => D3D11_VIDEO_PROCESSOR_ROTATION_180,
+                _ => D3D11_VIDEO_PROCESSOR_ROTATION_270,
+            };
+            context.VideoProcessorSetStreamRotation(processor, 0, true, turn);
+            cached.rotation_set = true;
+        }
         self.video_context.VideoProcessorSetStreamFrameFormat(
             processor,
             0,
@@ -3055,5 +3127,13 @@ mod tests {
         let error = presentation_status(DXGI_ERROR_DEVICE_REMOVED).unwrap_err();
         assert_eq!(error.stage, "video-present");
         assert!(error.hresult.is_some());
+    }
+}
+
+pub(crate) fn display_extents(width: u32, height: u32, rotation: u8) -> (u32, u32) {
+    if rotation & 1 != 0 {
+        (height, width)
+    } else {
+        (width, height)
     }
 }
