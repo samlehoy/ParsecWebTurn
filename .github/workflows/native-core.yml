@@ -34,6 +34,10 @@ jobs:
           $nativeTree = cargo tree --locked --manifest-path src-native/Cargo.toml --no-default-features --features native-core,vendor-video --edges normal,build --prefix none
           if ($LASTEXITCODE -ne 0) { throw 'Native dependency audit failed' }
           if ($nativeTree | Select-String '^(wasmtime|cranelift|glow|lowlat-(sdk|host|daemon|capture|encode))') { throw 'Unexpected legacy/host dependency in native runtime build' }
+          # The upstream Opus buildscript does not track CMake toolchain changes.
+          # Do not reuse /MD objects restored from an older dependency cache.
+          cargo clean --manifest-path src-native/Cargo.toml -p libopus_sys
+          if ($LASTEXITCODE -ne 0) { throw 'Opus cache reset failed' }
           $env:PWT_NATIVE_UI_CAPTURE = Join-Path (Get-Location) "dist/native-core/session-panel.png"
           cargo test --locked --manifest-path src-native/Cargo.toml --no-default-features --features native-core,vendor-video -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw 'Native core and shared regression tests failed' }
