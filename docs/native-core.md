@@ -180,8 +180,11 @@ parameters are reused in the GPU-only direct decoder. AYUV goes directly to the
 existing conversion/presentation pass, with no CPU pixel readback or intermediate
 video copy. This mode uses normal GPU rendering, not original-NV12 zero copy;
 4:4:4 takes precedence over the saved 10-bit preference. The host can still send
-4:2:0; actual decoded chroma is shown separately in Connection stats. Live 4:4:4
-compatibility is not established by capability checks or synthetic tests alone.
+4:2:0; actual decoded chroma is shown separately in Connection stats. Live BUD
+8-bit 4:4:4 decoding/presentation has been confirmed on NVIDIA GeForce RTX 3060.
+The tested AMD Radeon 780M driver rejects the Main444 profile query with
+`0x80070057`, so that configuration advertises 4:2:0 only. This is not a blanket
+claim about all AMD hardware or APIs; other configurations remain unverified.
 
 See [stock settings comparison](native-settings-comparison.md) for existing
 features and possible future additions; unimplemented options were not added.

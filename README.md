@@ -85,7 +85,9 @@ experimental options disabled for the most conservative configuration.
   not consistently worked in testing. This is not HDR. An initial host encoder
   error asks you to disable 10-bit and reconnect; no automatic 8-bit retry occurs.
 - **HEVC 4:4:4:** the experimental 8-bit GPU path requires compatible host encoding
-  and client decoding/presentation support, and still needs live validation.
+  and client decoding/presentation support. Live BUD decoding/presentation is
+  confirmed on NVIDIA RTX 3060; broader GPU/transport validation is ongoing.
+  The tested AMD Radeon 780M driver did not expose the required D3D11 profile.
   H.264 remains 4:2:0; 10-bit and original-NV12 zero-copy are not combined with
   this path. Host/account terms and permissions still apply.
 - **USB HID:** BUD only, with USB/Yubikey passthrough enabled on the stock host.
