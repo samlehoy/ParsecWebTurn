@@ -8,6 +8,37 @@ use std::sync::{
     Arc,
 };
 
+#[derive(Clone, Copy)]
+pub(super) struct Policy {
+    pub bud: bool,
+    pub allow_ten_bit: bool,
+}
+#[derive(Debug)]
+pub(super) struct HostStatus {
+    pub code: i32,
+    pub before_video: bool,
+}
+impl std::fmt::Display for HostStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "The host ended the stream (status {}).", self.code)
+    }
+}
+impl std::error::Error for HostStatus {}
+impl HostStatus {
+    pub fn from_window(code: i32, window: &Window) -> Self {
+        let before_video = window
+            .video_report
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_none_or(|video| video.frames_decoded == 0);
+        Self { code, before_video }
+    }
+    pub fn permits_8bit_retry(&self) -> bool {
+        self.code == -15002 && self.before_video
+    }
+}
+
 pub(super) enum Attempt {
     Bud(crate::bud_attempt::Attempt),
     Web(WebRtc),
@@ -43,14 +74,22 @@ impl Attempt {
         writer: crate::bud_attempt::SignalingWrite,
         window: Arc<Window>,
         manager: Arc<Manager>,
+        policy: Policy,
     ) -> Result<Self> {
         ensure!(
             !peer.is_empty() && peer.len() <= 256 && !peer.chars().any(char::is_control),
             "Invalid host peer ID"
         );
-        if manager.view().0.bud {
-            return crate::bud_attempt::Attempt::spawn_native(id, peer, writer, window, manager)
-                .map(Self::Bud);
+        if policy.bud {
+            return crate::bud_attempt::Attempt::spawn_native(
+                id,
+                peer,
+                writer,
+                window,
+                manager,
+                policy.allow_ten_bit,
+            )
+            .map(Self::Bud);
         }
         let settings = manager.view().0;
         let (target, attempt_id, publish) = (peer.to_owned(), id.to_owned(), writer.clone());
@@ -70,7 +109,7 @@ impl Attempt {
                     flag_offset: 4,
                 },
                 allow_hevc: settings.prefer_hevc,
-                ten_bit: settings.experimental_ten_bit,
+                ten_bit: settings.experimental_ten_bit && policy.allow_ten_bit,
                 chroma_444: settings.experimental_chroma_444,
             }),
             crate::attempt::StunProvider::Parsec,
@@ -191,6 +230,12 @@ impl Attempt {
             .then_some("WebRTC connection failed"),
         }
     }
+    pub fn host_status(&self) -> Option<i32> {
+        match self {
+            Self::Bud(bud) => bud.host_status(),
+            Self::Web(web) => web.transport.host_status(),
+        }
+    }
     pub fn send(&self, bytes: &[u8]) -> Result<()> {
         match self {
             Self::Bud(bud) => bud.send(bytes),
@@ -236,6 +281,17 @@ impl Drop for WebRtc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_initial_host_encoder_failure_can_downgrade_the_preference() {
+        assert!(HostStatus {
+            code: -15002,
+            before_video: true
+        }
+        .permits_8bit_retry());
+        for (code, before_video) in [(-15002, false), (-6200, true), (0, true), (-15000, true)] {
+            assert!(!HostStatus { code, before_video }.permits_8bit_retry());
+        }
+    }
     #[test]
     fn native_offer_uses_the_existing_web_transport_contract() {
         let wire = offer(

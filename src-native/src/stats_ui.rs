@@ -19,6 +19,7 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
 }
 struct Page {
+    notify: HWND,
     window_owned: bool,
     bus: Arc<Shared>,
     sample: Sample,
@@ -71,6 +72,7 @@ pub unsafe fn open(parent: HWND, bus: Arc<Shared>) -> HWND {
         ..std::mem::zeroed()
     });
     let page = Box::new(Page {
+        notify: parent,
         window_owned: false,
         sample: bus.read().unwrap_or_default(),
         bus,
@@ -94,7 +96,11 @@ pub unsafe fn open(parent: HWND, bus: Arc<Shared>) -> HWND {
         CW_USEDEFAULT,
         760,
         820,
-        parent,
+        if cfg!(feature = "native-core") {
+            null_mut()
+        } else {
+            parent
+        },
         null_mut(),
         instance,
         ptr.cast(),
@@ -328,6 +334,7 @@ fn rows(
                     match p {
                         1 => "Main".into(),
                         2 => "Main 10".into(),
+                        4 => "Range extensions".into(),
                         _ => format!("HEVC profile {p}"),
                     }
                 } else {
@@ -838,7 +845,7 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
             #[cfg(feature = "native-core")]
             WM_ACTIVATE => {
                 PostMessageW(
-                    GetWindow(hwnd, GW_OWNER),
+                    page.notify,
                     crate::native_core::session_ui::VISIBILITY,
                     0,
                     0,
@@ -931,7 +938,7 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
             WM_NCDESTROY => {
                 KillTimer(hwnd, 1);
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-                SendMessageW(GetWindow(hwnd, GW_OWNER), WM_APP + 10, hwnd as usize, 0);
+                SendMessageW(page.notify, WM_APP + 10, hwnd as usize, 0);
                 if page.window_owned {
                     drop(Box::from_raw(ptr));
                 }
@@ -1155,6 +1162,14 @@ mod tests {
             );
             let hwnd = open(parent, bus.clone());
             assert!(!hwnd.is_null());
+            #[cfg(feature = "native-core")]
+            assert!(
+                GetWindow(hwnd, GW_OWNER).is_null(),
+                "Native stats must be an independent window"
+            );
+            #[cfg(not(feature = "native-core"))]
+            assert_eq!(GetWindow(hwnd, GW_OWNER), parent);
+
             let mut title = [0u16; 64];
             let length = GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32);
             assert_eq!(

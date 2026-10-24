@@ -106,7 +106,7 @@ The newer UI/control code has synthetic regression coverage; live validation is
 still needed for host discovery, saved-session resume/expiry, requested display
 changes, rotated input, immersive mode and reopening connections. No GPU
 performance improvement or physical monitor bit depth is inferred from fixtures.
-WebRTC remains outside this branch's first scope; the normal client is unchanged.
+WebRTC now has a native account adapter in this branch; the normal WASM client remains separate.
 
 ParsecWebTurn remains independent of lowlat. This work does not change the
 stock host or turn it into an open-source server.
@@ -185,3 +185,13 @@ compatibility is not established by capability checks or synthetic tests alone.
 
 See [stock settings comparison](native-settings-comparison.md) for existing
 features and possible future additions; unimplemented options were not added.
+
+For a requested Main 10 connection, a host encoder error `-15002` before the
+first decoded frame permits one fresh 8-bit attempt to the same host over the
+same selected transport. Saved preferences are retained. Other failures and
+errors after playback starts do not trigger this retry. The host's numeric
+status and the one-time retry are recorded without credentials.
+
+In the native build, Connection stats is an independent top-level window so
+normal activation can place it in front of or behind the stream. Session stays
+owned by the stream. Closing the stream explicitly closes its stats window.

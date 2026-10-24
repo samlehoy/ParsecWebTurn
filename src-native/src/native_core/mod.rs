@@ -66,16 +66,45 @@ fn run() -> Result<()> {
         let Some(selection) = ui::choose(settings.clone(), session.take())? else {
             return Ok(());
         };
-        let result = (|| {
-            let socket = signaling::Socket::open(&selection.session)?;
-            let window = crate::window::Window::create_native()?;
-            window.install_connection_settings(settings.clone());
-            let result = stream(&selection.peer, &socket, &window, settings.clone());
-            window.end_session();
-            window.request_stop();
-            window.close();
-            result
-        })();
+        let preferences = settings.view().0;
+        let retry_main10 = preferences.prefer_hevc
+            && preferences.experimental_ten_bit
+            && !preferences.experimental_chroma_444;
+        let mut policy = transport::Policy {
+            bud: preferences.bud,
+            allow_ten_bit: true,
+        };
+        let result = loop {
+            let result = (|| {
+                let socket = signaling::Socket::open(&selection.session)?;
+                let window = crate::window::Window::create_native()?;
+                window.install_connection_settings(settings.clone());
+                let result = stream(&selection.peer, &socket, &window, settings.clone(), policy);
+                window.end_session();
+                window.request_stop();
+                window.close();
+                result
+            })();
+            if policy.allow_ten_bit
+                && retry_main10
+                && result
+                    .as_ref()
+                    .err()
+                    .and_then(|error| error.downcast_ref::<transport::HostStatus>())
+                    .is_some_and(|status| status.permits_8bit_retry())
+            {
+                policy.allow_ten_bit = false;
+                crate::event_log::record(
+                    "INFO",
+                    "native_video_8bit_retry",
+                    serde_json::json!({
+                        "host_status":-15002,"transport":if policy.bud {"BUD"} else {"WebRTC"},"settings_preserved":true
+                    }),
+                );
+                continue;
+            }
+            break result;
+        };
         if let Err(error) = result {
             crate::event_log::record(
                 "ERROR",
@@ -95,6 +124,7 @@ fn stream(
     socket: &signaling::Socket,
     window: &Arc<crate::window::Window>,
     manager: Arc<crate::connection_settings::Manager>,
+    policy: transport::Policy,
 ) -> Result<()> {
     let id = crate::bud_attempt::native_attempt_id()?;
     let attempt = transport::Attempt::spawn_native(
@@ -103,6 +133,7 @@ fn stream(
         socket.writer.clone(),
         window.clone(),
         manager.clone(),
+        policy,
     )?;
     let services = crate::platform::Services::new(Box::new(
         crate::platform_windows::NativeDesktop(window.handle() as usize),
@@ -135,11 +166,19 @@ fn stream(
                 }
                 Ok(None) => break,
                 Err(_) if established || attempt.native_connected() => break,
-                Err(_) => anyhow::bail!("Account signaling ended before BUD connected."),
+                Err(_) => anyhow::bail!(
+                    "Account signaling ended before {} connected.",
+                    attempt.name()
+                ),
             }
         }
         while let Some(event) = attempt.pop_event() {
             if event["type"] == 7 {
+                if event["status"] != 0 {
+                    if let Some(code) = attempt.host_status() {
+                        return Err(transport::HostStatus::from_window(code, window).into());
+                    }
+                }
                 ensure!(
                     event["status"] == 0,
                     "The {} connection ended.",
@@ -153,6 +192,9 @@ fn stream(
             }
         }
         if attempt.failure().is_some() {
+            if let Some(code) = attempt.host_status() {
+                return Err(transport::HostStatus::from_window(code, window).into());
+            }
             anyhow::bail!(
                 "{} connection failed. See the event log for its stage.",
                 attempt.name()
@@ -194,7 +236,7 @@ fn stream(
                         "native_host_status",
                         serde_json::json!({"transport":attempt.name(), "host_status":status}),
                     );
-                    anyhow::bail!("The host ended the stream (status {status}).");
+                    return Err(transport::HostStatus::from_window(status, window).into());
                 }
                 _ => {}
             }

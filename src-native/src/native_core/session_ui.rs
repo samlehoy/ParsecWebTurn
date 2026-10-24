@@ -494,20 +494,13 @@ pub unsafe fn raise(window: &crate::window::Window) {
     let foreground = GetForegroundWindow();
     let button = window.native_session_button.load(Ordering::Acquire) as HWND;
     let panel = panel(window);
-    let ceiling = window.native_stats_window();
-    let insert_after = if !ceiling.is_null() {
-        // Stats must stay readable even when the user activates the stream or
-        // Session panel. Foreground-only ordering still covered inactive stats.
-        Some(ceiling)
-    } else {
-        stacking_target(
-            parent,
-            button,
-            panel,
-            foreground,
-            GetAncestor(foreground, GA_ROOTOWNER),
-        )
-    };
+    let insert_after = stacking_target(
+        parent,
+        button,
+        panel,
+        foreground,
+        GetAncestor(foreground, GA_ROOTOWNER),
+    );
     let visible = !window.settings_open()
         && !window.closing.load(Ordering::Acquire)
         && IsIconic(parent) == 0
@@ -881,6 +874,9 @@ mod tests {
         let panel = 3usize as HWND;
         let stats = 4usize as HWND;
         let other = 5usize as HWND;
+        // Independent stats must follow normal activation, not pin itself
+        // above its former owner or re-raise that owner's Session popup.
+        assert_eq!(stacking_target(owner, button, panel, stats, stats), None);
         for foreground in [owner, button, panel] {
             assert_eq!(
                 stacking_target(owner, button, panel, foreground, owner),

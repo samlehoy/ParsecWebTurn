@@ -701,6 +701,23 @@ impl Attempt {
             .failed
             .then_some(state.progress.failure_stage.unwrap_or(FailureStage::Worker))
     }
+    #[cfg(feature = "native-core")]
+    pub fn host_status(&self) -> Option<i32> {
+        // A host status can precede SCTP closure in the same read batch. Keep
+        // its authenticated numeric reason available before a generic failure.
+        self.completion
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .messages
+            .iter()
+            .find_map(|(channel, text, bytes)| {
+                if *channel != 0 || *text || bytes.len() < 13 || bytes[12] != 10 {
+                    return None;
+                }
+                let status = i32::from_be_bytes(bytes[..4].try_into().ok()?);
+                (status != 0).then_some(status)
+            })
+    }
 
     pub fn control_ready(&self) -> bool {
         self.completion
@@ -2129,5 +2146,38 @@ mod tests {
         assert_eq!(m.u32(80).unwrap(), 12345);
         assert_eq!(attempt.snapshot()["peer_closed"], true);
         assert_eq!(attempt.snapshot()["host_connected"], false);
+    }
+    #[cfg(feature = "native-core")]
+    #[test]
+    fn native_offer_completion_needs_no_guest_memory_or_account_connection() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let output = Output::Native(Arc::new(move |description| {
+            let Some(description) = description else {
+                return Ok(false);
+            };
+            Ok(sender
+                .try_send((
+                    description.credentials.validate().is_ok(),
+                    !description.mid.is_empty(),
+                ))
+                .is_ok())
+        }));
+        let mut attempt = Attempt::spawn_configured(
+            "native-offer-fixture",
+            output,
+            None,
+            StunProvider::None,
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(12)).unwrap(),
+            (true, true)
+        );
+        assert!(attempt.snapshot()["offer_ready"].as_bool().unwrap());
+        assert_eq!(attempt.snapshot()["negotiated_channels"], 3);
+        attempt.cancel();
+        attempt.wait_finished(Duration::from_secs(12)).unwrap();
     }
 }

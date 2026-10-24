@@ -1421,6 +1421,7 @@ impl Session {
                     s.height = Some(layout.height);
                     s.nominal_range = Some(if layout.full_range { 1 } else { 2 });
                     s.decoded_bit_depth = Some(8);
+                    s.decoded_chroma = Some("4:2:0");
                     s.gpu_surface_output = true;
                     s.d3d11_decoder_surface = Some(true);
                 }

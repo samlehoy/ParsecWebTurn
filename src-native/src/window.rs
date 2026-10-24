@@ -177,15 +177,6 @@ impl Window {
         let page = crate::stats_ui::open(self.handle(), self.stats.clone());
         self.stats_page.store(page as usize, Ordering::Release);
     }
-    #[cfg(feature = "native-core")]
-    pub(crate) unsafe fn native_stats_window(&self) -> HWND {
-        let stats = self.stats_page.load(Ordering::Acquire) as HWND;
-        if !stats.is_null() && IsWindowVisible(stats) != 0 && IsIconic(stats) == 0 {
-            stats
-        } else {
-            std::ptr::null_mut()
-        }
-    }
     pub fn create(
         synthetic_login: bool,
         live: bool,
@@ -1871,6 +1862,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
             WM_DESTROY => {
+                #[cfg(feature = "native-core")]
+                {
+                    // Independent stats is not auto-destroyed by Win32 ownership.
+                    let stats = s.stats_page.swap(0, Ordering::AcqRel) as HWND;
+                    if !stats.is_null() {
+                        DestroyWindow(stats);
+                    }
+                }
                 if s.online {
                     RemoveClipboardFormatListener(hwnd);
                 }
