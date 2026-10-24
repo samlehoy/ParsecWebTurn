@@ -22,6 +22,8 @@ const LIST: usize = 5;
 const REMEMBER: usize = 6;
 const SETTINGS: usize = 7;
 const DONE: usize = 0x6e01;
+#[cfg(test)]
+thread_local! {static UI_FIXTURE:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
 pub(super) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
 }
@@ -56,6 +58,16 @@ struct Form {
     email: String,
     done: bool,
     result: Option<Selection>,
+}
+impl Drop for Form {
+    fn drop(&mut self) {
+        unsafe {
+            DeleteObject(self.font);
+            DeleteObject(self.heading);
+            DeleteObject(self.brush);
+            DeleteObject(self.field_brush);
+        }
+    }
 }
 unsafe fn text(hwnd: HWND) -> String {
     let n = GetWindowTextLengthW(hwnd).clamp(0, 4096) as usize;
@@ -435,12 +447,16 @@ pub fn choose(
 ) -> Result<Option<Selection>> {
     unsafe {
         let profile = manager.view().0.native_core;
-        let (saved, notice) = match profile.session() {
+        let (saved, notice) = if current.is_some() {
+            (None, None)
+        } else {
+            match profile.session() {
             Ok(s) => (s.map(Arc::new), None),
             Err(_) => (
                 None,
                 Some("The saved sign-in cannot be decrypted for this Windows user. Sign in again."),
             ),
+        }
         };
         let mut f = Box::new(Form {
             settings_page: null_mut(),
@@ -602,6 +618,17 @@ pub fn choose(
         } else {
             SetFocus(f.fields[0]);
         }
+        #[cfg(test)]
+        if UI_FIXTURE.with(|f| f.get()) {
+            if let Some(path) = std::env::var_os("PWT_NATIVE_UI_CAPTURE") {
+                capture_fixture(
+                    hwnd,
+                    &std::path::PathBuf::from(path).with_file_name("sign-in.png"),
+                )
+                .unwrap();
+            }
+            DestroyWindow(hwnd);
+        }
         let mut msg: MSG = std::mem::zeroed();
         while !f.done && GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
             if !f.settings_page.is_null() && IsDialogMessageW(f.settings_page, &msg) != 0 {
@@ -620,10 +647,6 @@ pub fn choose(
                 session.revoke();
             }
         }
-        DeleteObject(f.font);
-        DeleteObject(f.heading);
-        DeleteObject(f.brush);
-        DeleteObject(f.field_brush);
         Ok(f.result.take())
     }
 }
@@ -663,4 +686,80 @@ pub(crate) unsafe fn draw_button(lp: LPARAM) -> bool {
         DrawFocusRect(item.hDC, &r);
     }
     true
+}
+
+/// Offline GDI fixture capture only. Never called by a live video path.
+#[cfg(test)]
+pub(super) unsafe fn capture_fixture(hwnd: HWND, path: &std::path::Path) -> Result<()> {
+    let mut r = std::mem::zeroed();
+    GetClientRect(hwnd, &mut r);
+    let (w, h) = (r.right as u32, r.bottom as u32);
+    ensure!(
+        w > 0 && h > 0 && w <= 2048 && h <= 2048,
+        "Invalid UI fixture size"
+    );
+    let dc = CreateCompatibleDC(null_mut());
+    ensure!(!dc.is_null(), "UI fixture DC unavailable");
+    let info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w as i32,
+            biHeight: -(h as i32),
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            ..std::mem::zeroed()
+        },
+        ..std::mem::zeroed()
+    };
+    let mut bits = null_mut();
+    let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+    if bitmap.is_null() {
+        DeleteDC(dc);
+        anyhow::bail!("UI fixture bitmap unavailable");
+    }
+    let old = SelectObject(dc, bitmap);
+    SendMessageW(
+        hwnd,
+        WM_PRINT,
+        dc as usize,
+        (PRF_CLIENT | PRF_CHILDREN | PRF_ERASEBKGND) as isize,
+    );
+    GdiFlush();
+    let mut bytes = std::slice::from_raw_parts(bits.cast::<u8>(), (w * h * 4) as usize).to_vec();
+    SelectObject(dc, old);
+    DeleteObject(bitmap);
+    DeleteDC(dc);
+    for p in bytes.chunks_exact_mut(4) {
+        p.swap(0, 2);
+        p[3] = 255;
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    image::RgbaImage::from_raw(w, h, bytes)
+        .unwrap()
+        .save(path)?;
+    Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn launcher_can_render_without_credentials_or_external_requests() {
+        let path = std::env::temp_dir().join(format!(
+            "parsec-launcher-fixture-{}.json",
+            crate::bud_attempt::native_attempt_id().unwrap()
+        ));
+        let manager = crate::connection_settings::Manager::open(path);
+        UI_FIXTURE.with(|f| f.set(true));
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                UI_FIXTURE.with(|f| f.set(false));
+            }
+        }
+        let _reset = Reset;
+        assert!(choose(manager, None).unwrap().is_none());
+    }
 }

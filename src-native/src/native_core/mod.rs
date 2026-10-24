@@ -1,6 +1,7 @@
 //! Experimental BUD-only entry: no WASM load, execution or guest callbacks.
 //! The production media, carrier, route retry and HID workers are reused.
 mod account;
+mod host_video;
 mod input;
 mod pointer;
 pub(crate) mod profile;
@@ -119,6 +120,9 @@ fn stream(
         ..Default::default()
     });
     let mut requested_display = None;
+    let mut host_config = host_video::Config::default();
+    let mut host_query_deadline = None;
+    let mut pending_host = video.has_host_settings().then(|| video.clone());
     let mut detached = false;
     let mut last_clipboard = String::new();
     while !window.closing.load(Ordering::Acquire) && !window.stop.stopped() {
@@ -137,9 +141,14 @@ fn stream(
             if event["type"] == 7 {
                 ensure!(event["status"] == 0, "The BUD connection ended.");
                 if !established {
-                    let size = window.native_display_size();
-                    attempt.send(&video.request(size)?)?;
-                    requested_display = Some(size);
+                    host_query_deadline = Some(std::time::Instant::now() + Duration::from_secs(5));
+                    if attempt.send(&host_video::query()?).is_err() {
+                        crate::event_log::record(
+                            "WARN",
+                            "native_host_video_query_failed",
+                            serde_json::json!({}),
+                        );
+                    }
                 }
                 established = true;
                 window.set_wake_lock(true);
@@ -160,6 +169,52 @@ fn stream(
                 crate::control::Message::Buffer {
                     event,
                     payload: Some(range),
+                } if event["type"] == 3 && event["id"] == 11 => {
+                    let bytes = &frame[range];
+                    let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+                    if host_config.receive(bytes).is_ok() {
+                        host_query_deadline = None;
+                        let observed = host_config.observed();
+                        crate::event_log::record(
+                            "INFO",
+                            "native_host_video_configuration",
+                            observed.clone(),
+                        );
+                        *window
+                            .native_host_video
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner()) = observed;
+                        session_ui::reported(window);
+                        if let Some(next) = pending_host.take() {
+                            let size = window.native_display_size();
+                            let sent = host_config
+                                .request(&next, size)
+                                .and_then(|frame| attempt.send(&frame));
+                            if sent.is_ok() {
+                                log_video_request(&next);
+                                let _ = attempt.send(&host_video::query()?);
+                                requested_display = Some(size);
+                            } else {
+                                crate::event_log::record(
+                                    "WARN",
+                                    "native_host_video_request_failed",
+                                    serde_json::json!({}),
+                                );
+                            }
+                            session_ui::result(window, sent.is_ok());
+                        }
+                    } else {
+                        crate::event_log::record(
+                            "WARN",
+                            "native_host_video_configuration_invalid",
+                            serde_json::json!({}),
+                        );
+                        session_ui::result(window, false);
+                    }
+                }
+                crate::control::Message::Buffer {
+                    event,
+                    payload: Some(range),
                 } if event["type"] == 3 && event["id"] == 7 => {
                     let bytes = &frame[range];
                     if let Ok(text) = std::str::from_utf8(bytes.strip_suffix(&[0]).unwrap_or(bytes))
@@ -172,6 +227,15 @@ fn stream(
                 }
                 _ => {}
             }
+        }
+        if host_query_deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            host_query_deadline = None;
+            crate::event_log::record(
+                "WARN",
+                "native_host_video_query_timeout",
+                serde_json::json!({}),
+            );
+            session_ui::result(window, false);
         }
         if audio_source.is_none() {
             audio_source = attempt.audio_pipeline();
@@ -264,7 +328,18 @@ fn stream(
                         let result = (|| -> Result<()> {
                             ensure!(established, "BUD is not connected yet");
                             let size = window.native_display_size();
-                            attempt.send(&next.request(size)?)?;
+                            if next.has_host_settings() {
+                                if host_config.ready() {
+                                    attempt.send(&host_config.request(next, size)?)?;
+                                    attempt.send(&host_video::query()?)?;
+                                    log_video_request(next);
+                                } else {
+                                    pending_host = Some(next.clone());
+                                    host_query_deadline =
+                                        Some(std::time::Instant::now() + Duration::from_secs(5));
+                                    attempt.send(&host_video::query()?)?;
+                                }
+                            }
                             manager.update_native(|p| p.video = next.clone())?;
                             video = next.clone();
                             fullscreen = video.fullscreen;
@@ -301,8 +376,11 @@ fn stream(
             {
                 let size = window.native_display_size();
                 if requested_display != Some(size) {
-                    attempt.send(&video.request(size)?)?;
-                    requested_display = Some(size);
+                    if host_config.ready() {
+                        attempt.send(&host_config.request(&video, size)?)?;
+                        attempt.send(&host_video::query()?)?;
+                        requested_display = Some(size);
+                    }
                 }
             }
             if established {
@@ -321,4 +399,12 @@ fn stream(
         output.stop();
     }
     Ok(())
+}
+
+fn log_video_request(video: &profile::Video) {
+    crate::event_log::record(
+        "INFO",
+        "native_host_video_requested",
+        serde_json::json!({"fps":video.fps,"constant_fps":video.constant_fps,"bandwidth_mbps":video.bandwidth_mbps,"rotated":video.rotated,"resolution":video.resolution}),
+    );
 }

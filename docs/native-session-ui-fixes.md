@@ -56,8 +56,8 @@ This is consistent with a working request and a throughput limitation under
 load, but does not establish which stage is limiting throughput. Connection
 stats displays measured decoder output, not the requested host frame rate.
 The pinned core toggles the `fullFPS`
-boolean in its per-stream configuration and serializes the array into user-data
-sub-ID 11. The Rust adapter forwards that text as private control opcode 17,
+boolean in its per-stream configuration and serializes the containing JSON object
+with its `video` array into user-data sub-ID 11. The Rust adapter forwards that text as private control opcode 17,
 with a NUL-terminated payload and sub-ID, matching the pinned JavaScript adapter.
 The SDK header describes `fullFPS` as a desktop-host request to **attempt** to
 stream at `encoderFPS`; a checked menu item is not confirmation of the received

@@ -7,7 +7,7 @@ use super::{
 use anyhow::{ensure, Result};
 use std::{
     ptr::{null, null_mut},
-    sync::Arc,
+    sync::{atomic::Ordering, Arc},
 };
 use windows_sys::Win32::{
     Foundation::*,
@@ -16,7 +16,6 @@ use windows_sys::Win32::{
     UI::{Controls::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 pub const OPEN: usize = 4600;
-const PANEL: i32 = 4601;
 const APPLY: usize = 4602;
 const CLOSE: usize = 4603;
 const DISCONNECT: usize = 4604;
@@ -204,10 +203,19 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 EnableWindow(GetDlgItem(hwnd, APPLY as i32), 1);
                 SetWindowTextW(
                     GetDlgItem(hwnd, STATUS),
-                    wide(if wp == 0 {
-                        "Applied locally; video settings requested from host."
+                    wide(&if wp == 2 {
+                        let observed = (&*p.window)
+                            .native_host_video
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        format!(
+                            "Host reports: {} FPS / {} Mbps / Constant FPS: {}",
+                            observed["fps"], observed["bandwidth_mbps"], observed["constant_fps"]
+                        )
+                    } else if wp == 0 {
+                        "Applied locally; video settings requested from host.".into()
                     } else {
-                        "Could not apply or save settings. See the event log."
+                        "Could not apply or save settings. See the event log.".into()
                     })
                     .as_ptr(),
                 );
@@ -225,7 +233,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         }
                         Err(e) => super::ui::message_box(hwnd, &e.to_string()),
                     },
-                    CLOSE => {
+                    CLOSE | 2 => {
                         close(hwnd);
                     }
                     DISCONNECT => {
@@ -243,6 +251,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 return 0;
             }
             WM_NCDESTROY => {
+                (&*p.window).native_panel.store(0, Ordering::Release);
+                #[cfg(test)]
+                RemovePropW(hwnd, wide("ParsecWebTurn.SessionPanel.Ready").as_ptr());
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 if p.window_owned {
                     drop(Box::from_raw(pointer));
@@ -317,53 +328,78 @@ unsafe fn combo(
     }
     h
 }
+unsafe fn panel(window: &crate::window::Window) -> HWND {
+    window.native_panel.load(Ordering::Acquire) as HWND
+}
+unsafe fn panel_for_parent(parent: HWND) -> HWND {
+    let w = GetWindowLongPtrW(parent, GWLP_USERDATA) as *const crate::window::Window;
+    if w.is_null() {
+        null_mut()
+    } else {
+        panel(&*w)
+    }
+}
 pub unsafe fn install(window: &crate::window::Window) {
     let parent = window.handle();
-    if GetDlgItem(parent, OPEN as i32).is_null() {
-        CreateWindowExW(
-            0,
+    if window.native_session_button.load(Ordering::Acquire) == 0 {
+        let button = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_LAYERED,
             wide("BUTTON").as_ptr(),
             wide("Session").as_ptr(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
+            WS_POPUP | BS_OWNERDRAW as u32,
             16,
             16,
             108,
             34,
             parent,
-            OPEN as HMENU,
+            null_mut(),
             GetModuleHandleW(null()),
             null(),
         );
+        if !button.is_null() {
+            SetLayeredWindowAttributes(button, 0, 245, LWA_ALPHA);
+            window
+                .native_session_button
+                .store(button as usize, Ordering::Release);
+        }
     }
     raise(window);
 }
 pub unsafe fn raise(window: &crate::window::Window) {
     let parent = window.handle();
-    let button = GetDlgItem(parent, OPEN as i32);
+    let visible = !window.settings_open()
+        && !window.closing.load(Ordering::Acquire)
+        && IsIconic(parent) == 0
+        && IsWindowVisible(parent) != 0;
+    let mut origin = POINT { x: 16, y: 16 };
+    ClientToScreen(parent, &mut origin);
+    let button = window.native_session_button.load(Ordering::Acquire) as HWND;
     if !button.is_null() {
-        ShowWindow(
+        SetWindowPos(
             button,
-            if window.settings_open() {
-                SW_HIDE
-            } else {
-                SW_SHOWNA
-            },
+            HWND_TOP,
+            origin.x,
+            origin.y,
+            108,
+            34,
+            SWP_NOACTIVATE,
         );
-        SetWindowPos(button, HWND_TOP, 16, 16, 108, 34, SWP_NOACTIVATE);
+        ShowWindow(button, if visible { SW_SHOWNA } else { SW_HIDE });
     }
-    let panel = GetDlgItem(parent, PANEL);
+    let panel = panel(window);
     if !panel.is_null() {
         let mut r = std::mem::zeroed();
         GetClientRect(parent, &mut r);
         SetWindowPos(
             panel,
             HWND_TOP,
-            16,
-            60,
+            origin.x,
+            origin.y + 44,
             420,
             (r.bottom - 76).clamp(120, 580),
             SWP_NOACTIVATE,
         );
+        ShowWindow(panel, if visible { SW_SHOWNA } else { SW_HIDE });
     }
 }
 pub unsafe fn toggle(
@@ -371,7 +407,7 @@ pub unsafe fn toggle(
     manager: Arc<crate::connection_settings::Manager>,
 ) {
     let parent = window.handle();
-    let existing = GetDlgItem(parent, PANEL);
+    let existing = panel_for_parent(parent);
     if !existing.is_null() {
         DestroyWindow(existing);
         SetFocus(parent);
@@ -400,16 +436,16 @@ pub unsafe fn toggle(
     });
     let pointer = &mut *panel as *mut Panel;
     let hwnd = CreateWindowExW(
-        WS_EX_CONTROLPARENT | WS_EX_COMPOSITED,
+        WS_EX_CONTROLPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW,
         name.as_ptr(),
         wide("Session controls").as_ptr(),
-        WS_CHILD | WS_CLIPCHILDREN | WS_VSCROLL,
+        WS_POPUP | WS_CLIPCHILDREN | WS_VSCROLL,
         16,
         60,
         420,
         580,
         parent,
-        PANEL as HMENU,
+        null_mut(),
         instance,
         pointer.cast(),
     );
@@ -417,6 +453,8 @@ pub unsafe fn toggle(
         return;
     }
     panel.window_owned = true;
+    window.native_panel.store(hwnd as usize, Ordering::Release);
+    SetLayeredWindowAttributes(hwnd, 0, 238, LWA_ALPHA);
     let p = &mut *Box::into_raw(panel);
     let title = control(hwnd, p, "STATIC", "Session", 0, 0, [24, 18, 350, 36]);
     SendMessageW(title, WM_SETFONT, p.heading as usize, 0);
@@ -577,17 +615,31 @@ pub unsafe fn toggle(
     ShowWindow(hwnd, SW_SHOW);
     raise(window);
     SetFocus(p.controls[0]);
+    #[cfg(test)]
+    SetPropW(
+        hwnd,
+        wide("ParsecWebTurn.SessionPanel.Ready").as_ptr(),
+        1usize as HANDLE,
+    );
 }
 pub fn result(window: &crate::window::Window, ok: bool) {
     unsafe {
-        let panel = GetDlgItem(window.handle(), PANEL);
+        let panel = panel(window);
         if !panel.is_null() {
             PostMessageW(panel, RESULT, usize::from(!ok), 0);
         }
     }
 }
+pub fn reported(window: &crate::window::Window) {
+    unsafe {
+        let hwnd = panel(window);
+        if !hwnd.is_null() {
+            PostMessageW(hwnd, RESULT, 2, 0);
+        }
+    }
+}
 pub unsafe fn dialog(parent: HWND, msg: &MSG) -> bool {
-    let h = GetDlgItem(parent, PANEL);
+    let h = panel_for_parent(parent);
     !h.is_null() && IsDialogMessageW(h, msg) != 0
 }
 
@@ -620,11 +672,28 @@ mod tests {
             crate::bud_attempt::native_attempt_id().unwrap()
         ));
         window.install_connection_settings(crate::connection_settings::Manager::open(path));
-        window.native_toggle_overlay();
+        let button_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let button = loop {
+            let button = window.native_session_button.load(Ordering::Acquire) as HWND;
+            if !button.is_null() {
+                break button;
+            }
+            assert!(
+                std::time::Instant::now() < button_deadline,
+                "Session button did not open"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        unsafe {
+            SendMessageW(button, BM_CLICK, 0, 0);
+        }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let panel = loop {
-            let panel = unsafe { GetDlgItem(window.handle(), PANEL) };
-            if !panel.is_null() && !unsafe { GetDlgItem(panel, APPLY as i32) }.is_null() {
+            let panel = unsafe { panel(&window) };
+            if !panel.is_null()
+                && !unsafe { GetPropW(panel, wide("ParsecWebTurn.SessionPanel.Ready").as_ptr()) }
+                    .is_null()
+            {
                 break panel;
             }
             assert!(
@@ -634,14 +703,55 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         };
         unsafe {
+            assert_eq!(GetWindow(panel, GW_OWNER), window.handle());
+            assert_ne!(GetWindowLongPtrW(panel, GWL_STYLE) as u32 & WS_POPUP, 0);
+            assert_ne!(
+                GetWindowLongPtrW(panel, GWL_EXSTYLE) as u32 & WS_EX_LAYERED,
+                0
+            );
+            assert_eq!(
+                GetWindowLongPtrW(panel, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST,
+                0
+            );
+            let mut alpha = 0u8;
+            let mut key = 0u32;
+            let mut flags = 0u32;
+            assert_ne!(
+                GetLayeredWindowAttributes(panel, &mut key, &mut alpha, &mut flags),
+                0
+            );
+            assert_eq!(alpha, 238);
+            if let Some(path) = std::env::var_os("PWT_NATIVE_UI_CAPTURE") {
+                super::super::ui::capture_fixture(panel, &std::path::PathBuf::from(path)).unwrap();
+            }
             SendMessageW(panel, WM_COMMAND, APPLY, 0);
         }
         let mut events = std::collections::VecDeque::new();
         window.events.take_batch(&mut events);
         assert!(events.iter().any(|e|matches!(e,crate::window::Event::NativeSession(Action::Apply(v)) if v.resolution==Resolution::Host && v.immersive==0)));
+        for (selected, mode) in [(0, 0), (1, 3), (2, 2), (3, 1)] {
+            unsafe {
+                for (id, index) in [(20, 2), (21, 3), (22, 2), (23, 2), (24, 2), (25, selected)] {
+                    SendMessageW(GetDlgItem(panel, id), CB_SETCURSEL, index, 0);
+                }
+                SendMessageW(GetDlgItem(panel, 30), BM_SETCHECK, BST_CHECKED as usize, 0);
+                SendMessageW(panel, RESULT, 0, 0);
+                SendMessageW(panel, WM_COMMAND, APPLY, 0);
+            }
+            window.events.take_batch(&mut events);
+            assert!(events.iter().any(|event|matches!(event,crate::window::Event::NativeSession(Action::Apply(v)) if v.resolution==Resolution::Fixed(1280,720) && v.bandwidth_mbps==Some(15) && v.fps==Some(60) && v.constant_fps==Some(true) && v.rotated==Some(true) && v.immersive==mode && v.fullscreen)));
+        }
+        unsafe {
+            SendMessageW(panel, WM_COMMAND, DISCONNECT, 0);
+        }
+        window.events.take_batch(&mut events);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            crate::window::Event::NativeSession(Action::Disconnect)
+        )));
         unsafe {
             SendMessageW(panel, WM_COMMAND, CLOSE, 0);
         }
-        assert!(unsafe { GetDlgItem(window.handle(), PANEL) }.is_null());
+        assert_eq!(window.native_panel.load(Ordering::Acquire), 0);
     }
 }

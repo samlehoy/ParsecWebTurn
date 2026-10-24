@@ -214,7 +214,7 @@ fn parse_hosts(value: &Value) -> Result<Vec<Host>> {
     );
     let mut hosts = Vec::new();
     for host in data {
-        let Some(peer) = host["peer_id"].as_str().or_else(|| host["id"].as_str()) else {
+        let Some(peer) = host["peer_id"].as_str() else {
             continue;
         };
         if peer.is_empty() || peer.len() > 256 || peer.chars().any(char::is_control) {

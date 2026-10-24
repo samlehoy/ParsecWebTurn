@@ -34,6 +34,12 @@ pub enum Event {
 }
 
 pub struct Window {
+    #[cfg(feature = "native-core")]
+    pub(crate) native_panel: AtomicUsize,
+    #[cfg(feature = "native-core")]
+    pub(crate) native_session_button: AtomicUsize,
+    #[cfg(feature = "native-core")]
+    pub(crate) native_host_video: Mutex<serde_json::Value>,
     pub stats: Arc<crate::stats::Shared>,
     stats_page: AtomicUsize,
     pub updates: Arc<crate::updater::State>,
@@ -203,6 +209,12 @@ impl Window {
     ) -> Result<Arc<Self>> {
         let state = Arc::new(Self {
             stats: Default::default(),
+            #[cfg(feature = "native-core")]
+            native_panel: AtomicUsize::new(0),
+            #[cfg(feature = "native-core")]
+            native_session_button: AtomicUsize::new(0),
+            #[cfg(feature = "native-core")]
+            native_host_video: Mutex::new(serde_json::Value::Null),
             stats_page: AtomicUsize::new(0),
             updates: Default::default(),
             updates_page: AtomicUsize::new(0),
@@ -364,12 +376,23 @@ impl Window {
             .as_ref()
             .is_some_and(|binding| binding.owns(code, mods).unwrap_or(true))
     }
+    fn native_menu_allows_input(&self) -> bool {
+        #[cfg(feature = "native-core")]
+        {
+            self.native_panel.load(Ordering::Acquire) == 0
+        }
+        #[cfg(not(feature = "native-core"))]
+        {
+            true
+        }
+    }
     pub fn settings_open(&self) -> bool {
         self.settings_active.load(Ordering::Acquire)
     }
     #[cfg(feature = "native-core")]
     pub fn native_input_allowed(&self) -> bool {
-        self.has_focus.load(Ordering::Acquire)
+        self.native_menu_allows_input()
+            && self.has_focus.load(Ordering::Acquire)
             && self.video_ready.load(Ordering::Acquire)
             && self.video_visible.load(Ordering::Acquire)
             && !self.settings_open()
@@ -776,7 +799,8 @@ impl Window {
         }
     }
     unsafe fn input_allowed(&self) -> bool {
-        GetForegroundWindow() == self.handle()
+        self.native_menu_allows_input()
+            && GetForegroundWindow() == self.handle()
             && GetFocus() == self.handle()
             && IsIconic(self.handle()) == 0
             && self.video_ready.load(Ordering::Acquire)
@@ -1232,7 +1256,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 1;
             }
             #[cfg(feature = "native-core")]
-            WM_COMMAND if wp & 0xffff == crate::native_core::session_ui::OPEN => {
+            WM_COMMAND
+                if wp & 0xffff == crate::native_core::session_ui::OPEN
+                    || (lp != 0
+                        && lp as usize == s.native_session_button.load(Ordering::Acquire)
+                        && wp >> 16 == BN_CLICKED as usize) =>
+            {
                 let manager = s
                     .connection_settings
                     .lock()
@@ -1421,7 +1450,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                         0,
                         class.as_ptr(),
                         std::ptr::null(),
-                        WS_CHILD | WS_DISABLED,
+                        WS_CHILD | WS_DISABLED | WS_CLIPSIBLINGS,
                         0,
                         0,
                         width.max(1),
@@ -1595,6 +1624,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 s.apply_input_capture();
             }
             WM_MOVE => {
+                #[cfg(feature = "native-core")]
+                crate::native_core::session_ui::raise(s);
                 s.software_presenter
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())

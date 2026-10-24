@@ -27,6 +27,7 @@ jobs:
           }
           cargo fmt --manifest-path src-native/Cargo.toml -- --check
           if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
+          $env:PWT_NATIVE_UI_CAPTURE = Join-Path (Get-Location) "dist/native-core/session-panel.png"
           cargo test --locked --manifest-path src-native/Cargo.toml --features native-core -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw 'Native core and shared regression tests failed' }
           cargo build --locked --release --manifest-path src-native/Cargo.toml --features native-core

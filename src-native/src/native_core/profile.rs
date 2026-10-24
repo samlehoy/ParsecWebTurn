@@ -46,6 +46,14 @@ impl Default for Video {
     }
 }
 impl Video {
+    pub fn has_host_settings(&self) -> bool {
+        self.resolution != Resolution::Host
+            || self.bandwidth_mbps.is_some()
+            || self.fps.is_some()
+            || self.constant_fps.is_some()
+            || self.rotated.is_some()
+    }
+
     pub fn validate(&self) -> Result<()> {
         if let Resolution::Fixed(w, h) = self.resolution {
             ensure!(
@@ -98,7 +106,7 @@ impl Video {
         }
         // Same owner-video contract used by the existing core and lowlat daemon.
         // No codec flags here: the BUD adapter preserves its negotiated capability.
-        crate::control::text(17, 11, &serde_json::json!([values]).to_string())
+        crate::control::text(17, 11, &serde_json::json!({"video":[values]}).to_string())
     }
 }
 
@@ -125,6 +133,19 @@ mod tests {
     use super::*;
     #[test]
     fn protected_session_and_video_requests_do_not_store_passwords() {
+        for (mode, mouse, keyboard) in [
+            (0, false, false),
+            (1, true, true),
+            (2, false, true),
+            (3, true, false),
+        ] {
+            let v = Video {
+                immersive: mode,
+                ..Default::default()
+            };
+            assert_eq!(v.mode(), crate::core_input::Mode { mouse, keyboard });
+            assert!(!v.has_host_settings());
+        }
         let token = "fixture-session-not-a-real-account";
         let p = Profile {
             encrypted_session: Profile::encrypted(token).unwrap(),
@@ -150,14 +171,14 @@ mod tests {
         let bytes = v.request((2560, 1440)).unwrap();
         assert_eq!(&bytes[4..8], &11i32.to_be_bytes());
         let value: serde_json::Value = serde_json::from_slice(&bytes[13..bytes.len() - 1]).unwrap();
-        assert_eq!(value[0]["resolutionX"], 2560);
-        assert_eq!(value[0]["encoderMaxBitrate"], 20);
-        assert_eq!(value[0]["fullFPS"], true);
+        assert_eq!(value["video"][0]["resolutionX"], 2560);
+        assert_eq!(value["video"][0]["encoderMaxBitrate"], 20);
+        assert_eq!(value["video"][0]["fullFPS"], true);
         let preserve = Video::default().request((1, 1)).unwrap();
         let value: serde_json::Value =
             serde_json::from_slice(&preserve[13..preserve.len() - 1]).unwrap();
-        assert_eq!(value[0]["resolutionX"], 0);
-        assert!(value[0].get("encoderFPS").is_none());
+        assert_eq!(value["video"][0]["resolutionX"], 0);
+        assert!(value["video"][0].get("encoderFPS").is_none());
         assert!(Video {
             fps: Some(241),
             ..Default::default()

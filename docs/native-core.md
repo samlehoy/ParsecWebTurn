@@ -43,7 +43,8 @@ subject to host permissions, supported display modes and encoder capacity.
 Constant FPS does not duplicate frames or add pacing on the client. Keep host
 leaves unset bitrate/FPS/pacing/orientation fields absent from the request.
 
-The panel uses event-driven Win32/GDI controls; it does not read back or copy
+The slightly translucent panel uses an owned layered Win32/GDI window, so the
+Windows compositor keeps it above the DXGI video child without global topmost. It it does not read back or copy
 video pixels. Local controls release remote held input while focused. BUD rotation
 metadata selects a D3D11 VideoProcessor rotation in the existing conversion pass;
 no extra intermediate frame is introduced. Rotated streams use normal GPU
@@ -108,7 +109,17 @@ Signaling upgrade errors show a bounded stage and HTTP status when available.
 If event logging is enabled, `native_signaling_upgrade_failed` records the same
 safe fields; request URLs, account tokens and server response bodies are excluded.
 
-The owner video configuration uses the same opcode-17 application sub-ID 11 as
-the original core, and the field names corroborated by lowlat's daemon app.rs:
+Host settings are queried using application sub-ID 9. Updates use opcode 17,
+application sub-ID 11, and a JSON **object containing the `video` array**, not a
+bare array. The host's returned object, untouched streams, output identity and
+other fields are preserved. After an update the client requests the actual
+configuration again; the panel and optional event log show the host's reply.
+This contract was rechecked against the pinned core's native UI and lowlat's
+daemon app.rs. The patched fields are:
 `resolutionX`, `resolutionY`, `encoderFPS`, `encoderMaxBitrate`, `fullFPS`,
 `rotated`. No original code or proprietary core file is imported by this work.
+
+Windows CI runs the full native test suite. Its two PNGs are offline GDI control
+fixtures without accounts, tokens or a video stream; they check layout, not live
+DXGI/DWM composition. Live overlay ordering, host setting changes and opacity need
+rechecking with the new build.

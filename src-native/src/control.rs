@@ -267,7 +267,7 @@ mod tests {
     #[test]
     fn desktop_fullfps_settings_keep_the_pinned_userdata_envelope() {
         for full_fps in [false, true] {
-            let configuration = json!([{"encoderFPS":60,"fullFPS":full_fps}]).to_string();
+            let configuration = json!({"video":[{"encoderFPS":60,"fullFPS":full_fps}]}).to_string();
             let frame = text(17, 11, &configuration).unwrap();
             assert_eq!(frame[12], 17);
             assert_eq!(
