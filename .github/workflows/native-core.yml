@@ -2,6 +2,11 @@ name: EvoParseq native client
 
 on:
   workflow_dispatch:
+    inputs:
+      compare_video_logging:
+        description: Build an isolated logging-only A/B comparison
+        type: boolean
+        default: false
   push:
     branches: [codex/native-core]
 
@@ -17,6 +22,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 16
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -57,7 +64,50 @@ jobs:
           Copy-Item -LiteralPath src-native/crates/bud/vendor/lowlat-client/LICENSE -Destination dist/native-core/LOWLAT-LICENSE.txt
           git rev-parse HEAD | Set-Content -LiteralPath dist/native-core/SOURCE.txt -Encoding ascii
           Get-FileHash -Algorithm SHA256 dist/native-core/EvoParseq.exe | Format-List | Out-String | Set-Content -LiteralPath dist/native-core/SHA256.txt
+      - name: Build logging-only comparison (same source, toolchain and flags)
+        if: github.event_name == 'workflow_dispatch' && inputs.compare_video_logging
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path dist/logging-comparison/A,dist/logging-comparison/B -Force | Out-Null
+          Copy-Item dist/native-core/EvoParseq.exe dist/logging-comparison/A/EvoParseq.exe
+          $revision = git rev-parse HEAD
+          $compiler = rustc -vV | Out-String
+          @("Variant A: current extended video logging", "Source: $revision", $compiler) | Set-Content dist/logging-comparison/A/SOURCE.txt
+          try {
+            python .github/scripts/without-extended-video-log.py
+            if ($LASTEXITCODE -ne 0) { throw 'Comparison source patch failed' }
+            cargo fmt --manifest-path src-native/Cargo.toml -- --check
+            if ($LASTEXITCODE -ne 0) { throw 'Comparison formatting failed' }
+            cargo test --locked --manifest-path src-native/Cargo.toml --no-default-features --features native-core,vendor-video -- --test-threads=1
+            if ($LASTEXITCODE -ne 0) { throw 'Comparison regression tests failed' }
+            cargo build --locked --release --manifest-path src-native/Cargo.toml --no-default-features --features native-core,vendor-video
+            if ($LASTEXITCODE -ne 0) { throw 'Comparison build failed' }
+            Copy-Item src-native/target/x86_64-pc-windows-msvc/release/evoparseq.exe dist/logging-comparison/B/EvoParseq.exe
+            @("Variant B: only recent extended video logging removed", "Source: $revision plus source.patch", $compiler) | Set-Content dist/logging-comparison/B/SOURCE.txt
+            foreach ($variant in @('A','B')) {
+              Get-FileHash "dist/logging-comparison/$variant/EvoParseq.exe" -Algorithm SHA256 | Format-List | Out-String | Set-Content "dist/logging-comparison/$variant/SHA256.txt"
+            }
+          } finally {
+            git restore -- src-native/src/attempt.rs src-native/src/bud_attempt.rs src-native/src/stats.rs src-native/src/video_windows.rs
+          }
+          @(
+            'A and B use the same build flags, dependencies and compiler. Only the recent video log additions differ.',
+            'Both retain the BUD 4:4:4 flag fix and direct AYUV presentation. Earlier event logging remains in B.',
+            'These are diagnostic comparison builds, not a stable release. Keep Defender enabled.',
+            'Compare scan results before launching either file. Do not add antivirus exclusions for this test.',
+            'Different results establish a build correlation, not that log-file writes caused the detection.',
+            'If both differ from the previously quarantined build, hash/cloud reputation or build variability may be involved.',
+            'B/source.patch records the complete source difference. SOURCE.txt records the compiler and source revision.'
+          ) | Set-Content dist/logging-comparison/README.txt
       - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch' && inputs.compare_video_logging
+        with:
+          name: EvoParseq-video-logging-comparison
+          path: dist/logging-comparison/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'workflow_dispatch' || !inputs.compare_video_logging
         with:
           name: EvoParseq-win64
           path: dist/native-core/*
