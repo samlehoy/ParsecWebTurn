@@ -310,10 +310,14 @@ impl Window {
                                 if msg.message == WM_ACTIVATEAPP && msg.wParam == 0 {
                                     native_shortcuts.clear();
                                 }
-                                if msg.message == WM_KEYUP && native_shortcuts.remove(&msg.wParam) {
+                                if matches!(msg.message, WM_KEYUP | WM_SYSKEYUP)
+                                    && native_shortcuts.remove(&msg.wParam)
+                                {
                                     continue;
                                 }
-                                if msg.message == WM_KEYDOWN && !ui.settings_open() {
+                                if matches!(msg.message, WM_KEYDOWN | WM_SYSKEYDOWN)
+                                    && !ui.settings_open()
+                                {
                                     if let Some(action) = crate::native_core::session_ui::shortcut(
                                         msg.wParam,
                                         modifiers(),

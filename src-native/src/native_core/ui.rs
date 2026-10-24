@@ -175,7 +175,7 @@ unsafe fn start_hosts(hwnd: HWND, f: &mut Form, quiet: bool) {
     std::thread::spawn(move || {
         let _ = tx.send(Completed::Hosts(account::hosts(&session)));
     });
-    SetTimer(hwnd, DONE, 80, None);
+    SetTimer(hwnd, DONE, if quiet { 500 } else { 80 }, None);
 }
 unsafe fn completed(hwnd: HWND, f: &mut Form, job: Completed) {
     let quiet = std::mem::replace(&mut f.background_refresh, false);
@@ -699,7 +699,7 @@ pub fn choose(
             if let Some(path) = std::env::var_os("PWT_NATIVE_UI_CAPTURE") {
                 capture_fixture(
                     hwnd,
-                    &std::path::PathBuf::from(path).with_file_name("sign-in.png"),
+                    &std::path::PathBuf::from(&path).with_file_name("sign-in.png"),
                 )
                 .unwrap();
             }
@@ -763,13 +763,24 @@ pub fn choose(
                 if let Some(path) = std::env::var_os("PWT_NATIVE_UI_CAPTURE") {
                     capture_fixture(
                         hwnd,
-                        &std::path::PathBuf::from(path).with_file_name(if picker {
+                        &std::path::PathBuf::from(&path).with_file_name(if picker {
                             "picker-settings.png"
                         } else {
                             "sign-in-settings.png"
                         }),
                     )
                     .unwrap();
+                    if picker {
+                        SendMessageW(f.settings_page, WM_COMMAND, 4121, 0);
+                        assert!(!GetDlgItem(f.settings_page, 4135).is_null());
+                        SendMessageW(f.settings_page, WM_VSCROLL, SB_BOTTOM as usize, 0);
+                        capture_fixture(
+                            hwnd,
+                            &std::path::PathBuf::from(&path)
+                                .with_file_name("native-video-settings.png"),
+                        )
+                        .unwrap();
+                    }
                 }
                 SendMessageW(hwnd, WM_APP + 9, 0, 0);
                 assert!(f.settings_page.is_null());
