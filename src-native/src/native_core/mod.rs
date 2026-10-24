@@ -6,6 +6,7 @@ mod host_video;
 mod input;
 mod pointer;
 pub(crate) mod profile;
+mod session_badge;
 pub(crate) mod session_ui;
 mod session_video;
 mod signaling;

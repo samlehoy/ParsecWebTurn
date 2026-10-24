@@ -797,29 +797,29 @@ pub(crate) unsafe fn draw_button(lp: LPARAM) -> bool {
     DeleteObject(edge);
     SetBkMode(item.hDC, TRANSPARENT as i32);
     SetTextColor(item.hDC, if disabled { 0x00888888 } else { FG });
-    let mut label = wide(&text(item.hwndItem));
     let mut r = item.rcItem;
     if item.CtlID == super::session_ui::OPEN as u32 {
         DrawIconEx(
             item.hDC,
-            r.left + 9,
-            r.top + (r.bottom - r.top - 20) / 2,
+            r.left + (r.right - r.left - 32) / 2,
+            r.top + (r.bottom - r.top - 32) / 2,
             crate::branding::icon(),
-            20,
-            20,
+            32,
+            32,
             0,
             null_mut(),
             DI_NORMAL,
         );
-        r.left += 28;
+    } else {
+        let mut label = wide(&text(item.hwndItem));
+        DrawTextW(
+            item.hDC,
+            label.as_mut_ptr(),
+            -1,
+            &mut r,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+        );
     }
-    DrawTextW(
-        item.hDC,
-        label.as_mut_ptr(),
-        -1,
-        &mut r,
-        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-    );
     if item.itemState & ODS_FOCUS != 0 {
         r.left += 3;
         r.top += 3;

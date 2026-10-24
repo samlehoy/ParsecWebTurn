@@ -466,86 +466,8 @@ unsafe fn panel_for_parent(parent: HWND) -> HWND {
         panel(&*w)
     }
 }
-// A standard child BUTTON sends owner-draw notifications to its parent.
-// Keep its small popup container above the video, rather than making the
-// BUTTON itself a top-level window (which has no child notification parent).
-unsafe extern "system" fn badge_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    if msg == WM_NCCREATE {
-        let create = &*(lp as *const CREATESTRUCTW);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
-    }
-    let owner = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as HWND;
-    match msg {
-        WM_COMMAND if wp & 65535 == OPEN && (wp >> 16) as u32 == BN_CLICKED => {
-            SendMessageW(owner, WM_COMMAND, OPEN, 0);
-            return 0;
-        }
-        BM_CLICK => {
-            SendMessageW(GetDlgItem(hwnd, OPEN as i32), BM_CLICK, 0, 0);
-            return 0;
-        }
-        WM_DRAWITEM if draw_button(lp) => return 1,
-        WM_ERASEBKGND => return 1,
-        _ => {}
-    }
-    DefWindowProcW(hwnd, msg, wp, lp)
-}
 pub unsafe fn install(window: &crate::window::Window) {
-    let parent = window.handle();
-    if window.native_session_button.load(Ordering::Acquire) == 0 {
-        let class = wide("ParsecWebTurn.NativeSessionBadge");
-        RegisterClassW(&WNDCLASSW {
-            lpfnWndProc: Some(badge_proc),
-            hInstance: GetModuleHandleW(null()),
-            hCursor: LoadCursorW(null_mut(), IDC_ARROW),
-            lpszClassName: class.as_ptr(),
-            ..std::mem::zeroed()
-        });
-        let button = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_LAYERED,
-            class.as_ptr(),
-            wide("Session").as_ptr(),
-            WS_POPUP | WS_CLIPCHILDREN,
-            16,
-            16,
-            108,
-            34,
-            parent,
-            null_mut(),
-            GetModuleHandleW(null()),
-            parent.cast(),
-        );
-        if !button.is_null() {
-            let child = CreateWindowExW(
-                0,
-                wide("BUTTON").as_ptr(),
-                wide("Session").as_ptr(),
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
-                0,
-                0,
-                108,
-                34,
-                button,
-                OPEN as HMENU,
-                GetModuleHandleW(null()),
-                null(),
-            );
-            if child.is_null() {
-                DestroyWindow(button);
-                return;
-            }
-            SendMessageW(
-                child,
-                WM_SETFONT,
-                GetStockObject(DEFAULT_GUI_FONT) as usize,
-                1,
-            );
-            SetLayeredWindowAttributes(button, 0, 200, LWA_ALPHA);
-            window
-                .native_session_button
-                .store(button as usize, Ordering::Release);
-        }
-    }
+    super::session_badge::install(window);
     raise(window);
 }
 pub unsafe fn raise(window: &crate::window::Window) {
@@ -561,15 +483,7 @@ pub unsafe fn raise(window: &crate::window::Window) {
     ClientToScreen(parent, &mut origin);
     let button = window.native_session_button.load(Ordering::Acquire) as HWND;
     if !button.is_null() {
-        SetWindowPos(
-            button,
-            HWND_TOP,
-            origin.x,
-            origin.y,
-            108,
-            34,
-            SWP_NOACTIVATE | SWP_NOOWNERZORDER | if active { 0 } else { SWP_NOZORDER },
-        );
+        super::session_badge::position(button, active);
         let show = visible && !window.native_session_button_hidden();
         if (IsWindowVisible(button) != 0) != show {
             ShowWindow(button, if show { SW_SHOWNA } else { SW_HIDE });
@@ -1004,6 +918,35 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         };
         unsafe {
+            let child = GetDlgItem(button, OPEN as i32);
+            let mut before = RECT::default();
+            GetWindowRect(button, &mut before);
+            assert_eq!(
+                (before.right - before.left, before.bottom - before.top),
+                (48, 48)
+            );
+            let point = |x: u16, y: u16| (u32::from(x) | (u32::from(y) << 16)) as LPARAM;
+            SendMessageW(child, WM_LBUTTONDOWN, 1, point(8, 8));
+            SendMessageW(child, WM_MOUSEMOVE, 1, point(108, 68));
+            SendMessageW(child, WM_LBUTTONUP, 0, point(8, 8));
+            let mut after = RECT::default();
+            GetWindowRect(button, &mut after);
+            assert_eq!(
+                (after.left - before.left, after.top - before.top),
+                (100, 60)
+            );
+            assert!(panel(&window).is_null(), "Dragging must not open the menu");
+            let mut drag_events = std::collections::VecDeque::new();
+            window.events.take_batch(&mut drag_events);
+            assert!(
+                !drag_events.iter().any(|event| matches!(
+                    event,
+                    crate::window::Event::Button(..)
+                        | crate::window::Event::Motion(..)
+                        | crate::window::Event::RelativeMotion(..)
+                )),
+                "Badge dragging must stay local"
+            );
             if let Some(path) = std::env::var_os("PWT_NATIVE_UI_CAPTURE") {
                 let path = std::path::PathBuf::from(path).with_file_name("stream-waiting.png");
                 super::super::ui::capture_fixture(window.handle(), &path).unwrap();
@@ -1091,10 +1034,10 @@ mod tests {
                 super::super::ui::capture_fixture(button, &badge_path).unwrap();
                 let badge = image::open(badge_path).unwrap().to_rgb8();
                 // Check the interior, excluding the accent border: a blank
-                // light rectangle cannot satisfy both text and dark fill.
+                // light rectangle cannot satisfy both icon and dark fill.
                 let interior: Vec<_> = badge
                     .enumerate_pixels()
-                    .filter(|(x, y, _)| *x > 5 && *x < 102 && *y > 4 && *y < 29)
+                    .filter(|(x, y, _)| *x > 2 && *x < 46 && *y > 2 && *y < 46)
                     .map(|(_, _, p)| p.0)
                     .collect();
                 assert!(
@@ -1103,14 +1046,14 @@ mod tests {
                         .filter(|p| p.iter().all(|v| *v > 180))
                         .count()
                         > 15,
-                    "Session label was not painted"
+                    "Session icon was not painted"
                 );
                 assert!(
                     interior
                         .iter()
                         .filter(|p| p.iter().all(|v| *v < 100))
                         .count()
-                        > 1000,
+                        > 600,
                     "Session background was not painted"
                 );
             }
