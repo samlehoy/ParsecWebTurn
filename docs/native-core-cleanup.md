@@ -63,3 +63,23 @@ pipe service request. The user also confirmed failure with the stock client and
 a portable host. This is not evidence of incorrect native wire framing. Keep the
 host-authorized request; do not substitute ordinary injected keys or bypass the
 host service. A send event is not an execution acknowledgement.
+
+## Native maintainability pass
+
+- `session_video::HostSettings` owns host configuration, deferred requests,
+  confirmation polling and resize requests. The session loop dispatches events
+  instead of maintaining these related fields separately. Request ordering,
+  timeout values, settings persistence and error reporting are preserved.
+- `controls` shares bounded UTF-16 reads, fonts, palette and child-control
+  creation. Login buffers retain zeroization; existing control styles, limits,
+  positions and ownership remain unchanged.
+- Session result messages use named states and one posting helper. Existing
+  Win32 message values remain stable; status text no longer needs an extra String.
+- Account WebSocket startup and its async relay have separate responsibilities;
+  text/Pong sends share one timeout helper. Queue capacities, deadlines, wakeups
+  and shutdown behavior are unchanged. A local-only WebSocket regression test
+  covers outbound/inbound text, Ping/Pong and host-initiated close.
+
+No new dependency, worker, timer, media queue, decoded-frame copy or per-frame
+instrumentation is introduced. This is a structural change, not a measured
+performance improvement. Live host/device testing remains separate from CI.

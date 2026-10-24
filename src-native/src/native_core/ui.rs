@@ -1,5 +1,7 @@
 //! Native account and computer picker; all control access stays on the UI thread.
 use super::account::{self, Host, Login, Session};
+use super::controls::{self, BG, FG, FIELD};
+pub(super) use super::controls::{font, wide};
 use anyhow::{ensure, Result};
 use std::{
     ptr::{null, null_mut},
@@ -11,9 +13,6 @@ use windows_sys::Win32::{
     System::{LibraryLoader::*, SystemServices::SS_ICON},
     UI::{Controls::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
-const BG: u32 = 0x00231d19;
-const FIELD: u32 = 0x003a322c;
-const FG: u32 = 0x00f5f3f0;
 const LOGIN: usize = 1;
 const REFRESH: usize = 2;
 const CONNECT: usize = 3;
@@ -25,9 +24,6 @@ const DONE: usize = 0x6e01;
 const AUTO_REFRESH: usize = 0x6e02;
 #[cfg(test)]
 thread_local! {static UI_FIXTURE:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
-pub(super) fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain([0]).collect()
-}
 
 pub struct Selection {
     pub session: Arc<Session>,
@@ -73,28 +69,7 @@ impl Drop for Form {
     }
 }
 unsafe fn text(hwnd: HWND) -> String {
-    let n = GetWindowTextLengthW(hwnd).clamp(0, 4096) as usize;
-    let mut b = zeroize::Zeroizing::new(vec![0u16; n + 1]);
-    let used = GetWindowTextW(hwnd, b.as_mut_ptr(), b.len() as i32).max(0) as usize;
-    String::from_utf16_lossy(&b[..used])
-}
-pub(super) unsafe fn font(size: i32, weight: i32) -> HFONT {
-    CreateFontW(
-        -size,
-        0,
-        0,
-        0,
-        weight,
-        0,
-        0,
-        0,
-        DEFAULT_CHARSET as u32,
-        0,
-        0,
-        CLEARTYPE_QUALITY as u32,
-        0,
-        wide("Segoe UI").as_ptr(),
-    )
+    controls::text(hwnd, 4096)
 }
 unsafe fn add(
     parent: HWND,
@@ -105,29 +80,9 @@ unsafe fn add(
     style: u32,
     r: [i32; 4],
 ) -> HWND {
-    let h = CreateWindowExW(
-        0,
-        wide(class).as_ptr(),
-        wide(label).as_ptr(),
-        WS_CHILD
-            | WS_VISIBLE
-            | style
-            | if class == "BUTTON" && style & 0xf != BS_AUTOCHECKBOX as u32 {
-                BS_OWNERDRAW as u32
-            } else {
-                0
-            },
-        r[0],
-        r[1],
-        r[2],
-        r[3],
-        parent,
-        id as HMENU,
-        GetModuleHandleW(null()),
-        null(),
-    );
-    SendMessageW(h, WM_SETFONT, f.font as usize, 0);
-    h
+    let owner_draw = class == "BUTTON" && style & 0xf != BS_AUTOCHECKBOX as u32;
+    let style = style | if owner_draw { BS_OWNERDRAW as u32 } else { 0 };
+    controls::create(parent, f.font, class, label, id, style, r)
 }
 unsafe fn status(f: &Form, s: &str) {
     SetWindowTextW(f.status, wide(s).as_ptr());

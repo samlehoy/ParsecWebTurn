@@ -1,6 +1,7 @@
 //! Event-driven native session panel. GDI controls overlay the video child;
 //! no video pixels or additional decoded-frame copy. Visible metrics refresh at 1 Hz.
 use super::{
+    controls::{self, BG, FG, FIELD},
     profile::{Resolution, Video},
     ui::{draw_button, wide},
 };
@@ -28,9 +29,6 @@ const METRICS: i32 = 4609;
 const PANEL_HEIGHT: i32 = 680;
 pub const RESULT: u32 = WM_APP + 26;
 pub const VISIBILITY: u32 = WM_APP + 27;
-const BG: u32 = 0x00231d19;
-const FIELD: u32 = 0x003a322c;
-const FG: u32 = 0x00f5f3f0;
 #[derive(Clone, Debug)]
 pub enum Action {
     Apply(Video),
@@ -48,6 +46,41 @@ pub fn shortcut(key: usize, modifiers: i32) -> Option<Shortcut> {
         (key, 3) if key == b'M' as usize || key == b'O' as usize => Some(Shortcut::Menu),
         (key, 6) if key == VK_END as usize => Some(Shortcut::SecureAttention),
         _ => None,
+    }
+}
+// Values stay stable across the existing window-message boundary.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+enum Status {
+    Applied = 0,
+    Failed = 1,
+    Confirmed = 2,
+    Waiting = 3,
+    Unconfirmed = 4,
+    AttentionSent = 5,
+    AttentionFailed = 6,
+}
+impl Status {
+    fn from_message(value: usize) -> Self {
+        match value {
+            0 => Self::Applied,
+            2 => Self::Confirmed,
+            3 => Self::Waiting,
+            4 => Self::Unconfirmed,
+            5 => Self::AttentionSent,
+            6 => Self::AttentionFailed,
+            _ => Self::Failed,
+        }
+    }
+    fn text(self) -> &'static str {
+        match self {
+            Self::Applied | Self::Confirmed => "",
+            Self::Failed => "Could not apply or save settings. See the event log.",
+            Self::Waiting => "Applying settings...",
+            Self::Unconfirmed => "Host did not confirm the requested settings. See the event log.",
+            Self::AttentionSent => "Ctrl+Alt+Del requested from the host.",
+            Self::AttentionFailed => "Could not send Ctrl+Alt+Del. See the event log.",
+        }
     }
 }
 struct Panel {
@@ -76,11 +109,8 @@ impl Drop for Panel {
         }
     }
 }
-unsafe fn text(h: HWND) -> String {
-    let n = GetWindowTextLengthW(h).clamp(0, 256);
-    let mut b = vec![0; n as usize + 1];
-    let used = GetWindowTextW(h, b.as_mut_ptr(), b.len() as i32).max(0) as usize;
-    String::from_utf16_lossy(&b[..used])
+unsafe fn text(hwnd: HWND) -> String {
+    controls::text(hwnd, 256)
 }
 fn number(text: &str, max: u32) -> Result<Option<u32>> {
     let n: u32 = text
@@ -304,32 +334,17 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 return 1;
             }
             RESULT => {
+                let status = Status::from_message(wp);
                 EnableWindow(
                     GetDlgItem(hwnd, APPLY as i32),
                     i32::from(
-                        wp != 3
+                        status != Status::Waiting
                             && !(&*p.window)
                                 .native_host_video_pending
                                 .load(Ordering::Acquire),
                     ),
                 );
-                SetWindowTextW(
-                    GetDlgItem(hwnd, STATUS),
-                    wide(&if wp == 2 || wp == 0 {
-                        String::new()
-                    } else if wp == 5 {
-                        "Ctrl+Alt+Del requested from the host.".into()
-                    } else if wp == 6 {
-                        "Could not send Ctrl+Alt+Del. See the event log.".into()
-                    } else if wp == 3 {
-                        "Applying settings...".into()
-                    } else if wp == 4 {
-                        "Host did not confirm the requested settings. See the event log.".into()
-                    } else {
-                        "Could not apply or save settings. See the event log.".into()
-                    })
-                    .as_ptr(),
-                );
+                SetWindowTextW(GetDlgItem(hwnd, STATUS), wide(status.text()).as_ptr());
                 return 0;
             }
             WM_COMMAND => {
@@ -401,22 +416,7 @@ unsafe fn control(
     style: u32,
     r: [i32; 4],
 ) -> HWND {
-    let h = CreateWindowExW(
-        0,
-        wide(class).as_ptr(),
-        wide(label).as_ptr(),
-        WS_CHILD | WS_VISIBLE | style,
-        r[0],
-        r[1],
-        r[2],
-        r[3],
-        hwnd,
-        id as HMENU,
-        GetModuleHandleW(null()),
-        null(),
-    );
-    SendMessageW(h, WM_SETFONT, p.font as usize, 0);
-    h
+    controls::create(hwnd, p.font, class, label, id, style, r)
 }
 unsafe fn combo(
     hwnd: HWND,
@@ -862,7 +862,7 @@ pub unsafe fn toggle(
     raise(window);
     SetFocus(p.controls[0]);
     if window.native_host_video_pending.load(Ordering::Acquire) {
-        SendMessageW(hwnd, RESULT, 3, 0);
+        SendMessageW(hwnd, RESULT, Status::Waiting as usize, 0);
     }
     #[cfg(test)]
     SetPropW(
@@ -871,51 +871,48 @@ pub unsafe fn toggle(
         1usize as HANDLE,
     );
 }
-pub fn result(window: &crate::window::Window, ok: bool) {
+fn post_status(window: &crate::window::Window, status: Status) {
     unsafe {
-        let panel = panel(window);
-        if !panel.is_null() {
-            PostMessageW(panel, RESULT, usize::from(!ok), 0);
+        let hwnd = panel(window);
+        if !hwnd.is_null() {
+            PostMessageW(hwnd, RESULT, status as usize, 0);
         }
     }
+}
+pub fn result(window: &crate::window::Window, ok: bool) {
+    post_status(window, if ok { Status::Applied } else { Status::Failed });
 }
 pub fn waiting(window: &crate::window::Window) {
     window
         .native_host_video_pending
         .store(true, Ordering::Release);
-    unsafe {
-        let hwnd = panel(window);
-        if !hwnd.is_null() {
-            PostMessageW(hwnd, RESULT, 3, 0);
-        }
-    }
+    post_status(window, Status::Waiting);
 }
 pub fn finished(window: &crate::window::Window, confirmed: bool) {
     window
         .native_host_video_pending
         .store(false, Ordering::Release);
-    unsafe {
-        let hwnd = panel(window);
-        if !hwnd.is_null() {
-            PostMessageW(hwnd, RESULT, if confirmed { 2 } else { 4 }, 0);
-        }
-    }
+    post_status(
+        window,
+        if confirmed {
+            Status::Confirmed
+        } else {
+            Status::Unconfirmed
+        },
+    );
 }
 pub fn attention_result(window: &crate::window::Window, ok: bool) {
-    unsafe {
-        let hwnd = panel(window);
-        if !hwnd.is_null() {
-            PostMessageW(hwnd, RESULT, if ok { 5 } else { 6 }, 0);
-        }
-    }
+    post_status(
+        window,
+        if ok {
+            Status::AttentionSent
+        } else {
+            Status::AttentionFailed
+        },
+    );
 }
 pub fn reported(window: &crate::window::Window) {
-    unsafe {
-        let hwnd = panel(window);
-        if !hwnd.is_null() {
-            PostMessageW(hwnd, RESULT, 2, 0);
-        }
-    }
+    post_status(window, Status::Confirmed);
 }
 pub unsafe fn dialog(parent: HWND, msg: &MSG) -> bool {
     let h = panel_for_parent(parent);
