@@ -698,13 +698,18 @@ fn run(
     // Probe before the lifecycle lock: a slow driver must not stall Cancel.
     let hevc_available =
         settings.prefer_hevc && crate::video_windows::hevc_available(window.video_gpu().as_ref());
+    let chroma_444 = cfg!(feature = "native-core")
+        && hevc_available
+        && settings.experimental_chroma_444
+        && crate::video_windows::hevc_444_available(window.video_gpu().as_ref());
     let ten_bit = hevc_available
+        && !chroma_444
         && settings.experimental_ten_bit
         && crate::video_windows::hevc_ten_bit_available(window.video_gpu().as_ref());
     crate::event_log::record(
         "INFO",
         "video_capabilities_declared",
-        json!({"transport":"BUD","flags":8 | u32::from(hevc_available) | if ten_bit {16} else {0},"hevc":hevc_available,"main10":ten_bit}),
+        json!({"transport":"BUD","flags":8 | u32::from(hevc_available) | if ten_bit {16} else {0} | if chroma_444 {2} else {0},"hevc":hevc_available,"main10":ten_bit,"chroma_444":chroma_444}),
     );
     let hid_generation;
     let (mut media, mut session, statistics) = {
@@ -719,6 +724,7 @@ fn run(
             window.clone(),
             hevc_available,
             ten_bit,
+            chroma_444,
             settings.allow_raw_audio,
             settings.experimental_surround_audio,
         )?;
@@ -938,6 +944,10 @@ fn run(
                     );
                 }
                 Event::Ended { outcome } => {
+                    let host_status = match &outcome {
+                        Outcome::Disconnected(status) => Some(*status),
+                        _ => None,
+                    };
                     let reason = match outcome {
                         Outcome::ConnectivityFailed => "ended_connectivity_failed",
                         Outcome::PeerGone => "ended_peer_gone",
@@ -953,7 +963,7 @@ fn run(
                     crate::event_log::record(
                         "WARN",
                         "bud_connection_ended",
-                        json!({"reason":reason,"attempt_route":if direct_attempt {"Direct"} else {"TURN relay"},"turn_transport":transport.relay_transport}),
+                        json!({"reason":reason,"host_status":host_status,"attempt_route":if direct_attempt {"Direct"} else {"TURN relay"},"turn_transport":transport.relay_transport}),
                     );
                     ended = true;
                 }
@@ -1079,6 +1089,7 @@ fn run(
             let mut next = crate::bud_media::session(
                 hevc_available,
                 ten_bit,
+                chroma_444,
                 settings.allow_raw_audio,
                 media.audio_layout(),
             )?;

@@ -494,13 +494,20 @@ pub unsafe fn raise(window: &crate::window::Window) {
     let foreground = GetForegroundWindow();
     let button = window.native_session_button.load(Ordering::Acquire) as HWND;
     let panel = panel(window);
-    let insert_after = stacking_target(
-        parent,
-        button,
-        panel,
-        foreground,
-        GetAncestor(foreground, GA_ROOTOWNER),
-    );
+    let ceiling = window.native_stats_window();
+    let insert_after = if !ceiling.is_null() {
+        // Stats must stay readable even when the user activates the stream or
+        // Session panel. Foreground-only ordering still covered inactive stats.
+        Some(ceiling)
+    } else {
+        stacking_target(
+            parent,
+            button,
+            panel,
+            foreground,
+            GetAncestor(foreground, GA_ROOTOWNER),
+        )
+    };
     let visible = !window.settings_open()
         && !window.closing.load(Ordering::Acquire)
         && IsIconic(parent) == 0

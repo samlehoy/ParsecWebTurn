@@ -1,12 +1,18 @@
 //! GPU-only D3D11 decoder. Adapted from lowlat d3d11.rs at 5f8db568.
 //! MIT Copyright (c) 2026 Nguyen Duy; see ../LICENSE-lowlat.
-//! Only 8-bit 4:2:0: original decoder array slice, no split/export/staging/map.
+//! 8-bit NV12/AYUV decoder surfaces, no split/export/staging/map.
+//! Range-extension mapping retained from the same pinned MIT upstream decoder.
 use core::{ffi::c_void, fmt};
 use lowlat_decode::hevc::sps::{DIAG_4X4, DIAG_8X8};
 use lowlat_decode::{Fed, hevc};
 use lowlat_drivers::{
     d3d11::{Com, Device, Error as RuntimeError},
-    ffi::{d3d11::*, d3d11_guids::D3D11_DECODER_PROFILE_HEVC_VLD_MAIN},
+    ffi::{
+        d3d11::*,
+        d3d11_guids::{
+            D3D11_DECODER_PROFILE_HEVC_VLD_MAIN, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN_444,
+        },
+    },
     vcall,
 };
 use std::rc::Rc;
@@ -146,15 +152,29 @@ fn bytes_of<T>(value: &T) -> &[u8] {
     unsafe { core::slice::from_raw_parts((value as *const T).cast::<u8>(), size_of::<T>()) }
 }
 
-fn offers(device: &dyn DeviceAccess) -> bool {
+fn profile(full_chroma: bool) -> GUID {
+    if full_chroma {
+        D3D11_DECODER_PROFILE_HEVC_VLD_MAIN_444
+    } else {
+        D3D11_DECODER_PROFILE_HEVC_VLD_MAIN
+    }
+}
+fn surface_format(full_chroma: bool) -> DXGI_FORMAT {
+    if full_chroma {
+        DXGI_FORMAT_AYUV
+    } else {
+        DXGI_FORMAT_NV12
+    }
+}
+fn offers(device: &dyn DeviceAccess, full_chroma: bool) -> bool {
     let mut supported: BOOL = 0;
     // SAFETY: the device and the profile/output pointers remain live.
     let hr = unsafe {
         vcall!(
             device.video(),
             CheckVideoDecoderFormat,
-            &D3D11_DECODER_PROFILE_HEVC_VLD_MAIN,
-            DXGI_FORMAT_NV12,
+            &profile(full_chroma),
+            surface_format(full_chroma),
             &raw mut supported
         )
     };
@@ -166,15 +186,16 @@ fn create_decoder(
     width: u32,
     height: u32,
     independent: bool,
+    full_chroma: bool,
 ) -> Result<(Com<ID3D11VideoDecoder>, D3D11_VIDEO_DECODER_CONFIG)> {
-    if !offers(device) {
+    if !offers(device, full_chroma) {
         return Err(Error::NoProfile);
     }
     let desc = D3D11_VIDEO_DECODER_DESC {
-        Guid: D3D11_DECODER_PROFILE_HEVC_VLD_MAIN,
+        Guid: profile(full_chroma),
         SampleWidth: width,
         SampleHeight: height,
-        OutputFormat: DXGI_FORMAT_NV12,
+        OutputFormat: surface_format(full_chroma),
     };
     let mut count = 0u32;
     // SAFETY: a live video device; the description and output are live.
@@ -232,12 +253,13 @@ fn create_decoder(
 
 struct Staging {
     // HEVC Main 8-bit picture parameters.
-    hevc_picture: DXVA_PicParams_HEVC,
+    hevc_picture: DXVA_PicParams_HEVC_RangeExt,
     hevc_matrix: DXVA_Qmatrix_HEVC,
     hevc_slices: [DXVA_Slice_HEVC_Short; MAX_SLICES],
 }
 
 struct Built {
+    full_chroma: bool,
     coded: (u32, u32),
     decoder: Com<ID3D11VideoDecoder>,
     surfaces: Vec<Com<ID3D11Texture2D>>,
@@ -288,7 +310,7 @@ impl<'a> Backend<'a> {
         self.decode_hevc(bytes)
     }
     pub fn layout(&self) -> anyhow::Result<crate::Layout> {
-        crate::Layout::hevc(self.hevc.active_sps().ok_or(Error::NoProfile)?)
+        crate::Layout::hevc_direct(self.hevc.active_sps().ok_or(Error::NoProfile)?)
     }
     pub fn drain(&mut self) {
         self.hevc.drain();
@@ -330,21 +352,22 @@ impl<'a> Backend<'a> {
         result?;
         Ok(true)
     }
-    fn ensure(&mut self, coded: (u32, u32)) -> Result<bool> {
+    fn ensure(&mut self, coded: (u32, u32), full_chroma: bool) -> Result<bool> {
         if let Some(built) = &self.built {
-            return Ok(built.coded == coded);
+            return Ok(built.coded == coded && built.full_chroma == full_chroma);
         }
         if coded.0 > self.ceiling.0 || coded.1 > self.ceiling.1 {
             return Err(Error::TooLarge);
         }
         // Use only configurations advertising independent decode textures.
-        let (decoder, _) = create_decoder(self.device, coded.0, coded.1, self.displayable)?;
+        let (decoder, _) =
+            create_decoder(self.device, coded.0, coded.1, self.displayable, full_chroma)?;
         let desc = D3D11_TEXTURE2D_DESC {
             Width: coded.0.next_multiple_of(128),
             Height: coded.1.next_multiple_of(128),
             MipLevels: 1,
             ArraySize: if self.displayable { 1 } else { SURFACES as u32 },
-            Format: DXGI_FORMAT_NV12,
+            Format: surface_format(full_chroma),
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
@@ -373,9 +396,14 @@ impl<'a> Backend<'a> {
                 surfaces.push(self.device.texture(&desc)?);
             }
             let index = if self.displayable { slice } else { 0 };
-            views.push(self.view(&surfaces[index], if self.displayable { 0 } else { slice })?);
+            views.push(self.view(
+                &surfaces[index],
+                if self.displayable { 0 } else { slice },
+                full_chroma,
+            )?);
         }
         self.built = Some(Built {
+            full_chroma,
             coded,
             decoder,
             surfaces,
@@ -388,9 +416,10 @@ impl<'a> Backend<'a> {
         &self,
         surfaces: &Com<ID3D11Texture2D>,
         slice: usize,
+        full_chroma: bool,
     ) -> Result<Com<ID3D11VideoDecoderOutputView>> {
         let desc = D3D11_VIDEO_DECODER_OUTPUT_VIEW_DESC {
-            DecodeProfile: D3D11_DECODER_PROFILE_HEVC_VLD_MAIN,
+            DecodeProfile: profile(full_chroma),
             ViewDimension: D3D11_VDOV_DIMENSION_TEXTURE2D,
             __bindgen_anon_1: D3D11_VIDEO_DECODER_OUTPUT_VIEW_DESC__bindgen_ty_1 {
                 Texture2D: D3D11_TEX2D_VDOV {
@@ -431,15 +460,18 @@ impl<'a> Backend<'a> {
             hevc::Read::Picture => {}
         }
         let job = self.hevc.job().ok_or(Error::Status(-1))?;
-        if job.sps.chroma_format_idc != 1
+        let full_chroma = job.sps.chroma_format_idc == 3;
+        if !matches!(job.sps.chroma_format_idc, 1 | 3)
             || job.sps.bit_depth_luma_minus8 != 0
-            || job.sps.is_range_extended()
+            || job.sps.bit_depth_chroma_minus8 != 0
+            || job.sps.separate_colour_plane
+            || (!full_chroma && job.sps.is_range_extended())
         {
             self.hevc.abandon();
             return Err(Error::NoProfile);
         }
         let coded = (job.sps.width, job.sps.height);
-        if !self.ensure(coded)? {
+        if !self.ensure(coded, full_chroma)? {
             self.hevc.abandon();
             return Ok(Fed::FormatChanged);
         }
@@ -662,7 +694,52 @@ impl<'a> Backend<'a> {
         base.RefPicSetLtCurr = long;
         base.StatusReportFeedbackNumber = report;
 
-        self.staging.hevc_picture = base;
+        let p = &mut self.staging.hevc_picture;
+        *p = zeroed();
+        p.params = base;
+        if sps.chroma_format_idc == 3 {
+            let range = &sps.range;
+            let prange = &pps.range;
+            let mut flags: _DXVA_PicParams_HEVC_RangeExt__bindgen_ty_1__bindgen_ty_1 = zeroed();
+            flags.set_transform_skip_rotation_enabled_flag(u16::from(
+                range.transform_skip_rotation_enabled,
+            ));
+            flags.set_transform_skip_context_enabled_flag(u16::from(
+                range.transform_skip_context_enabled,
+            ));
+            flags.set_implicit_rdpcm_enabled_flag(u16::from(range.implicit_rdpcm_enabled));
+            flags.set_explicit_rdpcm_enabled_flag(u16::from(range.explicit_rdpcm_enabled));
+            flags.set_extended_precision_processing_flag(u16::from(
+                range.extended_precision_processing,
+            ));
+            flags.set_intra_smoothing_disabled_flag(u16::from(range.intra_smoothing_disabled));
+            flags.set_persistent_rice_adaptation_enabled_flag(u16::from(
+                range.persistent_rice_adaptation_enabled,
+            ));
+            flags.set_high_precision_offsets_enabled_flag(u16::from(
+                range.high_precision_offsets_enabled,
+            ));
+            flags.set_cabac_bypass_alignment_enabled_flag(u16::from(
+                range.cabac_bypass_alignment_enabled,
+            ));
+            flags.set_cross_component_prediction_enabled_flag(u16::from(
+                prange.cross_component_prediction_enabled,
+            ));
+            flags.set_chroma_qp_offset_list_enabled_flag(u16::from(
+                prange.chroma_qp_offset_list_enabled,
+            ));
+            p.__bindgen_anon_1 = _DXVA_PicParams_HEVC_RangeExt__bindgen_ty_1 {
+                __bindgen_anon_1: flags,
+            };
+            p.diff_cu_chroma_qp_offset_depth = prange.diff_cu_chroma_qp_offset_depth;
+            p.log2_sao_offset_scale_luma = prange.log2_sao_offset_scale_luma;
+            p.log2_sao_offset_scale_chroma = prange.log2_sao_offset_scale_chroma;
+            p.log2_max_transform_skip_block_size_minus2 =
+                prange.log2_max_transform_skip_block_size_minus2;
+            p.cb_qp_offset_list = prange.cb_qp_offset_list;
+            p.cr_qp_offset_list = prange.cr_qp_offset_list;
+            p.chroma_qp_offset_list_len_minus1 = prange.chroma_qp_offset_list_len_minus1;
+        }
 
         let s = &pps.scaling;
         let mut lists0 = [[0u8; 16]; 6];
@@ -783,7 +860,11 @@ impl<'a> Backend<'a> {
             }
         };
         let s = &self.staging;
-        let picture = bytes_of(&s.hevc_picture);
+        let picture = if built.full_chroma {
+            bytes_of(&s.hevc_picture)
+        } else {
+            bytes_of(&s.hevc_picture.params)
+        };
         self.put(
             decoder,
             D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS,

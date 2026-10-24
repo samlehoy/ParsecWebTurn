@@ -11,10 +11,11 @@ use std::sync::Arc;
 pub(crate) fn session(
     hevc: bool,
     ten_bit: bool,
+    chroma_444: bool,
     raw: bool,
     layout: crate::audio_layout::Layout,
 ) -> Result<Session> {
-    let mut session = Session::external_video_depth(hevc, ten_bit)?;
+    let mut session = Session::external_video_format(hevc, ten_bit, chroma_444)?;
     session.allow_raw_audio(raw);
     session.set_audio_layout(layout.channels, layout.mask)?;
     crate::event_log::record(
@@ -54,6 +55,7 @@ impl Media {
         window: Arc<crate::window::Window>,
         hevc_available: bool,
         ten_bit: bool,
+        chroma_444: bool,
         raw_audio: bool,
         surround: bool,
     ) -> Result<(Self, Session)> {
@@ -62,7 +64,7 @@ impl Media {
         } else {
             crate::audio_layout::Layout::STEREO
         };
-        let session = session(hevc_available, ten_bit, raw_audio, layout)?;
+        let session = session(hevc_available, ten_bit, chroma_444, raw_audio, layout)?;
         let audio = Arc::new(crate::audio_stream::Pipeline::start_with_layout(
             window.audio_buffer().map(|(_, max)| max),
             layout,

@@ -89,6 +89,7 @@ pub struct Session {
     external_units: Option<Units>,
     prefer_hevc: bool,
     ten_bit: bool,
+    chroma_444: bool,
     raw_audio: bool,
     audio_layout: Option<(u8, u32)>,
     hid_input: (bool, bool),
@@ -104,11 +105,15 @@ impl Session {
     }
 
     pub fn external_video_depth(hevc_available: bool, ten_bit: bool) -> Result<Self> {
+        Self::external_video_format(hevc_available, ten_bit, false)
+    }
+    pub fn external_video_format(hevc_available: bool, ten_bit: bool, chroma_444: bool) -> Result<Self> {
         let client = Client::new_external_video(
             lowlat_client::config::Caps {
                 h264: true,
                 hevc: hevc_available,
-                hevc_10: hevc_available && ten_bit,
+                hevc_10: hevc_available && ten_bit && !chroma_444,
+                hevc_444: hevc_available && chroma_444,
                 ..Default::default()
             },
             Port::Any,
@@ -120,7 +125,8 @@ impl Session {
             attempt: None,
             external_units: Some(units),
             prefer_hevc: hevc_available,
-            ten_bit: hevc_available && ten_bit,
+            ten_bit: hevc_available && ten_bit && !chroma_444,
+            chroma_444: hevc_available && chroma_444,
             raw_audio: false,
             audio_layout: None,
             hid_input: (false, false),
@@ -195,6 +201,7 @@ impl Session {
         let mut config = route.configure();
         config.video.hevc = self.prefer_hevc;
         config.video.ten_bit = self.ten_bit;
+        config.video.chroma_444 = self.chroma_444;
         config.video.full_range = true;
         config.raw_audio = self.raw_audio;
         config.audio_layout = self.audio_layout;

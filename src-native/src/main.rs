@@ -5,7 +5,6 @@
 #![warn(unused_crate_dependencies)]
 #[cfg(all(feature = "native-core", feature = "wasm-core"))]
 compile_error!("Use --no-default-features --features native-core,vendor-video for the independent native client");
-#[cfg(any(test, not(feature = "native-core")))]
 mod attempt;
 #[cfg(all(windows, feature = "bud"))]
 mod bud_attempt;

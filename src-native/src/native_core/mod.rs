@@ -10,6 +10,7 @@ mod session_badge;
 pub(crate) mod session_ui;
 mod session_video;
 mod signaling;
+mod transport;
 pub(crate) mod ui;
 
 use anyhow::{ensure, Context, Result};
@@ -96,7 +97,7 @@ fn stream(
     manager: Arc<crate::connection_settings::Manager>,
 ) -> Result<()> {
     let id = crate::bud_attempt::native_attempt_id()?;
-    let attempt = crate::bud_attempt::Attempt::spawn_native(
+    let attempt = transport::Attempt::spawn_native(
         &id,
         peer,
         socket.writer.clone(),
@@ -139,7 +140,11 @@ fn stream(
         }
         while let Some(event) = attempt.pop_event() {
             if event["type"] == 7 {
-                ensure!(event["status"] == 0, "The BUD connection ended.");
+                ensure!(
+                    event["status"] == 0,
+                    "The {} connection ended.",
+                    attempt.name()
+                );
                 if !established {
                     host_settings.connected(&attempt)?;
                 }
@@ -148,7 +153,10 @@ fn stream(
             }
         }
         if attempt.failure().is_some() {
-            anyhow::bail!("BUD connection failed. See the event log for its stage.");
+            anyhow::bail!(
+                "{} connection failed. See the event log for its stage.",
+                attempt.name()
+            );
         }
         for _ in 0..64 {
             let Some(frame) = attempt.pop_control() else {
@@ -283,7 +291,7 @@ fn stream(
                         // Same application request as the stock menu. The host
                         // authorizes it and needs its installed service for SAS.
                         let result = (|| -> Result<()> {
-                            ensure!(established, "BUD is not connected yet");
+                            ensure!(established, "Transport is not connected yet");
                             attempt.send(&crate::control::header(24, 0, 0, 0))?;
                             attempt.send(&crate::control::text(17, 14, "")?)
                         })();
@@ -296,7 +304,7 @@ fn stream(
                     }
                     session_ui::Action::Apply(next) => {
                         let result = (|| -> Result<()> {
-                            ensure!(established, "BUD is not connected yet");
+                            ensure!(established, "Transport is not connected yet");
                             let size = host_settings.apply(&attempt, window, next)?;
                             manager.update_native(|p| p.video = next.clone())?;
                             video = next.clone();

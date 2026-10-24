@@ -1,9 +1,7 @@
 //! Physical USB usages, as in lowlat examples/client/keys.h. Reuse our wire
 //! framing, viewport and HID adapter; characters remain the host layout's.
-use crate::{
-    bud_attempt::Attempt,
-    window::{Event, Window},
-};
+use super::transport::Attempt;
+use crate::window::{Event, Window};
 use anyhow::Result;
 
 fn usage(code: &str) -> Option<i32> {

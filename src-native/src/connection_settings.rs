@@ -69,6 +69,7 @@ pub struct Settings {
     pub prefer_hevc: bool,
     pub presentation_mode: PresentationMode,
     pub experimental_ten_bit: bool,
+    pub experimental_chroma_444: bool,
     pub event_logging: bool,
     #[serde(alias = "experimentalAudioBuffer")]
     pub custom_audio_buffer: bool,
@@ -113,6 +114,7 @@ impl Default for Settings {
             prefer_hevc: false,
             presentation_mode: PresentationMode::Automatic,
             experimental_ten_bit: false,
+            experimental_chroma_444: false,
             event_logging: false,
             custom_audio_buffer: false,
             audio_min_buffer_ms: 75,
@@ -353,14 +355,6 @@ impl Manager {
     }
     pub fn view(&self) -> (Settings, Option<String>) {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        #[cfg(feature = "native-core")]
-        let state = {
-            let (mut settings, error) = state;
-            // This separately selected build has exactly one transport. Reflect
-            // that in the UI/HID policy without rewriting the source file on load.
-            settings.bud = true;
-            (settings, error)
-        };
         state
     }
     #[cfg(feature = "native-core")]

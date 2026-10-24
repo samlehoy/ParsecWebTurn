@@ -177,6 +177,15 @@ impl Window {
         let page = crate::stats_ui::open(self.handle(), self.stats.clone());
         self.stats_page.store(page as usize, Ordering::Release);
     }
+    #[cfg(feature = "native-core")]
+    pub(crate) unsafe fn native_stats_window(&self) -> HWND {
+        let stats = self.stats_page.load(Ordering::Acquire) as HWND;
+        if !stats.is_null() && IsWindowVisible(stats) != 0 && IsIconic(stats) == 0 {
+            stats
+        } else {
+            std::ptr::null_mut()
+        }
+    }
     pub fn create(
         synthetic_login: bool,
         live: bool,

@@ -1,6 +1,7 @@
 //! Host settings transactions only; decoding/presentation stay on their workers.
+use super::transport::Attempt;
 use super::{host_video, profile::Video, session_ui};
-use crate::{bud_attempt::Attempt, window::Window};
+use crate::window::Window;
 use anyhow::{ensure, Result};
 use std::{
     sync::atomic::Ordering,

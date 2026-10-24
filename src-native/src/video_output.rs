@@ -125,6 +125,7 @@ pub struct Snapshot {
     pub presentation_mode: Option<&'static str>,
     pub display_updates_skipped: u64,
     pub decoded_bit_depth: Option<u8>,
+    pub decoded_chroma: Option<&'static str>,
     /// RGB swap-chain precision, not the monitor/link's physical bit depth.
     pub display_rgb_bit_depth: Option<u8>,
     pub display_output_fallback: Option<String>,

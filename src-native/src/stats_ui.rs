@@ -365,6 +365,9 @@ fn rows(
     if let Some(depth) = video.and_then(|v| v.decoded_bit_depth) {
         row("Decoded color depth", format!("{depth}-bit"));
     }
+    if let Some(chroma) = video.and_then(|v| v.decoded_chroma) {
+        row("Decoded chroma", chroma.into());
+    }
     if let Some(depth) = video.and_then(|v| v.display_rgb_bit_depth) {
         row(
             "RGB output",

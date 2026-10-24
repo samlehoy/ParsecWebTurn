@@ -8,26 +8,30 @@ pub(crate) const MAX_CHANNEL_MESSAGE: usize = 1024 * 1024;
 const LIMIT: usize = MAX_CHANNEL_MESSAGE;
 
 #[derive(Clone)]
-#[cfg(any(test, not(feature = "native-core")))]
 pub struct Config {
-    pub video_protocol: crate::backend::VideoProtocol,
+    pub video_protocol: crate::video_stream::VideoProtocol,
     pub allow_hevc: bool,
     pub ten_bit: bool,
+    pub chroma_444: bool,
 }
 
-#[cfg(any(test, not(feature = "native-core")))]
 impl Config {
     pub fn video_flags(&self) -> u32 {
         0x08 | u32::from(self.allow_hevc)
-            | if self.allow_hevc && self.ten_bit {
+            | if self.allow_hevc && self.ten_bit && !self.chroma_444 {
                 0x10
+            } else {
+                0
+            }
+            | if self.allow_hevc && self.chroma_444 {
+                2
             } else {
                 0
             }
     }
 
     /// Keep the negotiated capabilities on later per-stream reconfigurations.
-    /// 4:4:4 is deliberately not supported, even if the guest asks for it.
+    /// Only native, capability-checked preferences can request full chroma.
     pub fn encoder_request(&self, bytes: Bytes) -> Bytes {
         if bytes.len() < 13 || bytes[12] != 13 || bytes[..4] != [0; 4] {
             return bytes;
@@ -268,6 +272,23 @@ pub fn input_with_viewport(
 mod tests {
     use super::*;
     #[test]
+    fn full_chroma_request_is_preserved_on_refresh_without_requesting_main10() {
+        let config = Config {
+            video_protocol: crate::video_stream::VideoProtocol {
+                version: 1,
+                message_size: 11,
+                version_offset: 0,
+                flag_offset: 4,
+            },
+            allow_hevc: true,
+            ten_bit: true,
+            chroma_444: true,
+        };
+        assert_eq!(config.video_flags(), 0x0b);
+        let refresh = config.encoder_request(header(13, 0, 0, 1));
+        assert_eq!(i32::from_be_bytes(refresh[4..8].try_into().unwrap()), 0x0b);
+    }
+    #[test]
     fn desktop_fullfps_settings_keep_the_pinned_userdata_envelope() {
         for full_fps in [false, true] {
             let configuration = json!({"video":[{"encoderFPS":60,"fullFPS":full_fps}]}).to_string();
@@ -296,6 +317,7 @@ mod tests {
                 },
                 allow_hevc,
                 ten_bit: false,
+                chroma_444: false,
             };
             assert_eq!(
                 config.keyframe_request(),
@@ -318,6 +340,7 @@ mod tests {
             },
             allow_hevc: false,
             ten_bit: false,
+            chroma_444: false,
         };
         let avc = config.startup().unwrap();
         config.allow_hevc = true;
@@ -348,6 +371,7 @@ mod tests {
             },
             allow_hevc: true,
             ten_bit: true,
+            chroma_444: false,
         };
         let init = config.startup().unwrap();
         let init: Value = serde_json::from_slice(&init[13..init.len() - 1]).unwrap();

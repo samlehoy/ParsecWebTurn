@@ -60,6 +60,8 @@ const HELP: usize = 4200;
 const NETWORK_TAB: usize = 4201;
 const VIDEO_TAB: usize = 4121;
 const TEN_BIT: usize = 4122;
+#[cfg(feature = "native-core")]
+const CHROMA_444: usize = 4136;
 const EVENT_LOG: usize = 4123;
 const AUDIO_TAB: usize = 4124;
 const INPUT_TAB: usize = 4129;
@@ -581,12 +583,25 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     SendMessageW(timing, CB_SETCURSEL, selection, 0);
     #[cfg(feature = "native-core")]
     {
+        row_label(hwnd, page, "Chroma", "Experimental GPU 4:4:4 (8-bit HEVC).\nRequires host encoding and client AYUV support.\nUses normal GPU rendering; host may send 4:2:0 instead.", 720, 0, 64);
+        add(
+            hwnd,
+            page,
+            "BUTTON",
+            "Prefer 4:4:4 color (experimental)",
+            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+            [420, 720, 400, 36],
+            CHROMA_444,
+            0,
+            page.font,
+        );
+        check(hwnd, CHROMA_444, s.experimental_chroma_444);
         row_label(
             hwnd,
             page,
             "Session menu",
             "Ctrl+Shift+M opens the menu even when its button is hidden.\nApplies after saving.",
-            720,
+            834,
             0,
             48,
         );
@@ -596,7 +611,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
             "BUTTON",
             "Hide session button",
             BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-            [420, 720, 400, 36],
+            [420, 834, 400, 36],
             HIDE_SESSION_BUTTON,
             0,
             page.font,
@@ -627,21 +642,23 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     check(hwnd, FORCE_RELAY, s.force_relay);
     #[cfg(feature = "bud")]
     {
-        row_label(hwnd, page, "Transport", "BUD: direct UDP or TURN over UDP/TLS/TCP.\nUses the TURN URLs above. Reconnect after changing.", 938, 0, 40);
-        add(
+        row_label(hwnd, page, "Transport", "WebRTC or BUD: direct UDP or TURN over UDP/TLS/TCP.\nUses the TURN URLs above. Reconnect after changing.", 938, 0, 40);
+        let transport = add(
             hwnd,
             page,
-            "BUTTON",
-            "BUD",
-            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-            [420, 938, 400, 36],
+            "COMBOBOX",
+            "",
+            CBS_DROPDOWNLIST as u32 | WS_VSCROLL | WS_TABSTOP,
+            [420, 938, 400, 160],
             BUD,
             0,
             page.font,
         );
+        for label in ["WebRTC", "BUD"] {
+            SendMessageW(transport, CB_ADDSTRING, 0, wide(label).as_ptr() as isize);
+        }
+        controls::combo(transport);
         check(hwnd, BUD, s.bud);
-        #[cfg(feature = "native-core")]
-        EnableWindow(GetDlgItem(hwnd, BUD as i32), 0);
     }
     #[cfg(feature = "vendor-video")]
     {
@@ -888,7 +905,7 @@ unsafe fn layout(hwnd: HWND) {
         Tab::Input => 570,
         Tab::Video => {
             if cfg!(feature = "native-core") {
-                822
+                936
             } else {
                 728
             }
@@ -1038,6 +1055,16 @@ unsafe fn text(hwnd: HWND, id: usize) -> String {
     String::from_utf16_lossy(&buffer[..length as usize])
 }
 unsafe fn check(hwnd: HWND, id: usize, value: bool) {
+    #[cfg(feature = "bud")]
+    if id == BUD {
+        SendMessageW(
+            GetDlgItem(hwnd, id as i32),
+            CB_SETCURSEL,
+            usize::from(value),
+            0,
+        );
+        return;
+    }
     SendMessageW(
         GetDlgItem(hwnd, id as i32),
         BM_SETCHECK,
@@ -1046,6 +1073,10 @@ unsafe fn check(hwnd: HWND, id: usize, value: bool) {
     );
 }
 unsafe fn checked(hwnd: HWND, id: usize) -> bool {
+    #[cfg(feature = "bud")]
+    if id == BUD {
+        return SendMessageW(GetDlgItem(hwnd, id as i32), CB_GETCURSEL, 0, 0) == 1;
+    }
     SendMessageW(GetDlgItem(hwnd, id as i32), BM_GETCHECK, 0, 0) == 1
 }
 unsafe fn update_enabled(hwnd: HWND) {
@@ -1086,9 +1117,18 @@ unsafe fn update_enabled(hwnd: HWND) {
     #[cfg(not(feature = "bud"))]
     EnableWindow(GetDlgItem(hwnd, AUDIO_SURROUND as i32), 0);
     let hevc = checked(hwnd, HEVC) as i32;
-    EnableWindow(GetDlgItem(hwnd, TEN_BIT as i32), hevc);
+    #[cfg(feature = "native-core")]
+    EnableWindow(GetDlgItem(hwnd, CHROMA_444 as i32), hevc);
+    let full_chroma = cfg!(feature = "native-core") && checked(hwnd, 4136);
+    EnableWindow(
+        GetDlgItem(hwnd, TEN_BIT as i32),
+        hevc * i32::from(!full_chroma),
+    );
     #[cfg(feature = "vendor-video")]
-    EnableWindow(GetDlgItem(hwnd, ZERO_COPY as i32), hevc);
+    EnableWindow(
+        GetDlgItem(hwnd, ZERO_COPY as i32),
+        hevc * i32::from(!full_chroma),
+    );
     let turn = !checked(hwnd, STUN_ONLY);
     let cloudflare = SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1;
     for id in [
@@ -1119,6 +1159,10 @@ unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
     #[cfg(feature = "native-core")]
     {
         s.native_core.hide_session_button = checked(hwnd, HIDE_SESSION_BUTTON);
+    }
+    #[cfg(feature = "native-core")]
+    {
+        s.experimental_chroma_444 = checked(hwnd, CHROMA_444);
     }
     s.prefer_hevc = checked(hwnd, HEVC);
     s.presentation_mode =
@@ -1413,12 +1457,17 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     update_enabled(hwnd);
                     return 0;
                 }
+                #[cfg(feature = "native-core")]
+                CHROMA_444 if (wp >> 16) as u32 == BN_CLICKED => {
+                    update_enabled(hwnd);
+                    return 0;
+                }
                 AUDIO_CUSTOM if (wp >> 16) as u32 == BN_CLICKED => {
                     update_enabled(hwnd);
                     return 0;
                 }
                 #[cfg(feature = "bud")]
-                BUD if (wp >> 16) as u32 == BN_CLICKED => {
+                BUD if (wp >> 16) as u32 == CBN_SELCHANGE => {
                     update_enabled(hwnd);
                     return 0;
                 }

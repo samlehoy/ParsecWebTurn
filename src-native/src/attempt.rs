@@ -1,7 +1,6 @@
 //! Managed native offer creation behind parsec_web_new_attempt. The guest's
 //! private ABI is isolated; no account, signaling server or remote host is used.
 use crate::{
-    memory::GuestMemory,
     signaling::{Candidate, CandidateGate, Credentials, Description, LocalCandidateSync},
     transport::CHANNELS,
 };
@@ -36,13 +35,53 @@ use webrtc::{
     },
 };
 
+#[cfg(any(test, not(feature = "native-core")))]
 #[derive(Clone)]
-pub struct Output {
+pub(crate) struct GuestOutput {
     memory: GuestMemory,
     strings: [u32; 3],
     capacity: usize,
     sync: u32,
     error: u32,
+}
+
+#[cfg(any(test, not(feature = "native-core")))]
+use crate::memory::GuestMemory;
+
+#[derive(Clone)]
+pub enum Output {
+    #[cfg(any(test, not(feature = "native-core")))]
+    Guest(GuestOutput),
+    #[cfg(feature = "native-core")]
+    Native(Arc<dyn Fn(Option<&Description>) -> Result<bool> + Send + Sync>),
+}
+impl Output {
+    #[cfg(any(test, not(feature = "native-core")))]
+    pub fn new(
+        memory: GuestMemory,
+        strings: [u32; 3],
+        capacity: usize,
+        sync: u32,
+        error: u32,
+    ) -> Result<Self> {
+        GuestOutput::new(memory, strings, capacity, sync, error).map(Self::Guest)
+    }
+    pub fn finish(&self, credentials: Option<&Description>) -> Result<bool> {
+        match self {
+            #[cfg(any(test, not(feature = "native-core")))]
+            Self::Guest(output) => output.finish(credentials),
+            #[cfg(feature = "native-core")]
+            Self::Native(publish) => publish(credentials),
+        }
+    }
+    #[cfg(any(test, not(feature = "native-core")))]
+    pub fn finish_values(&self, values: Option<[&str; 3]>) -> Result<bool> {
+        match self {
+            Self::Guest(output) => output.finish_values(values),
+            #[cfg(feature = "native-core")]
+            Self::Native(_) => bail!("native offers require a full description"),
+        }
+    }
 }
 
 /// Static categories, never underlying errors, addresses or ICE credentials.
@@ -83,7 +122,8 @@ impl std::fmt::Display for FailureStage {
 }
 impl std::error::Error for FailureStage {}
 
-impl Output {
+#[cfg(any(test, not(feature = "native-core")))]
+impl GuestOutput {
     pub fn new(
         memory: GuestMemory,
         strings: [u32; 3],
@@ -720,6 +760,7 @@ impl Attempt {
         state.video_output = Some(video);
     }
 
+    #[cfg(any(test, not(feature = "native-core")))]
     pub fn poll_audio(&self, memory: &GuestMemory, pointer: u32, capacity: usize) -> Result<usize> {
         let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
         match &state.audio_stream {
@@ -728,7 +769,7 @@ impl Attempt {
         }
     }
 
-    pub fn configure_video_protocol(&self, protocol: crate::backend::VideoProtocol) {
+    pub fn configure_video_protocol(&self, protocol: crate::video_stream::VideoProtocol) {
         let inspector = self
             .completion
             .lock()
@@ -741,6 +782,15 @@ impl Attempt {
             .configure(protocol);
     }
 
+    #[cfg(feature = "native-core")]
+    pub fn audio_receiver(&self) -> Option<crate::audio_stream::NativeReceiver> {
+        self.completion
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .audio_stream
+            .as_ref()
+            .map(|audio| audio.native_receiver())
+    }
     pub fn pop_binary(&self) -> Option<(u16, bool, Bytes)> {
         let mut state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
         let message = state.messages.pop_front()?;
@@ -920,7 +970,11 @@ fn worker(
                 .and_then(|m| m.view().0.video_gpu);
             config.allow_hevc =
                 config.allow_hevc && crate::video_windows::hevc_available(gpu.as_ref());
-            config.ten_bit = config.allow_hevc
+            config.chroma_444 = config.allow_hevc
+                && config.chroma_444
+                && crate::video_windows::hevc_444_available(gpu.as_ref());
+            config.ten_bit = !config.chroma_444
+                && config.allow_hevc
                 && config.ten_bit
                 && crate::video_windows::hevc_ten_bit_available(gpu.as_ref());
         }
@@ -940,7 +994,7 @@ fn worker(
         crate::event_log::record(
             "INFO",
             "video_capabilities_declared",
-            serde_json::json!({"transport":"WebRTC","flags":config.video_flags(),"hevc":config.allow_hevc,"main10":config.ten_bit}),
+            serde_json::json!({"transport":"WebRTC","flags":config.video_flags(),"hevc":config.allow_hevc,"main10":config.ten_bit,"chroma_444":config.chroma_444}),
         );
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()

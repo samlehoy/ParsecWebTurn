@@ -186,6 +186,67 @@ pub fn hevc_ten_bit_available(
     }
 }
 
+/// Packed AYUV decoder surfaces and the existing processor input are both
+/// required. No MF/NV12 conversion can preserve 4:4:4 chroma.
+pub fn hevc_444_available(
+    preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
+) -> bool {
+    #[cfg(not(feature = "vendor-video"))]
+    {
+        let _ = preferred_gpu;
+        false
+    }
+    #[cfg(feature = "vendor-video")]
+    unsafe {
+        (|| -> Result<()> {
+            let _runtime = Runtime::start()?;
+            let (device, _) = create_device(preferred_gpu)?;
+            let video: ID3D11VideoDevice = api("video-444-device", device.cast())?;
+            if !api(
+                "video-444-profile",
+                video.CheckVideoDecoderFormat(
+                    &D3D12_VIDEO_DECODE_PROFILE_HEVC_MAIN_444,
+                    DXGI_FORMAT_AYUV,
+                ),
+            )?
+            .as_bool()
+            {
+                return Err(unavailable("video-444-unavailable"));
+            }
+            let desc = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
+                InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
+                InputWidth: 1920,
+                InputHeight: 1080,
+                OutputWidth: 1920,
+                OutputHeight: 1080,
+                InputFrameRate: DXGI_RATIONAL {
+                    Numerator: 60,
+                    Denominator: 1,
+                },
+                OutputFrameRate: DXGI_RATIONAL {
+                    Numerator: 60,
+                    Denominator: 1,
+                },
+                Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
+            };
+            let processor = api(
+                "video-444-processor",
+                video.CreateVideoProcessorEnumerator(&desc),
+            )?;
+            if api(
+                "video-444-input",
+                processor.CheckVideoProcessorFormat(DXGI_FORMAT_AYUV),
+            )? & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT.0 as u32
+                == 0
+            {
+                return Err(unavailable("video-444-input-unavailable"));
+            }
+            Ok(())
+        })()
+        .is_ok()
+    }
+}
+
 // A queue wake can interrupt the DXGI wait: never hold up new decode work
 // waiting for the monitor. The Arc keeps this handle alive for every waiter.
 struct WorkerWake(HANDLE);
@@ -1008,20 +1069,31 @@ impl Session {
             let candidate = (|| -> anyhow::Result<Option<Self>> {
                 let config = hevc.ok_or_else(|| anyhow::anyhow!("missing HEVC parameters"))?;
                 anyhow::ensure!(
-                    config.profile == 1 && config.bit_depth == 8 && config.chroma == 1,
+                    config.bit_depth == 8
+                        && matches!((config.profile, config.chroma), (1, 1) | (4, 3)),
                     "unsupported vendor color format"
                 );
                 let (probe, probe_context) =
                     create_device(preferred_gpu).map_err(|e| anyhow::anyhow!("{}", e.stage))?;
                 let dxgi: IDXGIDevice = probe.cast()?;
                 let adapter = dxgi.GetAdapter()?.GetDesc()?;
-                let Some(mode) = parsec_gpu_video::preferred(adapter.VendorId, true) else {
-                    return Ok(None);
+                let mode = if config.chroma == 3 {
+                    if _zero_copy {
+                        zero_copy_status = Some("4:4:4 uses normal GPU rendering".into());
+                    }
+                    parsec_gpu_video::Mode::DirectD3d11
+                } else {
+                    let Some(mode) = parsec_gpu_video::preferred(adapter.VendorId, true) else {
+                        return Ok(None);
+                    };
+                    mode
                 };
                 let luid = (u64::from(adapter.AdapterLuid.HighPart as u32) << 32)
                     | u64::from(adapter.AdapterLuid.LowPart);
                 drop((probe_context, probe));
-                if _zero_copy && parsec_gpu_video::original_surface_vendor_allowed(adapter.VendorId)
+                if _zero_copy
+                    && config.chroma == 1
+                    && parsec_gpu_video::original_surface_vendor_allowed(adapter.VendorId)
                 {
                     match parsec_gpu_video::display::Session::open(luid, hwnd) {
                         Ok(display) => {
@@ -1390,8 +1462,9 @@ impl Session {
                     let mut desc = D3D11_TEXTURE2D_DESC::default();
                     picture.texture.GetDesc(&mut desc);
                     anyhow::ensure!(
-                        desc.Format == DXGI_FORMAT_NV12 && desc.CPUAccessFlags == 0,
-                        "vendor returned a non-GPU NV12 texture"
+                        matches!(desc.Format, DXGI_FORMAT_NV12 | DXGI_FORMAT_AYUV)
+                            && desc.CPUAccessFlags == 0,
+                        "vendor returned an unsupported GPU texture"
                     );
                     let owner = picture.texture.GetDevice()?;
                     anyhow::ensure!(
@@ -1419,6 +1492,11 @@ impl Session {
                         s.height = Some(h);
                         s.nominal_range = Some(if layout.full_range { 1 } else { 2 });
                         s.decoded_bit_depth = Some(8);
+                        s.decoded_chroma = Some(if desc.Format == DXGI_FORMAT_AYUV {
+                            "4:4:4"
+                        } else {
+                            "4:2:0"
+                        });
                         match presented {
                             Presentation::Presented => {
                                 s.frames_presented = s.frames_presented.saturating_add(1)
@@ -1567,6 +1645,7 @@ impl Session {
                 s.frames_decoded = s.frames_decoded.saturating_add(1);
                 s.gpu_surface_output = true;
                 s.d3d11_decoder_surface = Some(decoder_surface);
+                s.decoded_chroma = Some("4:2:0");
                 s.decoded_bit_depth = Some(if texture_desc.Format == DXGI_FORMAT_P010 {
                     10
                 } else {

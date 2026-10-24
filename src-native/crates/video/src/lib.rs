@@ -45,10 +45,17 @@ pub struct Layout {
 impl Layout {
     pub fn hevc(s: &hevc::sps::Sps) -> Result<Self> {
         ensure!(
-            s.chroma_format_idc == 1
+            s.chroma_format_idc == 1 && !s.is_range_extended(),
+            "unsupported HEVC color format"
+        );
+        Self::hevc_direct(s)
+    }
+    pub fn hevc_direct(s: &hevc::sps::Sps) -> Result<Self> {
+        ensure!(
+            matches!(s.chroma_format_idc, 1 | 3)
+                && !s.separate_colour_plane
                 && s.bit_depth_luma_minus8 == 0
-                && s.bit_depth_chroma_minus8 == 0
-                && !s.is_range_extended(),
+                && s.bit_depth_chroma_minus8 == 0,
             "unsupported HEVC color format"
         );
         let (width, height) = s.visible();
@@ -58,8 +65,8 @@ impl Layout {
             "unsupported video geometry"
         );
         Ok(Self {
-            left: crop[0] * 2,
-            top: crop[2] * 2,
+            left: crop[0] * if s.chroma_format_idc == 3 { 1 } else { 2 },
+            top: crop[2] * if s.chroma_format_idc == 3 { 1 } else { 2 },
             width,
             height,
             full_range: s.video_full_range,

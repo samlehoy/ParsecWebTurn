@@ -135,6 +135,41 @@ struct Packet {
     raw: bool,
     layout: Layout,
 }
+#[cfg(feature = "native-core")]
+#[derive(Clone)]
+pub struct NativeReceiver {
+    state: Arc<Mutex<State>>,
+}
+#[cfg(feature = "native-core")]
+impl NativeReceiver {
+    pub fn set_native_consumer(&self, thread: std::thread::Thread) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .native_consumer = Some(thread);
+    }
+    pub fn take_native_pcm(&self) -> Option<Handoff> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let pcm = state.pcm.pop_front()?;
+        let layout = state.report.layout.unwrap_or(Layout::STEREO);
+        state.report.queued_samples -= pcm.len();
+        state.report.pcm_frames_polled += (pcm.len() / usize::from(layout.channels)) as u64;
+        Some(Handoff {
+            pointer: 0,
+            layout,
+            pcm,
+        })
+    }
+    pub fn recycle_handoff(&self, block: Handoff) {
+        recycle_pcm(&self.state, block);
+    }
+}
+fn recycle_pcm(shared: &Mutex<State>, block: Handoff) {
+    let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+    if !state.stopped && state.free_pcm.len() < RECYCLED_BUFFERS {
+        state.free_pcm.push(block.pcm);
+    }
+}
 pub struct Pipeline {
     tx: Option<mpsc::SyncSender<Packet>>,
     state: Arc<Mutex<State>>,
@@ -459,31 +494,21 @@ impl Pipeline {
         }
     }
     pub fn recycle_handoff(&self, block: Handoff) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if !state.stopped && state.free_pcm.len() < RECYCLED_BUFFERS {
-            state.free_pcm.push(block.pcm);
+        recycle_pcm(&self.state, block);
+    }
+    #[cfg(feature = "native-core")]
+    pub fn native_receiver(&self) -> NativeReceiver {
+        NativeReceiver {
+            state: self.state.clone(),
         }
     }
-    /// Native consumer of the same decoded PCM queue. No guest-memory roundtrip.
-    #[cfg(feature = "native-core")]
+    #[cfg(all(test, feature = "native-core"))]
     pub fn set_native_consumer(&self, thread: std::thread::Thread) {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .native_consumer = Some(thread);
+        self.native_receiver().set_native_consumer(thread);
     }
-    #[cfg(feature = "native-core")]
+    #[cfg(all(test, feature = "native-core"))]
     pub fn take_native_pcm(&self) -> Option<Handoff> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let pcm = state.pcm.pop_front()?;
-        let layout = state.report.layout.unwrap_or(Layout::STEREO);
-        state.report.queued_samples -= pcm.len();
-        state.report.pcm_frames_polled += (pcm.len() / usize::from(layout.channels)) as u64;
-        Some(Handoff {
-            pointer: 0,
-            layout,
-            pcm,
-        })
+        self.native_receiver().take_native_pcm()
     }
     pub fn snapshot(&self) -> Snapshot {
         let mut report = self
