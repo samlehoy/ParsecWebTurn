@@ -86,7 +86,6 @@ unsafe extern "system" fn button_proc(
                     if GetCapture() == hwnd {
                         ReleaseCapture();
                     }
-                    SetFocus((*pointer).owner);
                     return 0;
                 }
             }

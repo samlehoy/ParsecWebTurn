@@ -971,6 +971,8 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         };
         unsafe {
+            let mut prior_events = std::collections::VecDeque::new();
+            window.events.take_batch(&mut prior_events);
             let child = GetDlgItem(button, OPEN as i32);
             let mut before = RECT::default();
             GetWindowRect(button, &mut before);
