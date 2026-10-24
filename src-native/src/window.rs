@@ -1040,21 +1040,29 @@ impl Window {
     pub fn native_display_size(&self) -> (u32, u32) {
         unsafe {
             let monitor = MonitorFromWindow(self.handle(), MONITOR_DEFAULTTONEAREST);
-            let mut info = MONITORINFO {
-                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-                ..std::mem::zeroed()
-            };
-            if GetMonitorInfoW(monitor, &mut info) != 0 {
-                (
-                    (info.rcMonitor.right - info.rcMonitor.left).max(1) as u32,
-                    (info.rcMonitor.bottom - info.rcMonitor.top).max(1) as u32,
-                )
-            } else {
-                (
-                    GetSystemMetrics(SM_CXSCREEN).max(1) as u32,
-                    GetSystemMetrics(SM_CYSCREEN).max(1) as u32,
-                )
+            let mut info: MONITORINFOEXW = std::mem::zeroed();
+            info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+            if GetMonitorInfoW(monitor, &mut info.monitorInfo) != 0 {
+                let mut mode: DEVMODEW = std::mem::zeroed();
+                mode.dmSize = std::mem::size_of::<DEVMODEW>() as u16;
+                // EnumDisplaySettings gives physical display pixels even for a DPI-
+                // virtualized UI; client-area or work-area sizes are not resolutions.
+                if EnumDisplaySettingsW(info.szDevice.as_ptr(), ENUM_CURRENT_SETTINGS, &mut mode)
+                    != 0
+                {
+                    return (mode.dmPelsWidth.max(1), mode.dmPelsHeight.max(1));
+                }
+                return (
+                    (info.monitorInfo.rcMonitor.right - info.monitorInfo.rcMonitor.left).max(1)
+                        as u32,
+                    (info.monitorInfo.rcMonitor.bottom - info.monitorInfo.rcMonitor.top).max(1)
+                        as u32,
+                );
             }
+            (
+                GetSystemMetrics(SM_CXSCREEN).max(1) as u32,
+                GetSystemMetrics(SM_CYSCREEN).max(1) as u32,
+            )
         }
     }
     pub fn set_fullscreen(&self, enable: bool) {

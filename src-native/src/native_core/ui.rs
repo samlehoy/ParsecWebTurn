@@ -20,6 +20,7 @@ const CONNECT: usize = 3;
 const LOGOUT: usize = 4;
 const LIST: usize = 5;
 const REMEMBER: usize = 6;
+const SETTINGS: usize = 7;
 const DONE: usize = 0x6e01;
 pub(super) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
@@ -35,6 +36,7 @@ enum Completed {
     Logout,
 }
 struct Form {
+    settings_page: HWND,
     manager: Arc<crate::connection_settings::Manager>,
     fields: [HWND; 3],
     remember: HWND,
@@ -126,7 +128,7 @@ unsafe fn view(f: &Form) {
     for h in f.fields.into_iter().chain([f.remember]) {
         EnableWindow(h, i32::from(f.incoming.is_none()));
     }
-    for id in [LOGIN, REFRESH, CONNECT, LOGOUT] {
+    for id in [LOGIN, REFRESH, CONNECT, LOGOUT, SETTINGS] {
         let h = GetDlgItem(GetParent(f.status), id as i32);
         EnableWindow(h, i32::from(f.incoming.is_none()));
     }
@@ -243,6 +245,28 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
     if !p.is_null() {
         let f = &mut *p;
         match msg {
+            m if m == WM_APP + 9 => {
+                let page = std::mem::replace(&mut f.settings_page, null_mut());
+                if !page.is_null() {
+                    DestroyWindow(page);
+                }
+                SetWindowPos(
+                    hwnd,
+                    null_mut(),
+                    0,
+                    0,
+                    760,
+                    610,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+                SetFocus(if f.session.is_some() {
+                    f.list
+                } else {
+                    f.fields[0]
+                });
+                return 0;
+            }
+
             WM_DRAWITEM => {
                 if draw_button(lp) {
                     return 1;
@@ -293,6 +317,16 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     return 0;
                 }
                 match id {
+                    SETTINGS => {
+                        if f.settings_page.is_null() {
+                            f.settings_page =
+                                crate::connection_settings_ui::open(hwnd, f.manager.clone());
+                        }
+                        if !f.settings_page.is_null() {
+                            SetFocus(f.settings_page);
+                        }
+                    }
+
                     LOGIN => {
                         let email = text(f.fields[0]);
                         let password = zeroize::Zeroizing::new(text(f.fields[1]));
@@ -409,6 +443,7 @@ pub fn choose(
             ),
         };
         let mut f = Box::new(Form {
+            settings_page: null_mut(),
             manager,
             fields: [null_mut(); 3],
             remember: null_mut(),
@@ -455,6 +490,15 @@ pub fn choose(
         ensure!(!hwnd.is_null(), "Native account window unavailable");
         let heading = add(hwnd, &f, "STATIC", "ParsecWebTurn", 0, 0, [30, 24, 650, 46]);
         SendMessageW(heading, WM_SETFONT, f.heading as usize, 0);
+        add(
+            hwnd,
+            &f,
+            "BUTTON",
+            "Settings",
+            SETTINGS,
+            WS_TABSTOP,
+            [580, 28, 116, 36],
+        );
         add(
             hwnd,
             &f,
@@ -560,6 +604,9 @@ pub fn choose(
         }
         let mut msg: MSG = std::mem::zeroed();
         while !f.done && GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+            if !f.settings_page.is_null() && IsDialogMessageW(f.settings_page, &msg) != 0 {
+                continue;
+            }
             if IsDialogMessageW(hwnd, &msg) == 0 {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);

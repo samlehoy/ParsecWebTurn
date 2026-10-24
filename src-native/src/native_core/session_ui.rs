@@ -604,4 +604,44 @@ mod tests {
         assert!(number("101", 100).is_err());
         assert!(resolution("wrong").is_err());
     }
+    #[test]
+    fn panel_controls_emit_native_actions_without_a_guest_or_network() {
+        let window = crate::window::Window::create_native().unwrap();
+        struct Close(Arc<crate::window::Window>);
+        impl Drop for Close {
+            fn drop(&mut self) {
+                self.0.request_stop();
+                self.0.close();
+            }
+        }
+        let _close = Close(window.clone());
+        let path = std::env::temp_dir().join(format!(
+            "parsec-overlay-fixture-{}.json",
+            crate::bud_attempt::native_attempt_id().unwrap()
+        ));
+        window.install_connection_settings(crate::connection_settings::Manager::open(path));
+        window.native_toggle_overlay();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let panel = loop {
+            let panel = unsafe { GetDlgItem(window.handle(), PANEL) };
+            if !panel.is_null() && !unsafe { GetDlgItem(panel, APPLY as i32) }.is_null() {
+                break panel;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Session panel did not open"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        unsafe {
+            SendMessageW(panel, WM_COMMAND, APPLY, 0);
+        }
+        let mut events = std::collections::VecDeque::new();
+        window.events.take_batch(&mut events);
+        assert!(events.iter().any(|e|matches!(e,crate::window::Event::NativeSession(Action::Apply(v)) if v.resolution==Resolution::Host && v.immersive==0)));
+        unsafe {
+            SendMessageW(panel, WM_COMMAND, CLOSE, 0);
+        }
+        assert!(unsafe { GetDlgItem(window.handle(), PANEL) }.is_null());
+    }
 }

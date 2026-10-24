@@ -15,8 +15,9 @@ Run `ParsecWebTurn-native-core.exe` beside a copy of your usual `settings.json`,
 preferably in a separate test folder. Sign in with your Parsec email/password and
 optional 2FA code, then choose an available computer. Refresh updates the list;
 manual peer-ID entry remains available if discovery returns no recognized hosts.
-The discovery endpoint is the pinned core's `GET /v2/hosts?mode=desktop`. Discovery
-UI/schema interoperability still needs a live check; no device list is fabricated.
+The discovery endpoint is the pinned core's `GET /v2/hosts?mode=desktop`; its
+native reader takes the `data` array and each record's `peer_id` and `name`.
+The new discovery UI still needs a live check; no device list is fabricated.
 The bootstrap connection authorization remains for your own stock Parsec hosts.
 
 **Remember sign-in** stores only the session token, encrypted using Windows

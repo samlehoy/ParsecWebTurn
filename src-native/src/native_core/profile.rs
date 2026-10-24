@@ -185,4 +185,33 @@ mod tests {
             (1920, 1080)
         );
     }
+    #[test]
+    fn ordinary_settings_save_cannot_restore_a_signed_out_session() {
+        let path = std::env::temp_dir().join(format!(
+            "parsec-native-profile-{}-{}.json",
+            std::process::id(),
+            crate::bud_attempt::native_attempt_id().unwrap()
+        ));
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(path.clone());
+        let manager = crate::connection_settings::Manager::open(path.clone());
+        let protected = Profile::encrypted("fixture-session").unwrap();
+        manager
+            .update_native(|p| p.encrypted_session = protected)
+            .unwrap();
+        let stale = manager.view().0;
+        manager
+            .update_native(|p| p.encrypted_session.clear())
+            .unwrap();
+        manager.save(stale, "", "", false, false).unwrap();
+        assert!(manager.view().0.native_core.encrypted_session.is_empty());
+        assert!(!std::fs::read_to_string(path)
+            .unwrap()
+            .contains("fixture-session"));
+    }
 }

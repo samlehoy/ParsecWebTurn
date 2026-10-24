@@ -12,23 +12,27 @@ pub struct Login {
 }
 
 // Deliberately no Debug/Serialize: neither token nor password belongs in logs.
-pub struct Session(zeroize::Zeroizing<String>, std::sync::atomic::AtomicBool);
+pub struct Session {
+    token: zeroize::Zeroizing<String>,
+    revoke_on_drop: std::sync::atomic::AtomicBool,
+}
 impl Session {
     pub fn from_token(token: &str) -> Result<Self> {
         ensure!(
             !token.is_empty() && token.len() <= 4096 && !token.chars().any(char::is_control),
             "Invalid account session"
         );
-        Ok(Self(
-            zeroize::Zeroizing::new(token.into()),
-            std::sync::atomic::AtomicBool::new(false),
-        ))
+        Ok(Self {
+            token: zeroize::Zeroizing::new(token.into()),
+            revoke_on_drop: std::sync::atomic::AtomicBool::new(false),
+        })
     }
     pub fn token(&self) -> &str {
-        &self.0
+        &self.token
     }
     pub fn remembered(&self) {
-        self.1.store(false, std::sync::atomic::Ordering::Release);
+        self.revoke_on_drop
+            .store(false, std::sync::atomic::Ordering::Release);
     }
     pub fn revoke(&self) {
         self.remembered();
@@ -107,7 +111,9 @@ pub fn login(login: &Login) -> Result<Session> {
     let value =
         serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("Invalid sign-in response."))?;
     let session = accepted(status, value)?;
-    session.1.store(true, std::sync::atomic::Ordering::Release);
+    session
+        .revoke_on_drop
+        .store(true, std::sync::atomic::Ordering::Release);
     Ok(session)
 }
 
@@ -236,7 +242,7 @@ mod discovery_tests {
     use super::*;
     #[test]
     fn bounded_discovery_uses_host_identity_not_account_identity() {
-        let h = parse_hosts(&json!({"data":[{"peer_id":"peer","name":"My PC","user_id":123},{"peer_id":"peer"},{"id":"other","name":"Laptop"}]})).unwrap();
+        let h = parse_hosts(&json!({"data":[{"peer_id":"peer","name":"My PC","user_id":123},{"peer_id":"peer"},{"peer_id":"other","name":"Laptop"}]})).unwrap();
         assert_eq!(h.len(), 2);
         assert!(h.iter().any(|h| h.peer == "peer"));
         assert!(parse_hosts(&json!({"data":[{"user_id":123}]})).is_err());
@@ -246,7 +252,10 @@ mod discovery_tests {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        if self.1.load(std::sync::atomic::Ordering::Acquire) {
+        if self
+            .revoke_on_drop
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
             self.revoke();
         }
     }
