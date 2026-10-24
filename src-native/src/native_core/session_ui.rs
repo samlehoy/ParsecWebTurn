@@ -343,6 +343,43 @@ unsafe fn panel_for_parent(parent: HWND) -> HWND {
         panel(&*w)
     }
 }
+unsafe extern "system" fn button_proc(
+    hwnd: HWND,
+    msg: u32,
+    wp: WPARAM,
+    lp: LPARAM,
+    id: usize,
+    owner: usize,
+) -> LRESULT {
+    // A top-level owned BUTTON has no child control ID. Explicitly route its
+    // supported BM_CLICK action, including accessibility/programmatic clicks.
+    if msg == BM_CLICK {
+        PostMessageW(owner as HWND, WM_COMMAND, OPEN, 0);
+        return 0;
+    }
+    let before = panel_for_parent(owner as HWND);
+    let pressed = matches!(msg, WM_LBUTTONUP | WM_KEYUP)
+        && SendMessageW(hwnd, BM_GETSTATE, 0, 0) & BST_PUSHED as isize != 0;
+    let inside = if msg == WM_LBUTTONUP {
+        let mut rect = std::mem::zeroed();
+        GetClientRect(hwnd, &mut rect);
+        let x = (lp as u32 & 65535) as u16 as i16 as i32;
+        let y = ((lp as u32 >> 16) & 65535) as u16 as i16 as i32;
+        x >= 0 && y >= 0 && x < rect.right && y < rect.bottom
+    } else {
+        msg == WM_KEYUP && matches!(wp as u16, VK_SPACE | VK_RETURN)
+    };
+    if msg == WM_NCDESTROY {
+        RemoveWindowSubclass(hwnd, Some(button_proc), id);
+    }
+    let result = DefSubclassProc(hwnd, msg, wp, lp);
+    // Keep normal BUTTON press/capture behavior. If that implementation did
+    // not notify its owner, route the same action once, without double toggles.
+    if pressed && inside && before == panel_for_parent(owner as HWND) {
+        PostMessageW(owner as HWND, WM_COMMAND, OPEN, 0);
+    }
+    result
+}
 pub unsafe fn install(window: &crate::window::Window) {
     let parent = window.handle();
     if window.native_session_button.load(Ordering::Acquire) == 0 {
@@ -361,6 +398,7 @@ pub unsafe fn install(window: &crate::window::Window) {
             null(),
         );
         if !button.is_null() {
+            SetWindowSubclass(button, Some(button_proc), 1, parent as usize);
             SetLayeredWindowAttributes(button, 0, 245, LWA_ALPHA);
             window
                 .native_session_button
