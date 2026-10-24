@@ -31,6 +31,11 @@ separately with Cargo's `normal,build` edges, excluding test dependencies.
 - Application icon loading shares one embedded resource. No downloaded icon,
   image-generation library or runtime asset loader is added.
 
+Removing Wasmtime also exposed Opus's upstream CMake default `/MD` runtime
+overriding Rust's configured static CRT. The MSVC-target-only CMake toolchain
+sets upstream `OPUS_STATIC_RUNTIME=ON`; no codec source, DSP option or audio path
+is changed and no replacement DLL/shim is introduced.
+
 ## Retained lowlat runtime packages
 
 | Package | Required role |

@@ -61,6 +61,7 @@ mod event_log;
 mod event_queue;
 #[cfg(any(test, feature = "diagnostics"))]
 mod execution_diagnostics;
+#[cfg(any(test, not(feature = "native-core")))]
 mod filesystem;
 #[cfg(windows)]
 mod frame_timing;
@@ -185,6 +186,7 @@ mod native_core;
 #[cfg(all(feature = "native-core", feature = "diagnostics"))]
 compile_error!("Build native-core and the WASM diagnostics separately");
 #[cfg(all(windows, any(test, not(feature = "diagnostics"))))]
+#[cfg(any(test, not(feature = "native-core")))]
 mod profile;
 fn main() {
     #[cfg(feature = "diagnostics")]

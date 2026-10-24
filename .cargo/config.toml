@@ -4,3 +4,8 @@ target = "x86_64-pc-windows-msvc"
 
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# Opus defaults its CMake runtime to /MD, overriding cmake-rs' /MT choice.
+# Match the executable's static CRT; never depend on Wasmtime's CRT imports.
+[env]
+CMAKE_TOOLCHAIN_FILE_x86_64_pc_windows_msvc = { value = ".cargo/msvc-static-runtime.cmake", relative = true }
