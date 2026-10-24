@@ -10,7 +10,10 @@ use std::{
 use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
-    System::{LibraryLoader::*, SystemServices::SS_ICON},
+    System::{
+        LibraryLoader::*,
+        SystemServices::{SS_CENTERIMAGE, SS_ICON, SS_REALSIZEIMAGE},
+    },
     UI::{Controls::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 const LOGIN: usize = 1;
