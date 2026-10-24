@@ -540,14 +540,27 @@ pub fn choose(
             (&mut *f as *mut Form).cast(),
         );
         ensure!(!hwnd.is_null(), "Native account window unavailable");
-        let mark = add(hwnd, &f, "STATIC", "", 8, SS_ICON, [32, 28, 40, 40]);
-        SendMessageW(mark, STM_SETICON, crate::branding::icon() as usize, 0);
+        let mark = add(
+            hwnd,
+            &f,
+            "STATIC",
+            "",
+            8,
+            SS_ICON | SS_CENTERIMAGE | SS_REALSIZEIMAGE,
+            [32, 24, 40, 46],
+        );
+        SendMessageW(
+            mark,
+            STM_SETICON,
+            crate::branding::launcher_icon() as usize,
+            0,
+        );
         f.common_controls.push(mark);
         for (label, id, rect) in [
             ("EVO", 0, [84, 24, 68, 46]),
             ("PARSEQ", WORDMARK_BLUE, [152, 24, 180, 46]),
         ] {
-            let heading = add(hwnd, &f, "STATIC", label, id, 0, rect);
+            let heading = add(hwnd, &f, "STATIC", label, id, SS_CENTERIMAGE, rect);
             SendMessageW(heading, WM_SETFONT, f.heading as usize, 0);
             f.common_controls.push(heading);
         }

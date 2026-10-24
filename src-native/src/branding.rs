@@ -13,6 +13,19 @@ pub unsafe fn icon() -> HICON {
 }
 
 #[cfg(feature = "native-core")]
+pub unsafe fn launcher_icon() -> HICON {
+    // Use the embedded 40 px resource; Windows owns this shared handle.
+    LoadImageW(
+        GetModuleHandleW(std::ptr::null()),
+        std::ptr::without_provenance(1),
+        IMAGE_ICON,
+        40,
+        40,
+        LR_SHARED,
+    ) as HICON
+}
+
+#[cfg(feature = "native-core")]
 pub unsafe fn about(owner: HWND) {
     let text: Vec<u16> = format!("EvoParseq {}\nIndependent native Rust client — BUD / WebRTC.\nNo Parsec WASM core is loaded or executed.\nIndependent of Parsec/Unity and lowlat; not affiliated or endorsed.",env!("CARGO_PKG_VERSION")).encode_utf16().chain([0]).collect();
     let caption: Vec<u16> = "About EvoParseq".encode_utf16().chain([0]).collect();
