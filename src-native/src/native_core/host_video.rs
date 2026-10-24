@@ -19,7 +19,9 @@ impl Config {
             .as_array()
             .context("Host video configuration is missing its video array")?;
         ensure!(
-            (1..=3).contains(&streams.len()) && streams.iter().all(Value::is_object),
+            // The current stock Windows host serializes five slots, even
+            // for one connected display. The older web UI reads only three.
+            (1..=5).contains(&streams.len()) && streams.iter().all(Value::is_object),
             "Invalid host stream configuration"
         );
         self.value = Some(value);
@@ -58,9 +60,51 @@ impl Config {
 pub fn query() -> Result<bytes::Bytes> {
     crate::control::text(17, 9, "")
 }
+/// Shape only: never record output identities or arbitrary host text.
+pub fn diagnostic(bytes: &[u8]) -> Value {
+    match serde_json::from_slice::<Value>(bytes) {
+        Ok(value) => serde_json::json!({"bytes":bytes.len(),"json_valid":true,
+            "root_object":value.is_object(),
+            "video_slots":value["video"].as_array().map(Vec::len),
+            "video_objects":value["video"].as_array().map(|v|v.iter().filter(|v|v.is_object()).count())}),
+        Err(error) => serde_json::json!({"bytes":bytes.len(),"json_valid":false,
+            "error_line":error.line(),"error_column":error.column()}),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn current_stock_host_five_slots_are_accepted_and_preserved() {
+        let stream = serde_json::json!({"output":"none","encoderFPS":60,"encoderMaxBitrate":50,"resolutionX":0,"resolutionY":0,"rotated":false,"fullFPS":false,"hostOS":0});
+        for count in [1, 3, 5] {
+            let base = serde_json::json!({"virtualTablet":0,"virtualMicrophone":0,"video":vec![stream.clone();count]});
+            let mut config = Config::default();
+            config.receive(base.to_string().as_bytes()).unwrap();
+            let video = Video {
+                resolution: Resolution::Fixed(1280, 720),
+                fps: Some(30),
+                constant_fps: Some(true),
+                ..Default::default()
+            };
+            let frame = config.request(&video, (1920, 1080)).unwrap();
+            let value: Value = serde_json::from_slice(&frame[13..frame.len() - 1]).unwrap();
+            assert_eq!(value["video"][0]["encoderFPS"], 30);
+            assert_eq!(value["video"][0]["fullFPS"], true);
+            assert_eq!(value["video"][0]["resolutionX"], 1280);
+            assert_eq!(
+                &value["video"].as_array().unwrap()[1..],
+                &base["video"].as_array().unwrap()[1..]
+            );
+            assert_eq!(config.observed()["fps"], 60);
+        }
+        let invalid = serde_json::json!({"video":vec![stream;6]});
+        assert!(Config::default()
+            .receive(invalid.to_string().as_bytes())
+            .is_err());
+        let diagnostic = diagnostic(br#"{"video":[{"output":"private-identity"}]}"#).to_string();
+        assert!(!diagnostic.contains("private-identity"));
+    }
     #[test]
     fn every_host_menu_patches_the_complete_object_and_preserves_other_streams() {
         let base = serde_json::json!({"virtualTablet":0,"virtualMicrophone":1,"video":[{"output":"DISPLAY1","resolutionX":1920,"resolutionY":1080,"encoderFPS":60,"fullFPS":false,"rotated":false,"encoderMaxBitrate":10,"hostOS":0},{"output":"DISPLAY2","encoderFPS":30},{"output":"none","encoderFPS":0}]});

@@ -13,12 +13,7 @@ use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
     System::LibraryLoader::*,
-    UI::{
-        Controls::*,
-        Input::KeyboardAndMouse::*,
-        Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
-        WindowsAndMessaging::*,
-    },
+    UI::{Controls::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 pub const OPEN: usize = 4600;
 const APPLY: usize = 4602;
@@ -218,8 +213,12 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                             .lock()
                             .unwrap_or_else(|e| e.into_inner());
                         format!(
-                            "Host reports: {} FPS / {} Mbps / Constant FPS: {}",
-                            observed["fps"], observed["bandwidth_mbps"], observed["constant_fps"]
+                            "Host: {} x {} | {} FPS\n{} Mbps | Constant FPS: {}",
+                            observed["width"],
+                            observed["height"],
+                            observed["fps"],
+                            observed["bandwidth_mbps"],
+                            observed["constant_fps"]
                         )
                     } else if wp == 0 {
                         "Applied locally; video settings requested from host.".into()
@@ -348,53 +347,46 @@ unsafe fn panel_for_parent(parent: HWND) -> HWND {
         panel(&*w)
     }
 }
-unsafe extern "system" fn button_proc(
-    hwnd: HWND,
-    msg: u32,
-    wp: WPARAM,
-    lp: LPARAM,
-    id: usize,
-    owner: usize,
-) -> LRESULT {
-    // A top-level owned BUTTON has no child control ID. Explicitly route its
-    // supported BM_CLICK action, including accessibility/programmatic clicks.
-    if msg == BM_CLICK {
-        // Same UI thread. Complete the action before BUTTON's default mouse/
-        // keyboard handler resumes, so its fallback cannot queue a second toggle.
-        SendMessageW(owner as HWND, WM_COMMAND, OPEN, 0);
-        return 0;
+// A standard child BUTTON sends owner-draw notifications to its parent.
+// Keep its small popup container above the video, rather than making the
+// BUTTON itself a top-level window (which has no child notification parent).
+unsafe extern "system" fn badge_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if msg == WM_NCCREATE {
+        let create = &*(lp as *const CREATESTRUCTW);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
     }
-    let before = panel_for_parent(owner as HWND);
-    let pressed = matches!(msg, WM_LBUTTONUP | WM_KEYUP)
-        && SendMessageW(hwnd, BM_GETSTATE, 0, 0) & BST_PUSHED as isize != 0;
-    let inside = if msg == WM_LBUTTONUP {
-        let mut rect = std::mem::zeroed();
-        GetClientRect(hwnd, &mut rect);
-        let x = (lp as u32 & 65535) as u16 as i16 as i32;
-        let y = ((lp as u32 >> 16) & 65535) as u16 as i16 as i32;
-        x >= 0 && y >= 0 && x < rect.right && y < rect.bottom
-    } else {
-        msg == WM_KEYUP && matches!(wp as u16, VK_SPACE | VK_RETURN)
-    };
-    if msg == WM_NCDESTROY {
-        RemoveWindowSubclass(hwnd, Some(button_proc), id);
+    let owner = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as HWND;
+    match msg {
+        WM_COMMAND if wp & 65535 == OPEN && (wp >> 16) as u32 == BN_CLICKED => {
+            SendMessageW(owner, WM_COMMAND, OPEN, 0);
+            return 0;
+        }
+        BM_CLICK => {
+            SendMessageW(GetDlgItem(hwnd, OPEN as i32), BM_CLICK, 0, 0);
+            return 0;
+        }
+        WM_DRAWITEM if draw_button(lp) => return 1,
+        WM_ERASEBKGND => return 1,
+        _ => {}
     }
-    let result = DefSubclassProc(hwnd, msg, wp, lp);
-    // Keep normal BUTTON press/capture behavior. If that implementation did
-    // not notify its owner, route the same action once, without double toggles.
-    if pressed && inside && before == panel_for_parent(owner as HWND) {
-        PostMessageW(owner as HWND, WM_COMMAND, OPEN, 0);
-    }
-    result
+    DefWindowProcW(hwnd, msg, wp, lp)
 }
 pub unsafe fn install(window: &crate::window::Window) {
     let parent = window.handle();
     if window.native_session_button.load(Ordering::Acquire) == 0 {
+        let class = wide("ParsecWebTurn.NativeSessionBadge");
+        RegisterClassW(&WNDCLASSW {
+            lpfnWndProc: Some(badge_proc),
+            hInstance: GetModuleHandleW(null()),
+            hCursor: LoadCursorW(null_mut(), IDC_ARROW),
+            lpszClassName: class.as_ptr(),
+            ..std::mem::zeroed()
+        });
         let button = CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_LAYERED,
-            wide("BUTTON").as_ptr(),
+            class.as_ptr(),
             wide("Session").as_ptr(),
-            WS_POPUP | BS_OWNERDRAW as u32,
+            WS_POPUP | WS_CLIPCHILDREN,
             16,
             16,
             108,
@@ -402,10 +394,33 @@ pub unsafe fn install(window: &crate::window::Window) {
             parent,
             null_mut(),
             GetModuleHandleW(null()),
-            null(),
+            parent.cast(),
         );
         if !button.is_null() {
-            SetWindowSubclass(button, Some(button_proc), 1, parent as usize);
+            let child = CreateWindowExW(
+                0,
+                wide("BUTTON").as_ptr(),
+                wide("Session").as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
+                0,
+                0,
+                108,
+                34,
+                button,
+                OPEN as HMENU,
+                GetModuleHandleW(null()),
+                null(),
+            );
+            if child.is_null() {
+                DestroyWindow(button);
+                return;
+            }
+            SendMessageW(
+                child,
+                WM_SETFONT,
+                GetStockObject(DEFAULT_GUI_FONT) as usize,
+                1,
+            );
             SetLayeredWindowAttributes(button, 0, 245, LWA_ALPHA);
             window
                 .native_session_button
@@ -775,7 +790,35 @@ mod tests {
             );
             assert_eq!(alpha, 238);
             if let Some(path) = std::env::var_os("PWT_NATIVE_UI_CAPTURE") {
-                super::super::ui::capture_fixture(panel, &std::path::PathBuf::from(path)).unwrap();
+                let path = std::path::PathBuf::from(path);
+                super::super::ui::capture_fixture(panel, &path).unwrap();
+                assert!(!GetDlgItem(button, OPEN as i32).is_null());
+                let badge_path = path.with_file_name("session-button.png");
+                super::super::ui::capture_fixture(button, &badge_path).unwrap();
+                let badge = image::open(badge_path).unwrap().to_rgb8();
+                // Check the interior, excluding the accent border: a blank
+                // light rectangle cannot satisfy both text and dark fill.
+                let interior: Vec<_> = badge
+                    .enumerate_pixels()
+                    .filter(|(x, y, _)| *x > 5 && *x < 102 && *y > 4 && *y < 29)
+                    .map(|(_, _, p)| p.0)
+                    .collect();
+                assert!(
+                    interior
+                        .iter()
+                        .filter(|p| p.iter().all(|v| *v > 180))
+                        .count()
+                        > 15,
+                    "Session label was not painted"
+                );
+                assert!(
+                    interior
+                        .iter()
+                        .filter(|p| p.iter().all(|v| *v < 100))
+                        .count()
+                        > 1000,
+                    "Session background was not painted"
+                );
             }
             SendMessageW(panel, WM_COMMAND, APPLY, 0);
         }

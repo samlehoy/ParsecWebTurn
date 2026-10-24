@@ -115,11 +115,13 @@ bare array. The host's returned object, untouched streams, output identity and
 other fields are preserved. After an update the client requests the actual
 configuration again; the panel and optional event log show the host's reply.
 This contract was rechecked against the pinned core's native UI and lowlat's
-daemon app.rs. The patched fields are:
+daemon app.rs. The installed stock Windows host (150-105c) additionally confirms
+that its serializer and reader support five video slots; all five are preserved,
+including unused slots. The older web core reads only the first three. The patched fields are:
 `resolutionX`, `resolutionY`, `encoderFPS`, `encoderMaxBitrate`, `fullFPS`,
 `rotated`. No original code or proprietary core file is imported by this work.
 
-Windows CI runs the full native test suite. Its two PNGs are offline GDI control
+Windows CI runs the full native test suite. Its PNGs are offline GDI control
 fixtures without accounts, tokens or a video stream; they check layout, not live
 DXGI/DWM composition. Live overlay ordering, host setting changes and opacity need
 rechecking with the new build.

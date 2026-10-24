@@ -204,10 +204,11 @@ fn stream(
                             session_ui::result(window, sent.is_ok());
                         }
                     } else {
+                        host_query_deadline = None;
                         crate::event_log::record(
                             "WARN",
                             "native_host_video_configuration_invalid",
-                            serde_json::json!({}),
+                            host_video::diagnostic(bytes),
                         );
                         session_ui::result(window, false);
                     }
