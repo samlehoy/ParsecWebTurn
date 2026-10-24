@@ -9,6 +9,7 @@ pub struct Profile {
     pub email: String,
     pub encrypted_session: String,
     pub last_peer: String,
+    pub hide_session_button: bool,
     pub video: Video,
 }
 
@@ -225,12 +226,17 @@ mod tests {
         manager
             .update_native(|p| p.encrypted_session = protected)
             .unwrap();
-        let stale = manager.view().0;
+        let mut stale = manager.view().0;
+        stale.native_core.hide_session_button = true;
         manager
             .update_native(|p| p.encrypted_session.clear())
             .unwrap();
         manager.save(stale, "", "", false, false).unwrap();
         assert!(manager.view().0.native_core.encrypted_session.is_empty());
+        assert!(manager.native_session_button_hidden());
+        assert!(
+            crate::connection_settings::Manager::open(path.clone()).native_session_button_hidden()
+        );
         assert!(!std::fs::read_to_string(path)
             .unwrap()
             .contains("fixture-session"));

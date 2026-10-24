@@ -363,6 +363,15 @@ impl Manager {
         };
         state
     }
+    #[cfg(feature = "native-core")]
+    pub fn native_session_button_hidden(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .0
+            .native_core
+            .hide_session_button
+    }
     pub fn save(
         &self,
         mut settings: Settings,
@@ -389,7 +398,9 @@ impl Manager {
         let mut current = self.state.lock().unwrap_or_else(|e| e.into_inner());
         #[cfg(feature = "native-core")]
         {
+            let hide_button = settings.native_core.hide_session_button;
             settings.native_core = current.0.native_core.clone();
+            settings.native_core.hide_session_button = hide_button;
         }
         let raw = serde_json::to_vec_pretty(&settings)?;
         if raw.len() > MAX_FILE {

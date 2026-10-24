@@ -26,6 +26,8 @@ pub const ABOUT: usize = 4300;
 const HEADER_EXTRA: i32 = 20;
 const SAVE: usize = 4101;
 const BACK: usize = 4102;
+#[cfg(feature = "native-core")]
+const HIDE_SESSION_BUTTON: usize = 4135;
 const PROVIDER: usize = 4103;
 const STUN_ONLY: usize = 4104;
 const STUN: usize = 4105;
@@ -577,6 +579,30 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         crate::connection_settings::PresentationMode::Vsync => 2,
     };
     SendMessageW(timing, CB_SETCURSEL, selection, 0);
+    #[cfg(feature = "native-core")]
+    {
+        row_label(
+            hwnd,
+            page,
+            "Session menu",
+            "Ctrl+Shift+M opens the menu even when its button is hidden.\nApplies after saving.",
+            720,
+            0,
+            48,
+        );
+        add(
+            hwnd,
+            page,
+            "BUTTON",
+            "Hide session button",
+            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+            [420, 720, 400, 36],
+            HIDE_SESSION_BUTTON,
+            0,
+            page.font,
+        );
+        check(hwnd, HIDE_SESSION_BUTTON, s.native_core.hide_session_button);
+    }
     page.building_tab = Some(Tab::Network);
     row_label(
         hwnd,
@@ -860,7 +886,13 @@ unsafe fn layout(hwnd: HWND) {
         Tab::Network => 1056 + BUD_EXTRA,
         Tab::Audio => 750,
         Tab::Input => 570,
-        Tab::Video => 728,
+        Tab::Video => {
+            if cfg!(feature = "native-core") {
+                822
+            } else {
+                728
+            }
+        }
     };
     let height = footer + 122 + HEADER_EXTRA;
     page.scroll = page.scroll.clamp(0, (height - client.bottom).max(0));
@@ -1084,6 +1116,10 @@ unsafe fn update_enabled(hwnd: HWND) {
 }
 unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
     let mut s = page.saved.clone();
+    #[cfg(feature = "native-core")]
+    {
+        s.native_core.hide_session_button = checked(hwnd, HIDE_SESSION_BUTTON);
+    }
     s.prefer_hevc = checked(hwnd, HEVC);
     s.presentation_mode =
         match SendMessageW(GetDlgItem(hwnd, PRESENTATION as i32), CB_GETCURSEL, 0, 0) {
@@ -1156,6 +1192,13 @@ unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
         checked(hwnd, FORGET_TOKEN),
     )?;
     page.saved = page.manager.view().0;
+    #[cfg(feature = "native-core")]
+    PostMessageW(
+        GetParent(hwnd),
+        crate::native_core::session_ui::VISIBILITY,
+        0,
+        0,
+    );
     for id in [PASSWORD, TOKEN] {
         SetWindowTextW(GetDlgItem(hwnd, id as i32), wide("").as_ptr());
     }

@@ -71,6 +71,8 @@ impl Default for Sample {
 }
 #[derive(Default)]
 pub struct Shared {
+    #[cfg(feature = "native-core")]
+    pub overlay_visible: AtomicBool,
     #[cfg(windows)]
     pub host_timing: crate::frame_timing::Shared,
     #[cfg(windows)]
@@ -85,6 +87,13 @@ impl Shared {
     }
     pub fn requested(&self) -> bool {
         self.visible.load(Ordering::Acquire) || crate::event_log::enabled()
+    }
+    pub fn sample_requested(&self) -> bool {
+        #[cfg(feature = "native-core")]
+        if self.overlay_visible.load(Ordering::Acquire) {
+            return true;
+        }
+        self.requested()
     }
     pub fn begin(&self) -> u64 {
         let mut data = self.latest.lock().unwrap_or_else(|e| e.into_inner());

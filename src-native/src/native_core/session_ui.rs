@@ -1,5 +1,5 @@
 //! Event-driven native session panel. GDI controls overlay the video child;
-//! no video pixels, timer, render loop or additional decoded-frame copy.
+//! no video pixels or additional decoded-frame copy. Visible metrics refresh at 1 Hz.
 use super::{
     profile::{Resolution, Video},
     ui::{draw_button, wide},
@@ -21,6 +21,10 @@ const CLOSE: usize = 4603;
 const DISCONNECT: usize = 4604;
 const SETTINGS: usize = 4605;
 const STATUS: i32 = 4606;
+const HIDE_BUTTON: usize = 4607;
+const SECURE_ATTENTION: usize = 4608;
+const METRICS: i32 = 4609;
+const PANEL_HEIGHT: i32 = 630;
 pub const RESULT: u32 = WM_APP + 26;
 pub const VISIBILITY: u32 = WM_APP + 27;
 const BG: u32 = 0x00231d19;
@@ -30,6 +34,20 @@ const FG: u32 = 0x00f5f3f0;
 pub enum Action {
     Apply(Video),
     Disconnect,
+    HideButton,
+    SecureAttention,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub enum Shortcut {
+    Menu,
+    SecureAttention,
+}
+pub fn shortcut(key: usize, modifiers: i32) -> Option<Shortcut> {
+    match (key, modifiers & 15) {
+        (key, 3) if key == b'M' as usize || key == b'O' as usize => Some(Shortcut::Menu),
+        (key, 6) if key == VK_END as usize => Some(Shortcut::SecureAttention),
+        _ => None,
+    }
 }
 struct Panel {
     window: *const crate::window::Window,
@@ -41,6 +59,7 @@ struct Panel {
     heading: HFONT,
     bg: HBRUSH,
     field: HBRUSH,
+    rates: crate::stats::Rates,
 }
 impl Drop for Panel {
     fn drop(&mut self) {
@@ -120,6 +139,43 @@ unsafe fn scroll(hwnd: HWND, p: &mut Panel, target: i32) {
     );
     SetScrollPos(hwnd, SB_VERT, target, 1);
 }
+fn metrics(sample: Option<&crate::stats::Sample>, rates: &crate::stats::Values) -> String {
+    let metric = |value: Option<f64>, unit: &str| {
+        value
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .map_or_else(|| "N/A".into(), |v| format!("{v:.1}{unit}"))
+    };
+    let decode = sample
+        .and_then(|s| s.video.as_ref())
+        .map(|v| &v.local_timing.decoder_service)
+        .filter(|v| v.count > 0)
+        .map(|v| v.latest_ms);
+    let encode = sample
+        .and_then(|s| s.bud.as_ref())
+        .and_then(|b| b.encode_ms);
+    format!(
+        "Decode CPU {} | Encode {}\nRTT {} | RX {} | FPS {}",
+        metric(decode, "ms"),
+        metric(encode, "ms"),
+        metric(sample.and_then(|s| s.rtt_ms), "ms"),
+        metric(rates.incoming, "Mbps"),
+        metric(rates.fps, "")
+    )
+}
+unsafe fn update_metrics(hwnd: HWND, panel: &mut Panel) {
+    let sample = (&*panel.window)
+        .stats
+        .read()
+        .filter(|s| s.at.elapsed() < std::time::Duration::from_secs(3));
+    let values = sample
+        .as_ref()
+        .map(|s| panel.rates.update(s))
+        .unwrap_or_default();
+    SetWindowTextW(
+        GetDlgItem(hwnd, METRICS),
+        wide(&metrics(sample.as_ref(), &values)).as_ptr(),
+    );
+}
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if msg == WM_NCCREATE {
         SetWindowLongPtrW(
@@ -132,20 +188,26 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
     if !pointer.is_null() {
         let p = &mut *pointer;
         match msg {
+            WM_TIMER if wp == 1 => {
+                if IsWindowVisible(hwnd) != 0 {
+                    update_metrics(hwnd, p);
+                }
+                return 0;
+            }
             WM_ACTIVATE => {
                 PostMessageW(GetParent(hwnd), VISIBILITY, 0, 0);
             }
             WM_SIZE => {
                 let mut r = std::mem::zeroed();
                 GetClientRect(hwnd, &mut r);
-                let max = (580 - r.bottom).max(0);
+                let max = (PANEL_HEIGHT - r.bottom).max(0);
                 let target = p.scroll.min(max);
                 scroll(hwnd, p, target);
                 let info = SCROLLINFO {
                     cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
                     fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
                     nMin: 0,
-                    nMax: 579,
+                    nMax: PANEL_HEIGHT - 1,
                     nPage: r.bottom.max(1) as u32,
                     nPos: p.scroll,
                     ..std::mem::zeroed()
@@ -168,7 +230,11 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     x if x == SB_THUMBTRACK as usize => info.nTrackPos,
                     _ => p.scroll,
                 };
-                scroll(hwnd, p, target.clamp(0, (580 - info.nPage as i32).max(0)));
+                scroll(
+                    hwnd,
+                    p,
+                    target.clamp(0, (PANEL_HEIGHT - info.nPage as i32).max(0)),
+                );
                 return 0;
             }
 
@@ -217,6 +283,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                             observed["bandwidth_mbps"],
                             observed["constant_fps"]
                         )
+                    } else if wp == 5 {
+                        "Ctrl+Alt+Del requested from the host.".into()
+                    } else if wp == 6 {
+                        "Could not send Ctrl+Alt+Del. See the event log.".into()
                     } else if wp == 3 {
                         "Waiting for the host to confirm video settings...".into()
                     } else if wp == 4 {
@@ -242,6 +312,17 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         }
                         Err(e) => super::ui::message_box(hwnd, &e.to_string()),
                     },
+                    HIDE_BUTTON => {
+                        (&*p.window)
+                            .events
+                            .push(crate::window::Event::NativeSession(Action::HideButton));
+                        close(hwnd);
+                    }
+                    SECURE_ATTENTION => {
+                        (&*p.window)
+                            .events
+                            .push(crate::window::Event::NativeSession(Action::SecureAttention));
+                    }
                     CLOSE | 2 => {
                         close(hwnd);
                     }
@@ -260,6 +341,11 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 return 0;
             }
             WM_NCDESTROY => {
+                KillTimer(hwnd, 1);
+                (&*p.window)
+                    .stats
+                    .overlay_visible
+                    .store(false, Ordering::Release);
                 (&*p.window).native_panel.store(0, Ordering::Release);
                 #[cfg(test)]
                 RemovePropW(hwnd, wide("ParsecWebTurn.SessionPanel.Ready").as_ptr());
@@ -454,7 +540,7 @@ pub unsafe fn raise(window: &crate::window::Window) {
         );
         ShowWindow(
             button,
-            if visible && active {
+            if visible && active && !window.native_session_button_hidden() {
                 SW_SHOWNA
             } else {
                 SW_HIDE
@@ -462,6 +548,10 @@ pub unsafe fn raise(window: &crate::window::Window) {
         );
     }
     let panel = panel(window);
+    window
+        .stats
+        .overlay_visible
+        .store(!panel.is_null() && visible, Ordering::Release);
     if !panel.is_null() {
         let mut r = std::mem::zeroed();
         GetClientRect(parent, &mut r);
@@ -471,11 +561,16 @@ pub unsafe fn raise(window: &crate::window::Window) {
             origin.x,
             origin.y + 44,
             420,
-            (r.bottom - 76).clamp(120, 580),
+            (r.bottom - 76).clamp(120, PANEL_HEIGHT),
             SWP_NOACTIVATE | SWP_NOOWNERZORDER | if active { 0 } else { SWP_NOZORDER },
         );
         if (IsWindowVisible(panel) != 0) != visible {
             ShowWindow(panel, if visible { SW_SHOWNA } else { SW_HIDE });
+            if visible {
+                SetTimer(panel, 1, 1000, None);
+            } else {
+                KillTimer(panel, 1);
+            }
         }
     }
 }
@@ -542,6 +637,7 @@ pub unsafe fn toggle(
         heading: super::ui::font(25, 600),
         bg: CreateSolidBrush(BG),
         field: CreateSolidBrush(FIELD),
+        rates: Default::default(),
     });
     let name = wide("ParsecWebTurn.NativeCore.SessionPanel");
     let instance = GetModuleHandleW(null());
@@ -561,7 +657,7 @@ pub unsafe fn toggle(
         16,
         60,
         420,
-        580,
+        PANEL_HEIGHT,
         parent,
         null_mut(),
         instance,
@@ -580,10 +676,10 @@ pub unsafe fn toggle(
         hwnd,
         p,
         "STATIC",
-        "Video requests / local controls",
+        "Decode CPU N/A | Encode N/A\nRTT N/A | RX N/A | FPS N/A",
+        METRICS as usize,
         0,
-        0,
-        [24, 60, 370, 24],
+        [24, 60, 370, 40],
     );
     for (i, label) in [
         "Resolution",
@@ -717,6 +813,8 @@ pub unsafe fn toggle(
         (APPLY, "Apply", 214, 466, 178),
         (DISCONNECT, "Disconnect", 24, 516, 178),
         (CLOSE, "Close", 214, 516, 178),
+        (HIDE_BUTTON, "Hide button", 24, 566, 178),
+        (SECURE_ATTENTION, "Send Ctrl+Alt+Del", 214, 566, 178),
     ] {
         control(
             hwnd,
@@ -729,6 +827,8 @@ pub unsafe fn toggle(
         );
     }
     ShowWindow(hwnd, SW_SHOW);
+    SetTimer(hwnd, 1, 1000, None);
+    update_metrics(hwnd, p);
     raise(window);
     SetFocus(p.controls[0]);
     if window.native_host_video_pending.load(Ordering::Acquire) {
@@ -771,6 +871,14 @@ pub fn finished(window: &crate::window::Window, confirmed: bool) {
         }
     }
 }
+pub fn attention_result(window: &crate::window::Window, ok: bool) {
+    unsafe {
+        let hwnd = panel(window);
+        if !hwnd.is_null() {
+            PostMessageW(hwnd, RESULT, if ok { 5 } else { 6 }, 0);
+        }
+    }
+}
 pub fn reported(window: &crate::window::Window) {
     unsafe {
         let hwnd = panel(window);
@@ -788,7 +896,42 @@ pub unsafe fn dialog(parent: HWND, msg: &MSG) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn compact_metrics_use_existing_values_and_keep_unknowns_unknown() {
+        let mut sample = crate::stats::Sample {
+            rtt_ms: Some(2.5),
+            video: Some(Default::default()),
+            ..Default::default()
+        };
+        let rates = crate::stats::Values {
+            incoming: Some(10.0),
+            fps: Some(60.0),
+            ..Default::default()
+        };
+        let empty = metrics(None, &Default::default());
+        assert!(empty.contains("Decode CPU N/A"));
+        sample
+            .video
+            .as_mut()
+            .unwrap()
+            .local_timing
+            .decoder_service
+            .record(std::time::Duration::from_millis(1));
+        let text = metrics(Some(&sample), &rates);
+        assert!(text.contains("Decode CPU 1.0ms"));
+        assert!(text.contains("Encode N/A"));
+        assert!(text.contains("RTT 2.5ms"));
+        assert!(text.contains("RX 10.0Mbps"));
+    }
+    #[test]
     fn editable_values_are_bounded_before_sending() {
+        assert_eq!(shortcut(b'M' as usize, 3), Some(Shortcut::Menu));
+        assert_eq!(shortcut(b'O' as usize, 3), Some(Shortcut::Menu));
+        assert_eq!(
+            shortcut(VK_END as usize, 6),
+            Some(Shortcut::SecureAttention)
+        );
+        assert_eq!(shortcut(VK_DELETE as usize, 6), None);
+        assert_eq!(shortcut(b'M' as usize, 7), None);
         assert_eq!(
             resolution("3440 x 1440").unwrap(),
             Resolution::Fixed(3440, 1440)
@@ -939,6 +1082,15 @@ mod tests {
             assert!(events.iter().any(|event|matches!(event,crate::window::Event::NativeSession(Action::Apply(v)) if v.resolution==Resolution::Fixed(1280,720) && v.bandwidth_mbps==Some(15) && v.fps==Some(60) && v.constant_fps==Some(true) && v.rotated==Some(true) && v.immersive==mode && v.fullscreen)));
         }
         unsafe {
+            SendMessageW(panel, WM_COMMAND, SECURE_ATTENTION, 0);
+        }
+        events.clear();
+        window.events.take_batch(&mut events);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            crate::window::Event::NativeSession(Action::SecureAttention)
+        )));
+        unsafe {
             SendMessageW(panel, WM_COMMAND, DISCONNECT, 0);
         }
         events.clear();
@@ -948,8 +1100,14 @@ mod tests {
             crate::window::Event::NativeSession(Action::Disconnect)
         )));
         unsafe {
-            SendMessageW(panel, WM_COMMAND, CLOSE, 0);
+            SendMessageW(panel, WM_COMMAND, HIDE_BUTTON, 0);
         }
         assert_eq!(window.native_panel.load(Ordering::Acquire), 0);
+        assert!(!window.stats.overlay_visible.load(Ordering::Acquire));
+        events.clear();
+        window.events.take_batch(&mut events);
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, crate::window::Event::NativeSession(Action::HideButton))));
     }
 }

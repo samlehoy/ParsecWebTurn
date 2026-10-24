@@ -34,7 +34,7 @@ verification and Force TURN option are reused. BUD is fixed on in Network settin
 Settings and Connection stats are available from the native window menu.
 Save and reconnect after changing connection/video/audio settings.
 
-The **Session** button or **Ctrl+Shift+O** opens a small native control panel over
+The **Session** button or **Ctrl+Shift+M** (also **Ctrl+Shift+O**) opens a small native control panel over
 the video. It offers Keep host / Match client display / editable fixed resolution,
 a host bandwidth limit in Mbps, requested FPS and Constant FPS, Default / Rotated
 host orientation, mouse/keyboard/both immersive capture, and fullscreen. Apply
@@ -104,6 +104,26 @@ WebRTC remains outside this branch's first scope; the normal client is unchanged
 
 ParsecWebTurn remains independent of lowlat. This work does not change the
 stock host or turn it into an open-source server.
+
+The picker refreshes in the background every 30 seconds without disabling its
+controls. Unchanged lists are not rebuilt; changed lists preserve selection,
+typed peer ID and scroll position. Settings hides the complete picker/sign-in
+view and restores it on Back, including during a background refresh.
+
+Video settings include **Hide session button**; the session menu also has a
+**Hide button** action. This preference is saved in settings.json. Ctrl+Shift+M
+still opens the menu while the button is hidden, following the stock Windows
+[menu shortcut](https://support.parsec.app/hc/en-us/articles/32381778420372-Configure-Hotkeys).
+**Send Ctrl+Alt+Del** / **Ctrl+Alt+End** sends the stock application sub-ID 14
+request, independently corroborated by the pinned core UI and lowlat daemon.
+The unmodified host checks permissions and needs its installed service for
+Windows secure attention; sending a request does not confirm its execution.
+
+While the menu is visible, a compact 1 Hz header reads existing telemetry:
+decoder API CPU time, host encode time, network RTT, incoming transport Mbps
+and decoded FPS. Decode CPU excludes GPU completion; RX includes transport
+overhead rather than being a video-only bitrate. Unknown values show N/A.
+The header does not enable detailed host timing reports or GPU readbacks.
 
 Signaling upgrade errors show a bounded stage and HTTP status when available.
 If event logging is enabled, `native_signaling_upgrade_failed` records the same

@@ -379,6 +379,34 @@ fn stream(
             if let Event::NativeSession(action) = &event {
                 match action {
                     session_ui::Action::Disconnect => window.request_stop(),
+                    session_ui::Action::HideButton => {
+                        if manager
+                            .update_native(|p| p.hide_session_button = true)
+                            .is_err()
+                        {
+                            crate::event_log::record(
+                                "WARN",
+                                "native_session_button_save_failed",
+                                serde_json::json!({}),
+                            );
+                        }
+                        window.native_refresh_overlay();
+                    }
+                    session_ui::Action::SecureAttention => {
+                        // Same application request as the stock menu. The host
+                        // authorizes it and needs its installed service for SAS.
+                        let result = (|| -> Result<()> {
+                            ensure!(established, "BUD is not connected yet");
+                            attempt.send(&crate::control::header(24, 0, 0, 0))?;
+                            attempt.send(&crate::control::text(17, 14, "")?)
+                        })();
+                        crate::event_log::record(
+                            if result.is_ok() { "INFO" } else { "WARN" },
+                            "native_secure_attention_requested",
+                            serde_json::json!({"sent":result.is_ok()}),
+                        );
+                        session_ui::attention_result(window, result.is_ok());
+                    }
                     session_ui::Action::Apply(next) => {
                         let result = (|| -> Result<()> {
                             ensure!(established, "BUD is not connected yet");

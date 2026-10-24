@@ -964,7 +964,7 @@ fn run(
         ingress.audio_bytes_received =
             shared.ingress.audio_bytes_received + pumped.audio_bytes as u64;
         shared.ingress = ingress;
-        if window.stats.requested() && last_stats.elapsed() >= Duration::from_millis(250) {
+        if window.stats.sample_requested() && last_stats.elapsed() >= Duration::from_millis(250) {
             window.stats.publish(
                 statistics.generation,
                 crate::stats::Sample {

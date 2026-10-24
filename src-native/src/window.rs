@@ -302,7 +302,32 @@ impl Window {
                     let _ = tx.send(Ok(()));
                     unsafe {
                         let mut msg: MSG = std::mem::zeroed();
+                        #[cfg(feature = "native-core")]
+                        let mut native_shortcuts = std::collections::HashSet::new();
                         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                            #[cfg(feature = "native-core")]
+                            {
+                                if msg.message == WM_ACTIVATEAPP && msg.wParam == 0 {
+                                    native_shortcuts.clear();
+                                }
+                                if msg.message == WM_KEYUP && native_shortcuts.remove(&msg.wParam) {
+                                    continue;
+                                }
+                                if msg.message == WM_KEYDOWN && !ui.settings_open() {
+                                    if let Some(action) = crate::native_core::session_ui::shortcut(
+                                        msg.wParam,
+                                        modifiers(),
+                                    ) {
+                                        if native_shortcuts.insert(msg.wParam) {
+                                            match action {
+                                                crate::native_core::session_ui::Shortcut::Menu => ui.native_toggle_overlay(),
+                                                crate::native_core::session_ui::Shortcut::SecureAttention => ui.events.push(Event::NativeSession(crate::native_core::session_ui::Action::SecureAttention)),
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                }
+                            }
                             #[cfg(feature = "native-core")]
                             if crate::native_core::session_ui::dialog(hwnd, &msg) {
                                 continue;
@@ -1060,6 +1085,25 @@ impl Window {
                 self.handle(),
                 WM_COMMAND,
                 crate::native_core::session_ui::OPEN,
+                0,
+            );
+        }
+    }
+    #[cfg(feature = "native-core")]
+    pub fn native_session_button_hidden(&self) -> bool {
+        self.connection_settings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|manager| manager.native_session_button_hidden())
+    }
+    #[cfg(feature = "native-core")]
+    pub fn native_refresh_overlay(&self) {
+        unsafe {
+            PostMessageW(
+                self.handle(),
+                crate::native_core::session_ui::VISIBILITY,
+                0,
                 0,
             );
         }

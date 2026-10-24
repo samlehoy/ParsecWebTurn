@@ -22,6 +22,7 @@ const LIST: usize = 5;
 const REMEMBER: usize = 6;
 const SETTINGS: usize = 7;
 const DONE: usize = 0x6e01;
+const AUTO_REFRESH: usize = 0x6e02;
 #[cfg(test)]
 thread_local! {static UI_FIXTURE:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
 pub(super) fn wide(s: &str) -> Vec<u16> {
@@ -55,6 +56,7 @@ struct Form {
     session: Option<Arc<Session>>,
     hosts: Vec<Host>,
     incoming: Option<mpsc::Receiver<Completed>>,
+    background_refresh: bool,
     remember_login: bool,
     email: String,
     done: bool,
@@ -142,28 +144,41 @@ unsafe fn view(f: &Form) {
     for &h in &f.picker_controls {
         ShowWindow(h, if launcher && !login { SW_SHOW } else { SW_HIDE });
     }
+    let busy = f.incoming.is_some() && !f.background_refresh;
+    if f.session.is_some() {
+        SetTimer(GetParent(f.status), AUTO_REFRESH, 30_000, None);
+    } else {
+        KillTimer(GetParent(f.status), AUTO_REFRESH);
+    }
     for h in f.fields.into_iter().chain([f.remember]) {
-        EnableWindow(h, i32::from(f.incoming.is_none()));
+        EnableWindow(h, i32::from(!busy));
     }
     for id in [LOGIN, REFRESH, CONNECT, LOGOUT, SETTINGS] {
         let h = GetDlgItem(GetParent(f.status), id as i32);
-        EnableWindow(h, i32::from(f.incoming.is_none()));
+        EnableWindow(h, i32::from(!busy));
     }
 }
-unsafe fn start_hosts(hwnd: HWND, f: &mut Form) {
+unsafe fn start_hosts(hwnd: HWND, f: &mut Form, quiet: bool) {
+    if f.incoming.is_some() {
+        return;
+    }
     let Some(session) = f.session.clone() else {
         return;
     };
     let (tx, rx) = mpsc::channel();
     f.incoming = Some(rx);
-    status(f, "Refreshing computers...");
-    view(f);
+    f.background_refresh = quiet;
+    if !quiet {
+        status(f, "Refreshing computers...");
+        view(f);
+    }
     std::thread::spawn(move || {
         let _ = tx.send(Completed::Hosts(account::hosts(&session)));
     });
     SetTimer(hwnd, DONE, 80, None);
 }
 unsafe fn completed(hwnd: HWND, f: &mut Form, job: Completed) {
+    let quiet = std::mem::replace(&mut f.background_refresh, false);
     match job {
         Completed::Login(Ok(session)) => {
             if !f.remember_login {
@@ -190,7 +205,7 @@ unsafe fn completed(hwnd: HWND, f: &mut Form, job: Completed) {
                 }
             }
             f.session = Some(session);
-            start_hosts(hwnd, f);
+            start_hosts(hwnd, f, false);
         }
         Completed::Login(Err(e)) => {
             crate::event_log::record(
@@ -203,32 +218,58 @@ unsafe fn completed(hwnd: HWND, f: &mut Form, job: Completed) {
             SetFocus(f.fields[1]);
         }
         Completed::Hosts(Ok(hosts)) => {
-            SendMessageW(f.list, LB_RESETCONTENT, 0, 0);
-            f.hosts = hosts;
-            let last = f.manager.view().0.native_core.last_peer;
-            let mut selected = 0;
-            for (i, h) in f.hosts.iter().enumerate() {
-                let name = format!("{}   /   {}", h.name, h.peer);
-                SendMessageW(f.list, LB_ADDSTRING, 0, wide(&name).as_ptr() as isize);
-                if h.peer == last {
-                    selected = i;
+            let changed = !f
+                .hosts
+                .iter()
+                .map(|h| (&h.peer, &h.name))
+                .eq(hosts.iter().map(|h| (&h.peer, &h.name)));
+            if changed {
+                let old_index = SendMessageW(f.list, LB_GETCURSEL, 0, 0);
+                let selected_peer = usize::try_from(old_index)
+                    .ok()
+                    .and_then(|i| f.hosts.get(i))
+                    .map(|h| h.peer.clone())
+                    .unwrap_or_else(|| f.manager.view().0.native_core.last_peer);
+                let top = SendMessageW(f.list, LB_GETTOPINDEX, 0, 0).max(0) as usize;
+                let redraw = GetWindowLongW(f.list, GWL_STYLE) as u32 & WS_VISIBLE != 0;
+                if redraw {
+                    SendMessageW(f.list, WM_SETREDRAW, 0, 0);
+                }
+                SendMessageW(f.list, LB_RESETCONTENT, 0, 0);
+                f.hosts = hosts;
+                let mut selected = 0;
+                for (i, h) in f.hosts.iter().enumerate() {
+                    let name = format!("{}   /   {}", h.name, h.peer);
+                    SendMessageW(f.list, LB_ADDSTRING, 0, wide(&name).as_ptr() as isize);
+                    if h.peer == selected_peer {
+                        selected = i;
+                    }
+                }
+                if !f.hosts.is_empty() {
+                    SendMessageW(f.list, LB_SETCURSEL, selected, 0);
+                    SendMessageW(f.list, LB_SETTOPINDEX, top.min(f.hosts.len() - 1), 0);
+                    if !quiet {
+                        SetWindowTextW(f.peer, wide(&f.hosts[selected].peer).as_ptr());
+                    }
+                }
+                if redraw {
+                    SendMessageW(f.list, WM_SETREDRAW, 1, 0);
+                    RedrawWindow(f.list, null(), null_mut(), RDW_INVALIDATE | RDW_ERASE);
                 }
             }
-            if !f.hosts.is_empty() {
-                SendMessageW(f.list, LB_SETCURSEL, selected, 0);
-                SetWindowTextW(f.peer, wide(&f.hosts[selected].peer).as_ptr());
-            }
-            status(
-                f,
-                if f.hosts.is_empty() {
-                    "No computers listed. Refresh, or enter the host peer ID."
-                } else {
-                    "Choose a computer, or enter its peer ID. Owner connections are supported."
-                },
-            );
-            view(f);
-            if f.settings_page.is_null() {
-                SetFocus(f.list);
+            if !quiet {
+                status(
+                    f,
+                    if f.hosts.is_empty() {
+                        "No computers listed. Refresh, or enter the host peer ID."
+                    } else {
+                        "Choose a computer, or enter its peer ID. Owner connections are supported."
+                    },
+                );
+                view(f);
+                if f.settings_page.is_null() {
+                    SetFocus(f.list);
+                }
             }
         }
         Completed::Hosts(Err(e)) => {
@@ -242,8 +283,10 @@ unsafe fn completed(hwnd: HWND, f: &mut Form, job: Completed) {
                 f.session = None;
                 f.remember_login = false;
             }
-            status(f, &e.to_string());
-            view(f);
+            if !quiet || f.session.is_none() {
+                status(f, &e.to_string());
+                view(f);
+            }
         }
         Completed::Logout => {
             status(f, "Signed out. Enter your account details to sign in.");
@@ -308,6 +351,12 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 FillRect(wp as HDC, &r, f.brush);
                 return 1;
             }
+            WM_TIMER if wp == AUTO_REFRESH => {
+                if f.session.is_some() && f.incoming.is_none() && !f.done {
+                    start_hosts(hwnd, f, true);
+                }
+                return 0;
+            }
             WM_TIMER if wp == DONE => {
                 let result = f.incoming.as_ref().map(|r| r.try_recv());
                 match result {
@@ -334,7 +383,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         SetWindowTextW(f.peer, wide(&h.peer).as_ptr());
                     }
                 }
-                if f.incoming.is_some() {
+                if f.incoming.is_some() && !f.background_refresh {
                     return 0;
                 }
                 match id {
@@ -390,7 +439,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         });
                         SetTimer(hwnd, DONE, 80, None);
                     }
-                    REFRESH => start_hosts(hwnd, f),
+                    REFRESH => start_hosts(hwnd, f, false),
                     CONNECT => {
                         let peer = text(f.peer).trim().to_owned();
                         if peer.is_empty() || peer.len() > 256 || peer.chars().any(char::is_control)
@@ -424,6 +473,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         if let Some(session) = f.session.take() {
                             let (tx, rx) = mpsc::channel();
                             f.incoming = Some(rx);
+                            f.background_refresh = false;
                             status(f, "Signing out...");
                             view(f);
                             std::thread::spawn(move || {
@@ -444,6 +494,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             WM_DESTROY => {
                 f.done = true;
                 KillTimer(hwnd, DONE);
+                KillTimer(hwnd, AUTO_REFRESH);
                 return 0;
             }
             _ => {}
@@ -495,6 +546,7 @@ pub fn choose(
             session: current.or(saved),
             hosts: vec![],
             incoming: None,
+            background_refresh: false,
             remember_login: !profile.encrypted_session.is_empty(),
             email: profile.email.clone(),
             done: false,
@@ -638,7 +690,7 @@ pub fn choose(
         ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
         if f.session.is_some() {
-            start_hosts(hwnd, &mut f);
+            start_hosts(hwnd, &mut f, false);
         } else {
             SetFocus(f.fields[0]);
         }
@@ -669,6 +721,30 @@ pub fn choose(
                 SendMessageW(hwnd, WM_COMMAND, SETTINGS, 0);
                 assert!(!f.settings_page.is_null());
                 assert_ne!(IsWindowVisible(f.settings_page), 0);
+                if picker {
+                    SetWindowTextW(f.peer, wide("manually-entered-host").as_ptr());
+                    f.background_refresh = true;
+                    completed(
+                        hwnd,
+                        &mut f,
+                        Completed::Hosts(Ok(vec![Host {
+                            peer: "fixture-host".into(),
+                            name: "Updated computer".into(),
+                        }])),
+                    );
+                    assert_eq!(text(f.peer), "manually-entered-host");
+                    f.background_refresh = true;
+                    completed(
+                        hwnd,
+                        &mut f,
+                        Completed::Hosts(Ok(vec![Host {
+                            peer: "fixture-host".into(),
+                            name: "Updated computer".into(),
+                        }])),
+                    );
+                    assert_eq!(text(f.peer), "manually-entered-host");
+                    SetWindowTextW(f.peer, wide(&selected).as_ptr());
+                }
                 // Refreshing the launcher state must not resurrect its controls
                 // while Settings owns the view.
                 view(&f);
