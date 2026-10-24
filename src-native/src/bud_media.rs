@@ -36,6 +36,7 @@ pub struct Media {
     waiting_for_keyframe: bool,
     hevc_available: bool,
     ten_bit_available: bool,
+    chroma_444_available: bool,
 }
 
 #[derive(Default)]
@@ -84,6 +85,7 @@ impl Media {
                 waiting_for_keyframe: true,
                 hevc_available,
                 ten_bit_available: hevc_available && ten_bit,
+                chroma_444_available: hevc_available && chroma_444,
             },
             session,
         ))
@@ -97,6 +99,9 @@ impl Media {
                 serde_json::json!({"stage":"video_framing_or_format"}),
             );
         })?;
+        if matches!(&parsed, Video::Metadata(m) if m.chroma_444) && !self.chroma_444_available {
+            anyhow::bail!("BUD host sent unadvertised 4:4:4 video");
+        }
         let ten_bit = match &parsed {
             Video::Metadata(metadata) => metadata.ten_bit,
             Video::AccessUnit { header, .. } => header.ten_bit,

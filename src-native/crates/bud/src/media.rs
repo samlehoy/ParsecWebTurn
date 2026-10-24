@@ -18,6 +18,7 @@ pub fn video(message: &[u8]) -> Result<Video<'_>> {
     if header.metadata {
         let metadata = video::parse_metadata(message)
             .map_err(|e| anyhow::anyhow!("native video metadata: {e:?}"))?;
+        #[cfg(not(feature = "native-core"))]
         ensure!(
             !metadata.chroma_444,
             "BUD 4:4:4 video is not supported by this client"
@@ -193,7 +194,10 @@ mod tests {
             ..metadata
         };
         video::encode_metadata(&mut packet, &header, &metadata).unwrap();
-        assert!(video(&packet).is_err(), "4:4:4 must remain unsupported");
+        #[cfg(not(feature = "native-core"))]
+        assert!(video(&packet).is_err(), "legacy 4:4:4 must remain unsupported");
+        #[cfg(feature = "native-core")]
+        assert!(matches!(video(&packet), Ok(Video::Metadata(m)) if m.chroma_444));
         assert!(video(&packet[..video::METADATA_LEN - 1]).is_err());
     }
 

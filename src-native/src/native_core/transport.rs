@@ -19,15 +19,19 @@ pub(super) struct WebRtc {
     writer: crate::bud_attempt::SignalingWrite,
     failed: AtomicBool,
 }
-fn envelope(action: &str, peer: &str, id: &str, data: Value) -> String {
+fn envelope(action: &str, peer: &str, id: &str, data: Value) -> Value {
     json!({"version":1,"action":action,"payload":{"to":peer,"attempt_id":id,"data":data}})
-        .to_string()
 }
 fn offer(peer: &str, id: &str, credentials: &crate::signaling::Credentials) -> String {
-    let mut value: Value = serde_json::from_str(&envelope("offer", peer, id, json!({
-        "ver_data":1,"mode":2,"versions":{"p2p":1,"bud":1,"init":1,"video":1,"audio":1,"control":1},
-        "creds":{"ice_ufrag":credentials.ufrag,"ice_pwd":credentials.password,"fingerprint":credentials.fingerprint}
-    }))).expect("application JSON");
+    let mut value = envelope(
+        "offer",
+        peer,
+        id,
+        json!({
+            "ver_data":1,"mode":2,"versions":{"p2p":1,"bud":1,"init":1,"video":1,"audio":1,"control":1},
+            "creds":{"ice_ufrag":credentials.ufrag,"ice_pwd":credentials.password,"fingerprint":credentials.fingerprint}
+        }),
+    );
     value["payload"]["secret"] = json!("");
     value.to_string()
 }
@@ -40,6 +44,10 @@ impl Attempt {
         window: Arc<Window>,
         manager: Arc<Manager>,
     ) -> Result<Self> {
+        ensure!(
+            !peer.is_empty() && peer.len() <= 256 && !peer.chars().any(char::is_control),
+            "Invalid host peer ID"
+        );
         if manager.view().0.bud {
             return crate::bud_attempt::Attempt::spawn_native(id, peer, writer, window, manager)
                 .map(Self::Bud);
@@ -160,7 +168,7 @@ impl Attempt {
                     }
                     let data = json!({"ver_data":1,"versions":{"p2p":1,"bud":1,"init":1,"video":1,"audio":1,"control":1},
                         "ip":event["ip"],"port":event["port"],"lan":event["lan"],"from_stun":event["fromStun"],"sync":event["sync"]});
-                    if !(web.writer)(envelope("candex", &web.peer, &web.id, data)) {
+                    if !(web.writer)(envelope("candex", &web.peer, &web.id, data).to_string()) {
                         web.failed.store(true, Ordering::Release);
                         break;
                     }
@@ -219,7 +227,8 @@ impl Attempt {
 }
 impl Drop for WebRtc {
     fn drop(&mut self) {
-        let _ = (self.writer)(envelope("offer_cancel", &self.peer, &self.id, Value::Null));
+        let _ =
+            (self.writer)(envelope("offer_cancel", &self.peer, &self.id, Value::Null).to_string());
         self.transport.disconnect();
     }
 }

@@ -11,7 +11,7 @@ pub unsafe fn icon() -> HICON {
 
 #[cfg(feature = "native-core")]
 pub unsafe fn about(owner: HWND) {
-    let text: Vec<u16> = format!("ParsecWebTurn {}\nIndependent native Rust client — BUD transport.\nNo Parsec WASM core is loaded or executed.",env!("CARGO_PKG_VERSION")).encode_utf16().chain([0]).collect();
+    let text: Vec<u16> = format!("ParsecWebTurn {}\nIndependent native Rust client — BUD / WebRTC.\nNo Parsec WASM core is loaded or executed.",env!("CARGO_PKG_VERSION")).encode_utf16().chain([0]).collect();
     let caption: Vec<u16> = "About ParsecWebTurn".encode_utf16().chain([0]).collect();
     MessageBoxIndirectW(&MSGBOXPARAMSW {
         cbSize: std::mem::size_of::<MSGBOXPARAMSW>() as u32,

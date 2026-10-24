@@ -1,6 +1,6 @@
 # Experimental native Rust core
 
-Work branch: `codex/native-core`. This is a BUD-only bootstrap client, separate
+Work branch: `codex/native-core`. This is an independent native client with selectable BUD/WebRTC transport, separate
 from dev/main and from published releases. It is not a feature-complete replacement.
 
 Build: `cargo build --release --manifest-path src-native/Cargo.toml --no-default-features --features native-core,vendor-video`.
@@ -34,8 +34,9 @@ removes the saved token and attempts server-side revocation. A remembered sessio
 is retained on ordinary exit; an ephemeral session is revoked when its final
 owner exits. Revocation errors are logged without credentials.
 
-Only BUD is used. The existing direct/TURN UDP -> TLS -> TCP policy, rustls
-verification and Force TURN option are reused. BUD is fixed on in Network settings.
+Network settings select WebRTC or BUD. Both reuse their existing direct/TURN
+policy, TLS verification and Force TURN option. Changing transport requires
+reconnecting; no failure silently switches protocols.
 Settings and Connection stats are available from the native window menu.
 Save and reconnect after changing connection/video/audio settings.
 
@@ -165,3 +166,22 @@ Windows CI runs the full native test suite. Its PNGs are offline GDI control
 fixtures without accounts, tokens or a video stream; they check layout, not live
 DXGI/DWM composition. Live overlay ordering, host setting changes and opacity need
 rechecking with the new build.
+
+## Experimental 4:4:4 and restored WebRTC
+
+The WebRTC account adapter uses the old client's native Rust ICE/DTLS/SCTP
+engine and its pinned channel/initialization contract, without the WASM core.
+It still needs live direct, TURN/UDP, TURN/TLS and TURN/TCP verification in this
+independent build. BUD-only HID and raw/multichannel audio stay BUD-only.
+
+Prefer 4:4:4 offers 8-bit HEVC only after selected-GPU Main444/AYUV decoding
+and AYUV video-processor input checks. Existing pinned lowlat DXVA range-extension
+parameters are reused in the GPU-only direct decoder. AYUV goes directly to the
+existing conversion/presentation pass, with no CPU pixel readback or intermediate
+video copy. This mode uses normal GPU rendering, not original-NV12 zero copy;
+4:4:4 takes precedence over the saved 10-bit preference. The host can still send
+4:2:0; actual decoded chroma is shown separately in Connection stats. Live 4:4:4
+compatibility is not established by capability checks or synthetic tests alone.
+
+See [stock settings comparison](native-settings-comparison.md) for existing
+features and possible future additions; unimplemented options were not added.

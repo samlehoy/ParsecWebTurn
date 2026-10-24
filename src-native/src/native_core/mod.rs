@@ -1,4 +1,4 @@
-//! Experimental BUD-only entry: no WASM load, execution or guest callbacks.
+//! Independent native entry: no WASM load, execution or guest callbacks.
 //! The production media, carrier, route retry and HID workers are reused.
 mod account;
 mod controls;
@@ -35,7 +35,7 @@ fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--version"] {
         println!(
-            "ParsecWebTurn {} / native Rust core (BUD)",
+            "ParsecWebTurn {} / native Rust core (BUD/WebRTC)",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());
@@ -59,7 +59,7 @@ fn run() -> Result<()> {
     crate::event_log::record(
         "INFO",
         "native_core_started",
-        serde_json::json!({"transport":"BUD","wasm":false}),
+        serde_json::json!({"transport":if settings.view().0.bud {"BUD"} else {"WebRTC"},"wasm":false}),
     );
     let mut session = None;
     loop {
@@ -187,6 +187,14 @@ fn stream(
                             last_clipboard = text.into();
                         }
                     }
+                }
+                crate::control::Message::Status(status) if status != 0 => {
+                    crate::event_log::record(
+                        "ERROR",
+                        "native_host_status",
+                        serde_json::json!({"transport":attempt.name(), "host_status":status}),
+                    );
+                    anyhow::bail!("The host ended the stream (status {status}).");
                 }
                 _ => {}
             }

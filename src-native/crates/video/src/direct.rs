@@ -860,7 +860,7 @@ impl<'a> Backend<'a> {
             }
         };
         let s = &self.staging;
-        let picture = if built.full_chroma {
+        let picture = if self.built.as_ref().is_some_and(|built| built.full_chroma) {
             bytes_of(&s.hevc_picture)
         } else {
             bytes_of(&s.hevc_picture.params)

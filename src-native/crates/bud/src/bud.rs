@@ -99,7 +99,7 @@ pub struct Session {
 impl Session {
     /// Native transport with application-owned video decode. The caller must
     /// have verified its existing MF decoder's HEVC support before setting it.
-    /// Only 8-bit 4:2:0 is advertised. No SDK video decoder is created.
+    /// This entry advertises 8-bit 4:2:0 only. No SDK video decoder is created.
     pub fn external_video(hevc_available: bool) -> Result<Self> {
         Self::external_video_depth(hevc_available, false)
     }
