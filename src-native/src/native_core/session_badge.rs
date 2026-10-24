@@ -74,7 +74,7 @@ unsafe extern "system" fn button_proc(
                             y: drag.position.y + dy,
                         };
                         SendMessageW(hwnd, BM_SETSTATE, 0, 0);
-                        position(badge, false);
+                        position(badge, None);
                         return 0;
                     }
                 }
@@ -188,7 +188,7 @@ pub(super) unsafe fn install(window: &crate::window::Window) {
         .store(badge as usize, Ordering::Release);
 }
 
-pub(super) unsafe fn position(hwnd: HWND, active: bool) {
+pub(super) unsafe fn position(hwnd: HWND, insert_after: Option<HWND>) {
     let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Badge;
     if pointer.is_null() {
         return;
@@ -205,12 +205,18 @@ pub(super) unsafe fn position(hwnd: HWND, active: bool) {
     ClientToScreen(owner, &mut origin);
     SetWindowPos(
         hwnd,
-        HWND_TOP,
+        insert_after.unwrap_or(HWND_TOP),
         origin.x,
         origin.y,
         SIZE,
         SIZE,
-        SWP_NOACTIVATE | SWP_NOOWNERZORDER | if active { 0 } else { SWP_NOZORDER },
+        SWP_NOACTIVATE
+            | SWP_NOOWNERZORDER
+            | if insert_after.is_some() {
+                0
+            } else {
+                SWP_NOZORDER
+            },
     );
 }
 

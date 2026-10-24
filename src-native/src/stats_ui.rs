@@ -832,6 +832,15 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
     if !ptr.is_null() {
         let page = &mut *ptr;
         match message {
+            #[cfg(feature = "native-core")]
+            WM_ACTIVATE => {
+                PostMessageW(
+                    GetWindow(hwnd, GW_OWNER),
+                    crate::native_core::session_ui::VISIBILITY,
+                    0,
+                    0,
+                );
+            }
             WM_TIMER => {
                 if IsIconic(hwnd) != 0 {
                     return 0;

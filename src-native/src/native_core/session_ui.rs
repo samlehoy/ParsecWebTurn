@@ -470,26 +470,50 @@ pub unsafe fn install(window: &crate::window::Window) {
     super::session_badge::install(window);
     raise(window);
 }
+// Keep the overlays over the stream, but below another active owned window
+// such as Connection stats. Switching apps must not raise or hide either overlay.
+fn stacking_target(
+    parent: HWND,
+    button: HWND,
+    panel: HWND,
+    foreground: HWND,
+    root_owner: HWND,
+) -> Option<HWND> {
+    if foreground.is_null() {
+        None
+    } else if foreground == parent || foreground == button || foreground == panel {
+        Some(HWND_TOP)
+    } else if root_owner == parent {
+        Some(foreground)
+    } else {
+        None
+    }
+}
 pub unsafe fn raise(window: &crate::window::Window) {
     let parent = window.handle();
     let foreground = GetForegroundWindow();
-    let active = foreground == parent
-        || (!foreground.is_null() && GetAncestor(foreground, GA_ROOTOWNER) == parent);
+    let button = window.native_session_button.load(Ordering::Acquire) as HWND;
+    let panel = panel(window);
+    let insert_after = stacking_target(
+        parent,
+        button,
+        panel,
+        foreground,
+        GetAncestor(foreground, GA_ROOTOWNER),
+    );
     let visible = !window.settings_open()
         && !window.closing.load(Ordering::Acquire)
         && IsIconic(parent) == 0
         && IsWindowVisible(parent) != 0;
     let mut origin = POINT { x: 16, y: 16 };
     ClientToScreen(parent, &mut origin);
-    let button = window.native_session_button.load(Ordering::Acquire) as HWND;
     if !button.is_null() {
-        super::session_badge::position(button, active);
+        super::session_badge::position(button, insert_after);
         let show = visible && !window.native_session_button_hidden();
         if (IsWindowVisible(button) != 0) != show {
             ShowWindow(button, if show { SW_SHOWNA } else { SW_HIDE });
         }
     }
-    let panel = panel(window);
     window
         .stats
         .overlay_visible
@@ -499,12 +523,18 @@ pub unsafe fn raise(window: &crate::window::Window) {
         GetClientRect(parent, &mut r);
         SetWindowPos(
             panel,
-            HWND_TOP,
+            insert_after.unwrap_or(HWND_TOP),
             origin.x,
             origin.y + 44,
             420,
             (r.bottom - 76).clamp(120, PANEL_HEIGHT),
-            SWP_NOACTIVATE | SWP_NOOWNERZORDER | if active { 0 } else { SWP_NOZORDER },
+            SWP_NOACTIVATE
+                | SWP_NOOWNERZORDER
+                | if insert_after.is_some() {
+                    0
+                } else {
+                    SWP_NOZORDER
+                },
         );
         if (IsWindowVisible(panel) != 0) != visible {
             ShowWindow(panel, if visible { SW_SHOWNA } else { SW_HIDE });
@@ -836,6 +866,29 @@ pub unsafe fn dialog(parent: HWND, msg: &MSG) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn overlay_stacking_respects_active_stats_and_other_apps() {
+        let owner = 1usize as HWND;
+        let button = 2usize as HWND;
+        let panel = 3usize as HWND;
+        let stats = 4usize as HWND;
+        let other = 5usize as HWND;
+        for foreground in [owner, button, panel] {
+            assert_eq!(
+                stacking_target(owner, button, panel, foreground, owner),
+                Some(HWND_TOP)
+            );
+        }
+        assert_eq!(
+            stacking_target(owner, button, panel, stats, owner),
+            Some(stats)
+        );
+        assert_eq!(stacking_target(owner, button, panel, other, other), None);
+        assert_eq!(
+            stacking_target(owner, button, null_mut(), null_mut(), null_mut()),
+            None
+        );
+    }
     #[test]
     fn compact_metrics_use_existing_values_and_keep_unknowns_unknown() {
         let mut sample = crate::stats::Sample {

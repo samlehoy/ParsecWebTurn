@@ -39,7 +39,7 @@ verification and Force TURN option are reused. BUD is fixed on in Network settin
 Settings and Connection stats are available from the native window menu.
 Save and reconnect after changing connection/video/audio settings.
 
-The **Session** button or **Ctrl+Shift+M** (also **Ctrl+Shift+O**) opens a small native control panel over
+The draggable **Session icon** or **Ctrl+Shift+M** (also **Ctrl+Shift+O**) opens a small native control panel over
 the video. It offers Keep host / Match client display / editable fixed resolution,
 a host bandwidth limit in Mbps, requested FPS and Constant FPS, Default / Rotated
 host orientation, mouse/keyboard/both immersive capture, and fullscreen. Apply
