@@ -359,7 +359,9 @@ unsafe extern "system" fn button_proc(
     // A top-level owned BUTTON has no child control ID. Explicitly route its
     // supported BM_CLICK action, including accessibility/programmatic clicks.
     if msg == BM_CLICK {
-        PostMessageW(owner as HWND, WM_COMMAND, OPEN, 0);
+        // Same UI thread. Complete the action before BUTTON's default mouse/
+        // keyboard handler resumes, so its fallback cannot queue a second toggle.
+        SendMessageW(owner as HWND, WM_COMMAND, OPEN, 0);
         return 0;
     }
     let before = panel_for_parent(owner as HWND);
