@@ -45,6 +45,7 @@ struct Form {
     list: HWND,
     peer: HWND,
     status: HWND,
+    common_controls: Vec<HWND>,
     login_controls: Vec<HWND>,
     picker_controls: Vec<HWND>,
     font: HFONT,
@@ -130,12 +131,16 @@ unsafe fn status(f: &Form, s: &str) {
     SetWindowTextW(f.status, wide(s).as_ptr());
 }
 unsafe fn view(f: &Form) {
+    let launcher = f.settings_page.is_null();
     let login = f.session.is_none();
+    for &h in &f.common_controls {
+        ShowWindow(h, if launcher { SW_SHOW } else { SW_HIDE });
+    }
     for &h in &f.login_controls {
-        ShowWindow(h, if login { SW_SHOW } else { SW_HIDE });
+        ShowWindow(h, if launcher && login { SW_SHOW } else { SW_HIDE });
     }
     for &h in &f.picker_controls {
-        ShowWindow(h, if login { SW_HIDE } else { SW_SHOW });
+        ShowWindow(h, if launcher && !login { SW_SHOW } else { SW_HIDE });
     }
     for h in f.fields.into_iter().chain([f.remember]) {
         EnableWindow(h, i32::from(f.incoming.is_none()));
@@ -222,7 +227,9 @@ unsafe fn completed(hwnd: HWND, f: &mut Form, job: Completed) {
                 },
             );
             view(f);
-            SetFocus(f.list);
+            if f.settings_page.is_null() {
+                SetFocus(f.list);
+            }
         }
         Completed::Hosts(Err(e)) => {
             crate::event_log::record(
@@ -271,6 +278,8 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     610,
                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
                 );
+                view(f);
+                InvalidateRect(hwnd, null(), 1);
                 SetFocus(if f.session.is_some() {
                     f.list
                 } else {
@@ -335,6 +344,16 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                                 crate::connection_settings_ui::open(hwnd, f.manager.clone());
                         }
                         if !f.settings_page.is_null() {
+                            view(f);
+                            SetWindowPos(
+                                f.settings_page,
+                                HWND_TOP,
+                                0,
+                                0,
+                                0,
+                                0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                            );
                             SetFocus(f.settings_page);
                         }
                     }
@@ -466,6 +485,7 @@ pub fn choose(
             list: null_mut(),
             peer: null_mut(),
             status: null_mut(),
+            common_controls: vec![],
             login_controls: vec![],
             picker_controls: vec![],
             font: font(17, 400),
@@ -493,7 +513,7 @@ pub fn choose(
             WS_EX_CONTROLPARENT,
             name.as_ptr(),
             wide("ParsecWebTurn - native core").as_ptr(),
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             760,
@@ -506,7 +526,8 @@ pub fn choose(
         ensure!(!hwnd.is_null(), "Native account window unavailable");
         let heading = add(hwnd, &f, "STATIC", "ParsecWebTurn", 0, 0, [30, 24, 650, 46]);
         SendMessageW(heading, WM_SETFONT, f.heading as usize, 0);
-        add(
+        f.common_controls.push(heading);
+        let settings = add(
             hwnd,
             &f,
             "BUTTON",
@@ -515,7 +536,8 @@ pub fn choose(
             WS_TABSTOP,
             [580, 28, 116, 36],
         );
-        add(
+        f.common_controls.push(settings);
+        let subtitle = add(
             hwnd,
             &f,
             "STATIC",
@@ -524,6 +546,7 @@ pub fn choose(
             0,
             [32, 80, 650, 26],
         );
+        f.common_controls.push(subtitle);
         for (i, label) in ["Email", "Password", "Two-factor code (optional)"]
             .iter()
             .enumerate()
@@ -610,6 +633,7 @@ pub fn choose(
             0,
             [32, 484, 664, 66],
         );
+        f.common_controls.push(f.status);
         view(&f);
         ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
@@ -627,6 +651,64 @@ pub fn choose(
                 )
                 .unwrap();
             }
+            for picker in [false, true] {
+                if picker {
+                    // A local fixture token never enters auth, host discovery,
+                    // persistence or explicit logout requests.
+                    f.session = Some(Arc::new(Session::from_token("offline-ui-fixture").unwrap()));
+                    completed(
+                        hwnd,
+                        &mut f,
+                        Completed::Hosts(Ok(vec![Host {
+                            peer: "fixture-host".into(),
+                            name: "Fixture computer".into(),
+                        }])),
+                    );
+                }
+                let selected = text(f.peer);
+                SendMessageW(hwnd, WM_COMMAND, SETTINGS, 0);
+                assert!(!f.settings_page.is_null());
+                assert_ne!(IsWindowVisible(f.settings_page), 0);
+                // Refreshing the launcher state must not resurrect its controls
+                // while Settings owns the view.
+                view(&f);
+                for &control in f
+                    .common_controls
+                    .iter()
+                    .chain(&f.login_controls)
+                    .chain(&f.picker_controls)
+                {
+                    assert_eq!(
+                        IsWindowVisible(control),
+                        0,
+                        "Launcher control covers Settings"
+                    );
+                }
+                if let Some(path) = std::env::var_os("PWT_NATIVE_UI_CAPTURE") {
+                    capture_fixture(
+                        hwnd,
+                        &std::path::PathBuf::from(path).with_file_name(if picker {
+                            "picker-settings.png"
+                        } else {
+                            "sign-in-settings.png"
+                        }),
+                    )
+                    .unwrap();
+                }
+                SendMessageW(hwnd, WM_APP + 9, 0, 0);
+                assert!(f.settings_page.is_null());
+                for &control in &f.common_controls {
+                    assert_ne!(IsWindowVisible(control), 0);
+                }
+                for &control in &f.login_controls {
+                    assert_eq!(IsWindowVisible(control) != 0, !picker);
+                }
+                for &control in &f.picker_controls {
+                    assert_eq!(IsWindowVisible(control) != 0, picker);
+                }
+                assert_eq!(text(f.peer), selected);
+            }
+            f.session = None; // Do not run explicit account logout for the fixture.
             DestroyWindow(hwnd);
         }
         let mut msg: MSG = std::mem::zeroed();
