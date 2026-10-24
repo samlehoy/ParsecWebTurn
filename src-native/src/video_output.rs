@@ -265,7 +265,7 @@ impl Queue {
             self.recycle(bytes);
             return false;
         }
-        if bytes.len() > crate::attempt::MAX_CHANNEL_MESSAGE {
+        if bytes.len() > crate::control::MAX_CHANNEL_MESSAGE {
             self.fail("video-input-too-large", None);
             self.report.frames_dropped += 1;
             return false;
@@ -651,7 +651,7 @@ mod tests {
         assert_eq!(q.report.frames_queued, 0);
         let mut q = Queue::default();
         assert!(!q.submit(
-            &vec![0; crate::attempt::MAX_CHANNEL_MESSAGE + 1],
+            &vec![0; crate::control::MAX_CHANNEL_MESSAGE + 1],
             true,
             false,
             0

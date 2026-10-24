@@ -56,13 +56,7 @@ pub struct InputAvailability {
     pub unavailable_reason: Option<&'static str>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct VideoProtocol {
-    pub version: u32,
-    pub message_size: u32,
-    pub version_offset: u32,
-    pub flag_offset: u32,
-}
+pub use crate::video_stream::VideoProtocol;
 
 impl Backend {
     pub fn init(&mut self) {

@@ -6,6 +6,14 @@ use parsec_native_bud::{
 };
 use serde_json::{json, Value};
 pub type SignalingWrite = Arc<dyn Fn(String) -> bool + Send + Sync>;
+// Legacy guest completion is a callback, not a dependency of the BUD worker
+// on a Wasmtime buffer. Native account signaling uses None.
+type OfferOutput = Arc<dyn for<'a> Fn(Option<[&'a str; 3]>) -> Result<bool> + Send + Sync>;
+#[cfg(any(test, not(feature = "native-core")))]
+fn guest_output(output: crate::attempt::Output) -> OfferOutput {
+    Arc::new(move |values| output.finish_values(values))
+}
+
 type SharedAudio = Arc<Mutex<Option<Arc<crate::audio_stream::Pipeline>>>>;
 
 use std::{
@@ -89,13 +97,20 @@ pub struct Attempt {
 }
 
 impl Attempt {
+    #[cfg(any(test, not(feature = "native-core")))]
     pub fn spawn(
         id: &str,
         output: crate::attempt::Output,
         window: Arc<crate::window::Window>,
         manager: Arc<crate::connection_settings::Manager>,
     ) -> Result<Self> {
-        Self::spawn_inner(id, Some(output), window, manager, State::default())
+        Self::spawn_inner(
+            id,
+            Some(guest_output(output)),
+            window,
+            manager,
+            State::default(),
+        )
     }
 
     #[cfg(feature = "native-core")]
@@ -129,7 +144,7 @@ impl Attempt {
 
     fn spawn_inner(
         id: &str,
-        output: Option<crate::attempt::Output>,
+        output: Option<OfferOutput>,
         window: Arc<crate::window::Window>,
         manager: Arc<crate::connection_settings::Manager>,
         initial: State,
@@ -166,7 +181,7 @@ impl Attempt {
                 state.events.clear();
                 state.controls.clear();
                 state.events.push_back(json!({"type":7,"status":-6200,"state":4,"attemptID":attempt_id,"duration":0}));
-                if !state.output_finished { state.output_finished = true; if let Some(output) = &output { let _ = output.finish_values(None); } }
+                if !state.output_finished { state.output_finished = true; if let Some(output) = &output { let _ = output(None); } }
                 }
             }
             withdraw_pending(&worker_state);
@@ -339,6 +354,7 @@ impl Attempt {
         self.send(absolute.as_deref().unwrap_or(packet))
     }
 
+    #[cfg(any(test, not(feature = "native-core")))]
     pub fn poll_audio(
         &self,
         memory: &crate::memory::GuestMemory,
@@ -490,7 +506,7 @@ fn withdraw_pending(state: &Mutex<State>) {
 fn complete_offer(
     state: &Mutex<State>,
     cancel: &AtomicBool,
-    output: &Option<crate::attempt::Output>,
+    output: &Option<OfferOutput>,
     offer: Value,
     values: [&str; 3],
 ) -> Result<bool> {
@@ -501,10 +517,7 @@ fn complete_offer(
     ensure!(!state.output_finished, "BUD offer already completed");
     state.output_finished = true;
     if let Some(output) = output {
-        ensure!(
-            output.finish_values(Some(values))?,
-            "BUD credential output too small"
-        );
+        ensure!(output(Some(values))?, "BUD credential output too small");
         state.offer = Some(offer);
         return Ok(true);
     }
@@ -655,7 +668,7 @@ fn log_route_attempt(route: &Route) {
 #[allow(clippy::too_many_arguments)]
 fn run(
     id: &str,
-    output: &Option<crate::attempt::Output>,
+    output: &Option<OfferOutput>,
     window: &Arc<crate::window::Window>,
     manager: &crate::connection_settings::Manager,
     state: &Arc<Mutex<State>>,
@@ -1420,8 +1433,9 @@ mod tests {
             )
             .unwrap(),
         );
-        let output =
-            crate::attempt::Output::new(memory.clone(), [100, 400, 700], 128, 64, 80).unwrap();
+        let output = guest_output(
+            crate::attempt::Output::new(memory.clone(), [100, 400, 700], 128, 64, 80).unwrap(),
+        );
         memory.c_string(100, 128, "next-attempt-sentinel").unwrap();
         let state = Mutex::new(State::default());
         let cancelled = AtomicBool::new(true);

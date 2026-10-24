@@ -59,10 +59,15 @@ pub struct Window {
     pub active_contexts: AtomicUsize,
     pub events: crate::event_queue::Queue<Event>,
     pub dimensions: Mutex<(i32, i32)>,
+    #[cfg(any(test, not(feature = "native-core")))]
     pub overlay: Mutex<crate::overlay::Shared>,
+    #[cfg(any(test, not(feature = "native-core")))]
     pub software_overlay_enabled: AtomicBool,
+    #[cfg(any(test, not(feature = "native-core")))]
     software_pending: Mutex<crate::overlay_software::Pending>,
+    #[cfg(any(test, not(feature = "native-core")))]
     software_presenter: Mutex<crate::overlay_software::Presenter>,
+    #[cfg(any(test, not(feature = "native-core")))]
     pub graphics: Mutex<Option<crate::graphics::GraphicsReport>>,
     pub audio_registry: Mutex<crate::audio_windows::Registry>,
     pub video_report: Mutex<Option<crate::video_output::Snapshot>>,
@@ -96,6 +101,7 @@ pub struct Window {
     has_focus: AtomicBool,
     clipboard_pending: AtomicBool,
     input_state: Mutex<crate::core_input::State>,
+    #[cfg(any(test, not(feature = "native-core")))]
     core_hotkeys: Mutex<Option<crate::core_hotkeys::Binding>>,
     mouse_clipped: AtomicBool,
     input_suspended: AtomicBool,
@@ -121,18 +127,7 @@ impl Window {
     unsafe fn open_about(&self) {
         #[cfg(feature = "native-core")]
         {
-            MessageBoxW(
-                self.handle(),
-                "Experimental independent Rust core. BUD only.\0"
-                    .encode_utf16()
-                    .collect::<Vec<_>>()
-                    .as_ptr(),
-                "ParsecWebTurn - native core\0"
-                    .encode_utf16()
-                    .collect::<Vec<_>>()
-                    .as_ptr(),
-                MB_OK,
-            );
+            crate::branding::about(self.handle());
             return;
         }
         #[cfg(not(feature = "native-core"))]
@@ -233,10 +228,15 @@ impl Window {
             active_contexts: AtomicUsize::new(0),
             events: Default::default(),
             dimensions: Mutex::new((1024, 720)),
+            #[cfg(any(test, not(feature = "native-core")))]
             graphics: Default::default(),
+            #[cfg(any(test, not(feature = "native-core")))]
             overlay: Default::default(),
+            #[cfg(any(test, not(feature = "native-core")))]
             software_overlay_enabled: AtomicBool::new(true),
+            #[cfg(any(test, not(feature = "native-core")))]
             software_pending: Default::default(),
+            #[cfg(any(test, not(feature = "native-core")))]
             software_presenter: Default::default(),
             video_report: Default::default(),
             audio_registry: Default::default(),
@@ -270,6 +270,7 @@ impl Window {
             has_focus: AtomicBool::new(false),
             clipboard_pending: AtomicBool::new(false),
             input_state: Default::default(),
+            #[cfg(any(test, not(feature = "native-core")))]
             core_hotkeys: Default::default(),
             mouse_clipped: AtomicBool::new(false),
             input_suspended: AtomicBool::new(false),
@@ -399,15 +400,24 @@ impl Window {
     pub fn handle(&self) -> HWND {
         self.hwnd.load(Ordering::Acquire) as HWND
     }
+    #[cfg(any(test, not(feature = "native-core")))]
     pub fn bind_core_hotkeys(&self, binding: crate::core_hotkeys::Binding) {
         *self.core_hotkeys.lock().unwrap_or_else(|e| e.into_inner()) = Some(binding);
     }
     fn core_owns_key(&self, code: &str, mods: i32) -> bool {
-        self.core_hotkeys
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .is_some_and(|binding| binding.owns(code, mods).unwrap_or(true))
+        #[cfg(any(test, not(feature = "native-core")))]
+        {
+            self.core_hotkeys
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .is_some_and(|binding| binding.owns(code, mods).unwrap_or(true))
+        }
+        #[cfg(all(not(test), feature = "native-core"))]
+        {
+            let _ = (code, mods);
+            false
+        }
     }
     fn native_menu_allows_input(&self) -> bool {
         #[cfg(feature = "native-core")]
@@ -609,6 +619,7 @@ impl Window {
         self.set_relative_mouse(false);
         self.set_keyboard_grab(false);
     }
+    #[cfg(any(test, not(feature = "native-core")))]
     pub fn publish_software_overlay(&self, frame: &crate::overlay::Frame) {
         if !self.software_overlay_enabled.load(Ordering::Acquire)
             || !self.video_ready.load(Ordering::Acquire)
@@ -634,6 +645,7 @@ impl Window {
                 && self.video_visible.load(Ordering::Acquire)
                 && !self.closing.load(Ordering::Acquire);
             ShowWindow(hwnd, if show { SW_SHOWNA } else { SW_HIDE });
+            #[cfg(any(test, not(feature = "native-core")))]
             if !show {
                 self.software_presenter
                     .lock()
@@ -1088,7 +1100,7 @@ impl Window {
             PostMessageW(
                 self.handle(),
                 WM_COMMAND,
-                crate::native_core::session_ui::OPEN,
+                crate::native_core::session_ui::OPEN_SHORTCUT,
                 0,
             );
         }
@@ -1205,7 +1217,7 @@ unsafe fn create_window(state: &Arc<Window>, opengl_required: bool) -> Result<HW
         lpfnWndProc: Some(window_proc),
         hInstance: instance,
         hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
-        hIcon: LoadIconW(instance, std::ptr::without_provenance(1)),
+        hIcon: crate::branding::icon(),
         // The native core has no WASM UI repainting this background while
         // signaling and the first decoder frame are still pending.
         #[cfg(feature = "native-core")]
@@ -1333,10 +1345,13 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             #[cfg(feature = "native-core")]
             WM_COMMAND
-                if wp & 0xffff == crate::native_core::session_ui::OPEN
-                    || (lp != 0
-                        && lp as usize == s.native_session_button.load(Ordering::Acquire)
-                        && wp >> 16 == BN_CLICKED as usize) =>
+                if matches!(
+                    wp & 0xffff,
+                    crate::native_core::session_ui::OPEN
+                        | crate::native_core::session_ui::OPEN_SHORTCUT
+                ) || (lp != 0
+                    && lp as usize == s.native_session_button.load(Ordering::Acquire)
+                    && wp >> 16 == BN_CLICKED as usize) =>
             {
                 let manager = s
                     .connection_settings
@@ -1344,6 +1359,21 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                     .unwrap_or_else(|e| e.into_inner())
                     .clone();
                 if let Some(manager) = manager {
+                    if wp & 0xffff == crate::native_core::session_ui::OPEN_SHORTCUT
+                        && manager.native_session_button_hidden()
+                    {
+                        if manager
+                            .update_native(|p| p.hide_session_button = false)
+                            .is_err()
+                        {
+                            crate::event_log::record(
+                                "WARN",
+                                "native_session_button_save_failed",
+                                serde_json::json!({}),
+                            );
+                        }
+                        crate::native_core::session_ui::raise(s);
+                    }
                     crate::native_core::session_ui::toggle(s, manager);
                 }
                 return 0;
@@ -1560,6 +1590,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 s.queue_clipboard();
                 return 0;
             }
+            #[cfg(any(test, not(feature = "native-core")))]
             m if m == WM_APP + 14 => {
                 let surface = {
                     let mut pending = s.software_pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -1660,6 +1691,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
             WM_SIZE => {
+                #[cfg(any(test, not(feature = "native-core")))]
                 s.software_presenter
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -1702,6 +1734,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             WM_MOVE => {
                 #[cfg(feature = "native-core")]
                 crate::native_core::session_ui::raise(s);
+                #[cfg(any(test, not(feature = "native-core")))]
                 s.software_presenter
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -1836,6 +1869,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 s.input_suspended.store(true, Ordering::Release);
                 #[cfg(feature = "bud")]
                 s.apply_hid_capture(false);
+                #[cfg(any(test, not(feature = "native-core")))]
                 s.software_presenter
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())

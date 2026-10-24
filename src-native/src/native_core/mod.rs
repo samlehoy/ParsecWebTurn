@@ -194,18 +194,13 @@ fn stream(
                         if let Some(next) = pending_host.take() {
                             let size = window.native_display_size();
                             let sent = (|| -> Result<()> {
-                                let frame = host_config.request(&next, size)?;
-                                let verify = host_video::Confirmation::new(
-                                    &frame,
-                                    std::time::Instant::now(),
-                                )?;
-                                attempt.send(&frame)?;
+                                let verify =
+                                    send_video_request(&attempt, &host_config, &next, size)?;
                                 confirmation = Some(verify);
                                 session_ui::waiting(window);
                                 Ok(())
                             })();
                             if sent.is_ok() {
-                                log_video_request(&next);
                                 requested_display = Some(size);
                             } else {
                                 crate::event_log::record(
@@ -329,12 +324,8 @@ fn stream(
         for event in batch.drain(..) {
             use crate::window::Event;
             if let Event::Key(true, code, mods) = &event {
-                if mods & 3 == 3 && matches!(*code, "KeyQ" | "KeyW" | "KeyR" | "KeyO") {
+                if mods & 3 == 3 && matches!(*code, "KeyQ" | "KeyW" | "KeyR") {
                     local_keys.insert(*code);
-                }
-                if mods & 3 == 3 && *code == "KeyO" {
-                    window.native_toggle_overlay();
-                    continue;
                 }
                 if mods & 3 == 3 && *code == "KeyQ" {
                     window.request_stop();
@@ -417,14 +408,9 @@ fn stream(
                             let size = window.native_display_size();
                             if next.has_host_settings() {
                                 if host_config.ready() {
-                                    let frame = host_config.request(next, size)?;
-                                    let verify = host_video::Confirmation::new(
-                                        &frame,
-                                        std::time::Instant::now(),
-                                    )?;
-                                    attempt.send(&frame)?;
+                                    let verify =
+                                        send_video_request(&attempt, &host_config, next, size)?;
                                     confirmation = Some(verify);
-                                    log_video_request(next);
                                 } else {
                                     pending_host = Some(next.clone());
                                     host_query_deadline =
@@ -474,10 +460,7 @@ fn stream(
                 let size = window.native_display_size();
                 if requested_display != Some(size) {
                     if host_config.ready() && confirmation.is_none() && pending_host.is_none() {
-                        let frame = host_config.request(&video, size)?;
-                        let verify =
-                            host_video::Confirmation::new(&frame, std::time::Instant::now())?;
-                        attempt.send(&frame)?;
+                        let verify = send_video_request(&attempt, &host_config, &video, size)?;
                         confirmation = Some(verify);
                         session_ui::waiting(window);
                         requested_display = Some(size);
@@ -502,6 +485,19 @@ fn stream(
     Ok(())
 }
 
+// All owner video changes share one serialization/send/confirmation boundary.
+fn send_video_request(
+    attempt: &crate::bud_attempt::Attempt,
+    config: &host_video::Config,
+    video: &profile::Video,
+    size: (u32, u32),
+) -> Result<host_video::Confirmation> {
+    let frame = config.request(video, size)?;
+    let confirmation = host_video::Confirmation::new(&frame, std::time::Instant::now())?;
+    attempt.send(&frame)?;
+    log_video_request(video);
+    Ok(confirmation)
+}
 fn log_video_request(video: &profile::Video) {
     crate::event_log::record(
         "INFO",

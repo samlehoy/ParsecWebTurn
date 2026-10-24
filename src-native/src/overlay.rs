@@ -1,5 +1,6 @@
 //! Mirror only the pinned Matoya GUI's CPU draw commands. No framebuffer readback.
 //! Original GL rendering remains authoritative for account/login screens.
+#[cfg(any(test, not(feature = "native-core")))]
 use crate::memory::GuestMemory;
 use anyhow::{bail, Context, Result};
 use std::{collections::BTreeMap, sync::Arc};
@@ -72,6 +73,7 @@ pub struct Capture {
     failure_call: Option<String>,
     failure_detail: Option<String>,
 }
+#[cfg(any(test, not(feature = "native-core")))]
 impl Capture {
     pub fn publish(&mut self, shared: &mut Shared) {
         if self.failed {
@@ -436,6 +438,7 @@ impl Capture {
     }
 }
 
+#[cfg(any(test, not(feature = "native-core")))]
 fn read_pixels(
     m: &GuestMemory,
     size: (u32, u32),

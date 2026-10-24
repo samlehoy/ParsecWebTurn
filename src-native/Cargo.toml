@@ -7,11 +7,12 @@ publish = false
 
 # Independent crate: neither Tauri nor WebView2 is linked.
 [features]
-default = ["vendor-video", "bud"]
+default = ["vendor-video", "bud", "wasm-core"]
+wasm-core = ["dep:wasmtime", "dep:glow"]
 vendor-video = ["dep:parsec-gpu-video"]
 bud = ["dep:parsec-native-bud"]
 native-core = ["windows-sys/Win32_System_SystemServices", "bud", "parsec-native-bud/native-core", "dep:zeroize"]
-diagnostics = ["dep:log", "dep:rcgen", "dep:ring", "dep:rustls", "dep:tokio-rustls", "wasmtime/wat", "wasmtime/cranelift"]
+diagnostics = ["wasm-core", "dep:log", "dep:rcgen", "dep:ring", "dep:rustls", "dep:tokio-rustls", "wasmtime/wat", "wasmtime/cranelift"]
 
 [dependencies]
 anyhow = "1"
@@ -30,21 +31,22 @@ rcgen = { version = "0.13", optional = true }
 futures-util = { version = "0.3", features = ["sink"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net"] }
 webrtc = "=0.14.0"
-glow = "=0.16.0"
+glow = { version = "=0.16.0", optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 log = { version = "0.4", optional = true }
 libopus_sys = { version = "=0.3.3", features = ["bundled", "static"] }
 ring = { version = "0.17", optional = true }
-wasmtime = { version = "38", default-features = false, features = ["std", "runtime", "threads"] }
+wasmtime = { version = "38", optional = true, default-features = false, features = ["std", "runtime", "threads"] }
 
 # Unit tests also exercise the diagnostic helpers without requiring a CLI build.
 [dev-dependencies]
+glow = "=0.16.0"
 log = "0.4"
 rcgen = "0.13"
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
-wasmtime = { version = "38", default-features = false, features = ["wat", "cranelift"] }
+wasmtime = { version = "38", default-features = false, features = ["std", "runtime", "threads", "wat", "cranelift"] }
 
 [profile.release]
 strip = true
@@ -67,7 +69,7 @@ turn = { path = "vendor/turn-0.11.0" }
 lowlat-core = { path = "crates/bud/vendor/lowlat-core" }
 
 [build-dependencies]
-wasmtime = { version = "38", default-features = false, features = ["std", "runtime", "cranelift", "threads"] }
+wasmtime = { version = "38", optional = true, default-features = false, features = ["std", "runtime", "cranelift", "threads"] }
 sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies.parsec-gpu-video]

@@ -1,12 +1,15 @@
-# Icon source
+# Application icon
 
-`parsec.ico` is the Parsec favicon obtained from <https://parsec.app/favicon.ico> on 2026-09-29. It is checked in so builds require no icon download, ImageMagick installation or conversion.
+`parsecwebturn.svg` is the editable source for the project's original blue
+linked-portals mark. It is independent of Parsec's logo. `parsecwebturn.png`
+contains a 512 px transparent preview; `parsecwebturn.ico` includes 16, 20, 24,
+32, 40, 48, 64, 128 and 256 px Windows resources. These assets use the project's
+root license. The previous third-party favicon has been replaced.
 
-SHA-256: `fce1a24e408ac00dcef4c8eb64e20d4042728b1fd1e96965a3da0f6f21869770`
-
-The icon is used only to identify the Parsec-focused launcher. ParsecWebTurn is an independent community project and is not affiliated with, endorsed by, or sponsored by Parsec or Unity.
-
-Parsec trademarks remain the property of their owners.
+Windows builds embed the ICO directly. No image conversion, extra asset files
+or network access is required on the user's machine. SVG/PNG are source/export
+assets only, not runtime dependencies. The shared resource supplies the EXE,
+taskbar/title bars, native launcher, Session button, stats, updates and About.
 
 ## Client comparison illustration
 

@@ -65,7 +65,7 @@ pub unsafe fn open(parent: HWND, bus: Arc<Shared>) -> HWND {
     RegisterClassW(&WNDCLASSW {
         lpfnWndProc: Some(proc),
         hInstance: instance,
-        hIcon: LoadIconW(instance, std::ptr::without_provenance(1)),
+        hIcon: crate::branding::icon(),
         hCursor: LoadCursorW(null_mut(), IDC_ARROW),
         lpszClassName: class.as_ptr(),
         ..std::mem::zeroed()

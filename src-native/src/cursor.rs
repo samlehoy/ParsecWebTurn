@@ -1,5 +1,6 @@
 //! Pinned Matoya cursor ABI, backed by documented Win32 cursor APIs.
 //! Guest image buffers are copied; all window cursor ownership stays on its UI thread.
+#[cfg(any(test, not(feature = "native-core")))]
 use crate::memory::GuestMemory;
 use anyhow::{bail, Context, Result};
 use windows_sys::Win32::{Graphics::Gdi::*, UI::WindowsAndMessaging::*};
@@ -97,6 +98,7 @@ pub fn handles(name: &str) -> bool {
         "web_set_png_cursor" | "web_set_rgba_cursor" | "web_show_cursor" | "web_use_default_cursor"
     )
 }
+#[cfg(any(test, not(feature = "native-core")))]
 pub fn decode(memory: &GuestMemory, name: &str, args: &[wasmtime::Val]) -> Result<Request> {
     let int = |i| {
         args.get(i)

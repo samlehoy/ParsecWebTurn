@@ -1,10 +1,14 @@
 //! Read-only adapter for input services omitted by the pinned 150-104a core.
 //! See docs/native-immersive-input.md for the audited ABI and version boundary.
+#[cfg(any(test, not(feature = "native-core")))]
 use crate::memory::GuestMemory;
 use anyhow::{ensure, Context, Result};
 
+#[cfg(any(test, not(feature = "native-core")))]
 const CONFIG_HASH: u32 = 2_954_756;
+#[cfg(any(test, not(feature = "native-core")))]
 const KEY: u32 = 2_123_041;
+#[cfg(any(test, not(feature = "native-core")))]
 const NAME: &[u8] = b"client_immersive\0";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -40,11 +44,13 @@ pub struct State {
     pub warp_disabled: bool,
 }
 
+#[cfg(any(test, not(feature = "native-core")))]
 fn add(base: u32, offset: u32) -> Result<u32> {
     base.checked_add(offset)
         .context("input ABI address overflow")
 }
 
+#[cfg(any(test, not(feature = "native-core")))]
 pub fn mode(memory: &GuestMemory) -> Result<Mode> {
     // The build verifies the complete core SHA-256. Also reject an uninitialized
     // or different layout here; never scan memory or guess a mode from UI pixels.
@@ -98,6 +104,7 @@ pub fn mode(memory: &GuestMemory) -> Result<Mode> {
     anyhow::bail!("immersive setting missing")
 }
 
+#[cfg(any(test, not(feature = "native-core")))]
 pub fn state(memory: &GuestMemory, app: u32, mode: Mode) -> Result<State> {
     ensure!(app != 0, "application not initialized");
     // MTY_AppCreate stores the main-app opaque argument at +884. Verify the
@@ -116,6 +123,7 @@ pub fn state(memory: &GuestMemory, app: u32, mode: Mode) -> Result<State> {
 
 /// GUI workers have separate host instances but edit the same guest memory.
 /// Read effective policy here rather than caching it in a single host instance.
+#[cfg(any(test, not(feature = "native-core")))]
 pub fn effective_state(memory: &GuestMemory, app: u32) -> Result<State> {
     state(memory, app, mode(memory)?)
 }

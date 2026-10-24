@@ -1,11 +1,13 @@
 use std::{env, fs, path::PathBuf, process::Command};
+#[cfg(feature = "wasm-core")]
 #[path = "src/core_config.rs"]
 mod core_config;
 fn main() {
-    println!("cargo:rerun-if-changed=../assets/parsec.ico");
+    println!("cargo:rerun-if-changed=../assets/parsecwebturn.ico");
     println!("cargo:rerun-if-changed=vendor/parsecd.wasm");
     println!("cargo:rerun-if-changed=src/core_config.rs");
     // Compile once for the portable target, never the build machine CPU.
+    #[cfg(feature = "wasm-core")]
     if env::var_os("CARGO_FEATURE_NATIVE_CORE").is_none() {
         use sha2::{Digest, Sha256};
         let bytes = fs::read("vendor/parsecd.wasm").expect("Fetch the pinned core first");
@@ -33,7 +35,7 @@ fn main() {
         return;
     }
     let output = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    let icon = fs::canonicalize("../assets/parsec.ico").expect("Application icon missing");
+    let icon = fs::canonicalize("../assets/parsecwebturn.ico").expect("Application icon missing");
     let icon = icon
         .display()
         .to_string()

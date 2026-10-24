@@ -217,6 +217,7 @@ impl Media {
     }
 
     /// Preserve the current audio/WASM playback boundary and libopus decoder.
+    #[cfg(any(test, not(feature = "native-core")))]
     pub fn poll_audio(
         &self,
         memory: &crate::memory::GuestMemory,

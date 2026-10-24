@@ -8,7 +8,7 @@ use std::{
 use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
-    System::LibraryLoader::*,
+    System::{LibraryLoader::*, SystemServices::SS_ICON},
     UI::{Controls::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 const BG: u32 = 0x00231d19;
@@ -557,6 +557,7 @@ pub fn choose(
         RegisterClassW(&WNDCLASSW {
             lpfnWndProc: Some(proc),
             hInstance: instance,
+            hIcon: crate::branding::icon(),
             lpszClassName: name.as_ptr(),
             hCursor: LoadCursorW(null_mut(), IDC_ARROW),
             ..std::mem::zeroed()
@@ -576,7 +577,10 @@ pub fn choose(
             (&mut *f as *mut Form).cast(),
         );
         ensure!(!hwnd.is_null(), "Native account window unavailable");
-        let heading = add(hwnd, &f, "STATIC", "ParsecWebTurn", 0, 0, [30, 24, 650, 46]);
+        let mark = add(hwnd, &f, "STATIC", "", 8, SS_ICON, [32, 28, 40, 40]);
+        SendMessageW(mark, STM_SETICON, crate::branding::icon() as usize, 0);
+        f.common_controls.push(mark);
+        let heading = add(hwnd, &f, "STATIC", "ParsecWebTurn", 0, 0, [84, 24, 490, 46]);
         SendMessageW(heading, WM_SETFONT, f.heading as usize, 0);
         f.common_controls.push(heading);
         let settings = add(
@@ -840,6 +844,20 @@ pub(crate) unsafe fn draw_button(lp: LPARAM) -> bool {
     SetTextColor(item.hDC, if disabled { 0x00888888 } else { FG });
     let mut label = wide(&text(item.hwndItem));
     let mut r = item.rcItem;
+    if item.CtlID == super::session_ui::OPEN as u32 {
+        DrawIconEx(
+            item.hDC,
+            r.left + 9,
+            r.top + (r.bottom - r.top - 20) / 2,
+            crate::branding::icon(),
+            20,
+            20,
+            0,
+            null_mut(),
+            DI_NORMAL,
+        );
+        r.left += 28;
+    }
     DrawTextW(
         item.hDC,
         label.as_mut_ptr(),

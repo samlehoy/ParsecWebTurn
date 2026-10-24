@@ -31,12 +31,16 @@ jobs:
           }
           cargo fmt --manifest-path src-native/Cargo.toml -- --check
           if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
+          $nativeTree = cargo tree --locked --manifest-path src-native/Cargo.toml --no-default-features --features native-core,vendor-video --edges normal,build --prefix none
+          if ($LASTEXITCODE -ne 0) { throw 'Native dependency audit failed' }
+          if ($nativeTree | Select-String '^(wasmtime|cranelift|glow|lowlat-(sdk|host|daemon|capture|encode))') { throw 'Unexpected legacy/host dependency in native runtime build' }
           $env:PWT_NATIVE_UI_CAPTURE = Join-Path (Get-Location) "dist/native-core/session-panel.png"
-          cargo test --locked --manifest-path src-native/Cargo.toml --features native-core -- --test-threads=1
+          cargo test --locked --manifest-path src-native/Cargo.toml --no-default-features --features native-core,vendor-video -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw 'Native core and shared regression tests failed' }
-          cargo build --locked --release --manifest-path src-native/Cargo.toml --features native-core
+          cargo build --locked --release --manifest-path src-native/Cargo.toml --no-default-features --features native-core,vendor-video
           if ($LASTEXITCODE -ne 0) { throw 'Native core build failed' }
           New-Item -ItemType Directory -Path dist/native-core -Force | Out-Null
+          $nativeTree | Set-Content -LiteralPath dist/native-core/dependencies.txt -Encoding utf8
           Copy-Item -LiteralPath src-native/target/x86_64-pc-windows-msvc/release/parsec-web-turn.exe -Destination dist/native-core/ParsecWebTurn-native-core.exe
           & ./dist/native-core/ParsecWebTurn-native-core.exe --version
           if ($LASTEXITCODE -ne 0) { throw 'Native version probe failed' }

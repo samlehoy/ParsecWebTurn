@@ -3,11 +3,13 @@
 Work branch: `codex/native-core`. This is a BUD-only bootstrap client, separate
 from dev/main and from published releases. It is not a feature-complete replacement.
 
-Build: `cargo build --release --manifest-path src-native/Cargo.toml --features native-core`.
+Build: `cargo build --release --manifest-path src-native/Cargo.toml --no-default-features --features native-core,vendor-video`.
 The build does not fetch, compile, embed or execute `parsecd.wasm`. All new runtime
-code is Rust, including the native Win32 sign-in UI. The shared source tree still
-contains the existing WASM bridge and its build dependencies for the normal build;
-removing that compile-time coupling is not yet completed.
+code is Rust, including the native Win32 sign-in UI. The native runtime/build
+dependency graph excludes Wasmtime, Cranelift and glow; CI checks this. The normal
+WASM client retains its separate default `wasm-core` feature. Synthetic regression
+tests deliberately keep the old ABI test dependencies; these do not enter the
+native release. See [cleanup audit](native-core-cleanup.md).
 
 ## First live check
 
@@ -114,6 +116,8 @@ Video settings include **Hide session button**; the session menu also has a
 **Hide button** action. This preference is saved in settings.json. Ctrl+Shift+M
 still opens the menu while the button is hidden, following the stock Windows
 [menu shortcut](https://support.parsec.app/hc/en-us/articles/32381778420372-Configure-Hotkeys).
+The shortcut also clears the saved hidden-button preference, so the button
+reappears immediately and remains visible on the next launch.
 **Send Ctrl+Alt+Del** / **Ctrl+Alt+End** sends the stock application sub-ID 14
 request, independently corroborated by the pinned core UI and lowlat daemon.
 The unmodified host checks permissions and needs its installed service for

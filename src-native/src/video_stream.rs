@@ -1,7 +1,14 @@
 //! Bounded inspection of pinned Parsec video framing, not a decoder.
 //! Proprietary metadata is separate from H.264/HEVC Annex B byte-stream syntax.
-use crate::backend::VideoProtocol;
 use serde::Serialize;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct VideoProtocol {
+    pub version: u32,
+    pub message_size: u32,
+    pub version_offset: u32,
+    pub flag_offset: u32,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub enum Codec {

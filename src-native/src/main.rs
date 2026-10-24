@@ -3,6 +3,9 @@
     windows_subsystem = "windows"
 )]
 #![warn(unused_crate_dependencies)]
+#[cfg(all(feature = "native-core", feature = "wasm-core"))]
+compile_error!("Use --no-default-features --features native-core,vendor-video for the independent native client");
+#[cfg(any(test, not(feature = "native-core")))]
 mod attempt;
 #[cfg(all(windows, feature = "bud"))]
 mod bud_attempt;
@@ -15,6 +18,7 @@ const APP_TITLE: &str = "ParsecWebTurn - native core";
 const PARSEC_CORE_VERSION: &str = "150-104a";
 #[cfg(any(test, feature = "diagnostics"))]
 mod attempt_probe;
+#[cfg(any(test, not(feature = "native-core")))]
 mod audio;
 mod audio_layout;
 mod audio_stream;
@@ -22,14 +26,20 @@ mod audio_stream;
 mod audio_windows;
 #[cfg(any(test, feature = "diagnostics"))]
 mod audit_probe;
+#[cfg(any(test, not(feature = "native-core")))]
 mod backend;
+#[cfg(windows)]
+mod branding;
+#[cfg(any(test, not(feature = "native-core")))]
 mod buffers;
 mod connection_settings;
 mod connection_settings_ui;
 mod control;
 #[cfg(any(windows, feature = "diagnostics"))]
+#[cfg(any(test, not(feature = "native-core")))]
 mod core_config;
 #[cfg(windows)]
+#[cfg(any(test, not(feature = "native-core")))]
 mod core_hotkeys;
 #[cfg(windows)]
 mod core_input;
@@ -44,6 +54,7 @@ mod cursor;
 #[cfg(test)]
 mod data_only_policy_tests;
 #[cfg(windows)]
+#[cfg(any(test, not(feature = "native-core")))]
 mod desktop;
 mod event_log;
 #[cfg(any(windows, test))]
@@ -58,12 +69,15 @@ mod fullscreen;
 #[cfg(windows)]
 mod gpu_windows;
 #[cfg(windows)]
+#[cfg(any(test, not(feature = "native-core")))]
 mod graphics;
 #[cfg(windows)]
 mod gui_visibility;
 #[cfg(all(windows, feature = "bud"))]
 mod hid_input;
+#[cfg(any(test, not(feature = "native-core")))]
 mod host;
+#[cfg(any(test, not(feature = "native-core")))]
 mod http;
 #[cfg(any(test, feature = "diagnostics"))]
 mod http_probe;
@@ -74,14 +88,18 @@ mod lifecycle;
 mod media_ingress;
 #[cfg(windows)]
 mod media_scheduling;
+#[cfg(any(test, not(feature = "native-core")))]
 mod memory;
 mod network_audit;
 mod network_policy;
 #[cfg(windows)]
+#[cfg(any(test, not(feature = "native-core")))]
 mod overlay;
 #[cfg(windows)]
+#[cfg(any(test, not(feature = "native-core")))]
 mod overlay_software;
 #[cfg(windows)]
+#[cfg(any(test, not(feature = "native-core")))]
 mod overlay_windows;
 #[cfg(windows)]
 mod performance;
@@ -92,6 +110,7 @@ mod platform;
 mod platform_probe;
 #[cfg(windows)]
 mod platform_windows;
+#[cfg(any(test, not(feature = "native-core")))]
 mod poll;
 mod secure_storage;
 #[cfg(any(test, feature = "diagnostics"))]
@@ -103,6 +122,7 @@ mod stats;
 mod stats_ui;
 #[cfg(any(test, feature = "diagnostics"))]
 mod thread_probe;
+#[cfg(any(test, not(feature = "native-core")))]
 mod threads;
 #[cfg(any(test, feature = "diagnostics"))]
 mod tls_probe;
@@ -122,24 +142,31 @@ mod video_stream;
 #[cfg(windows)]
 mod video_windows;
 mod viewport;
+#[cfg(any(test, not(feature = "native-core")))]
 mod wait;
 #[cfg(windows)]
 mod wake_lock;
+#[cfg(any(test, not(feature = "native-core")))]
 mod websocket;
 #[cfg(any(test, feature = "diagnostics"))]
 mod websocket_probe;
 #[cfg(windows)]
 mod window;
 
+#[cfg(any(test, not(feature = "native-core")))]
 use anyhow::{bail, Context, Result};
+#[cfg(any(test, not(feature = "native-core")))]
 use host::HostState;
+#[cfg(any(test, not(feature = "native-core")))]
 use memory::GuestMemory;
+#[cfg(any(test, not(feature = "native-core")))]
 use std::{
     sync::{atomic::Ordering, Arc},
     time::Duration,
 };
 #[cfg(test)]
 use wasmtime::Config;
+#[cfg(any(test, not(feature = "native-core")))]
 use wasmtime::{Engine, ExternType, Func, Instance, Linker, Module, SharedMemory, Store};
 #[cfg(feature = "diagnostics")]
 use {
@@ -168,6 +195,7 @@ fn main() {
     native_core::main();
 }
 #[cfg(any(test, feature = "diagnostics"))]
+#[cfg(any(test, not(feature = "native-core")))]
 fn instantiate(engine: &Engine, module: &Module) -> Result<(Store<HostState>, Instance)> {
     #[cfg(windows)]
     {
@@ -180,6 +208,7 @@ fn instantiate(engine: &Engine, module: &Module) -> Result<(Store<HostState>, In
 }
 
 #[cfg(windows)]
+#[cfg(any(test, not(feature = "native-core")))]
 fn instantiate_mode(
     engine: &Engine,
     module: &Module,
@@ -188,6 +217,7 @@ fn instantiate_mode(
     instantiate_base_with_window(engine, module, window)
 }
 
+#[cfg(any(test, not(feature = "native-core")))]
 fn instantiate_base_with_window(
     engine: &Engine,
     module: &Module,
@@ -233,6 +263,7 @@ fn instantiate_base_with_window(
     instantiate_with_runtime(Arc::new(runtime))
 }
 
+#[cfg(any(test, not(feature = "native-core")))]
 fn instantiate_with_runtime(
     runtime: Arc<threads::ThreadRuntime>,
 ) -> Result<(Store<HostState>, Instance)> {
@@ -311,6 +342,7 @@ fn instantiate_with_runtime(
 }
 
 #[cfg(any(test, feature = "diagnostics"))]
+#[cfg(any(test, not(feature = "native-core")))]
 fn allocator_roundtrip(store: &mut Store<HostState>, instance: &Instance) -> Result<()> {
     let alloc = instance.get_typed_func::<(i32, i32), i32>(&mut *store, "mty_system_alloc")?;
     let free = instance.get_typed_func::<i32, ()>(&mut *store, "mty_system_free")?;

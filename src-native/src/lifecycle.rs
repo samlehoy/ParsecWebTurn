@@ -51,6 +51,7 @@ impl StopSignal {
 
 /// Epoch callbacks handle cancellation only. Replenish fuel at host-call
 /// boundaries, where Wasmtime saves/reloads its compiled fuel counter.
+#[cfg(any(test, not(feature = "native-core")))]
 pub fn configure_store<T: 'static>(
     store: &mut wasmtime::Store<T>,
     stop: std::sync::Arc<StopSignal>,
@@ -63,6 +64,7 @@ pub fn configure_store<T: 'static>(
     });
 }
 
+#[cfg(any(test, not(feature = "native-core")))]
 pub fn renew_fuel<T>(
     caller: &mut wasmtime::Caller<'_, T>,
     stop: &StopSignal,

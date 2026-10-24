@@ -15,7 +15,7 @@ use std::{
     },
     time::Duration,
 };
-pub(crate) const MAX_CHANNEL_MESSAGE: usize = 1024 * 1024;
+pub(crate) const MAX_CHANNEL_MESSAGE: usize = crate::control::MAX_CHANNEL_MESSAGE;
 static ACTIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
 struct Permit;
 impl Drop for Permit {

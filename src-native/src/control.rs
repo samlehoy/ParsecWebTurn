@@ -4,15 +4,18 @@ use anyhow::{bail, Context, Result};
 use bytes::Bytes;
 use serde_json::{json, Value};
 
-const LIMIT: usize = 1024 * 1024;
+pub(crate) const MAX_CHANNEL_MESSAGE: usize = 1024 * 1024;
+const LIMIT: usize = MAX_CHANNEL_MESSAGE;
 
 #[derive(Clone)]
+#[cfg(any(test, not(feature = "native-core")))]
 pub struct Config {
     pub video_protocol: crate::backend::VideoProtocol,
     pub allow_hevc: bool,
     pub ten_bit: bool,
 }
 
+#[cfg(any(test, not(feature = "native-core")))]
 impl Config {
     pub fn video_flags(&self) -> u32 {
         0x08 | u32::from(self.allow_hevc)

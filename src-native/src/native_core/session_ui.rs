@@ -16,6 +16,7 @@ use windows_sys::Win32::{
     UI::{Controls::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 pub const OPEN: usize = 4600;
+pub const OPEN_SHORTCUT: usize = 4610;
 const APPLY: usize = 4602;
 const CLOSE: usize = 4603;
 const DISCONNECT: usize = 4604;
@@ -984,7 +985,15 @@ mod tests {
             "parsec-overlay-fixture-{}.json",
             crate::bud_attempt::native_attempt_id().unwrap()
         ));
-        window.install_connection_settings(crate::connection_settings::Manager::open(path));
+        struct Remove(std::path::PathBuf);
+        impl Drop for Remove {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _remove = Remove(path.clone());
+        let manager = crate::connection_settings::Manager::open(path.clone());
+        window.install_connection_settings(manager.clone());
         let button_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let button = loop {
             let button = window.native_session_button.load(Ordering::Acquire) as HWND;
@@ -1155,5 +1164,20 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, crate::window::Event::NativeSession(Action::HideButton))));
+        manager
+            .update_native(|p| p.hide_session_button = true)
+            .unwrap();
+        window.native_toggle_overlay();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while manager.native_session_button_hidden()
+            || window.native_panel.load(Ordering::Acquire) == 0
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Menu shortcut must restore the persisted button preference"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!crate::connection_settings::Manager::open(path).native_session_button_hidden());
     }
 }

@@ -396,6 +396,7 @@ impl Pipeline {
             allowed: self.allowed,
         })
     }
+    #[cfg(any(test, not(feature = "native-core")))]
     pub fn poll(
         &self,
         memory: &crate::memory::GuestMemory,
