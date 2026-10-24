@@ -41,11 +41,11 @@ host orientation, mouse/keyboard/both immersive capture, and fullscreen. Apply
 saves preferences for later connections. Host video values are requests and remain
 subject to host permissions, supported display modes and encoder capacity.
 Constant FPS does not duplicate frames or add pacing on the client. Keep host
-leaves unset bitrate/FPS/pacing/orientation fields absent from the request.
+leaves the host's existing bitrate/FPS/pacing/orientation fields unchanged.
 
 The slightly translucent panel uses an owned layered Win32/GDI window, so the
-Windows compositor keeps it above the DXGI video child without global topmost. It it does not read back or copy
-video pixels. Local controls release remote held input while focused. BUD rotation
+Windows compositor keeps it above the DXGI video child without global topmost.
+The panel does not read back or copy video pixels. Local controls release remote held input while focused. BUD rotation
 metadata selects a D3D11 VideoProcessor rotation in the existing conversion pass;
 no extra intermediate frame is introduced. Rotated streams use normal GPU
 presentation, with an explicit Zero copy status, because original-surface rotation

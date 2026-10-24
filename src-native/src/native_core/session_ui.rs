@@ -22,6 +22,7 @@ const DISCONNECT: usize = 4604;
 const SETTINGS: usize = 4605;
 const STATUS: i32 = 4606;
 pub const RESULT: u32 = WM_APP + 26;
+pub const VISIBILITY: u32 = WM_APP + 27;
 const BG: u32 = 0x00231d19;
 const FIELD: u32 = 0x003a322c;
 const FG: u32 = 0x00f5f3f0;
@@ -142,6 +143,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
     if !pointer.is_null() {
         let p = &mut *pointer;
         match msg {
+            WM_ACTIVATE => {
+                PostMessageW(GetParent(hwnd), VISIBILITY, 0, 0);
+            }
             WM_SIZE => {
                 let mut r = std::mem::zeroed();
                 GetClientRect(hwnd, &mut r);
@@ -367,7 +371,11 @@ pub unsafe fn install(window: &crate::window::Window) {
 }
 pub unsafe fn raise(window: &crate::window::Window) {
     let parent = window.handle();
-    let visible = !window.settings_open()
+    let foreground = GetForegroundWindow();
+    let active = foreground == parent
+        || (!foreground.is_null() && GetAncestor(foreground, GA_ROOTOWNER) == parent);
+    let visible = active
+        && !window.settings_open()
         && !window.closing.load(Ordering::Acquire)
         && IsIconic(parent) == 0
         && IsWindowVisible(parent) != 0;
@@ -382,7 +390,7 @@ pub unsafe fn raise(window: &crate::window::Window) {
             origin.y,
             108,
             34,
-            SWP_NOACTIVATE,
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER,
         );
         ShowWindow(button, if visible { SW_SHOWNA } else { SW_HIDE });
     }
@@ -397,7 +405,7 @@ pub unsafe fn raise(window: &crate::window::Window) {
             origin.y + 44,
             420,
             (r.bottom - 76).clamp(120, 580),
-            SWP_NOACTIVATE,
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER,
         );
         ShowWindow(panel, if visible { SW_SHOWNA } else { SW_HIDE });
     }

@@ -1252,6 +1252,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
             #[cfg(feature = "native-core")]
+            m if m == crate::native_core::session_ui::VISIBILITY => {
+                crate::native_core::session_ui::raise(s);
+                return 0;
+            }
+            #[cfg(feature = "native-core")]
             WM_DRAWITEM if crate::native_core::ui::draw_button(lp) => {
                 return 1;
             }
@@ -1450,7 +1455,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                         0,
                         class.as_ptr(),
                         std::ptr::null(),
-                        WS_CHILD | WS_DISABLED | WS_CLIPSIBLINGS,
+                        WS_CHILD | WS_DISABLED,
                         0,
                         0,
                         width.max(1),
@@ -1633,6 +1638,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 s.apply_input_capture();
             }
             WM_SETFOCUS => {
+                #[cfg(feature = "native-core")]
+                PostMessageW(hwnd, crate::native_core::session_ui::VISIBILITY, 0, 0);
                 s.has_focus.store(true, Ordering::Release);
                 // Foreground activation can still be in progress while this
                 // synchronous focus notification is being dispatched.
@@ -1659,6 +1666,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 s.apply_input_capture();
             }
             WM_KILLFOCUS => {
+                #[cfg(feature = "native-core")]
+                PostMessageW(hwnd, crate::native_core::session_ui::VISIBILITY, 0, 0);
                 s.has_focus.store(false, Ordering::Release);
                 #[cfg(feature = "bud")]
                 s.apply_hid_capture(false);
