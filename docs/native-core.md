@@ -174,7 +174,8 @@ engine and its pinned channel/initialization contract, without the WASM core.
 It still needs live direct, TURN/UDP, TURN/TLS and TURN/TCP verification in this
 independent build. BUD-only HID and raw/multichannel audio stay BUD-only.
 
-Prefer 4:4:4 offers 8-bit HEVC only after selected-GPU Main444/AYUV decoding
+Prefer 4:4:4 is currently supported on NVIDIA client GPUs only (experimental).
+It offers 8-bit HEVC only after selected-GPU Main444/AYUV decoding
 and AYUV video-processor input checks. Existing pinned lowlat DXVA range-extension
 parameters are reused in the GPU-only direct decoder. AYUV goes directly to the
 existing conversion/presentation pass, with no CPU pixel readback or intermediate
@@ -184,7 +185,8 @@ video copy. This mode uses normal GPU rendering, not original-NV12 zero copy;
 8-bit 4:4:4 decoding/presentation has been confirmed on NVIDIA GeForce RTX 3060.
 The tested AMD Radeon 780M driver rejects the Main444 profile query with
 `0x80070057`, so that configuration advertises 4:2:0 only. This is not a blanket
-claim about all AMD hardware or APIs; other configurations remain unverified.
+claim about all AMD hardware or APIs. AMD and Intel 4:4:4 client configurations
+are not currently supported; other NVIDIA configurations remain unverified.
 
 See [stock settings comparison](native-settings-comparison.md) for existing
 features and possible future additions; unimplemented options were not added.

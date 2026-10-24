@@ -583,12 +583,12 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     SendMessageW(timing, CB_SETCURSEL, selection, 0);
     #[cfg(feature = "native-core")]
     {
-        row_label(hwnd, page, "Chroma", "Experimental GPU 4:4:4 (8-bit HEVC).\nRequires host encoding and client AYUV support.\nUses normal GPU rendering; host may send 4:2:0 instead.", 720, 0, 64);
+        row_label(hwnd, page, "Chroma", "NVIDIA client GPUs only (experimental 8-bit HEVC).\nRequires compatible host encoding and client AYUV support.\nUses normal GPU rendering; host may send 4:2:0 instead.", 720, 0, 64);
         add(
             hwnd,
             page,
             "BUTTON",
-            "Prefer 4:4:4 color (experimental)",
+            "Prefer 4:4:4 (NVIDIA only, experimental)",
             BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
             [420, 720, 400, 36],
             CHROMA_444,

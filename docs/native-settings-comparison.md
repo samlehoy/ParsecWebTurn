@@ -13,7 +13,7 @@ This comparison does not add the other listed features to the application.
 | Decoder selection | Automatic AMF/VPL/direct D3D11/MF selection and recovery | Manual forcing/software decode are separate features; no such selector currently |
 | H.265 | GPU capability check and H.264 host fallback | Existing |
 | 10-bit color | Main 10 request, SPS verification, P010 and RGB10 SDR output | Host encoder compatibility still matters; unsupported hosts can disconnect |
-| Prefer 4:4:4 | New experimental 8-bit HEVC/AYUV direct GPU path | Needs live encoder/client validation; unavailable GPU support must not be advertised |
+| Prefer 4:4:4 | Experimental 8-bit HEVC/AYUV direct GPU path; currently NVIDIA client GPUs only | Confirmed live over BUD on RTX 3060; other configurations need validation |
 | Audio codec | Opus; optional raw PCM over BUD | Existing; raw PCM is not offered on the restored WebRTC path |
 | Audio buffer | Optional bounded custom minimum/maximum | Existing |
 | Immersive mode | Mouse, keyboard or both | Existing |
