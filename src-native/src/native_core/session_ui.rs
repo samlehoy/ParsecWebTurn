@@ -780,6 +780,7 @@ mod tests {
             SendMessageW(panel, WM_COMMAND, APPLY, 0);
         }
         let mut events = std::collections::VecDeque::new();
+        events.clear();
         window.events.take_batch(&mut events);
         assert!(events.iter().any(|e|matches!(e,crate::window::Event::NativeSession(Action::Apply(v)) if v.resolution==Resolution::Host && v.immersive==0)));
         for (selected, mode) in [(0, 0), (1, 3), (2, 2), (3, 1)] {
@@ -791,12 +792,14 @@ mod tests {
                 SendMessageW(panel, RESULT, 0, 0);
                 SendMessageW(panel, WM_COMMAND, APPLY, 0);
             }
+            events.clear();
             window.events.take_batch(&mut events);
             assert!(events.iter().any(|event|matches!(event,crate::window::Event::NativeSession(Action::Apply(v)) if v.resolution==Resolution::Fixed(1280,720) && v.bandwidth_mbps==Some(15) && v.fps==Some(60) && v.constant_fps==Some(true) && v.rotated==Some(true) && v.immersive==mode && v.fullscreen)));
         }
         unsafe {
             SendMessageW(panel, WM_COMMAND, DISCONNECT, 0);
         }
+        events.clear();
         window.events.take_batch(&mut events);
         assert!(events.iter().any(|event| matches!(
             event,
