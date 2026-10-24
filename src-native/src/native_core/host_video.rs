@@ -3,6 +3,57 @@
 use super::profile::{Resolution, Video};
 use anyhow::{ensure, Context, Result};
 use serde_json::Value;
+use std::time::{Duration, Instant};
+
+/// Sub-ID 11 has no request ID or apply acknowledgement. A query can return
+/// the old configuration while the host's UI thread applies the update.
+/// Send the write once; poll reads only until its fields agree or time out.
+pub struct Confirmation {
+    expected: Value,
+    poll_at: Instant,
+    deadline: Instant,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub enum Verification {
+    Waiting,
+    Query,
+    Confirmed,
+    TimedOut,
+}
+impl Confirmation {
+    pub fn new(frame: &[u8], now: Instant) -> Result<Self> {
+        let value: Value = serde_json::from_slice(&frame[13..frame.len() - 1])?;
+        Ok(Self {
+            expected: value["video"][0].clone(),
+            poll_at: now + Duration::from_millis(150),
+            deadline: now + Duration::from_secs(5),
+        })
+    }
+    pub fn poll(&mut self, config: &Config, now: Instant) -> Verification {
+        if config.value.as_ref().is_some_and(|v| {
+            [
+                "encoderFPS",
+                "encoderMaxBitrate",
+                "resolutionX",
+                "resolutionY",
+                "fullFPS",
+                "rotated",
+            ]
+            .iter()
+            .all(|key| v["video"][0][*key] == self.expected[*key])
+        }) {
+            return Verification::Confirmed;
+        }
+        if now >= self.deadline {
+            return Verification::TimedOut;
+        }
+        if now >= self.poll_at {
+            self.poll_at = now + Duration::from_millis(250);
+            return Verification::Query;
+        }
+        Verification::Waiting
+    }
+}
 #[derive(Default)]
 pub struct Config {
     value: Option<Value>,
@@ -74,6 +125,60 @@ pub fn diagnostic(bytes: &[u8]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn delayed_host_apply_is_polled_without_accepting_the_previous_values() {
+        let original = serde_json::json!({"video":[{"encoderFPS":60,"encoderMaxBitrate":50,"resolutionX":1920,"resolutionY":1080,"fullFPS":false,"rotated":false}]});
+        let mut config = Config::default();
+        config.receive(original.to_string().as_bytes()).unwrap();
+        let desired = Video {
+            fps: Some(30),
+            bandwidth_mbps: Some(20),
+            constant_fps: Some(true),
+            resolution: Resolution::Fixed(1280, 720),
+            ..Default::default()
+        };
+        let frame = config.request(&desired, (1920, 1080)).unwrap();
+        let start = Instant::now();
+        let mut verify = Confirmation::new(&frame, start).unwrap();
+        assert_eq!(verify.poll(&config, start), Verification::Waiting);
+        assert_eq!(
+            verify.poll(&config, start + Duration::from_millis(150)),
+            Verification::Query
+        );
+        // The first reply can still be the host state before its apply task.
+        config.receive(original.to_string().as_bytes()).unwrap();
+        assert_eq!(
+            verify.poll(&config, start + Duration::from_millis(200)),
+            Verification::Waiting
+        );
+        assert_eq!(
+            verify.poll(&config, start + Duration::from_millis(400)),
+            Verification::Query
+        );
+        config.receive(&frame[13..frame.len() - 1]).unwrap();
+        assert_eq!(
+            verify.poll(&config, start + Duration::from_millis(450)),
+            Verification::Confirmed
+        );
+        // A later bandwidth-only request must preserve the confirmed resolution.
+        let next = config
+            .request(
+                &Video {
+                    bandwidth_mbps: Some(10),
+                    ..Default::default()
+                },
+                (1920, 1080),
+            )
+            .unwrap();
+        let target: Value = serde_json::from_slice(&next[13..next.len() - 1]).unwrap();
+        assert_eq!(target["video"][0]["resolutionX"], 1280);
+        assert_eq!(target["video"][0]["encoderFPS"], 30);
+        let mut next_verify = Confirmation::new(&next, start).unwrap();
+        assert_eq!(
+            next_verify.poll(&config, start + Duration::from_secs(5)),
+            Verification::TimedOut
+        );
+    }
     #[test]
     fn current_stock_host_five_slots_are_accepted_and_preserved() {
         let stream = serde_json::json!({"output":"none","encoderFPS":60,"encoderMaxBitrate":50,"resolutionX":0,"resolutionY":0,"rotated":false,"fullFPS":false,"hostOS":0});

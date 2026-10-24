@@ -114,6 +114,14 @@ application sub-ID 11, and a JSON **object containing the `video` array**, not a
 bare array. The host's returned object, untouched streams, output identity and
 other fields are preserved. After an update the client requests the actual
 configuration again; the panel and optional event log show the host's reply.
+The stock host can answer before its settings task applies the update. The
+client sends each write once, then polls configuration reads at most four times
+per second for up to five seconds. Apply remains pending until the requested
+fields match, or a failure is shown. Old replies are not displayed as successful
+confirmation and cannot be used for another concurrent edit. Bandwidth, FPS,
+frame pacing and orientation have concrete menu choices; only resolution offers
+Keep host. Missing preferences in older profiles use current host values where
+usable, otherwise 10 Mbps / 60 FPS / adaptive / default orientation.
 This contract was rechecked against the pinned core's native UI and lowlat's
 daemon app.rs. The installed stock Windows host (150-105c) additionally confirms
 that its serializer and reader support five video slots; all five are preserved,

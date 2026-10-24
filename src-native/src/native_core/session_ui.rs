@@ -59,13 +59,10 @@ unsafe fn text(h: HWND) -> String {
     String::from_utf16_lossy(&b[..used])
 }
 fn number(text: &str, max: u32) -> Result<Option<u32>> {
-    if text == "Keep host" {
-        return Ok(None);
-    }
     let n: u32 = text
         .trim()
         .parse()
-        .map_err(|_| anyhow::anyhow!("Enter a number, or select Keep host."))?;
+        .map_err(|_| anyhow::anyhow!("Enter a number."))?;
     ensure!((1..=max).contains(&n), "Value must be 1–{max}.");
     Ok(Some(n))
 }
@@ -87,16 +84,8 @@ unsafe fn collect(p: &Panel) -> Result<Video> {
         resolution: resolution(&text(p.controls[0]))?,
         bandwidth_mbps: number(&text(p.controls[1]), 100)?,
         fps: number(&text(p.controls[2]), 240)?,
-        constant_fps: match select(3) {
-            1 => Some(false),
-            2 => Some(true),
-            _ => None,
-        },
-        rotated: match select(4) {
-            1 => Some(false),
-            2 => Some(true),
-            _ => None,
-        },
+        constant_fps: Some(select(3) == 1),
+        rotated: Some(select(4) == 1),
         immersive: match select(5) {
             1 => 3,
             2 => 2,
@@ -204,7 +193,15 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 return 1;
             }
             RESULT => {
-                EnableWindow(GetDlgItem(hwnd, APPLY as i32), 1);
+                EnableWindow(
+                    GetDlgItem(hwnd, APPLY as i32),
+                    i32::from(
+                        wp != 3
+                            && !(&*p.window)
+                                .native_host_video_pending
+                                .load(Ordering::Acquire),
+                    ),
+                );
                 SetWindowTextW(
                     GetDlgItem(hwnd, STATUS),
                     wide(&if wp == 2 {
@@ -220,6 +217,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                             observed["bandwidth_mbps"],
                             observed["constant_fps"]
                         )
+                    } else if wp == 3 {
+                        "Waiting for the host to confirm video settings...".into()
+                    } else if wp == 4 {
+                        "Host did not confirm the requested settings. See the event log.".into()
                     } else if wp == 0 {
                         "Applied locally; video settings requested from host.".into()
                     } else {
@@ -421,7 +422,7 @@ pub unsafe fn install(window: &crate::window::Window) {
                 GetStockObject(DEFAULT_GUI_FONT) as usize,
                 1,
             );
-            SetLayeredWindowAttributes(button, 0, 245, LWA_ALPHA);
+            SetLayeredWindowAttributes(button, 0, 200, LWA_ALPHA);
             window
                 .native_session_button
                 .store(button as usize, Ordering::Release);
@@ -481,7 +482,48 @@ pub unsafe fn toggle(
         SetFocus(parent);
         return;
     }
-    let video = manager.view().0.native_core.video;
+    let mut video = manager.view().0.native_core.video;
+    // Old profiles may omit these requests. Show concrete current values,
+    // falling back only where the host has no usable numeric preference.
+    let observed = window
+        .native_host_video
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    video.bandwidth_mbps = Some(
+        video
+            .bandwidth_mbps
+            .or_else(|| {
+                observed["bandwidth_mbps"]
+                    .as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .filter(|n| (1..=100).contains(n))
+            })
+            .unwrap_or(10),
+    );
+    video.fps = Some(
+        video
+            .fps
+            .or_else(|| {
+                observed["fps"]
+                    .as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .filter(|n| (1..=240).contains(n))
+            })
+            .unwrap_or(60),
+    );
+    video.constant_fps = Some(
+        video
+            .constant_fps
+            .or_else(|| observed["constant_fps"].as_bool())
+            .unwrap_or(false),
+    );
+    video.rotated = Some(
+        video
+            .rotated
+            .or_else(|| observed["rotated"].as_bool())
+            .unwrap_or(false),
+    );
+    drop(observed);
     let mut panel = Box::new(Panel {
         window,
         window_owned: false,
@@ -585,10 +627,8 @@ pub unsafe fn toggle(
         p,
         21,
         144,
-        &["Keep host", "5", "10", "15", "20", "30", "50", "100"],
-        &video
-            .bandwidth_mbps
-            .map_or("Keep host".into(), |n| n.to_string()),
+        &["5", "10", "15", "20", "30", "50", "100"],
+        &video.bandwidth_mbps.unwrap().to_string(),
         true,
     );
     p.controls[2] = combo(
@@ -596,8 +636,8 @@ pub unsafe fn toggle(
         p,
         22,
         188,
-        &["Keep host", "30", "60", "90", "120", "144", "165", "240"],
-        &video.fps.map_or("Keep host".into(), |n| n.to_string()),
+        &["30", "60", "90", "120", "144", "165", "240"],
+        &video.fps.unwrap().to_string(),
         true,
     );
     p.controls[3] = combo(
@@ -605,11 +645,11 @@ pub unsafe fn toggle(
         p,
         23,
         232,
-        &["Keep host", "Adaptive", "Constant FPS"],
-        match video.constant_fps {
-            None => "Keep host",
-            Some(false) => "Adaptive",
-            Some(true) => "Constant FPS",
+        &["Adaptive", "Constant FPS"],
+        if video.constant_fps == Some(true) {
+            "Constant FPS"
+        } else {
+            "Adaptive"
         },
         false,
     );
@@ -618,11 +658,11 @@ pub unsafe fn toggle(
         p,
         24,
         276,
-        &["Keep host", "Default", "Rotated"],
-        match video.rotated {
-            None => "Keep host",
-            Some(false) => "Default",
-            Some(true) => "Rotated",
+        &["Default", "Rotated"],
+        if video.rotated == Some(true) {
+            "Rotated"
+        } else {
+            "Default"
         },
         false,
     );
@@ -683,6 +723,9 @@ pub unsafe fn toggle(
     ShowWindow(hwnd, SW_SHOW);
     raise(window);
     SetFocus(p.controls[0]);
+    if window.native_host_video_pending.load(Ordering::Acquire) {
+        SendMessageW(hwnd, RESULT, 3, 0);
+    }
     #[cfg(test)]
     SetPropW(
         hwnd,
@@ -695,6 +738,28 @@ pub fn result(window: &crate::window::Window, ok: bool) {
         let panel = panel(window);
         if !panel.is_null() {
             PostMessageW(panel, RESULT, usize::from(!ok), 0);
+        }
+    }
+}
+pub fn waiting(window: &crate::window::Window) {
+    window
+        .native_host_video_pending
+        .store(true, Ordering::Release);
+    unsafe {
+        let hwnd = panel(window);
+        if !hwnd.is_null() {
+            PostMessageW(hwnd, RESULT, 3, 0);
+        }
+    }
+}
+pub fn finished(window: &crate::window::Window, confirmed: bool) {
+    window
+        .native_host_video_pending
+        .store(false, Ordering::Release);
+    unsafe {
+        let hwnd = panel(window);
+        if !hwnd.is_null() {
+            PostMessageW(hwnd, RESULT, if confirmed { 2 } else { 4 }, 0);
         }
     }
 }
@@ -720,7 +785,7 @@ mod tests {
             resolution("3440 x 1440").unwrap(),
             Resolution::Fixed(3440, 1440)
         );
-        assert_eq!(number("Keep host", 100).unwrap(), None);
+        assert!(number("Keep host", 100).is_err());
         assert!(number("101", 100).is_err());
         assert!(resolution("wrong").is_err());
     }
@@ -772,6 +837,21 @@ mod tests {
         };
         unsafe {
             assert_eq!(GetWindow(panel, GW_OWNER), window.handle());
+            for id in [21, 22, 23, 24] {
+                assert_eq!(
+                    SendMessageW(
+                        GetDlgItem(panel, id),
+                        CB_FINDSTRINGEXACT,
+                        usize::MAX,
+                        wide("Keep host").as_ptr() as isize
+                    ),
+                    CB_ERR as isize
+                );
+            }
+            SendMessageW(panel, RESULT, 3, 0);
+            assert_eq!(IsWindowEnabled(GetDlgItem(panel, APPLY as i32)), 0);
+            SendMessageW(panel, RESULT, 2, 0);
+            assert_ne!(IsWindowEnabled(GetDlgItem(panel, APPLY as i32)), 0);
             assert_ne!(GetWindowLongPtrW(panel, GWL_STYLE) as u32 & WS_POPUP, 0);
             assert_ne!(
                 GetWindowLongPtrW(panel, GWL_EXSTYLE) as u32 & WS_EX_LAYERED,
@@ -828,7 +908,7 @@ mod tests {
         assert!(events.iter().any(|e|matches!(e,crate::window::Event::NativeSession(Action::Apply(v)) if v.resolution==Resolution::Host && v.immersive==0)));
         for (selected, mode) in [(0, 0), (1, 3), (2, 2), (3, 1)] {
             unsafe {
-                for (id, index) in [(20, 2), (21, 3), (22, 2), (23, 2), (24, 2), (25, selected)] {
+                for (id, index) in [(20, 2), (21, 2), (22, 1), (23, 1), (24, 1), (25, selected)] {
                     SendMessageW(GetDlgItem(panel, id), CB_SETCURSEL, index, 0);
                 }
                 SendMessageW(GetDlgItem(panel, 30), BM_SETCHECK, BST_CHECKED as usize, 0);

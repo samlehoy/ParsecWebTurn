@@ -40,6 +40,8 @@ pub struct Window {
     pub(crate) native_session_button: AtomicUsize,
     #[cfg(feature = "native-core")]
     pub(crate) native_host_video: Mutex<serde_json::Value>,
+    #[cfg(feature = "native-core")]
+    pub(crate) native_host_video_pending: AtomicBool,
     pub stats: Arc<crate::stats::Shared>,
     stats_page: AtomicUsize,
     pub updates: Arc<crate::updater::State>,
@@ -215,6 +217,8 @@ impl Window {
             native_session_button: AtomicUsize::new(0),
             #[cfg(feature = "native-core")]
             native_host_video: Mutex::new(serde_json::Value::Null),
+            #[cfg(feature = "native-core")]
+            native_host_video_pending: AtomicBool::new(false),
             stats_page: AtomicUsize::new(0),
             updates: Default::default(),
             updates_page: AtomicUsize::new(0),

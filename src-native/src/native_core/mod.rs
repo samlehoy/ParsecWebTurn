@@ -122,7 +122,11 @@ fn stream(
     let mut requested_display = None;
     let mut host_config = host_video::Config::default();
     let mut host_query_deadline = None;
+    let mut confirmation: Option<host_video::Confirmation> = None;
     let mut pending_host = video.has_host_settings().then(|| video.clone());
+    if pending_host.is_some() {
+        session_ui::waiting(window);
+    }
     let mut detached = false;
     let mut last_clipboard = String::new();
     while !window.closing.load(Ordering::Acquire) && !window.stop.stopped() {
@@ -184,15 +188,24 @@ fn stream(
                             .native_host_video
                             .lock()
                             .unwrap_or_else(|e| e.into_inner()) = observed;
-                        session_ui::reported(window);
+                        if confirmation.is_none() && pending_host.is_none() {
+                            session_ui::reported(window);
+                        }
                         if let Some(next) = pending_host.take() {
                             let size = window.native_display_size();
-                            let sent = host_config
-                                .request(&next, size)
-                                .and_then(|frame| attempt.send(&frame));
+                            let sent = (|| -> Result<()> {
+                                let frame = host_config.request(&next, size)?;
+                                let verify = host_video::Confirmation::new(
+                                    &frame,
+                                    std::time::Instant::now(),
+                                )?;
+                                attempt.send(&frame)?;
+                                confirmation = Some(verify);
+                                session_ui::waiting(window);
+                                Ok(())
+                            })();
                             if sent.is_ok() {
                                 log_video_request(&next);
-                                let _ = attempt.send(&host_video::query()?);
                                 requested_display = Some(size);
                             } else {
                                 crate::event_log::record(
@@ -201,16 +214,27 @@ fn stream(
                                     serde_json::json!({}),
                                 );
                             }
-                            session_ui::result(window, sent.is_ok());
+                            if sent.is_err() {
+                                window
+                                    .native_host_video_pending
+                                    .store(false, Ordering::Release);
+                                session_ui::result(window, false);
+                            }
                         }
                     } else {
                         host_query_deadline = None;
+                        pending_host = None;
                         crate::event_log::record(
                             "WARN",
                             "native_host_video_configuration_invalid",
                             host_video::diagnostic(bytes),
                         );
-                        session_ui::result(window, false);
+                        if confirmation.is_none() {
+                            window
+                                .native_host_video_pending
+                                .store(false, Ordering::Release);
+                            session_ui::result(window, false);
+                        }
                     }
                 }
                 crate::control::Message::Buffer {
@@ -229,8 +253,38 @@ fn stream(
                 _ => {}
             }
         }
+        if let Some(verify) = confirmation.as_mut() {
+            match verify.poll(&host_config, std::time::Instant::now()) {
+                host_video::Verification::Query => {
+                    if attempt.send(&host_video::query()?).is_err() {
+                        confirmation = None;
+                        session_ui::finished(window, false);
+                    }
+                }
+                status @ (host_video::Verification::Confirmed
+                | host_video::Verification::TimedOut) => {
+                    let confirmed = status == host_video::Verification::Confirmed;
+                    confirmation = None;
+                    crate::event_log::record(
+                        if confirmed { "INFO" } else { "WARN" },
+                        if confirmed {
+                            "native_host_video_confirmed"
+                        } else {
+                            "native_host_video_not_confirmed"
+                        },
+                        host_config.observed(),
+                    );
+                    session_ui::finished(window, confirmed);
+                }
+                host_video::Verification::Waiting => {}
+            }
+        }
         if host_query_deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             host_query_deadline = None;
+            pending_host = None;
+            window
+                .native_host_video_pending
+                .store(false, Ordering::Release);
             crate::event_log::record(
                 "WARN",
                 "native_host_video_query_timeout",
@@ -328,11 +382,20 @@ fn stream(
                     session_ui::Action::Apply(next) => {
                         let result = (|| -> Result<()> {
                             ensure!(established, "BUD is not connected yet");
+                            ensure!(
+                                confirmation.is_none() && pending_host.is_none(),
+                                "Waiting for the previous host request"
+                            );
                             let size = window.native_display_size();
                             if next.has_host_settings() {
                                 if host_config.ready() {
-                                    attempt.send(&host_config.request(next, size)?)?;
-                                    attempt.send(&host_video::query()?)?;
+                                    let frame = host_config.request(next, size)?;
+                                    let verify = host_video::Confirmation::new(
+                                        &frame,
+                                        std::time::Instant::now(),
+                                    )?;
+                                    attempt.send(&frame)?;
+                                    confirmation = Some(verify);
                                     log_video_request(next);
                                 } else {
                                     pending_host = Some(next.clone());
@@ -340,6 +403,9 @@ fn stream(
                                         Some(std::time::Instant::now() + Duration::from_secs(5));
                                     attempt.send(&host_video::query()?)?;
                                 }
+                            }
+                            if confirmation.is_some() || pending_host.is_some() {
+                                session_ui::waiting(window);
                             }
                             manager.update_native(|p| p.video = next.clone())?;
                             video = next.clone();
@@ -361,7 +427,9 @@ fn stream(
                                 serde_json::json!({}),
                             );
                         }
-                        session_ui::result(window, result.is_ok());
+                        if confirmation.is_none() && pending_host.is_none() {
+                            session_ui::result(window, result.is_ok());
+                        }
                     }
                 }
                 continue;
@@ -377,9 +445,13 @@ fn stream(
             {
                 let size = window.native_display_size();
                 if requested_display != Some(size) {
-                    if host_config.ready() {
-                        attempt.send(&host_config.request(&video, size)?)?;
-                        attempt.send(&host_video::query()?)?;
+                    if host_config.ready() && confirmation.is_none() && pending_host.is_none() {
+                        let frame = host_config.request(&video, size)?;
+                        let verify =
+                            host_video::Confirmation::new(&frame, std::time::Instant::now())?;
+                        attempt.send(&frame)?;
+                        confirmation = Some(verify);
+                        session_ui::waiting(window);
                         requested_display = Some(size);
                     }
                 }
