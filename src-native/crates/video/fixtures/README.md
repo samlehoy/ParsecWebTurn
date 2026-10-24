@@ -9,3 +9,9 @@ Copyright (c) 2026 Nguyen Duy; MIT license in `../LICENSE-lowlat`.
 Only regression tests include this file, to verify bounded presentation leases
 against an actual parsed HEVC reference-picture buffer. Normal client execution
 does not include or play it. Standalone comparison executables have been retired.
+
+`hevc-444-10.sps` is the first SPS NAL (Annex B start code included) from
+`crates/decode/tests/data/fixtures/hevc-nvenc-444-10.bin` at the same revision
+and under the same MIT license. It checks real 10-bit 4:4:4 metadata and surface
+selection without bundling a complete clip. It is included by tests only;
+metadata/profile checks do not establish successful hardware decoding.

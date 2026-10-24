@@ -1204,7 +1204,8 @@ impl Driver {
 }
 
 fn negotiated_encoder_flags(external: u32, initial: u32) -> u32 {
-    const MASK: u32 = init::FLAG_HEVC | init::FLAG_COLOR444 | init::FLAG_FULL_RANGE | init::FLAG_10BIT;
+    const MASK: u32 =
+        init::FLAG_HEVC | init::FLAG_COLOR444 | init::FLAG_FULL_RANGE | init::FLAG_10BIT;
     (external & !MASK) | (initial & MASK)
 }
 
@@ -1311,7 +1312,7 @@ mod tests {
 
     #[test]
     fn external_encoder_requests_keep_negotiated_chroma_depth_and_range() {
-        for initial in [0, 8, 0x09, 0x0b, 0x19] {
+        for initial in [0, 8, 0x09, 0x0b, 0x19, 0x1b] {
             for external in [0, 1, 2, 8, 16, 0x1b, 0x40, 0x5b] {
                 let flags = negotiated_encoder_flags(external, initial);
                 assert_eq!(flags & 0x1b, initial);

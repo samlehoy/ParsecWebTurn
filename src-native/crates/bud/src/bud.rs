@@ -116,8 +116,9 @@ impl Session {
             lowlat_client::config::Caps {
                 h264: true,
                 hevc: hevc_available,
-                hevc_10: hevc_available && ten_bit && !chroma_444,
+                hevc_10: hevc_available && ten_bit,
                 hevc_444: hevc_available && chroma_444,
+                hevc_444_10: hevc_available && chroma_444 && ten_bit,
                 ..Default::default()
             },
             Port::Any,
@@ -129,7 +130,7 @@ impl Session {
             attempt: None,
             external_units: Some(units),
             prefer_hevc: hevc_available,
-            ten_bit: hevc_available && ten_bit && !chroma_444,
+            ten_bit: hevc_available && ten_bit,
             chroma_444: hevc_available && chroma_444,
             raw_audio: false,
             audio_layout: None,

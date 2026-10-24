@@ -186,28 +186,56 @@ pub fn hevc_ten_bit_available(
     }
 }
 
-/// Packed AYUV decoder surfaces and the existing processor input are both
+/// Resolve Automatic through the same D3D11 device selection as live video.
+/// Used once per settings window, never on the frame path.
+pub fn video_gpu_vendor(
+    preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
+) -> Option<u32> {
+    unsafe {
+        let (device, _) = create_device(preferred_gpu).ok()?;
+        let dxgi: IDXGIDevice = device.cast().ok()?;
+        Some(dxgi.GetAdapter().ok()?.GetDesc().ok()?.VendorId)
+    }
+}
+
+/// Packed AYUV/Y410 decoder surfaces and the existing processor input are both
 /// required. No MF/NV12 conversion can preserve 4:4:4 chroma.
 pub fn hevc_444_available(
     preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
+    ten_bit: bool,
 ) -> bool {
     #[cfg(not(feature = "vendor-video"))]
     {
-        let _ = preferred_gpu;
+        let _ = (preferred_gpu, ten_bit);
         false
     }
     #[cfg(feature = "vendor-video")]
     unsafe {
+        if ten_bit && !hevc_444_available(preferred_gpu, false) {
+            return false;
+        }
         let result = (|| -> Result<()> {
             let _runtime = Runtime::start()?;
             let (device, _) = create_device(preferred_gpu)?;
+            let dxgi: IDXGIDevice = api("video-444-adapter", device.cast())?;
+            let adapter = api("video-444-adapter", dxgi.GetAdapter())?;
+            if api("video-444-adapter", adapter.GetDesc())?.VendorId != 0x10de {
+                return Err(unavailable("video-444-nvidia-only"));
+            }
+            let format = if ten_bit {
+                DXGI_FORMAT_Y410
+            } else {
+                DXGI_FORMAT_AYUV
+            };
+            let profile = if ten_bit {
+                D3D12_VIDEO_DECODE_PROFILE_HEVC_MAIN10_444
+            } else {
+                D3D12_VIDEO_DECODE_PROFILE_HEVC_MAIN_444
+            };
             let video: ID3D11VideoDevice = api("video-444-device", device.cast())?;
             if !api(
                 "video-444-profile",
-                video.CheckVideoDecoderFormat(
-                    &D3D12_VIDEO_DECODE_PROFILE_HEVC_MAIN_444,
-                    DXGI_FORMAT_AYUV,
-                ),
+                video.CheckVideoDecoderFormat(&profile, format),
             )?
             .as_bool()
             {
@@ -235,11 +263,20 @@ pub fn hevc_444_available(
             )?;
             if api(
                 "video-444-input",
-                processor.CheckVideoProcessorFormat(DXGI_FORMAT_AYUV),
+                processor.CheckVideoProcessorFormat(format),
             )? & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT.0 as u32
                 == 0
             {
                 return Err(unavailable("video-444-input-unavailable"));
+            }
+            if ten_bit
+                && !supports_rgb10(
+                    &processor,
+                    crate::video_color::processor_color(Some(1), Some(1)),
+                    format,
+                )
+            {
+                return Err(unavailable("video-444-rgb10-unavailable"));
             }
             Ok(())
         })();
@@ -247,7 +284,7 @@ pub fn hevc_444_available(
             crate::event_log::record(
                 "INFO",
                 "video_chroma_444_unavailable",
-                serde_json::json!({"stage":error.stage,"hresult":error.hresult}),
+                serde_json::json!({"stage":error.stage,"hresult":error.hresult,"bit_depth":if ten_bit {10} else {8}}),
             );
         }
         result.is_ok()
@@ -263,7 +300,7 @@ fn validate_processor_texture(
 ) -> Result<()> {
     if !matches!(
         desc.Format,
-        DXGI_FORMAT_NV12 | DXGI_FORMAT_P010 | DXGI_FORMAT_AYUV
+        DXGI_FORMAT_NV12 | DXGI_FORMAT_P010 | DXGI_FORMAT_AYUV | DXGI_FORMAT_Y410
     ) || desc.MipLevels != 1
         || desc.ArraySize == 0
         || subresource >= desc.ArraySize
@@ -1146,13 +1183,15 @@ impl Session {
         #[cfg(feature = "vendor-video")]
         if _allow_vendor
             && codec == crate::video_stream::Codec::Hevc
-            && hevc.is_some_and(|h| h.bit_depth == 8)
+            && hevc.is_some_and(|h| h.bit_depth == 8 || (h.bit_depth == 10 && h.chroma == 3))
         {
             let candidate = (|| -> anyhow::Result<Option<Self>> {
                 let config = hevc.ok_or_else(|| anyhow::anyhow!("missing HEVC parameters"))?;
                 anyhow::ensure!(
-                    config.bit_depth == 8
-                        && matches!((config.profile, config.chroma), (1, 1) | (4, 3)),
+                    matches!(
+                        (config.profile, config.chroma, config.bit_depth),
+                        (1, 1, 8) | (4, 3, 8 | 10)
+                    ),
                     "unsupported vendor color format"
                 );
                 let (probe, probe_context) =
@@ -1212,7 +1251,7 @@ impl Session {
                     hevc,
                     rotation: 0,
                     in_flight: Default::default(),
-                    ten_bit: false,
+                    ten_bit: config.bit_depth == 10,
                     surface_generation,
                     low_latency_request_accepted: vendor.low_latency_request_accepted(),
                     decoder: None,
@@ -1548,8 +1587,10 @@ impl Session {
                     let mut desc = D3D11_TEXTURE2D_DESC::default();
                     picture.texture.GetDesc(&mut desc);
                     anyhow::ensure!(
-                        matches!(desc.Format, DXGI_FORMAT_NV12 | DXGI_FORMAT_AYUV)
-                            && desc.CPUAccessFlags == 0,
+                        matches!(
+                            desc.Format,
+                            DXGI_FORMAT_NV12 | DXGI_FORMAT_AYUV | DXGI_FORMAT_Y410
+                        ) && desc.CPUAccessFlags == 0,
                         "vendor returned an unsupported GPU texture"
                     );
                     let owner = picture.texture.GetDevice()?;
@@ -1577,12 +1618,18 @@ impl Session {
                         s.width = Some(w);
                         s.height = Some(h);
                         s.nominal_range = Some(if layout.full_range { 1 } else { 2 });
-                        s.decoded_bit_depth = Some(8);
-                        s.decoded_chroma = Some(if desc.Format == DXGI_FORMAT_AYUV {
-                            "4:4:4"
+                        s.decoded_bit_depth = Some(if desc.Format == DXGI_FORMAT_Y410 {
+                            10
                         } else {
-                            "4:2:0"
+                            8
                         });
+                        s.decoded_chroma = Some(
+                            if matches!(desc.Format, DXGI_FORMAT_AYUV | DXGI_FORMAT_Y410) {
+                                "4:4:4"
+                            } else {
+                                "4:2:0"
+                            },
+                        );
                         match presented {
                             Presentation::Presented => {
                                 s.frames_presented = s.frames_presented.saturating_add(1)
@@ -1888,7 +1935,11 @@ fn rgb10_output_rejected(error: &Failure) -> bool {
     )
 }
 
-unsafe fn supports_rgb10(enumeration: &ID3D11VideoProcessorEnumerator, color: u32) -> bool {
+unsafe fn supports_rgb10(
+    enumeration: &ID3D11VideoProcessorEnumerator,
+    color: u32,
+    input: DXGI_FORMAT,
+) -> bool {
     let output = enumeration
         .CheckVideoProcessorFormat(DXGI_FORMAT_R10G10B10A2_UNORM)
         .is_ok_and(|flags| flags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT.0 as u32 != 0);
@@ -1897,7 +1948,7 @@ unsafe fn supports_rgb10(enumeration: &ID3D11VideoProcessorEnumerator, color: u3
             .cast::<ID3D11VideoProcessorEnumerator1>()
             .is_ok_and(|e| {
                 e.CheckVideoProcessorFormatConversion(
-                    DXGI_FORMAT_P010,
+                    input,
                     rgb10_input_color(color),
                     DXGI_FORMAT_R10G10B10A2_UNORM,
                     DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
@@ -2251,7 +2302,12 @@ impl Renderer {
             Err(error)
                 if self.ten_bit_attempted
                     && self.ten_bit_fallback.is_none()
-                    && rgb10_output_rejected(&error) =>
+                    && rgb10_output_rejected(&error)
+                    && {
+                        let mut input = D3D11_TEXTURE2D_DESC::default();
+                        texture.GetDesc(&mut input);
+                        input.Format == DXGI_FORMAT_P010
+                    } =>
             {
                 self.ten_bit_fallback = Some(format!(
                     "{}: {}",
@@ -2311,11 +2367,16 @@ impl Renderer {
                 self.video_device.CreateVideoProcessorEnumerator(&desc),
             )?;
             let mut output_format = DXGI_FORMAT_B8G8R8A8_UNORM;
-            if td.Format == DXGI_FORMAT_P010 && self.ten_bit_fallback.is_none() {
-                if supports_rgb10(&enumeration, color) {
+            if td.Format == DXGI_FORMAT_Y410
+                || (td.Format == DXGI_FORMAT_P010 && self.ten_bit_fallback.is_none())
+            {
+                if supports_rgb10(&enumeration, color, td.Format) {
                     self.ten_bit_attempted = true;
                     output_format = DXGI_FORMAT_R10G10B10A2_UNORM;
                 } else {
+                    if td.Format == DXGI_FORMAT_Y410 {
+                        return Err(unavailable("video-444-rgb10-unavailable"));
+                    }
                     self.ten_bit_fallback = Some("P010 to RGB10 SDR conversion unavailable".into());
                 }
             }
@@ -2525,7 +2586,8 @@ impl Renderer {
                 } else {
                     8
                 });
-            s.display_output_fallback = if td.Format == DXGI_FORMAT_P010 {
+            s.display_output_fallback = if matches!(td.Format, DXGI_FORMAT_P010 | DXGI_FORMAT_Y410)
+            {
                 self.ten_bit_fallback.clone()
             } else {
                 None
@@ -3281,7 +3343,12 @@ mod tests {
             ArraySize: 4,
             ..Default::default()
         };
-        for format in [DXGI_FORMAT_AYUV, DXGI_FORMAT_NV12, DXGI_FORMAT_P010] {
+        for format in [
+            DXGI_FORMAT_AYUV,
+            DXGI_FORMAT_Y410,
+            DXGI_FORMAT_NV12,
+            DXGI_FORMAT_P010,
+        ] {
             desc.Format = format;
             assert!(validate_processor_texture(&desc, 3, (1920, 1080)).is_ok());
         }

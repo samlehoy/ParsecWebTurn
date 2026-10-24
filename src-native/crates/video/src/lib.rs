@@ -1,4 +1,4 @@
-//! Optional 8-bit GPU video backends. No transport, pixels on CPU or exporter.
+//! Optional GPU video backends. No transport, pixels on CPU or exporter.
 #![cfg(windows)]
 pub mod direct;
 pub mod display;
@@ -45,7 +45,10 @@ pub struct Layout {
 impl Layout {
     pub fn hevc(s: &hevc::sps::Sps) -> Result<Self> {
         ensure!(
-            s.chroma_format_idc == 1 && !s.is_range_extended(),
+            s.chroma_format_idc == 1
+                && !s.is_range_extended()
+                && s.bit_depth_luma_minus8 == 0
+                && s.bit_depth_chroma_minus8 == 0,
             "unsupported HEVC color format"
         );
         Self::hevc_direct(s)
@@ -54,8 +57,9 @@ impl Layout {
         ensure!(
             matches!(s.chroma_format_idc, 1 | 3)
                 && !s.separate_colour_plane
-                && s.bit_depth_luma_minus8 == 0
-                && s.bit_depth_chroma_minus8 == 0,
+                && (s.bit_depth_luma_minus8 == 0
+                    || (s.chroma_format_idc == 3 && s.bit_depth_luma_minus8 == 2))
+                && s.bit_depth_chroma_minus8 == s.bit_depth_luma_minus8,
             "unsupported HEVC color format"
         );
         let (width, height) = s.visible();

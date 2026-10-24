@@ -91,3 +91,8 @@ creation and PNG decoding remain the application's.
 
 The native client is now named EvoParseq. This notice retains its historical
 filename so existing provenance links remain valid.
+
+The 2026-10-25 native-core integration adds an explicit combined HEVC 4:4:4
+10-bit capability. Initialization and later encoder requests retain both flags
+only when the application verifies the combined GPU path and its fallback
+rows. No decoder, exporter or vendor SDK is added to this transport subset.

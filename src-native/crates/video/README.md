@@ -11,8 +11,9 @@ write; original-surface presentation omits that application pass. Windows/driver
 internal copies and direct scanout are not established.
 
 `direct.rs` derives parameter staging from MIT-licensed lowlat revision
-5f8db5689e55de0d396b0520824caa9fc053dd86. Exporters, CPU pixel paths, full chroma
-and high-depth profiles were omitted. Driver bindings and parser dependencies
+5f8db5689e55de0d396b0520824caa9fc053dd86. Exporters and CPU pixel paths were omitted. Native-core full chroma uses
+AYUV (8-bit) or Y410 (10-bit) original decoder textures on the existing normal
+GPU conversion/output pass. Original-surface presentation remains NV12-only. Driver bindings and parser dependencies
 remain pinned; the original license is in LICENSE-lowlat.
 
 The earlier direct H.264 comparison path was removed: this backend is HEVC-only.

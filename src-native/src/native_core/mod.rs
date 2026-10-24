@@ -67,9 +67,7 @@ fn run() -> Result<()> {
             return Ok(());
         };
         let preferences = settings.view().0;
-        let requested_main10 = preferences.prefer_hevc
-            && preferences.experimental_ten_bit
-            && !preferences.experimental_chroma_444;
+        let requested_main10 = preferences.prefer_hevc && preferences.experimental_ten_bit;
         let policy = transport::Policy {
             bud: preferences.bud,
         };

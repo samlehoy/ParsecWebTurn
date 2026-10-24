@@ -10,6 +10,7 @@ pub struct Caps {
     pub hevc: bool,
     pub hevc_10: bool,
     pub hevc_444: bool,
+    pub hevc_444_10: bool,
 }
 use zeroize::Zeroizing;
 
@@ -84,7 +85,7 @@ impl Video {
         }
         let chroma_444 = self.chroma_444 && caps.hevc_444;
         flags |= init::FLAG_HEVC;
-        if self.ten_bit && caps.hevc_10 && !chroma_444 {
+        if self.ten_bit && caps.hevc_10 && (!chroma_444 || caps.hevc_444_10) {
             flags |= init::FLAG_10BIT;
         }
         if chroma_444 {
@@ -100,6 +101,7 @@ impl Video {
             hevc: true,
             hevc_10: true,
             hevc_444: true,
+            hevc_444_10: true,
         })
     }
 }
@@ -239,11 +241,43 @@ mod tests {
         hevc: true,
         hevc_10: true,
         hevc_444: true,
+        hevc_444_10: true,
     };
 
     #[test]
     fn the_defaults_declare_the_first_codec_in_the_video_range() {
         assert_eq!(Video::default().flags(&EVERYTHING), 0);
+    }
+    #[test]
+    fn full_chroma_main10_needs_both_depth_and_combined_capabilities() {
+        let video = Video {
+            ten_bit: true,
+            chroma_444: true,
+            full_range: true,
+            ..Video::default()
+        };
+        assert_eq!(video.flags(&EVERYTHING), 0x1b);
+        assert_eq!(
+            video.flags(&Caps {
+                hevc_444_10: false,
+                ..EVERYTHING
+            }),
+            0x0b
+        );
+        assert_eq!(
+            video.flags(&Caps {
+                hevc_10: false,
+                ..EVERYTHING
+            }),
+            0x0b
+        );
+        assert_eq!(
+            video.flags(&Caps {
+                hevc_444: false,
+                ..EVERYTHING
+            }),
+            0x19
+        );
     }
     #[test]
     fn main10_requires_verified_main_and_main10_decode() {

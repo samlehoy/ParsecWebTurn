@@ -709,9 +709,11 @@ fn run(
     let chroma_444 = cfg!(feature = "native-core")
         && hevc_available
         && settings.experimental_chroma_444
-        && crate::video_windows::hevc_444_available(window.video_gpu().as_ref());
+        && crate::video_windows::hevc_444_available(
+            window.video_gpu().as_ref(),
+            settings.experimental_ten_bit,
+        );
     let ten_bit = hevc_available
-        && !chroma_444
         && settings.experimental_ten_bit
         && crate::video_windows::hevc_ten_bit_available(window.video_gpu().as_ref());
     crate::event_log::record(

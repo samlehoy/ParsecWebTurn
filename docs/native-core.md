@@ -175,18 +175,26 @@ It still needs live direct, TURN/UDP, TURN/TLS and TURN/TCP verification in this
 independent build. BUD-only HID and raw/multichannel audio stay BUD-only.
 
 Prefer 4:4:4 is currently supported on NVIDIA client GPUs only (experimental).
-It offers 8-bit HEVC only after selected-GPU Main444/AYUV decoding
-and AYUV video-processor input checks. Existing pinned lowlat DXVA range-extension
+It offers 8-bit HEVC after selected-GPU Main444/AYUV decoding and processor
+input checks. With 10-bit HEVC also enabled, it checks Main10 4:4:4/Y410 decode,
+Y410-to-RGB10 conversion and the existing Main/Main10 4:2:0 fallback rows. Existing pinned lowlat DXVA range-extension
 parameters are reused in the GPU-only direct decoder. AYUV goes directly to the
 existing conversion/presentation pass, with no CPU pixel readback or intermediate
 video copy. This mode uses normal GPU rendering, not original-NV12 zero copy;
-4:4:4 takes precedence over the saved 10-bit preference. The host can still send
+The two preferences can be combined; the host remains responsible for the
+actual stream format. A 10-bit 4:4:4 surface uses the same single processor
+write directly into the RGB10 swapchain, with no intermediate RGB texture.
+This combined mode still requires live validation. A rejected Y410/RGB10
+conversion is an error, rather than a silent retry in RGB8. The host can still send
 4:2:0; actual decoded chroma is shown separately in Connection stats. Live BUD
 8-bit 4:4:4 decoding/presentation has been confirmed on NVIDIA GeForce RTX 3060.
 The tested AMD Radeon 780M driver rejects the Main444 profile query with
 `0x80070057`, so that configuration advertises 4:2:0 only. This is not a blanket
 claim about all AMD hardware or APIs. AMD and Intel 4:4:4 client configurations
-are not currently supported; other NVIDIA configurations remain unverified.
+are not currently supported; Settings disables and clears the 4:4:4 checkbox
+for non-NVIDIA adapters, including Automatic when Windows selects one. The
+connection capability check independently enforces this policy. Other NVIDIA
+configurations remain unverified.
 
 See [stock settings comparison](native-settings-comparison.md) for existing
 features and possible future additions; unimplemented options were not added.

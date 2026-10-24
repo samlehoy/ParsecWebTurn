@@ -990,9 +990,8 @@ fn worker(
                 config.allow_hevc && crate::video_windows::hevc_available(gpu.as_ref());
             config.chroma_444 = config.allow_hevc
                 && config.chroma_444
-                && crate::video_windows::hevc_444_available(gpu.as_ref());
-            config.ten_bit = !config.chroma_444
-                && config.allow_hevc
+                && crate::video_windows::hevc_444_available(gpu.as_ref(), config.ten_bit);
+            config.ten_bit = config.allow_hevc
                 && config.ten_bit
                 && crate::video_windows::hevc_ten_bit_available(gpu.as_ref());
         }

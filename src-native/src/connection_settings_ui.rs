@@ -97,6 +97,7 @@ struct Page {
     saved: Settings,
     gpu_choices: Vec<Option<crate::connection_settings::GpuPreference>>,
     gpu_labels: Vec<String>,
+    default_gpu_vendor: Option<u32>,
     background: HBRUSH,
     field: HBRUSH,
     font: HFONT,
@@ -180,6 +181,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         saved,
         gpu_choices: vec![None],
         gpu_labels: vec!["Automatic (Windows default)".into()],
+        default_gpu_vendor: crate::video_windows::video_gpu_vendor(None),
         background: CreateSolidBrush(BG),
         field: CreateSolidBrush(FIELD),
         font: font(16, 400),
@@ -583,7 +585,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     SendMessageW(timing, CB_SETCURSEL, selection, 0);
     #[cfg(feature = "native-core")]
     {
-        row_label(hwnd, page, "Chroma", "NVIDIA client GPUs only (experimental 8-bit HEVC).\nRequires compatible host encoding and client AYUV support.\nUses normal GPU rendering; host may send 4:2:0 instead.", 720, 0, 64);
+        row_label(hwnd, page, "Chroma", "NVIDIA client GPUs only (experimental HEVC, 8/10-bit).\nRequires compatible host encoding and client AYUV support.\nUses normal GPU rendering; host may send 4:2:0 instead.", 720, 0, 64);
         add(
             hwnd,
             page,
@@ -1118,12 +1120,28 @@ unsafe fn update_enabled(hwnd: HWND) {
     EnableWindow(GetDlgItem(hwnd, AUDIO_SURROUND as i32), 0);
     let hevc = checked(hwnd, HEVC) as i32;
     #[cfg(feature = "native-core")]
-    EnableWindow(GetDlgItem(hwnd, CHROMA_444 as i32), hevc);
+    {
+        let page = &*(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Page);
+        let selection = SendMessageW(GetDlgItem(hwnd, GPU as i32), CB_GETCURSEL, 0, 0);
+        let vendor = usize::try_from(selection)
+            .ok()
+            .and_then(|i| page.gpu_choices.get(i))
+            .and_then(|gpu| {
+                gpu.as_ref()
+                    .map(|g| g.vendor_id)
+                    .or(page.default_gpu_vendor)
+            });
+        let allowed = vendor == Some(0x10de);
+        if !allowed {
+            check(hwnd, CHROMA_444, false);
+        }
+        EnableWindow(
+            GetDlgItem(hwnd, CHROMA_444 as i32),
+            hevc * i32::from(allowed),
+        );
+    }
     let full_chroma = cfg!(feature = "native-core") && checked(hwnd, 4136);
-    EnableWindow(
-        GetDlgItem(hwnd, TEN_BIT as i32),
-        hevc * i32::from(!full_chroma),
-    );
+    EnableWindow(GetDlgItem(hwnd, TEN_BIT as i32), hevc);
     #[cfg(feature = "vendor-video")]
     EnableWindow(
         GetDlgItem(hwnd, ZERO_COPY as i32),
@@ -1449,7 +1467,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     PostMessageW(GetParent(hwnd), WM_APP + 9, 0, 0);
                     return 0;
                 }
-                PROVIDER if (wp >> 16) as u32 == CBN_SELCHANGE => {
+                GPU | PROVIDER if (wp >> 16) as u32 == CBN_SELCHANGE => {
                     update_enabled(hwnd);
                     return 0;
                 }
@@ -1622,6 +1640,33 @@ mod tests {
             assert_no_overlaps(page);
             capture(page, "video");
             assert_combo_label_visible(page, GPU);
+            #[cfg(feature = "native-core")]
+            {
+                // Synthetic adapter identities: no production GPU settings are changed.
+                let state = &mut *(GetWindowLongPtrW(page, GWLP_USERDATA) as *mut Page);
+                let default_vendor = state.default_gpu_vendor;
+                SendMessageW(GetDlgItem(page, GPU as i32), CB_SETCURSEL, 0, 0);
+                for vendor in [0x10de, 0x1002, 0x8086] {
+                    state.default_gpu_vendor = Some(vendor);
+                    check(page, CHROMA_444, true);
+                    update_enabled(page);
+                    assert_eq!(
+                        IsWindowEnabled(GetDlgItem(page, CHROMA_444 as i32)) != 0,
+                        vendor == 0x10de
+                    );
+                    assert_eq!(checked(page, CHROMA_444), vendor == 0x10de);
+                    assert_ne!(IsWindowEnabled(GetDlgItem(page, TEN_BIT as i32)), 0);
+                    #[cfg(feature = "vendor-video")]
+                    assert_eq!(
+                        IsWindowEnabled(GetDlgItem(page, ZERO_COPY as i32)) != 0,
+                        vendor != 0x10de
+                    );
+                }
+                state.default_gpu_vendor = default_vendor;
+                check(page, CHROMA_444, false);
+                update_enabled(page);
+            }
+
             SendMessageW(page, WM_COMMAND, AUDIO_TAB, 0);
             assert_ne!(IsWindowVisible(GetDlgItem(page, AUDIO_CUSTOM as i32)), 0);
             assert_eq!(IsWindowEnabled(GetDlgItem(page, AUDIO_MIN as i32)), 0);

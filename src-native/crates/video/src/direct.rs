@@ -1,6 +1,6 @@
 //! GPU-only D3D11 decoder. Adapted from lowlat d3d11.rs at 5f8db568.
 //! MIT Copyright (c) 2026 Nguyen Duy; see ../LICENSE-lowlat.
-//! 8-bit NV12/AYUV decoder surfaces, no split/export/staging/map.
+//! NV12/AYUV and 10-bit Y410 decoder surfaces, no split/export/staging/map.
 //! Range-extension mapping retained from the same pinned MIT upstream decoder.
 use core::{ffi::c_void, fmt};
 use lowlat_decode::hevc::sps::{DIAG_4X4, DIAG_8X8};
@@ -11,6 +11,7 @@ use lowlat_drivers::{
         d3d11::*,
         d3d11_guids::{
             D3D11_DECODER_PROFILE_HEVC_VLD_MAIN, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN_444,
+            D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10_444,
         },
     },
     vcall,
@@ -152,29 +153,33 @@ fn bytes_of<T>(value: &T) -> &[u8] {
     unsafe { core::slice::from_raw_parts((value as *const T).cast::<u8>(), size_of::<T>()) }
 }
 
-fn profile(full_chroma: bool) -> GUID {
-    if full_chroma {
+fn profile(full_chroma: bool, ten_bit: bool) -> GUID {
+    if ten_bit {
+        D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10_444
+    } else if full_chroma {
         D3D11_DECODER_PROFILE_HEVC_VLD_MAIN_444
     } else {
         D3D11_DECODER_PROFILE_HEVC_VLD_MAIN
     }
 }
-fn surface_format(full_chroma: bool) -> DXGI_FORMAT {
-    if full_chroma {
+fn surface_format(full_chroma: bool, ten_bit: bool) -> DXGI_FORMAT {
+    if ten_bit {
+        DXGI_FORMAT_Y410
+    } else if full_chroma {
         DXGI_FORMAT_AYUV
     } else {
         DXGI_FORMAT_NV12
     }
 }
-fn offers(device: &dyn DeviceAccess, full_chroma: bool) -> bool {
+fn offers(device: &dyn DeviceAccess, full_chroma: bool, ten_bit: bool) -> bool {
     let mut supported: BOOL = 0;
     // SAFETY: the device and the profile/output pointers remain live.
     let hr = unsafe {
         vcall!(
             device.video(),
             CheckVideoDecoderFormat,
-            &profile(full_chroma),
-            surface_format(full_chroma),
+            &profile(full_chroma, ten_bit),
+            surface_format(full_chroma, ten_bit),
             &raw mut supported
         )
     };
@@ -187,15 +192,16 @@ fn create_decoder(
     height: u32,
     independent: bool,
     full_chroma: bool,
+    ten_bit: bool,
 ) -> Result<(Com<ID3D11VideoDecoder>, D3D11_VIDEO_DECODER_CONFIG)> {
-    if !offers(device, full_chroma) {
+    if !offers(device, full_chroma, ten_bit) {
         return Err(Error::NoProfile);
     }
     let desc = D3D11_VIDEO_DECODER_DESC {
-        Guid: profile(full_chroma),
+        Guid: profile(full_chroma, ten_bit),
         SampleWidth: width,
         SampleHeight: height,
-        OutputFormat: surface_format(full_chroma),
+        OutputFormat: surface_format(full_chroma, ten_bit),
     };
     let mut count = 0u32;
     // SAFETY: a live video device; the description and output are live.
@@ -260,6 +266,7 @@ struct Staging {
 
 struct Built {
     full_chroma: bool,
+    ten_bit: bool,
     coded: (u32, u32),
     decoder: Com<ID3D11VideoDecoder>,
     surfaces: Vec<Com<ID3D11Texture2D>>,
@@ -352,22 +359,30 @@ impl<'a> Backend<'a> {
         result?;
         Ok(true)
     }
-    fn ensure(&mut self, coded: (u32, u32), full_chroma: bool) -> Result<bool> {
+    fn ensure(&mut self, coded: (u32, u32), full_chroma: bool, ten_bit: bool) -> Result<bool> {
         if let Some(built) = &self.built {
-            return Ok(built.coded == coded && built.full_chroma == full_chroma);
+            return Ok(built.coded == coded
+                && built.full_chroma == full_chroma
+                && built.ten_bit == ten_bit);
         }
         if coded.0 > self.ceiling.0 || coded.1 > self.ceiling.1 {
             return Err(Error::TooLarge);
         }
         // Use only configurations advertising independent decode textures.
-        let (decoder, _) =
-            create_decoder(self.device, coded.0, coded.1, self.displayable, full_chroma)?;
+        let (decoder, _) = create_decoder(
+            self.device,
+            coded.0,
+            coded.1,
+            self.displayable,
+            full_chroma,
+            ten_bit,
+        )?;
         let desc = D3D11_TEXTURE2D_DESC {
             Width: coded.0.next_multiple_of(128),
             Height: coded.1.next_multiple_of(128),
             MipLevels: 1,
             ArraySize: if self.displayable { 1 } else { SURFACES as u32 },
-            Format: surface_format(full_chroma),
+            Format: surface_format(full_chroma, ten_bit),
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
@@ -400,10 +415,12 @@ impl<'a> Backend<'a> {
                 &surfaces[index],
                 if self.displayable { 0 } else { slice },
                 full_chroma,
+                ten_bit,
             )?);
         }
         self.built = Some(Built {
             full_chroma,
+            ten_bit,
             coded,
             decoder,
             surfaces,
@@ -417,9 +434,10 @@ impl<'a> Backend<'a> {
         surfaces: &Com<ID3D11Texture2D>,
         slice: usize,
         full_chroma: bool,
+        ten_bit: bool,
     ) -> Result<Com<ID3D11VideoDecoderOutputView>> {
         let desc = D3D11_VIDEO_DECODER_OUTPUT_VIEW_DESC {
-            DecodeProfile: profile(full_chroma),
+            DecodeProfile: profile(full_chroma, ten_bit),
             ViewDimension: D3D11_VDOV_DIMENSION_TEXTURE2D,
             __bindgen_anon_1: D3D11_VIDEO_DECODER_OUTPUT_VIEW_DESC__bindgen_ty_1 {
                 Texture2D: D3D11_TEX2D_VDOV {
@@ -461,9 +479,12 @@ impl<'a> Backend<'a> {
         }
         let job = self.hevc.job().ok_or(Error::Status(-1))?;
         let full_chroma = job.sps.chroma_format_idc == 3;
+        let depth = job.sps.bit_depth_luma_minus8;
+        let ten_bit = depth == 2;
         if !matches!(job.sps.chroma_format_idc, 1 | 3)
-            || job.sps.bit_depth_luma_minus8 != 0
-            || job.sps.bit_depth_chroma_minus8 != 0
+            || !matches!(depth, 0 | 2)
+            || (ten_bit && (!full_chroma || self.displayable))
+            || job.sps.bit_depth_chroma_minus8 != depth
             || job.sps.separate_colour_plane
             || (!full_chroma && job.sps.is_range_extended())
         {
@@ -471,7 +492,7 @@ impl<'a> Backend<'a> {
             return Err(Error::NoProfile);
         }
         let coded = (job.sps.width, job.sps.height);
-        if !self.ensure(coded, full_chroma)? {
+        if !self.ensure(coded, full_chroma, ten_bit)? {
             self.hevc.abandon();
             return Ok(Fed::FormatChanged);
         }
@@ -1084,6 +1105,23 @@ mod presentation_ownership_tests {
                 0xff
             );
         }
+    }
+    #[test]
+    fn full_chroma_main10_sps_uses_y410_without_chroma_or_depth_loss() {
+        // Lowlat 5f8db568 NVENC fixture SPS; MIT, see fixtures/README.md.
+        let bytes = include_bytes!("../fixtures/hevc-444-10.sps");
+        let sps = hevc::sps::parse(&bytes[5..]).unwrap();
+        assert_eq!(sps.chroma_format_idc, 3);
+        assert_eq!(sps.bit_depth_luma_minus8, 2);
+        assert_eq!(sps.bit_depth_chroma_minus8, 2);
+        let layout = crate::Layout::hevc_direct(&sps).unwrap();
+        assert!(layout.width > 0 && layout.height > 0);
+        assert!(crate::Layout::hevc(&sps).is_err()); // AMF/NV12 path must reject it.
+        assert_eq!(surface_format(true, true), DXGI_FORMAT_Y410);
+        let guid = profile(true, true);
+        assert_eq!(guid.Data1, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10_444.Data1);
+        assert_eq!(surface_format(true, false), DXGI_FORMAT_AYUV);
+        assert_eq!(surface_format(false, false), DXGI_FORMAT_NV12);
     }
     struct Lease(Cell<bool>);
     impl SurfaceLease for Lease {

@@ -18,7 +18,7 @@ pub struct Config {
 impl Config {
     pub fn video_flags(&self) -> u32 {
         0x08 | u32::from(self.allow_hevc)
-            | if self.allow_hevc && self.ten_bit && !self.chroma_444 {
+            | if self.allow_hevc && self.ten_bit {
                 0x10
             } else {
                 0
@@ -272,7 +272,7 @@ pub fn input_with_viewport(
 mod tests {
     use super::*;
     #[test]
-    fn full_chroma_request_is_preserved_on_refresh_without_requesting_main10() {
+    fn full_chroma_main10_request_is_preserved_on_refresh() {
         let config = Config {
             video_protocol: crate::video_stream::VideoProtocol {
                 version: 1,
@@ -284,9 +284,9 @@ mod tests {
             ten_bit: true,
             chroma_444: true,
         };
-        assert_eq!(config.video_flags(), 0x0b);
+        assert_eq!(config.video_flags(), 0x1b);
         let refresh = config.encoder_request(header(13, 0, 0, 1));
-        assert_eq!(i32::from_be_bytes(refresh[4..8].try_into().unwrap()), 0x0b);
+        assert_eq!(i32::from_be_bytes(refresh[4..8].try_into().unwrap()), 0x1b);
     }
     #[test]
     fn desktop_fullfps_settings_keep_the_pinned_userdata_envelope() {

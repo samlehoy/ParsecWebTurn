@@ -711,6 +711,16 @@ mod tests {
         }
         assert!(hevc_configuration(HEVC_KEY).is_none());
     }
+    #[test]
+    fn full_chroma_main10_is_identified_from_actual_sps() {
+        let config =
+            hevc_configuration(include_bytes!("../crates/video/fixtures/hevc-444-10.sps")).unwrap();
+        assert_eq!(
+            (config.profile, config.chroma, config.bit_depth),
+            (4, 3, 10)
+        );
+        assert!(config.width > 0 && config.height > 0);
+    }
     const HEVC_KEY: &[u8] = &[
         0, 0, 0, 1, 0x40, 1, 0x80, // VPS
         0, 0, 1, 0x42, 1, 1, 1, 0x80, // SPS, Main profile
