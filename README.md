@@ -88,8 +88,8 @@ experimental options disabled for the most conservative configuration.
   client GPUs, with compatible host encoding. The 8-bit GPU path
   has been confirmed live over BUD on NVIDIA RTX 3060; other configurations
   remain unverified. Combining 4:4:4 with 10-bit HEVC is implemented
-  experimentally with direct Y410-to-RGB10 GPU conversion; live validation is
-  still required. AMD cannot enable 4:4:4 in Settings.
+  experimentally with direct Y410-to-RGB10 GPU conversion; live 1920x1080
+  playback is confirmed on RTX 3060 over BUD/TURN-UDP. AMD cannot enable 4:4:4 in Settings.
   The tested AMD Radeon 780M driver did not expose the required D3D11 profile.
   H.264 remains 4:2:0; original-NV12 zero-copy is not combined with
   this path. Host/account terms and permissions still apply.

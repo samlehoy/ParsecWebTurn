@@ -184,7 +184,11 @@ video copy. This mode uses normal GPU rendering, not original-NV12 zero copy;
 The two preferences can be combined; the host remains responsible for the
 actual stream format. A 10-bit 4:4:4 surface uses the same single processor
 write directly into the RGB10 swapchain, with no intermediate RGB texture.
-This combined mode still requires live validation. A rejected Y410/RGB10
+Live 1920x1080 BUD/TURN-UDP playback of this combined mode was confirmed on
+NVIDIA GeForce RTX 3060 on 2026-10-25: both request flags were declared
+(`flags=27`), decoded output was 10-bit 4:4:4 and RGB output was 10-bit SDR,
+with no decoder fallback/error recorded in that attempt. This validates that
+configuration, not other GPUs/transports, physical panel depth or HDR. A rejected Y410/RGB10
 conversion is an error, rather than a silent retry in RGB8. The host can still send
 4:2:0; actual decoded chroma is shown separately in Connection stats. Live BUD
 8-bit 4:4:4 decoding/presentation has been confirmed on NVIDIA GeForce RTX 3060.
