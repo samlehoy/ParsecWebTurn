@@ -133,7 +133,8 @@ Host settings are queried using application sub-ID 9. Updates use opcode 17,
 application sub-ID 11, and a JSON **object containing the `video` array**, not a
 bare array. The host's returned object, untouched streams, output identity and
 other fields are preserved. After an update the client requests the actual
-configuration again; the panel and optional event log show the host's reply.
+configuration again; the optional event log records the host's reply. The panel
+shows pending/error states without dumping host configuration values.
 The stock host can answer before its settings task applies the update. The
 client sends each write once, then polls configuration reads at most four times
 per second for up to five seconds. Apply remains pending until the requested
@@ -142,8 +143,8 @@ confirmation and cannot be used for another concurrent edit. Bandwidth, FPS,
 frame pacing and orientation have concrete menu choices; only resolution offers
 Keep host. Missing preferences in older profiles use current host values where
 usable, otherwise 10 Mbps / 60 FPS / adaptive / default orientation.
-The session button is more translucent than the panel. An open panel stays
-visible when the client loses focus, while retaining normal owned-window
+The session button is more translucent than the panel. Both the button and an
+open panel stay visible when the client loses focus, retaining normal owned-window
 ordering (never system-wide topmost). The native stream window paints black
 until video is available; this adds no decoded-frame operation or startup delay.
 This contract was rechecked against the pinned core's native UI and lowlat's

@@ -24,7 +24,7 @@ const STATUS: i32 = 4606;
 const HIDE_BUTTON: usize = 4607;
 const SECURE_ATTENTION: usize = 4608;
 const METRICS: i32 = 4609;
-const PANEL_HEIGHT: i32 = 630;
+const PANEL_HEIGHT: i32 = 680;
 pub const RESULT: u32 = WM_APP + 26;
 pub const VISIBILITY: u32 = WM_APP + 27;
 const BG: u32 = 0x00231d19;
@@ -57,6 +57,8 @@ struct Panel {
     fullscreen: HWND,
     font: HFONT,
     heading: HFONT,
+    caption: HFONT,
+    metrics_edge: HBRUSH,
     bg: HBRUSH,
     field: HBRUSH,
     rates: crate::stats::Rates,
@@ -66,6 +68,8 @@ impl Drop for Panel {
         unsafe {
             DeleteObject(self.font);
             DeleteObject(self.heading);
+            DeleteObject(self.caption);
+            DeleteObject(self.metrics_edge);
             DeleteObject(self.bg);
             DeleteObject(self.field);
         }
@@ -176,6 +180,46 @@ unsafe fn update_metrics(hwnd: HWND, panel: &mut Panel) {
         wide(&metrics(sample.as_ref(), &values)).as_ptr(),
     );
 }
+unsafe fn draw_metrics(lp: LPARAM, p: &Panel) -> bool {
+    if lp == 0 {
+        return false;
+    }
+    let item = &*(lp as *const DRAWITEMSTRUCT);
+    if item.CtlType != ODT_STATIC || item.CtlID != METRICS as u32 {
+        return false;
+    }
+    FillRect(item.hDC, &item.rcItem, p.field);
+    FrameRect(item.hDC, &item.rcItem, p.metrics_edge);
+    SetBkMode(item.hDC, TRANSPARENT as i32);
+    let previous = SelectObject(item.hDC, p.caption);
+    SetTextColor(item.hDC, 0x00e7bd63);
+    let mut title = wide("LIVE PERFORMANCE");
+    let mut bounds = item.rcItem;
+    bounds.left += 12;
+    bounds.right -= 12;
+    bounds.top += 9;
+    DrawTextW(
+        item.hDC,
+        title.as_mut_ptr(),
+        -1,
+        &mut bounds,
+        DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX,
+    );
+    SelectObject(item.hDC, p.font);
+    SetTextColor(item.hDC, FG);
+    bounds.top += 22;
+    bounds.bottom -= 9;
+    let mut values = wide(&text(item.hwndItem));
+    DrawTextW(
+        item.hDC,
+        values.as_mut_ptr(),
+        -1,
+        &mut bounds,
+        DT_LEFT | DT_TOP | DT_NOPREFIX,
+    );
+    SelectObject(item.hDC, previous);
+    true
+}
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if msg == WM_NCCREATE {
         SetWindowLongPtrW(
@@ -239,7 +283,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             }
 
             WM_DRAWITEM => {
-                if draw_button(lp) {
+                if draw_metrics(lp, p) || draw_button(lp) {
                     return 1;
                 }
             }
@@ -270,29 +314,16 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 );
                 SetWindowTextW(
                     GetDlgItem(hwnd, STATUS),
-                    wide(&if wp == 2 {
-                        let observed = (&*p.window)
-                            .native_host_video
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner());
-                        format!(
-                            "Host: {} x {} | {} FPS\n{} Mbps | Constant FPS: {}",
-                            observed["width"],
-                            observed["height"],
-                            observed["fps"],
-                            observed["bandwidth_mbps"],
-                            observed["constant_fps"]
-                        )
+                    wide(&if wp == 2 || wp == 0 {
+                        String::new()
                     } else if wp == 5 {
                         "Ctrl+Alt+Del requested from the host.".into()
                     } else if wp == 6 {
                         "Could not send Ctrl+Alt+Del. See the event log.".into()
                     } else if wp == 3 {
-                        "Waiting for the host to confirm video settings...".into()
+                        "Applying settings...".into()
                     } else if wp == 4 {
                         "Host did not confirm the requested settings. See the event log.".into()
-                    } else if wp == 0 {
-                        "Applied locally; video settings requested from host.".into()
                     } else {
                         "Could not apply or save settings. See the event log.".into()
                     })
@@ -538,14 +569,10 @@ pub unsafe fn raise(window: &crate::window::Window) {
             34,
             SWP_NOACTIVATE | SWP_NOOWNERZORDER | if active { 0 } else { SWP_NOZORDER },
         );
-        ShowWindow(
-            button,
-            if visible && active && !window.native_session_button_hidden() {
-                SW_SHOWNA
-            } else {
-                SW_HIDE
-            },
-        );
+        let show = visible && !window.native_session_button_hidden();
+        if (IsWindowVisible(button) != 0) != show {
+            ShowWindow(button, if show { SW_SHOWNA } else { SW_HIDE });
+        }
     }
     let panel = panel(window);
     window
@@ -635,6 +662,8 @@ pub unsafe fn toggle(
         fullscreen: null_mut(),
         font: super::ui::font(16, 400),
         heading: super::ui::font(25, 600),
+        caption: super::ui::font(12, 600),
+        metrics_edge: CreateSolidBrush(0x0065543f),
         bg: CreateSolidBrush(BG),
         field: CreateSolidBrush(FIELD),
         rates: Default::default(),
@@ -678,8 +707,8 @@ pub unsafe fn toggle(
         "STATIC",
         "Decode CPU N/A | Encode N/A\nRTT N/A | RX N/A | FPS N/A",
         METRICS as usize,
-        0,
-        [24, 60, 370, 40],
+        SS_OWNERDRAW as u32,
+        [24, 66, 370, 82],
     );
     for (i, label) in [
         "Resolution",
@@ -699,7 +728,7 @@ pub unsafe fn toggle(
             label,
             0,
             0,
-            [24, 104 + i as i32 * 44, 150, 24],
+            [24, 170 + i as i32 * 44, 150, 24],
         );
     }
     let res = match video.resolution {
@@ -711,7 +740,7 @@ pub unsafe fn toggle(
         hwnd,
         p,
         20,
-        100,
+        166,
         &[
             "Keep host",
             "Match client display",
@@ -730,7 +759,7 @@ pub unsafe fn toggle(
         hwnd,
         p,
         21,
-        144,
+        210,
         &["5", "10", "15", "20", "30", "50", "100"],
         &video.bandwidth_mbps.unwrap().to_string(),
         true,
@@ -739,7 +768,7 @@ pub unsafe fn toggle(
         hwnd,
         p,
         22,
-        188,
+        254,
         &["30", "60", "90", "120", "144", "165", "240"],
         &video.fps.unwrap().to_string(),
         true,
@@ -748,7 +777,7 @@ pub unsafe fn toggle(
         hwnd,
         p,
         23,
-        232,
+        298,
         &["Adaptive", "Constant FPS"],
         if video.constant_fps == Some(true) {
             "Constant FPS"
@@ -761,7 +790,7 @@ pub unsafe fn toggle(
         hwnd,
         p,
         24,
-        276,
+        342,
         &["Default", "Rotated"],
         if video.rotated == Some(true) {
             "Rotated"
@@ -774,7 +803,7 @@ pub unsafe fn toggle(
         hwnd,
         p,
         25,
-        320,
+        386,
         &["Disabled", "Mouse", "Keyboard", "Mouse + keyboard"],
         match video.immersive {
             1 => "Mouse + keyboard",
@@ -791,7 +820,7 @@ pub unsafe fn toggle(
         "Fullscreen",
         30,
         BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [24, 366, 350, 30],
+        [24, 432, 350, 30],
     );
     SendMessageW(
         p.fullscreen,
@@ -803,18 +832,18 @@ pub unsafe fn toggle(
         hwnd,
         p,
         "STATIC",
-        "Video changes are host requests. Constant FPS does not duplicate frames locally.",
+        "",
         STATUS as usize,
         0,
-        [24, 404, 370, 46],
+        [24, 470, 370, 40],
     );
     for (id, label, x, y, w) in [
-        (SETTINGS, "Settings", 24, 466, 178),
-        (APPLY, "Apply", 214, 466, 178),
-        (DISCONNECT, "Disconnect", 24, 516, 178),
-        (CLOSE, "Close", 214, 516, 178),
-        (HIDE_BUTTON, "Hide button", 24, 566, 178),
-        (SECURE_ATTENTION, "Send Ctrl+Alt+Del", 214, 566, 178),
+        (SETTINGS, "Settings", 24, 518, 178),
+        (APPLY, "Apply", 214, 518, 178),
+        (DISCONNECT, "Disconnect", 24, 568, 178),
+        (CLOSE, "Close", 214, 568, 178),
+        (HIDE_BUTTON, "Hide button", 24, 618, 178),
+        (SECURE_ATTENTION, "Send Ctrl+Alt+Del", 214, 618, 178),
     ] {
         control(
             hwnd,
@@ -999,6 +1028,19 @@ mod tests {
         };
         unsafe {
             assert_eq!(GetWindow(panel, GW_OWNER), window.handle());
+            assert_ne!(
+                IsWindowVisible(button),
+                0,
+                "Session button must remain visible independently of foreground focus"
+            );
+            let mut card: RECT = std::mem::zeroed();
+            let mut resolution: RECT = std::mem::zeroed();
+            GetWindowRect(GetDlgItem(panel, METRICS), &mut card);
+            GetWindowRect(GetDlgItem(panel, 20), &mut resolution);
+            assert!(
+                resolution.top - card.bottom >= 12,
+                "Performance card needs space before the controls"
+            );
             for id in [21, 22, 23, 24] {
                 assert_eq!(
                     SendMessageW(
@@ -1013,6 +1055,10 @@ mod tests {
             SendMessageW(panel, RESULT, 3, 0);
             assert_eq!(IsWindowEnabled(GetDlgItem(panel, APPLY as i32)), 0);
             SendMessageW(panel, RESULT, 2, 0);
+            assert!(
+                text(GetDlgItem(panel, STATUS)).is_empty(),
+                "Host configuration debug text must not appear in the panel"
+            );
             assert_ne!(IsWindowEnabled(GetDlgItem(panel, APPLY as i32)), 0);
             assert_ne!(GetWindowLongPtrW(panel, GWL_STYLE) as u32 & WS_POPUP, 0);
             assert_ne!(
