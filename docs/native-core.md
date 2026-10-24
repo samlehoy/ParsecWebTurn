@@ -5,7 +5,7 @@ from dev/main and from published releases. It is not a feature-complete replacem
 
 Build: `cargo build --release --manifest-path src-native/Cargo.toml --no-default-features --features native-core,vendor-video`.
 When reusing an older build directory, first run
-`cargo clean --manifest-path src-native/Cargo.toml -p libopus_sys` to discard
+`cargo clean --manifest-path src-native/Cargo.toml --release -p libopus_sys` to discard
 Opus objects built with the old MSVC runtime. Fresh builds need no extra step.
 The build does not fetch, compile, embed or execute `parsecd.wasm`. All new runtime
 code is Rust, including the native Win32 sign-in UI. The native runtime/build
