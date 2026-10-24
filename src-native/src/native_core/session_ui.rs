@@ -450,7 +450,7 @@ pub unsafe fn raise(window: &crate::window::Window) {
             origin.y,
             108,
             34,
-            SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER | if active { 0 } else { SWP_NOZORDER },
         );
         ShowWindow(
             button,
@@ -472,9 +472,11 @@ pub unsafe fn raise(window: &crate::window::Window) {
             origin.y + 44,
             420,
             (r.bottom - 76).clamp(120, 580),
-            SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER | if active { 0 } else { SWP_NOZORDER },
         );
-        ShowWindow(panel, if visible { SW_SHOWNA } else { SW_HIDE });
+        if (IsWindowVisible(panel) != 0) != visible {
+            ShowWindow(panel, if visible { SW_SHOWNA } else { SW_HIDE });
+        }
     }
 }
 pub unsafe fn toggle(
