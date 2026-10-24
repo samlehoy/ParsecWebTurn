@@ -183,6 +183,9 @@ impl Shared {
                         .and_then(|old| old.video.as_ref())
                         .is_none_or(|old| {
                             old.decoder != v.decoder
+                                || old.adapter != v.adapter
+                                || old.decoded_chroma != v.decoded_chroma
+                                || old.decoded_bit_depth != v.decoded_bit_depth
                                 || old.decoder_fallback != v.decoder_fallback
                                 || old.display_rgb_bit_depth != v.display_rgb_bit_depth
                                 || old.display_output_fallback != v.display_output_fallback
@@ -200,6 +203,7 @@ impl Shared {
                     "decoder_state_changed",
                     serde_json::json!({
                         "generation":generation,"decoder":v.decoder,"fallback":v.decoder_fallback.is_some(),
+                        "gpu_adapter":v.adapter,"decoded_chroma":v.decoded_chroma,
                         "stage":v.failure_stage,"hresult":v.failure_hresult,"decoded_bit_depth":v.decoded_bit_depth,
                         "display_rgb_bit_depth":v.display_rgb_bit_depth,"display_output_fallback":v.display_output_fallback,
                     }),

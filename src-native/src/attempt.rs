@@ -979,6 +979,7 @@ fn worker(
         connection_settings,
     } = network;
     if let Some(config) = &mut config {
+        let chroma_444_requested = config.chroma_444;
         // Capability work stays on this worker, outside the WASM/backend lock.
         #[cfg(windows)]
         {
@@ -1011,7 +1012,7 @@ fn worker(
         crate::event_log::record(
             "INFO",
             "video_capabilities_declared",
-            serde_json::json!({"transport":"WebRTC","flags":config.video_flags(),"hevc":config.allow_hevc,"main10":config.ten_bit,"chroma_444":config.chroma_444}),
+            serde_json::json!({"transport":"WebRTC","flags":config.video_flags(),"hevc":config.allow_hevc,"main10":config.ten_bit,"chroma_444":config.chroma_444,"chroma_444_requested":chroma_444_requested}),
         );
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()

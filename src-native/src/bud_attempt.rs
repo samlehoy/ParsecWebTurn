@@ -717,7 +717,7 @@ fn run(
     crate::event_log::record(
         "INFO",
         "video_capabilities_declared",
-        json!({"transport":"BUD","flags":8 | u32::from(hevc_available) | if ten_bit {16} else {0} | if chroma_444 {2} else {0},"hevc":hevc_available,"main10":ten_bit,"chroma_444":chroma_444}),
+        json!({"transport":"BUD","flags":8 | u32::from(hevc_available) | if ten_bit {16} else {0} | if chroma_444 {2} else {0},"hevc":hevc_available,"main10":ten_bit,"chroma_444":chroma_444,"chroma_444_requested":settings.experimental_chroma_444}),
     );
     let hid_generation;
     let (mut media, mut session, statistics) = {

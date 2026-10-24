@@ -202,3 +202,10 @@ current parameter sets and the arriving keyframe, and requests a new keyframe
 only when needed. A size change alone does not disable vendor decoding or
 zero-copy, and does not consume the decoder-error retry limit. Live validation
 with remote hosts and the affected GPU paths is still required.
+
+Full-chroma requests are retained on BUD per-stream encoder updates as well as
+initialization and native keyframe requests. Capability logs distinguish
+`chroma_444_requested` from the effective `chroma_444` declaration. When a
+requested AYUV path is unavailable, `video_chroma_444_unavailable` records the
+bounded GPU probe stage/result. Decoder state logs include the actual adapter,
+decoded chroma and bit depth; no media data or continuous input is recorded.

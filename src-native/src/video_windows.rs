@@ -198,7 +198,7 @@ pub fn hevc_444_available(
     }
     #[cfg(feature = "vendor-video")]
     unsafe {
-        (|| -> Result<()> {
+        let result = (|| -> Result<()> {
             let _runtime = Runtime::start()?;
             let (device, _) = create_device(preferred_gpu)?;
             let video: ID3D11VideoDevice = api("video-444-device", device.cast())?;
@@ -242,8 +242,15 @@ pub fn hevc_444_available(
                 return Err(unavailable("video-444-input-unavailable"));
             }
             Ok(())
-        })()
-        .is_ok()
+        })();
+        if let Err(error) = &result {
+            crate::event_log::record(
+                "INFO",
+                "video_chroma_444_unavailable",
+                serde_json::json!({"stage":error.stage,"hresult":error.hresult}),
+            );
+        }
+        result.is_ok()
     }
 }
 

@@ -1204,7 +1204,8 @@ impl Driver {
 }
 
 fn negotiated_encoder_flags(external: u32, initial: u32) -> u32 {
-    (external & !0x1b) | (initial & 0x19)
+    const MASK: u32 = init::FLAG_HEVC | init::FLAG_COLOR444 | init::FLAG_FULL_RANGE | init::FLAG_10BIT;
+    (external & !MASK) | (initial & MASK)
 }
 
 #[cfg(test)]
@@ -1309,15 +1310,15 @@ mod tests {
     }
 
     #[test]
-    fn external_encoder_requests_keep_initial_depth_and_range() {
-        for external in [0, 1, 2, 8, 16, 0x1b] {
-            assert_eq!(negotiated_encoder_flags(external, 0x19), 0x19);
-            assert_eq!(negotiated_encoder_flags(external, 0x09), 0x09);
-            assert_eq!(negotiated_encoder_flags(external, 8), 8);
+    fn external_encoder_requests_keep_negotiated_chroma_depth_and_range() {
+        for initial in [0, 8, 0x09, 0x0b, 0x19] {
+            for external in [0, 1, 2, 8, 16, 0x1b, 0x40, 0x5b] {
+                let flags = negotiated_encoder_flags(external, initial);
+                assert_eq!(flags & 0x1b, initial);
+                assert_eq!(flags & !0x1b, external & !0x1b);
+            }
         }
-        assert_eq!(negotiated_encoder_flags(0x40, 0x19), 0x59);
     }
-
     #[test]
     fn missing_encode_report_retains_last_value_only_for_current_connection() {
         let make = || {
