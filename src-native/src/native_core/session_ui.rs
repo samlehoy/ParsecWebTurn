@@ -13,7 +13,12 @@ use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
     System::LibraryLoader::*,
-    UI::{Controls::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
+    UI::{
+        Controls::*,
+        Input::KeyboardAndMouse::*,
+        Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+        WindowsAndMessaging::*,
+    },
 };
 pub const OPEN: usize = 4600;
 const APPLY: usize = 4602;
