@@ -521,13 +521,14 @@ pub unsafe fn raise(window: &crate::window::Window) {
     if !panel.is_null() {
         let mut r = std::mem::zeroed();
         GetClientRect(parent, &mut r);
+        let panel_offset = super::session_badge::SIZE + 10;
         SetWindowPos(
             panel,
             insert_after.unwrap_or(HWND_TOP),
             origin.x,
-            origin.y + 44,
+            origin.y + panel_offset,
             420,
-            (r.bottom - 76).clamp(120, PANEL_HEIGHT),
+            (r.bottom - panel_offset - 32).clamp(120, PANEL_HEIGHT),
             SWP_NOACTIVATE
                 | SWP_NOOWNERZORDER
                 | if insert_after.is_some() {
