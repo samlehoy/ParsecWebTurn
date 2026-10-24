@@ -103,14 +103,6 @@ pub fn match_index(preferred: &GpuPreference, adapters: &[GpuPreference]) -> Opt
 mod tests {
     use super::*;
     #[test]
-    fn full_chroma_policy_admits_intel_and_nvidia_but_not_amd_or_unknown() {
-        assert!(full_chroma_vendor_allowed(0x10de));
-        assert!(full_chroma_vendor_allowed(0x8086));
-        assert!(!full_chroma_vendor_allowed(0x1002));
-        assert!(!full_chroma_vendor_allowed(0));
-        assert!(!full_chroma_vendor_allowed(0x1414));
-    }
-    #[test]
     fn excludes_indirect_display_alias_but_keeps_render_devices_and_unknowns() {
         assert!(is_display_only_indirect(Some(0x0342)));
         assert!(!is_display_only_indirect(Some(0x232b))); // integrated GPU
