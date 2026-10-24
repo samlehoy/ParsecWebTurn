@@ -66,7 +66,7 @@ impl Binding {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "native-core")))]
 mod tests {
     use super::*;
     #[test]

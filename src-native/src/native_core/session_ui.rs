@@ -34,6 +34,7 @@ pub enum Action {
 struct Panel {
     window: *const crate::window::Window,
     window_owned: bool,
+    scroll: i32,
     controls: [HWND; 6],
     fullscreen: HWND,
     font: HFONT,
@@ -112,6 +113,24 @@ unsafe fn close(hwnd: HWND) {
     DestroyWindow(hwnd);
     SetFocus(parent);
 }
+unsafe fn scroll(hwnd: HWND, p: &mut Panel, target: i32) {
+    if target == p.scroll {
+        return;
+    }
+    let delta = p.scroll - target;
+    p.scroll = target;
+    ScrollWindowEx(
+        hwnd,
+        0,
+        delta,
+        null(),
+        null(),
+        null_mut(),
+        null_mut(),
+        SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE,
+    );
+    SetScrollPos(hwnd, SB_VERT, target, 1);
+}
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if msg == WM_NCCREATE {
         SetWindowLongPtrW(
@@ -124,6 +143,43 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
     if !pointer.is_null() {
         let p = &mut *pointer;
         match msg {
+            WM_SIZE => {
+                let mut r = std::mem::zeroed();
+                GetClientRect(hwnd, &mut r);
+                let max = (580 - r.bottom).max(0);
+                let target = p.scroll.min(max);
+                scroll(hwnd, p, target);
+                let info = SCROLLINFO {
+                    cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
+                    fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
+                    nMin: 0,
+                    nMax: 579,
+                    nPage: r.bottom.max(1) as u32,
+                    nPos: p.scroll,
+                    ..std::mem::zeroed()
+                };
+                SetScrollInfo(hwnd, SB_VERT, &info, 1);
+                return 0;
+            }
+            WM_VSCROLL => {
+                let mut info = SCROLLINFO {
+                    cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
+                    fMask: SIF_ALL,
+                    ..std::mem::zeroed()
+                };
+                GetScrollInfo(hwnd, SB_VERT, &mut info);
+                let target = match wp & 0xffff {
+                    x if x == SB_LINEUP as usize => p.scroll - 28,
+                    x if x == SB_LINEDOWN as usize => p.scroll + 28,
+                    x if x == SB_PAGEUP as usize => p.scroll - info.nPage as i32,
+                    x if x == SB_PAGEDOWN as usize => p.scroll + info.nPage as i32,
+                    x if x == SB_THUMBTRACK as usize => info.nTrackPos,
+                    _ => p.scroll,
+                };
+                scroll(hwnd, p, target.clamp(0, (580 - info.nPage as i32).max(0)));
+                return 0;
+            }
+
             WM_DRAWITEM => {
                 if draw_button(lp) {
                     return 1;
@@ -297,7 +353,17 @@ pub unsafe fn raise(window: &crate::window::Window) {
     }
     let panel = GetDlgItem(parent, PANEL);
     if !panel.is_null() {
-        SetWindowPos(panel, HWND_TOP, 16, 60, 420, 580, SWP_NOACTIVATE);
+        let mut r = std::mem::zeroed();
+        GetClientRect(parent, &mut r);
+        SetWindowPos(
+            panel,
+            HWND_TOP,
+            16,
+            60,
+            420,
+            (r.bottom - 76).clamp(120, 580),
+            SWP_NOACTIVATE,
+        );
     }
 }
 pub unsafe fn toggle(
@@ -315,6 +381,7 @@ pub unsafe fn toggle(
     let mut panel = Box::new(Panel {
         window,
         window_owned: false,
+        scroll: 0,
         controls: [null_mut(); 6],
         fullscreen: null_mut(),
         font: super::ui::font(16, 400),
@@ -336,7 +403,7 @@ pub unsafe fn toggle(
         WS_EX_CONTROLPARENT | WS_EX_COMPOSITED,
         name.as_ptr(),
         wide("Session controls").as_ptr(),
-        WS_CHILD | WS_CLIPCHILDREN,
+        WS_CHILD | WS_CLIPCHILDREN | WS_VSCROLL,
         16,
         60,
         420,

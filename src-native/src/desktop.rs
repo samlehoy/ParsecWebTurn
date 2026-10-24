@@ -337,6 +337,8 @@ fn dispatch_input_event(
         }
     }
     let (name, values, count) = match event {
+        #[cfg(feature = "native-core")]
+        Event::NativeSession(_) => return Ok(()), // Native UI commands never enter guest callbacks.
         Event::CursorReady => return Ok(()),
         Event::Clipboard => {
             if let Some(window) = &store.data().window {

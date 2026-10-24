@@ -76,11 +76,7 @@ fn accepted(status: u16, value: Value) -> Result<Session> {
     let token = value["session_id"]
         .as_str()
         .context("No session returned by Parsec")?;
-    ensure!(
-        !token.is_empty() && token.len() <= 4096 && !token.chars().any(char::is_control),
-        "Invalid account session"
-    );
-    Ok(Session(zeroize::Zeroizing::new(token.into())))
+    Session::from_token(token)
 }
 
 pub fn login(login: &Login) -> Result<Session> {

@@ -95,7 +95,7 @@ unsafe fn add(
         WS_CHILD
             | WS_VISIBLE
             | style
-            | if class == "BUTTON" && style & BS_AUTOCHECKBOX as u32 == 0 {
+            | if class == "BUTTON" && style & 0xf != BS_AUTOCHECKBOX as u32 {
                 BS_OWNERDRAW as u32
             } else {
                 0
@@ -123,6 +123,9 @@ unsafe fn view(f: &Form) {
     for &h in &f.picker_controls {
         ShowWindow(h, if login { SW_HIDE } else { SW_SHOW });
     }
+    for h in f.fields.into_iter().chain([f.remember]) {
+        EnableWindow(h, i32::from(f.incoming.is_none()));
+    }
     for id in [LOGIN, REFRESH, CONNECT, LOGOUT] {
         let h = GetDlgItem(GetParent(f.status), id as i32);
         EnableWindow(h, i32::from(f.incoming.is_none()));
@@ -144,6 +147,14 @@ unsafe fn start_hosts(hwnd: HWND, f: &mut Form) {
 unsafe fn completed(hwnd: HWND, f: &mut Form, job: Completed) {
     match job {
         Completed::Login(Ok(session)) => {
+            if !f.remember_login {
+                if f.manager
+                    .update_native(|p| p.encrypted_session.clear())
+                    .is_err()
+                {
+                    message_box(hwnd,"The old saved sign-in could not be removed. Check write access to settings.json.");
+                }
+            }
             if f.remember_login {
                 let save = super::profile::Profile::encrypted(session.token()).and_then(|blob| {
                     f.manager.update_native(|p| {
@@ -163,6 +174,11 @@ unsafe fn completed(hwnd: HWND, f: &mut Form, job: Completed) {
             start_hosts(hwnd, f);
         }
         Completed::Login(Err(e)) => {
+            crate::event_log::record(
+                "ERROR",
+                "native_account_login_failed",
+                serde_json::json!({}),
+            );
             status(f, &e.to_string());
             view(f);
             SetFocus(f.fields[1]);
@@ -195,6 +211,11 @@ unsafe fn completed(hwnd: HWND, f: &mut Form, job: Completed) {
             SetFocus(f.list);
         }
         Completed::Hosts(Err(e)) => {
+            crate::event_log::record(
+                "WARN",
+                "native_computer_list_failed",
+                serde_json::json!({"session_rejected":e.downcast_ref::<account::ExpiredSession>().is_some()}),
+            );
             if e.downcast_ref::<account::ExpiredSession>().is_some() {
                 let _ = f.manager.update_native(|p| p.encrypted_session.clear());
                 f.session = None;
@@ -549,7 +570,7 @@ pub fn choose(
         }
         if let Some(session) = f.session.take() {
             if f.manager.view().0.native_core.encrypted_session.is_empty() {
-                std::thread::spawn(move || session.revoke());
+                session.revoke();
             }
         }
         DeleteObject(f.font);

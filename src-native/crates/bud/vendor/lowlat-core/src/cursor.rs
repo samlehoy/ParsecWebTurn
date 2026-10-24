@@ -10,7 +10,7 @@
 //! because somebody is using touch, and is not relative; whether a pointer is
 //! being drawn at all is a third thing again.
 
-use crate::control::{self, Control, op};
+use crate::control::{Control, op};
 use crate::error::{Error, Result};
 
 /// Body length, after the thirteen-byte header.
