@@ -33,6 +33,13 @@ pub struct Snapshot {
     pub failure_hresult: Option<String>,
     pub resources_released: bool,
 }
+#[derive(Default)]
+struct State {
+    report: Snapshot,
+    pcm: VecDeque<i16>,
+    stopped: bool,
+    reset: bool,
+}
 pub struct Playback {
     pub layout: Layout,
     shared: Arc<Mutex<State>>,

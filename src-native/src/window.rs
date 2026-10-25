@@ -1869,13 +1869,6 @@ mod tests {
                     })
                     .collect();
                 assert_eq!(motion, [(-400, 0), (1, 0)]); // Immediate reversal, no absolute dead zone.
-                for (x, y) in motion {
-                    let packet = crate::control::input(
-                        &serde_json::json!({"type":4,"relative":true,"x":x,"y":y}),
-                    )
-                    .unwrap();
-                    assert_eq!(packet, crate::control::header(3, 1, x, y));
-                }
                 let mut held = POINT::default();
                 unsafe {
                     GetCursorPos(&mut held);

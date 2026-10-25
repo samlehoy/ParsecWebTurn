@@ -153,7 +153,6 @@ impl NativeReceiver {
         state.report.pcm_frames_consumed += (pcm.len() / usize::from(layout.channels)) as u64;
         Some(Handoff { layout, pcm })
     }
-    #[cfg(test)]
     pub fn recycle_handoff(&self, block: Handoff) {
         recycle_pcm(&self.state, block);
     }
