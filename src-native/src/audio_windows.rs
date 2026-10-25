@@ -142,9 +142,6 @@ impl Playback {
         );
         let state = shared.clone();
         let (tx, rx) = mpsc::sync_channel(1);
-        window
-            .active_contexts
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let worker = std::thread::spawn(move || {
             let result = unsafe { render(&state, &window, min_frames, &tx, layout) };
             if let Err(error) = result {
@@ -160,9 +157,6 @@ impl Playback {
                 .unwrap_or_else(|e| e.into_inner())
                 .report
                 .resources_released = true;
-            window
-                .active_contexts
-                .fetch_sub(1, std::sync::atomic::Ordering::Release);
         });
         let output = Self {
             layout,

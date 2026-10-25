@@ -205,7 +205,7 @@ pub fn probe() -> Result<serde_json::Value> {
     drop(window);
 
     Ok(
-        serde_json::json!({"schema":1,"scope":"isolated-native-fullscreen-", "fullscreen_roundtrips":5,"native_geometry_restored":true,"native_style_restored":true,"idempotent_requests_verified":true,"window_event_feedback_verified":false,"real_account_used":false,"parsec_host_connected":false}),
+        serde_json::json!({"schema":1,"scope":"isolated-native-fullscreen", "fullscreen_roundtrips":5,"native_geometry_restored":true,"native_style_restored":true,"idempotent_requests_verified":true,"window_event_feedback_verified":false,"real_account_used":false,"parsec_host_connected":false}),
     )
 }
 

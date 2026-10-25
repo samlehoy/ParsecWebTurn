@@ -1,4 +1,4 @@
-//! Optional, bounded operational JSON Lines log. No packet or guest log capture.
+//! Optional, bounded operational JSON Lines log. No packet or media-content capture.
 #![cfg_attr(not(windows), allow(dead_code))]
 use serde_json::{json, Value};
 use std::{

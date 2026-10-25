@@ -14,6 +14,3 @@ These assets use the project's root license.
 Windows builds embed the ICO directly. No asset downloads, image conversion or
 extra runtime files are needed. The embedded resource is shared by the EXE,
 taskbar, native launcher, session icon, settings, statistics and About dialogs.
-
-`native-client-comparison-v2.png` is a historical comparison illustration; it
-may include proposed capabilities and does not define the current feature list.

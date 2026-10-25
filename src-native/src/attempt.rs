@@ -1947,7 +1947,7 @@ mod tests {
     }
 
     #[test]
-    fn native_offer_completion_needs_no_guest_memory_or_account_connection() {
+    fn native_offer_completion_needs_no_account_connection() {
         let (sender, receiver) = mpsc::sync_channel(1);
         let output = Output::new(Arc::new(move |description| {
             let Some(description) = description else {

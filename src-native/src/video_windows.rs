@@ -394,11 +394,6 @@ impl Pipeline {
             .report
             .enabled = true;
         let state = shared.clone();
-        // Guard HWND destruction even if thread startup or device creation fails.
-        window
-            .active_contexts
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        let activity = Activity(window.clone());
         let error_state = shared.clone();
         let preferred_gpu = window.video_gpu();
         shared
@@ -436,7 +431,6 @@ impl Pipeline {
                     .video_report
                     .lock()
                     .unwrap_or_else(|e| e.into_inner()) = Some(q.report.clone());
-                drop(activity);
             });
         if spawned.is_err() {
             let mut q = error_state.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -533,14 +527,6 @@ impl Pipeline {
 impl Drop for Pipeline {
     fn drop(&mut self) {
         self.stop();
-    }
-}
-struct Activity(Arc<crate::window::Window>);
-impl Drop for Activity {
-    fn drop(&mut self) {
-        self.0
-            .active_contexts
-            .fetch_sub(1, std::sync::atomic::Ordering::Release);
     }
 }
 

@@ -29,9 +29,8 @@ webrtc = "=0.14.0"
 image = { version = "0.25", default-features = false, features = ["png"] }
 libopus_sys = { version = "=0.3.3", features = ["bundled", "static"] }
 
-# Unit tests also exercise the diagnostic helpers without requiring a CLI build.
+# Synthetic crypto-policy and loopback TLS regression fixtures.
 [dev-dependencies]
-log = "0.4"
 rcgen = "0.13"
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

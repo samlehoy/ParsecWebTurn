@@ -51,7 +51,6 @@ pub struct Window {
     pub gui_visibility: crate::gui_visibility::State,
     pub hwnd: AtomicUsize,
     pub closing: AtomicBool,
-    pub active_contexts: AtomicUsize,
     pub events: crate::event_queue::Queue<Event>,
     pub dimensions: Mutex<(i32, i32)>,
 
@@ -141,7 +140,6 @@ impl Window {
             gui_visibility: Default::default(),
             hwnd: AtomicUsize::new(0),
             closing: AtomicBool::new(false),
-            active_contexts: AtomicUsize::new(0),
             events: Default::default(),
             dimensions: Mutex::new((1024, 720)),
 
@@ -153,7 +151,6 @@ impl Window {
             video_generation: Mutex::new(0),
             video_visible: AtomicBool::new(true),
 
-            #[cfg(test)]
             online,
 
             stop: Default::default(),
@@ -555,7 +552,7 @@ impl Window {
             || self.settings_open()
             || state.detached;
         let previous = self.relative_requested.load(Ordering::Acquire);
-        // The core may issue an unlock while focus/detach temporarily suspends
+        // The session may issue an unlock while focus/detach temporarily suspends
         // acquisition. Keep the host's relative request for the next activation.
         if authoritative || enabled || !suspended {
             self.relative_requested.store(enabled, Ordering::Release);
@@ -594,7 +591,7 @@ impl Window {
         // must acquire native relative input too; button state is not evidence.
         let relative = relative || hidden;
         *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner()) = Some((x, y, relative));
-        // When capture is suspended, the guest already sees relative=false and
+        // When capture is suspended, the input consumer already sees relative=false and
         // may omit its redundant unlock. Do not retain a stale relative request.
         if relative != self.relative_requested.load(Ordering::Acquire) {
             // A host transition is permanent, including while unfocused.
@@ -866,7 +863,7 @@ impl Window {
         } else {
             self.select_client_cursor();
         }
-        // A rejected request must also report the actual state to the guest.
+        // Report the actual acquisition state to the input consumer, including rejection.
         self.relative_mouse.store(acquired, Ordering::Release);
         self.push(Event::RelativeMode(acquired));
     }
@@ -1268,8 +1265,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 let pending = s.fullscreen_pending.swap(0, Ordering::AcqRel);
                 if pending != 0 {
                     let mut fullscreen = s.fullscreen.lock().unwrap_or_else(|e| e.into_inner());
-                    // Like a rejected browser fullscreen request, an OS failure
-                    // leaves the guest running and reports the retained state.
+                    // An OS failure keeps the session running and reports the retained state.
                     if fullscreen.set(hwnd, pending == 2).is_err() {
                         crate::event_log::record(
                             "WARN",

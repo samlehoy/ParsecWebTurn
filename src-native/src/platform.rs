@@ -79,7 +79,7 @@ impl Services {
     }
 
     pub fn read_notification_text(&self) -> Option<String> {
-        // Keep the core's byte-oriented truncation from cutting a UTF-8 character.
+        // Enforce the remote byte limit without splitting a UTF-8 character.
         self.try_read_text().map(remote_text)
     }
 

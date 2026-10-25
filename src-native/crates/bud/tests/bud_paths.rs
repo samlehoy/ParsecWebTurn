@@ -141,7 +141,7 @@ fn turn_udp_connectivity() {
         .parse()
         .unwrap();
     connect(
-        Route::turn_udp(server, "pwt-fixture", "isolated-fixture-only"),
+        Route::turn_udp(server, "evoparseq-fixture", "isolated-fixture-only"),
         true,
     );
 }
@@ -156,7 +156,7 @@ fn turn_tcp_connectivity() {
     connect(
         Route::turn(
             server,
-            "pwt-fixture",
+            "evoparseq-fixture",
             "isolated-fixture-only",
             RelayTransport::Tcp,
         ),

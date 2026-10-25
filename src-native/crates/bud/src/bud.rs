@@ -119,7 +119,6 @@ impl Session {
                 hevc_10: hevc_available && ten_bit,
                 hevc_444: hevc_available && chroma_444,
                 hevc_444_10: hevc_available && chroma_444 && ten_bit,
-                ..Default::default()
             },
             Port::Any,
         )

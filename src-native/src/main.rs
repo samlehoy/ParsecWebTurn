@@ -62,10 +62,6 @@ mod stats;
 #[cfg(windows)]
 mod stats_ui;
 mod transport;
-#[cfg(test)]
-mod transport_diagnostic_errors;
-#[cfg(test)]
-mod transport_diagnostics;
 mod video_color;
 mod video_output;
 mod video_stream;
