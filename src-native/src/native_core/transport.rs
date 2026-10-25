@@ -290,7 +290,7 @@ mod tests {
         }
     }
     #[test]
-    fn native_offer_uses_the_existing_web_transport_contract() {
+    fn native_offer_uses_the_host_signaling_contract() {
         let wire = offer(
             "fixture-host",
             "fixture-attempt",

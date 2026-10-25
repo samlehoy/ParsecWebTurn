@@ -361,7 +361,7 @@ mod tests {
         assert_eq!(avc, hevc);
     }
     #[test]
-    fn guest_reconfiguration_cannot_erase_main10_or_enable_444() {
+    fn stream_reconfiguration_preserves_main10_without_enabling_444() {
         let config = Config {
             video_protocol: crate::video_stream::VideoProtocol {
                 version: 0,

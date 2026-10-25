@@ -8,14 +8,14 @@ use tokio_tungstenite::tungstenite::{protocol::WebSocketConfig, Message};
 
 fn connect_url(token: &str) -> Result<String> {
     let mut url = reqwest::Url::parse("wss://kessel-ws.parsec.app/")?;
-    // Unlike the C++ demo's Matoya parser, tungstenite requires the root
-    // path. Removing it produces `GET ?session_id=...`, an invalid target.
+    // The WebSocket HTTP request requires the root path. Removing it
+    // produces `GET ?session_id=...`, an invalid target.
     // See lowlat crates/kessel/src/url.rs at e548d48.
     url.query_pairs_mut().extend_pairs([
         ("session_id", token),
         ("role", "client"),
         ("version", "1"),
-        ("build", "lowlat-client"),
+        ("build", "EvoParseq"),
         ("sdk_version", "0"),
     ]);
     Ok(url.into())

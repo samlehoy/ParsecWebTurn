@@ -90,13 +90,6 @@ impl Pending {
     }
 }
 
-pub fn handles(name: &str) -> bool {
-    matches!(
-        name,
-        "web_set_png_cursor" | "web_set_rgba_cursor" | "web_show_cursor" | "web_use_default_cursor"
-    )
-}
-
 struct OwnedCursor(usize);
 impl Drop for OwnedCursor {
     fn drop(&mut self) {

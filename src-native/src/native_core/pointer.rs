@@ -16,9 +16,12 @@ impl Pointer {
             self.cache.clear();
             self.delivered = None;
         }
-        window.host_cursor_event(&serde_json::json!({"type":1,"cursor":{
-            "positionX":pointer.update.x,"positionY":pointer.update.y,
-            "relative":pointer.update.relative,"hidden":pointer.update.hidden}}));
+        window.set_host_cursor(
+            i32::from(pointer.update.x),
+            i32::from(pointer.update.y),
+            pointer.update.relative,
+            pointer.update.hidden,
+        );
         window.set_cursor(crate::cursor::Request::Visible(!pointer.update.suppressed));
         let checksum = if !pointer.image.is_empty() {
             ensure!(

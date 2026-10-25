@@ -32,11 +32,13 @@ transport-owned. Native AES keys remain inside the transport adapter.
 Removed because EvoParseq supplies these functions already: SDK decoder
 selection and threads, vendor/software video backends, decoded frame exporters,
 CPU plane/readback paths, SDK audio decode and PCM staging, input remapping,
-controller report conversion, cursor cache/PNG decode, semantic UI events and
+controller report conversion, SDK cursor-image decoding, semantic UI events and
 microphone capture/encoding. Their tests/fixtures and unused dependencies were
 removed with them. The unused port-mapping and separate NAT-classification APIs
 were removed; normal STUN gathering and host candidates remain. There is no
-second renderer, decoder, UI or account WebSocket in this subset.
+second renderer, decoder, UI or account WebSocket in this subset. The native
+client enables the small cursor-cache feature for host cache/forget semantics;
+PNG decoding and cursor ownership remain in EvoParseq.
 
 Original native controls are forwarded once to the retained UI. Only session
 status, encoder generation/encode time and the client's roster number are also

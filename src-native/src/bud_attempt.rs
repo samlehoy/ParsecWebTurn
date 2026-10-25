@@ -22,7 +22,7 @@ use std::{
 struct State {
     offer: Option<Value>,
     output_finished: bool,
-    web_mode: Option<Value>,
+    offer_mode: Option<Value>,
     wire_id: String,
     retired_wires: Vec<String>,
     template: Option<Value>,
@@ -214,7 +214,7 @@ impl Attempt {
                 state.writer = Some(writer);
             }
             state.template = Some(value.clone());
-            state.web_mode = value["payload"]["data"].get("mode").cloned();
+            state.offer_mode = value["payload"]["data"].get("mode").cloned();
             let offer = state.offer.as_ref().context("BUD offer not ready")?;
             // Preserve account destination, authorization secret, and envelope.
             value["payload"]["data"] = offer.clone();
@@ -290,7 +290,7 @@ impl Attempt {
                 .state
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .web_mode
+                .offer_mode
                 .clone();
             if let Some(mode) = mode {
                 value["payload"]["data"]["mode"] = mode;
@@ -1254,7 +1254,7 @@ mod tests {
     #[test]
     fn native_answer_keeps_aes_out_of_consumer_and_rejects_stale_delivery() {
         let (attempt, incoming) = isolated();
-        attempt.state.lock().unwrap().web_mode = Some(json!(2));
+        attempt.state.lock().unwrap().offer_mode = Some(json!(2));
         let wire = json!({"action":"answer_relay","payload":{"attempt_id":"isolated","approved":true,"data":{"mode":1,"creds":{"aes256":"native-key-sentinel","ice_ufrag":"abc"}}}}).to_string();
         let consumer: Value =
             serde_json::from_str(&attempt.incoming(&wire).unwrap().unwrap()).unwrap();
@@ -1380,7 +1380,7 @@ mod tests {
     #[test]
     fn malformed_active_answer_fails_without_mutating_consumer_or_queue() {
         let (attempt, incoming) = isolated();
-        attempt.state.lock().unwrap().web_mode = Some(json!(2));
+        attempt.state.lock().unwrap().offer_mode = Some(json!(2));
         assert!(attempt.incoming(r#"{"action":"answer_relay","payload":{"attempt_id":"isolated","approved":true,"data":42}}"#).is_err());
         assert!(incoming.try_recv().is_err());
     }

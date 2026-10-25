@@ -531,9 +531,7 @@ impl Window {
     }
 
     pub fn set_relative_mouse(&self, enabled: bool) {
-        // The browser build omits the native `relative || hidden` rule because
-        // MTY_AppCanWarpCursor returns false. Known native host intent takes
-        // precedence over that browser-specific pointer-lock callback.
+        // Preserve known host intent across temporary local capture changes.
         let enabled = self
             .host_cursor
             .lock()
@@ -568,25 +566,7 @@ impl Window {
             PostMessageW(self.handle(), WM_APP + 7, 0, 0);
         }
     }
-    pub fn host_cursor_event(&self, event: &serde_json::Value) {
-        if event["type"].as_i64() != Some(1) {
-            return;
-        }
-        let cursor = &event["cursor"];
-        if let (Some(x), Some(y), Some(relative), Some(hidden)) = (
-            cursor["positionX"]
-                .as_i64()
-                .and_then(|v| i32::try_from(v).ok()),
-            cursor["positionY"]
-                .as_i64()
-                .and_then(|v| i32::try_from(v).ok()),
-            cursor["relative"].as_bool(),
-            cursor["hidden"].as_bool(),
-        ) {
-            self.set_host_cursor(x, y, relative, hidden);
-        }
-    }
-    fn set_host_cursor(&self, x: i32, y: i32, relative: bool, hidden: bool) {
+    pub fn set_host_cursor(&self, x: i32, y: i32, relative: bool, hidden: bool) {
         // Parsec SDK cursor_func and lowlat both use OR. A hidden-only event
         // must acquire native relative input too; button state is not evidence.
         let relative = relative || hidden;
@@ -1874,19 +1854,20 @@ mod tests {
                 wire[26..28].copy_from_slice(&540i16.to_be_bytes());
                 let flags: u16 = if rel { 0x100 } else { 0 } | if hidden { 0x200 } else { 0 };
                 wire[32..34].copy_from_slice(&flags.to_be_bytes());
-                let crate::control::Message::Buffer { event, .. } =
-                    crate::control::decode(&wire).unwrap()
-                else {
-                    panic!("not a cursor event");
-                };
-                window.host_cursor_event(&event);
+                let pointer = evoparseq_bud::bud::cursor_message(&wire).unwrap();
+                window.set_host_cursor(
+                    i32::from(pointer.update.x),
+                    i32::from(pointer.update.y),
+                    pointer.update.relative,
+                    pointer.update.hidden,
+                );
                 wait(|| relative() && clipped());
                 unsafe {
                     let mut rect = RECT::default();
                     assert_ne!(GetClipCursor(&mut rect), 0);
                     assert_eq!((rect.right - rect.left, rect.bottom - rect.top), (1, 1));
                 }
-                // Browser callback must not cancel a hidden-only native request.
+                // Local cleanup must not cancel a hidden-only native request.
                 window.set_relative_mouse(false);
                 assert!(window.relative_requested.load(Ordering::Acquire));
                 window.events.drain();
@@ -1978,7 +1959,7 @@ mod tests {
                 ..mode(true, true)
             });
             wait(|| !relative() && !clipped() && !keyboard());
-            window.set_relative_mouse(false); // Core detach cleanup must not lose the request.
+            window.set_relative_mouse(false); // Session detach cleanup must not lose the request.
             window.set_input_state(mode(true, true));
             wait(|| relative() && clipped() && keyboard());
             unsafe {

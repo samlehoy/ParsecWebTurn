@@ -1,5 +1,5 @@
-//! Native WebRTC offer creation and managed connection lifecycle. The client's
-//! private ABI is isolated; no account, signaling server or remote host is used.
+//! Native WebRTC offer creation and managed connection lifecycle.
+//! Host signaling translation is isolated from the ICE/DTLS/SCTP engine.
 use crate::{
     signaling::{Candidate, CandidateGate, Credentials, Description, LocalCandidateSync},
     transport::CHANNELS,

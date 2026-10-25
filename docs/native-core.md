@@ -19,7 +19,7 @@ administrator rights. The configured static CRT and bundled Opus remain in place
 
 ## Native components
 
-- `native_core/api.rs`: account sign-in, optional two-factor authentication,
+- `native_core/account.rs`: account sign-in, optional two-factor authentication,
   computer discovery and session management. Remembered sessions are protected
   using Windows CurrentUser DPAPI in settings.json.
 - `native_core/signaling.rs` and `transport.rs`: authenticated session signaling
