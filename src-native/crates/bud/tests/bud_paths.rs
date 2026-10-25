@@ -3,7 +3,7 @@
 //! only. The separately configured coturn test must not use real credentials.
 use lowlat_client::{Event, Peer};
 use lowlat_core::conn::Kind;
-use parsec_native_bud::bud::{RelayTransport, Route, Session};
+use evoparseq_bud::bud::{RelayTransport, Route, Session};
 use std::time::{Duration, Instant};
 
 fn peer(ours: lowlat_crypto::Credentials) -> Peer {
@@ -134,9 +134,9 @@ fn direct_udp_connectivity() {
 }
 
 #[test]
-#[ignore = "requires isolated coturn on loopback, PWT_TEST_TURN endpoint"]
+#[ignore = "requires isolated coturn on loopback, EVOPARSEQ_TEST_TURN endpoint"]
 fn turn_udp_connectivity() {
-    let server = std::env::var("PWT_TEST_TURN")
+    let server = std::env::var("EVOPARSEQ_TEST_TURN")
         .expect("isolated TURN endpoint")
         .parse()
         .unwrap();
@@ -147,9 +147,9 @@ fn turn_udp_connectivity() {
 }
 
 #[test]
-#[ignore = "requires isolated coturn with TCP listener, PWT_TEST_TURN endpoint"]
+#[ignore = "requires isolated coturn with TCP listener, EVOPARSEQ_TEST_TURN endpoint"]
 fn turn_tcp_connectivity() {
-    let server = std::env::var("PWT_TEST_TURN")
+    let server = std::env::var("EVOPARSEQ_TEST_TURN")
         .expect("isolated TURN endpoint")
         .parse()
         .unwrap();

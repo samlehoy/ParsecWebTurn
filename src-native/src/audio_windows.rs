@@ -41,14 +41,6 @@ pub struct Registry {
     rejected_layouts: BTreeMap<u32, Layout>,
 }
 impl Registry {
-    #[cfg(feature = "diagnostics")]
-    pub fn snapshots(&self) -> Vec<Snapshot> {
-        self.completed
-            .iter()
-            .cloned()
-            .chain(self.outputs.values().map(|v| v.snapshot()))
-            .collect()
-    }
     pub fn retain_snapshot(&mut self, snapshot: Snapshot) {
         if self.completed.len() == 8 {
             self.completed.pop_front();
@@ -515,71 +507,6 @@ unsafe fn render(
         }
     }
     Ok(())
-}
-
-/// Quiet local device smoke test: no account/network and no audible test tone.
-#[cfg(feature = "diagnostics")]
-pub fn probe() -> Result<serde_json::Value> {
-    let mut baseline = probe_output(false, Layout::STEREO)?;
-    baseline["custom"] = probe_output(true, Layout::STEREO)?;
-    baseline["multichannel_inputs"] = serde_json::json!([
-        probe_output(false, Layout::new(6, 0x60f)?)?,
-        probe_output(false, Layout::new(8, 0x63f)?)?,
-    ]);
-    baseline["physical_speaker_mapping_verified"] = false.into();
-    Ok(baseline)
-}
-#[cfg(feature = "diagnostics")]
-fn probe_output(custom: bool, layout: Layout) -> Result<serde_json::Value> {
-    let window = crate::window::Window::create_video_probe()?;
-    let fixture_root = if custom {
-        let root = std::env::temp_dir().join(format!(
-            "parsec-audio-probe-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
-        ));
-        std::fs::create_dir(&root)?;
-        let manager = crate::connection_settings::Manager::open(root.join("settings.json"));
-        let mut settings = manager.view().0;
-        settings.provider = "custom".into();
-        settings.custom_audio_buffer = true;
-        settings.audio_min_buffer_ms = 20;
-        settings.audio_max_buffer_ms = 60;
-        manager.save(settings, "", "", false, false)?;
-        window.install_connection_settings(manager);
-        Some(root)
-    } else {
-        None
-    };
-    let mut snapshot = None;
-    let mut failure = None;
-    match Playback::create_layout(window.clone(), 0, 200, layout) {
-        Ok(output) => {
-            let silence = vec![0; layout.samples(960)];
-            for _ in 0..10 {
-                output.queue(&silence);
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            output.reset();
-            output.stop();
-            snapshot = Some(output.snapshot());
-        }
-        Err(error) => failure = Some(format!("{error:#}")),
-    }
-    window.close();
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    while !window.handle().is_null() && std::time::Instant::now() < until {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    if let Some(root) = fixture_root {
-        std::fs::remove_file(root.join("settings.json"))?;
-        std::fs::remove_dir(root)?;
-    }
-    Ok(
-        serde_json::json!({"scope":"synthetic-silent-wasapi-output","requested_layout":layout,"audio":snapshot,"initialization_error":failure,"real_account_used":false,"external_requests_enabled":false,"native_window_released":window.handle().is_null()}),
-    )
 }
 
 #[cfg(test)]

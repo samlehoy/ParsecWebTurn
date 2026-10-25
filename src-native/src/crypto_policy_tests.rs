@@ -3,7 +3,7 @@ use ring::signature::{
     UnparsedPublicKey, RSA_PKCS1_1024_8192_SHA256_FOR_LEGACY_USE_ONLY, RSA_PKCS1_2048_8192_SHA256,
 };
 
-const MESSAGE: &[u8] = b"Parsec-native-WASM synthetic RSA policy audit v1";
+const MESSAGE: &[u8] = b"EvoParseq synthetic RSA policy audit v1";
 const PUBLIC_1024: &[u8] = include_bytes!("../tests/fixtures/rsa-policy/rsa1024-public.der");
 const SIGNATURE_1024: &[u8] = include_bytes!("../tests/fixtures/rsa-policy/rsa1024-signature.bin");
 const PUBLIC_2048: &[u8] = include_bytes!("../tests/fixtures/rsa-policy/rsa2048-public.der");

@@ -1,4 +1,4 @@
-//! PC scan codes -> UI Events code names registered by the pinned Matoya core.
+//! PC scan codes mapped to standard UI Events code names.
 //! Printable text is delivered separately by Win32 WM_CHAR, preserving layout.
 pub fn code(vk: u32, scan: u8, extended: bool) -> Option<&'static str> {
     let special = match vk {

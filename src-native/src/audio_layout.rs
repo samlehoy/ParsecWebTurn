@@ -34,30 +34,6 @@ impl Layout {
             _ => (1, 1, [0, 1, 0, 0, 0, 0, 0, 0]),
         }
     }
-
-    /// The unchanged WASM mixer takes stereo. Give it a valid reference mix
-    /// while the native queue retains the original channels for presentation.
-    /// Its queue/reset decisions still own mute and playback; no audio is sent
-    /// to the device until that exact polled block is queued by the core.
-    pub fn stereo_mix(self, pcm: &[i16]) -> Vec<i16> {
-        let mut output = Vec::with_capacity(pcm.len() / usize::from(self.channels) * 2);
-        for frame in pcm.chunks_exact(usize::from(self.channels)) {
-            let mut left = f32::from(frame[0]);
-            let mut right = f32::from(frame[1]);
-            if self.channels > 2 {
-                let center = f32::from(frame[2]) * std::f32::consts::FRAC_1_SQRT_2;
-                left += center;
-                right += center;
-                // LFE is omitted from the reference stereo fold-down.
-                for pair in frame[4..].as_chunks::<2>().0 {
-                    left += f32::from(pair[0]) * std::f32::consts::FRAC_1_SQRT_2;
-                    right += f32::from(pair[1]) * std::f32::consts::FRAC_1_SQRT_2;
-                }
-            }
-            output.extend([left as i16, right as i16]);
-        }
-        output
-    }
 }
 
 #[cfg(test)]

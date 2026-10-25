@@ -1,4 +1,4 @@
-//! Independent native entry: no WASM load, execution or guest callbacks.
+//! EvoParseq native account and session entry point.
 //! The production media, carrier, route retry and HID workers are reused.
 mod account;
 mod controls;
@@ -59,7 +59,7 @@ fn run() -> Result<()> {
     crate::event_log::record(
         "INFO",
         "native_core_started",
-        serde_json::json!({"transport":if settings.view().0.bud {"BUD"} else {"WebRTC"},"wasm":false}),
+        serde_json::json!({"transport":if settings.view().0.bud {"BUD"} else {"WebRTC"}}),
     );
     let mut session = None;
     loop {
@@ -130,7 +130,7 @@ fn stream(
     video.validate()?;
     let mut fullscreen = video.fullscreen;
     window.set_fullscreen(fullscreen);
-    window.set_input_state(crate::core_input::State {
+    window.set_input_state(crate::input_state::State {
         mode: video.mode(),
         ..Default::default()
     });
@@ -272,7 +272,7 @@ fn stream(
                                 attempt.send(&crate::control::header(24, 0, 0, 0))?;
                             }
                             detached = !detached;
-                            window.set_input_state(crate::core_input::State {
+                            window.set_input_state(crate::input_state::State {
                                 detached,
                                 mode: video.mode(),
                                 ..Default::default()
@@ -341,7 +341,7 @@ fn stream(
                             fullscreen = video.fullscreen;
                             host_settings.applied_locally(size);
                             attempt.send(&crate::control::header(24, 0, 0, 0))?;
-                            window.set_input_state(crate::core_input::State {
+                            window.set_input_state(crate::input_state::State {
                                 mode: video.mode(),
                                 detached,
                                 ..Default::default()

@@ -516,6 +516,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "evoparseq-turn-integration"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "webrtc",
+]
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1086,21 +1101,6 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
-]
-
-[[package]]
-name = "parsec-turn-integration"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "rcgen",
- "rustls",
- "serde",
- "serde_json",
- "tokio",
- "tokio-rustls",
- "webrtc",
 ]
 
 [[package]]

@@ -1,5 +1,4 @@
 /target/
 /.cargo-cache/
 /artifacts/
-/vendor/*.wasm
 

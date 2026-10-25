@@ -939,7 +939,7 @@ mod tests {
         assert!(resolution("wrong").is_err());
     }
     #[test]
-    fn panel_controls_emit_native_actions_without_a_guest_or_network() {
+    fn panel_controls_emit_native_actions_without_network() {
         let window = crate::window::Window::create_native().unwrap();
         struct Close(Arc<crate::window::Window>);
         impl Drop for Close {
@@ -950,7 +950,7 @@ mod tests {
         }
         let _close = Close(window.clone());
         let path = std::env::temp_dir().join(format!(
-            "parsec-overlay-fixture-{}.json",
+            "evoparseq-overlay-fixture-{}.json",
             crate::bud_attempt::native_attempt_id().unwrap()
         ));
         struct Remove(std::path::PathBuf);
@@ -1006,7 +1006,7 @@ mod tests {
                 )),
                 "Badge dragging must stay local"
             );
-            if let Some(path) = std::env::var_os("PWT_NATIVE_UI_CAPTURE") {
+            if let Some(path) = std::env::var_os("EVOPARSEQ_UI_CAPTURE") {
                 let path = std::path::PathBuf::from(path).with_file_name("stream-waiting.png");
                 super::super::ui::capture_fixture(window.handle(), &path).unwrap();
                 let waiting = image::open(path).unwrap().to_rgb8();
@@ -1085,7 +1085,7 @@ mod tests {
                 0
             );
             assert_eq!(alpha, 238);
-            if let Some(path) = std::env::var_os("PWT_NATIVE_UI_CAPTURE") {
+            if let Some(path) = std::env::var_os("EVOPARSEQ_UI_CAPTURE") {
                 let path = std::path::PathBuf::from(path);
                 super::super::ui::capture_fixture(panel, &path).unwrap();
                 assert!(!GetDlgItem(button, OPEN as i32).is_null());

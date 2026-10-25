@@ -23,7 +23,7 @@ This comparison does not add the other listed features to the application.
 | Camera passthrough / selection (stock Warp) | Not implemented | Requires capture, encoding and host-device integration |
 | Enhanced Pen (stock Warp) | Not implemented | Requires pressure/tilt events and the host pen contract |
 | Swap Command/Ctrl for macOS | Not implemented; current executable targets Windows | Possible as an input mapping after host-platform identification |
-| New UI preview | Not applicable: independent native UI | No WASM UI to switch |
+| New UI preview | Not applicable: independent native UI | Independent native UI |
 | Chat | No native chat panel | Application messages and a bounded UI would be needed |
 | Sound ON/OFF | No native Session mute toggle | Can be added at the existing playback queue, without stopping video |
 | Metrics graphs | Numeric live card and Connection stats only | Bounded history can reuse the same samples |
@@ -32,6 +32,6 @@ This comparison does not add the other listed features to the application.
 
 The restored WebRTC route reuses this project's existing Rust ICE/DTLS/SCTP
 implementation, TURN policy and GPU decoder workers. No lowlat WebRTC engine,
-browser, guest memory or WASM core is introduced. BUD-only audio/HID preferences
+browser or second client runtime is introduced. BUD-only audio/HID preferences
 stay inactive when WebRTC is selected. Live transport/driver verification is
 separate from the synthetic regression suite.

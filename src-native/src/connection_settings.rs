@@ -1,4 +1,4 @@
-//! Tauri-compatible settings; native RTCIceServer configuration, never guest JS.
+//! Persisted native connection settings and RTCIceServer configuration.
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
-#[cfg(any(test, windows, not(feature = "diagnostics")))]
+
 use std::{io::Read, sync::Arc};
 use webrtc::{
     ice::url::{ProtoType, SchemeType, Url},
@@ -57,7 +57,6 @@ impl GpuPreference {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
-    #[cfg(feature = "native-core")]
     pub native_core: crate::native_core::profile::Profile,
     #[cfg(feature = "bud")]
     #[serde(alias = "experimentalBud")]
@@ -103,7 +102,6 @@ impl Default for Settings {
     // Legacy defaults apply to existing JSON; a new native installation uses fresh().
     fn default() -> Self {
         Self {
-            #[cfg(feature = "native-core")]
             native_core: Default::default(),
             #[cfg(feature = "bud")]
             bud: false,
@@ -151,7 +149,7 @@ impl Settings {
     pub fn hid_keyboard_enabled(&self) -> bool {
         self.bud && self.experimental_hid_keyboard
     }
-    #[cfg(any(test, windows, not(feature = "diagnostics")))]
+
     fn fresh() -> Self {
         Self {
             provider: "custom".into(),
@@ -319,7 +317,6 @@ struct Cached {
 }
 
 impl Manager {
-    #[cfg(any(test, windows, not(feature = "diagnostics")))]
     pub fn open(path: PathBuf) -> Arc<Self> {
         let loaded = (|| -> Result<Settings> {
             let file = match std::fs::File::open(&path) {
@@ -357,7 +354,7 @@ impl Manager {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
         state
     }
-    #[cfg(feature = "native-core")]
+
     pub fn native_session_button_hidden(&self) -> bool {
         self.state
             .lock()
@@ -388,9 +385,9 @@ impl Manager {
             settings.encrypted_api_token = protect(token)?;
         }
         settings.validate()?;
-        #[cfg(feature = "native-core")]
+
         let mut current = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        #[cfg(feature = "native-core")]
+
         {
             let hide_button = settings.native_core.hide_session_button;
             settings.native_core = current.0.native_core.clone();
@@ -402,20 +399,17 @@ impl Manager {
         }
         atomic_write(&self.path, &raw)?;
         let logging = settings.event_logging;
-        #[cfg(feature = "native-core")]
+
         {
             *current = (settings, None);
         }
-        #[cfg(not(feature = "native-core"))]
-        {
-            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = (settings, None);
-        }
+
         *self.cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
         crate::event_log::configure(logging)
             .context("Settings saved, but the event log could not be opened")?;
         Ok(())
     }
-    #[cfg(feature = "native-core")]
+
     pub fn update_native(
         &self,
         update: impl FnOnce(&mut crate::native_core::profile::Profile),
@@ -783,7 +777,7 @@ mod tests {
             let mut nonce = [0; 16];
             getrandom::fill(&mut nonce).unwrap();
             let name: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
-            let path = std::env::temp_dir().join(format!("parsec-settings-{name}"));
+            let path = std::env::temp_dir().join(format!("evoparseq-settings-{name}"));
             std::fs::create_dir(&path).unwrap();
             Self(path)
         }

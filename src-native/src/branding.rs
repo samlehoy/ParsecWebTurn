@@ -1,7 +1,6 @@
 //! One embedded application icon; no runtime assets or per-frame icon decoding.
 use windows_sys::Win32::{Foundation::*, System::LibraryLoader::*, UI::WindowsAndMessaging::*};
 
-#[cfg(feature = "native-core")]
 pub const BLUE: u32 = 0x00ed802f; // #2f80ed as Win32 COLORREF
 
 pub unsafe fn icon() -> HICON {
@@ -12,7 +11,6 @@ pub unsafe fn icon() -> HICON {
     )
 }
 
-#[cfg(feature = "native-core")]
 pub unsafe fn launcher_icon() -> HICON {
     // Use the embedded 40 px resource; Windows owns this shared handle.
     LoadImageW(
@@ -25,9 +23,8 @@ pub unsafe fn launcher_icon() -> HICON {
     ) as HICON
 }
 
-#[cfg(feature = "native-core")]
 pub unsafe fn about(owner: HWND) {
-    let text: Vec<u16> = format!("EvoParseq {}\nIndependent native Rust client — BUD / WebRTC.\nNo Parsec WASM core is loaded or executed.\nIndependent of Parsec/Unity and lowlat; not affiliated or endorsed.",env!("CARGO_PKG_VERSION")).encode_utf16().chain([0]).collect();
+    let text: Vec<u16> = format!("EvoParseq {}\nIndependent native Rust client — BUD / WebRTC.\nNetworking, media and input are handled directly in Rust.\nIndependent of Parsec/Unity and lowlat; not affiliated or endorsed.",env!("CARGO_PKG_VERSION")).encode_utf16().chain([0]).collect();
     let caption: Vec<u16> = "About EvoParseq".encode_utf16().chain([0]).collect();
     MessageBoxIndirectW(&MSGBOXPARAMSW {
         cbSize: std::mem::size_of::<MSGBOXPARAMSW>() as u32,
@@ -40,3 +37,5 @@ pub unsafe fn about(owner: HWND) {
         ..std::mem::zeroed()
     });
 }
+
+pub const ABOUT: usize = 4302;

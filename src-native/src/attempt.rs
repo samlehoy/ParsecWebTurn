@@ -1,4 +1,4 @@
-//! Managed native offer creation behind parsec_web_new_attempt. The guest's
+//! Native WebRTC offer creation and managed connection lifecycle. The client's
 //! private ABI is isolated; no account, signaling server or remote host is used.
 use crate::{
     signaling::{Candidate, CandidateGate, Credentials, Description, LocalCandidateSync},
@@ -35,52 +35,14 @@ use webrtc::{
     },
 };
 
-#[cfg(any(test, not(feature = "native-core")))]
 #[derive(Clone)]
-pub(crate) struct GuestOutput {
-    memory: GuestMemory,
-    strings: [u32; 3],
-    capacity: usize,
-    sync: u32,
-    error: u32,
-}
-
-#[cfg(any(test, not(feature = "native-core")))]
-use crate::memory::GuestMemory;
-
-#[derive(Clone)]
-pub enum Output {
-    #[cfg(any(test, not(feature = "native-core")))]
-    Guest(GuestOutput),
-    #[cfg(feature = "native-core")]
-    Native(Arc<dyn Fn(Option<&Description>) -> Result<bool> + Send + Sync>),
-}
+pub struct Output(Arc<dyn Fn(Option<&Description>) -> Result<bool> + Send + Sync>);
 impl Output {
-    #[cfg(any(test, not(feature = "native-core")))]
-    pub fn new(
-        memory: GuestMemory,
-        strings: [u32; 3],
-        capacity: usize,
-        sync: u32,
-        error: u32,
-    ) -> Result<Self> {
-        GuestOutput::new(memory, strings, capacity, sync, error).map(Self::Guest)
+    pub fn new(publish: Arc<dyn Fn(Option<&Description>) -> Result<bool> + Send + Sync>) -> Self {
+        Self(publish)
     }
     pub fn finish(&self, credentials: Option<&Description>) -> Result<bool> {
-        match self {
-            #[cfg(any(test, not(feature = "native-core")))]
-            Self::Guest(output) => output.finish(credentials),
-            #[cfg(feature = "native-core")]
-            Self::Native(publish) => publish(credentials),
-        }
-    }
-    #[cfg(any(test, not(feature = "native-core")))]
-    pub fn finish_values(&self, values: Option<[&str; 3]>) -> Result<bool> {
-        match self {
-            Self::Guest(output) => output.finish_values(values),
-            #[cfg(feature = "native-core")]
-            Self::Native(_) => bail!("native offers require a full description"),
-        }
+        (self.0)(credentials)
     }
 }
 
@@ -122,81 +84,13 @@ impl std::fmt::Display for FailureStage {
 }
 impl std::error::Error for FailureStage {}
 
-#[cfg(any(test, not(feature = "native-core")))]
-impl GuestOutput {
-    pub fn new(
-        memory: GuestMemory,
-        strings: [u32; 3],
-        capacity: usize,
-        sync: u32,
-        error: u32,
-    ) -> Result<Self> {
-        if !(2..=4096).contains(&capacity) {
-            bail!("invalid attempt output capacity");
-        }
-        memory.sync_word(sync)?;
-        let mut ranges = Vec::new();
-        for ptr in strings {
-            ranges.push(memory.range(ptr, capacity)?);
-        }
-        ranges.push(memory.range(sync, 4)?);
-        ranges.push(memory.range(error, 4)?);
-        for (i, a) in ranges.iter().enumerate() {
-            for b in &ranges[i + 1..] {
-                if a.start < b.end && b.start < a.end {
-                    bail!("overlapping attempt output buffers");
-                }
-            }
-        }
-        Ok(Self {
-            memory,
-            strings,
-            capacity,
-            sync,
-            error,
-        })
-    }
-    pub fn finish(&self, credentials: Option<&Description>) -> Result<bool> {
-        // Validate every size before writing any credential. Failure leaves the
-        // buffers empty, so stale credentials cannot look like a valid offer.
-        self.finish_values(credentials.map(|d| {
-            [
-                d.credentials.ufrag.as_str(),
-                d.credentials.password.as_str(),
-                d.credentials.fingerprint.as_str(),
-            ]
-        }))
-    }
-
-    /// Shared guest-memory completion only; does not construct an RTC description.
-    pub fn finish_values(&self, values: Option<[&str; 3]>) -> Result<bool> {
-        let fits = values
-            .as_ref()
-            .is_some_and(|values| values.iter().all(|v| v.len() < self.capacity));
-        for (i, ptr) in self.strings.iter().enumerate() {
-            self.memory.c_string(
-                *ptr,
-                self.capacity,
-                if fits {
-                    values.as_ref().unwrap()[i]
-                } else {
-                    ""
-                },
-            )?;
-        }
-        self.memory.set_u32(self.error, u32::from(!fits))?;
-        self.memory.signal(self.sync)?;
-        Ok(fits)
-    }
-}
-
 #[derive(Default)]
 struct Progress {
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     relay_only: bool,
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     relay_only_connectivity: bool,
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     resolved_ice_servers: Option<usize>,
     ready: bool,
     closed: bool,
@@ -226,14 +120,13 @@ struct Progress {
     local_gathering_complete: bool,
     local_sync: LocalCandidateSync,
     local_sync_queued: bool,
-    #[cfg(feature = "diagnostics")]
-    ice_checks_before_close: serde_json::Value,
+
     transport_states: serde_json::Value,
     transport_states_before_close: serde_json::Value,
     transport_states_at_failure: serde_json::Value,
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     stun_provider: StunProvider,
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     legacy_rsa_1024: bool,
 }
 
@@ -436,7 +329,7 @@ async fn read_channel(
 ) {
     let mut buffer = vec![0; MAX_CHANNEL_MESSAGE];
     // This session mode is immutable. Native media goes straight to its sink;
-    // only control/probe receipts need an owned copy for the guest queue.
+    // only control/probe receipts need an owned copy for the control queue.
     let native_mode = shared
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -507,9 +400,9 @@ enum Command {
 pub enum StunProvider {
     #[default]
     None,
-    #[cfg(any(test, not(feature = "diagnostics")))]
+
     Parsec,
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     Cloudflare,
 }
 impl StunProvider {
@@ -517,9 +410,8 @@ impl StunProvider {
         match self {
             Self::None => None,
             // Audited constructor in the pinned public parsec.js (150-104a).
-            #[cfg(any(test, not(feature = "diagnostics")))]
             Self::Parsec => Some(("parsec", "stun:stun.parsec.gg:3478")),
-            #[cfg(any(test, feature = "diagnostics"))]
+            #[cfg(test)]
             Self::Cloudflare => Some(("cloudflare", "stun:stun.cloudflare.com:3478")),
         }
     }
@@ -583,9 +475,9 @@ impl Attempt {
             closing: false,
             output: Some(output),
             progress: Progress {
-                #[cfg(any(test, feature = "diagnostics"))]
+                #[cfg(test)]
                 stun_provider,
-                #[cfg(any(test, feature = "diagnostics"))]
+                #[cfg(test)]
                 legacy_rsa_1024,
                 ..Default::default()
             },
@@ -607,7 +499,7 @@ impl Attempt {
         let notify = wake.clone();
         let attempt_id = id.to_owned();
         std::thread::Builder::new()
-            .name("parsec-native-offer".into())
+            .name("evoparseq-offer".into())
             .spawn(move || {
                 let _permit = permit;
                 let result = worker(
@@ -670,7 +562,7 @@ impl Attempt {
 
     pub fn cancel(&mut self) {
         // Serialize publication and cancellation. Taking the output lease
-        // prevents the old worker from writing into reused guest buffers.
+        // prevents the old worker from writing into retired output callbacks.
         let mut state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
         state.cancelled = true;
         #[cfg(windows)]
@@ -701,7 +593,7 @@ impl Attempt {
             .failed
             .then_some(state.progress.failure_stage.unwrap_or(FailureStage::Worker))
     }
-    #[cfg(feature = "native-core")]
+
     pub fn host_status(&self) -> Option<i32> {
         // A host status can precede SCTP closure in the same read batch. Keep
         // its authenticated numeric reason available before a generic failure.
@@ -777,15 +669,6 @@ impl Attempt {
         state.video_output = Some(video);
     }
 
-    #[cfg(any(test, not(feature = "native-core")))]
-    pub fn poll_audio(&self, memory: &GuestMemory, pointer: u32, capacity: usize) -> Result<usize> {
-        let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
-        match &state.audio_stream {
-            Some(audio) => audio.poll(memory, pointer, capacity),
-            None => Ok(0),
-        }
-    }
-
     pub fn configure_video_protocol(&self, protocol: crate::video_stream::VideoProtocol) {
         let inspector = self
             .completion
@@ -799,7 +682,6 @@ impl Attempt {
             .configure(protocol);
     }
 
-    #[cfg(feature = "native-core")]
     pub fn audio_receiver(&self) -> Option<crate::audio_stream::NativeReceiver> {
         self.completion
             .lock()
@@ -815,7 +697,7 @@ impl Attempt {
         Some(message)
     }
 
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     pub fn snapshot(&self) -> serde_json::Value {
         let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
         let mut snapshot = serde_json::json!({ "offer_ready": state.progress.ready, "mid":state.progress.mid, "peer_closed": state.progress.closed, "failed": state.progress.failed, "failure_stage": state.progress.failure_stage, "negotiated_channels": state.progress.channels, "channels_open": state.progress.open_mask.count_ones(), "transport_connected":state.progress.transport_connected, "local_candidates":state.progress.local_candidates, "remote_candidates":state.progress.remote_candidates, "messages_received":state.progress.messages_received, "worker_finished": *self.finished.0.lock().unwrap_or_else(|e| e.into_inner()), "host_connected": false,
@@ -843,10 +725,7 @@ impl Attempt {
         snapshot["local_gathering_complete"] =
             serde_json::json!(state.progress.local_gathering_complete);
         snapshot["local_sync_queued"] = serde_json::json!(state.progress.local_sync_queued);
-        #[cfg(feature = "diagnostics")]
-        {
-            snapshot["ice_checks_before_close"] = state.progress.ice_checks_before_close.clone();
-        }
+
         snapshot["ice_servers_configured"] =
             serde_json::json!(state.progress.resolved_ice_servers.map(|count| count != 0));
         snapshot["resolved_ice_server_entries"] =
@@ -892,7 +771,7 @@ impl Attempt {
             .events
             .pop_front()
     }
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     pub fn receive_binary(&self, duration: Duration) -> Result<(u16, bool, Bytes)> {
         let state = self
             .completion
@@ -911,7 +790,7 @@ impl Attempt {
         state.message_bytes -= message.2.len();
         Ok(message)
     }
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     pub fn wait_transport(&self, duration: Duration) -> Result<()> {
         let state = self
             .completion
@@ -980,7 +859,7 @@ fn worker(
     } = network;
     if let Some(config) = &mut config {
         let chroma_444_requested = config.chroma_444;
-        // Capability work stays on this worker, outside the WASM/backend lock.
+        // Capability work stays on this worker, outside the connection lock.
         #[cfg(windows)]
         {
             let gpu = connection_settings
@@ -1029,7 +908,7 @@ fn worker(
     // Explicit legacy key-size compatibility only. Signature and SDP fingerprint
     // verification remain enabled; insecure hashes are not enabled.
     settings.allow_insecure_verification_algorithm(legacy_rsa_1024);
-    // Resolve short-lived credentials on the async worker, never the UI/WASM
+    // Resolve short-lived credentials on the async worker, never the UI
     // thread. Snapshot settings once; a save affects only the next attempt.
     let mut ice = ice_configuration(stun_provider);
     if let Some(manager) = connection_settings {
@@ -1055,7 +934,7 @@ fn worker(
         settings.set_relay_only_connectivity(true);
     }
     let api = APIBuilder::new().with_setting_engine(settings).build();
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     {
         let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
         state.progress.resolved_ice_servers = Some(ice.ice_servers.len());
@@ -1063,8 +942,7 @@ fn worker(
             == webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy::Relay;
         state.progress.relay_only_connectivity = relay_only;
     }
-    #[cfg(feature = "diagnostics")]
-    let ice_trace = crate::transport_diagnostics::start_ice_window();
+
     let peer = Arc::new(runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(5), api.new_peer_connection(ice)).await
     })??);
@@ -1100,14 +978,8 @@ fn worker(
                     if s.cancelled || s.closing {
                         break;
                     }
-                    s.media_ingress.network_rtt = if sample.state == "connected" {
-                        sample.rtt_ms.map(|ms| (sample.at, ms))
-                    } else {
-                        None
-                    };
                 }
-                // The guest overlay also needs RTT with the native stats window
-                // closed. Reuse this existing 1 Hz task, not the per-frame import.
+                // Reuse the existing 1 Hz statistics task.
                 if !bus.requested() {
                     continue;
                 }
@@ -1477,24 +1349,7 @@ fn worker(
         drop((offer, channels));
         Ok(())
     })();
-    #[cfg(feature = "diagnostics")]
-    {
-        let pairs = runtime.block_on(async {
-            tokio::time::timeout(
-                Duration::from_millis(500),
-                crate::transport_diagnostics::peer_ice_summary(&peer),
-            )
-            .await
-            .ok()
-        });
-        let trace = crate::transport_diagnostics::finish_ice_window(ice_trace);
-        shared
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .progress
-            .ice_checks_before_close =
-            serde_json::json!({"trace_window":trace,"candidate_pairs":pairs});
-    }
+
     {
         let states = transport_states(&peer);
         let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -1815,7 +1670,7 @@ mod tests {
     }
     use super::*;
     use crate::signaling::Credentials;
-    use wasmtime::{Config, Engine, MemoryType, SharedMemory};
+
     #[test]
     fn relay_sync_remote_first_waits_for_relay_and_later_candidates_stay_after_marker() {
         let mut state = empty_completion();
@@ -2092,66 +1947,10 @@ mod tests {
         }
     }
 
-    fn memory() -> GuestMemory {
-        let mut config = Config::new();
-        config.wasm_threads(true);
-        GuestMemory(
-            SharedMemory::new(&Engine::new(&config).unwrap(), MemoryType::shared(1, 1)).unwrap(),
-        )
-    }
-    #[test]
-    fn outputs_reject_aliases_and_incomplete_credentials_before_publication() {
-        let m = memory();
-        assert!(Output::new(m.clone(), [100, 200, 700], 256, 64, 80).is_err());
-        assert!(Output::new(m.clone(), [100, 400, 700], 256, 65, 80).is_err());
-        assert!(Output::new(m.clone(), [100, 400, 700], 256, 64, 702).is_err());
-        let output = Output::new(m.clone(), [100, 400, 700], 128, 64, 80).unwrap();
-        let d = Description {
-            credentials: Credentials {
-                ufrag: "abcd".into(),
-                password: "x".repeat(256),
-                fingerprint: format!("sha-256 {}", ["AB"; 32].join(":")),
-            },
-            mid: "0".into(),
-        };
-        assert!(!output.finish(Some(&d)).unwrap());
-        assert_eq!(m.u32(80).unwrap(), 1);
-        assert_eq!(m.string(100, 128).unwrap(), "");
-        assert_eq!(m.string(400, 128).unwrap(), "");
-        assert_eq!(m.string(700, 128).unwrap(), "");
-    }
-    #[test]
-    fn cancellation_prevents_writes_into_reused_guest_buffers() {
-        let m = memory();
-        let output = Output::new(m.clone(), [100, 400, 700], 256, 64, 80).unwrap();
-        let mut attempt = Attempt::spawn(output).unwrap();
-        assert!(attempt.sync("stale-attempt").is_err());
-        assert!(attempt
-            .candidate(
-                "stale-attempt",
-                Candidate::new("127.0.0.1", 1234, false).unwrap()
-            )
-            .is_err());
-        attempt.cancel();
-        assert!(attempt.sync("local-offer-test").is_err());
-        m.sync_word(64).unwrap().store(0, Ordering::SeqCst);
-        for ptr in [100, 400, 700] {
-            m.c_string(ptr, 256, "reused-buffer").unwrap();
-        }
-        m.set_u32(80, 12345).unwrap();
-        attempt.wait_finished(Duration::from_secs(12)).unwrap();
-        for ptr in [100, 400, 700] {
-            assert_eq!(m.string(ptr, 256).unwrap(), "reused-buffer");
-        }
-        assert_eq!(m.u32(80).unwrap(), 12345);
-        assert_eq!(attempt.snapshot()["peer_closed"], true);
-        assert_eq!(attempt.snapshot()["host_connected"], false);
-    }
-    #[cfg(feature = "native-core")]
     #[test]
     fn native_offer_completion_needs_no_guest_memory_or_account_connection() {
         let (sender, receiver) = mpsc::sync_channel(1);
-        let output = Output::Native(Arc::new(move |description| {
+        let output = Output::new(Arc::new(move |description| {
             let Some(description) = description else {
                 return Ok(false);
             };

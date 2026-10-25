@@ -684,7 +684,7 @@ pub fn choose(
         }
         #[cfg(test)]
         if UI_FIXTURE.with(|f| f.get()) {
-            if let Some(path) = std::env::var_os("PWT_NATIVE_UI_CAPTURE") {
+            if let Some(path) = std::env::var_os("EVOPARSEQ_UI_CAPTURE") {
                 capture_fixture(
                     hwnd,
                     &std::path::PathBuf::from(&path).with_file_name("sign-in.png"),
@@ -748,7 +748,7 @@ pub fn choose(
                         "Launcher control covers Settings"
                     );
                 }
-                if let Some(path) = std::env::var_os("PWT_NATIVE_UI_CAPTURE") {
+                if let Some(path) = std::env::var_os("EVOPARSEQ_UI_CAPTURE") {
                     capture_fixture(
                         hwnd,
                         &std::path::PathBuf::from(&path).with_file_name(if picker {
@@ -919,7 +919,7 @@ mod tests {
     #[test]
     fn launcher_can_render_without_credentials_or_external_requests() {
         let path = std::env::temp_dir().join(format!(
-            "parsec-launcher-fixture-{}.json",
+            "evoparseq-launcher-fixture-{}.json",
             crate::bud_attempt::native_attempt_id().unwrap()
         ));
         let manager = crate::connection_settings::Manager::open(path);

@@ -1,4 +1,4 @@
-//! Native account signaling. Separate from WASM web credentials and SDP.
+//! Native BUD account signaling, isolated from WebRTC SDP.
 use crate::bud::Session;
 use anyhow::{Result, anyhow, ensure};
 use lowlat_client::{Event, Peer};

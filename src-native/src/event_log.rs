@@ -1,5 +1,5 @@
 //! Optional, bounded operational JSON Lines log. No packet or guest log capture.
-#![cfg_attr(any(not(windows), feature = "diagnostics"), allow(dead_code))]
+#![cfg_attr(not(windows), allow(dead_code))]
 use serde_json::{json, Value};
 use std::{
     fs::{File, OpenOptions},
@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(timestamp(0), "1970-01-01T00:00:00.000Z");
         assert_eq!(timestamp(1709164800123), "2024-02-29T00:00:00.123Z");
         let dir = std::env::temp_dir().join(format!(
-            "parsec-log-{}-{}",
+            "evoparseq-log-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

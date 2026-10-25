@@ -5,7 +5,7 @@ MIT-licensed source derived from nomi-san/lowlat `feat/win-seams`, revision
 Copyright (c) 2026 Nguyen Duy; original license in `LICENSE`.
 Common/crypto remain pinned to that revision; local net/core copies carry the
 isolated TURN stream additions described below.
-This is a EvoParseq-specific subset, not the upstream SDK's complete API.
+This is an EvoParseq-specific subset, not the upstream SDK's complete API.
 
 The application may supply a validated audio channel count/mask in the existing
 initialization contract. Stereo remains the default. This adds no SDK decoder,
@@ -13,8 +13,7 @@ audio device, network scheduler or session-layer dependency.
 
 Application-verified Main 10 capability is retained for external GPU decoding.
 The stream-0 encoder-config bridge preserves the negotiated HEVC/range/depth
-flags instead of allowing the embedded UI to erase them; it does not enable
-4:4:4. No packet scheduling, retransmission or congestion policy is changed.
+flags on later encoder requests, including negotiated 4:4:4/10-bit combinations. No packet scheduling, retransmission or congestion policy is changed.
 
 The subset retains native credentials, AES-GCM, candidate/readiness exchange,
 BUD rings, acknowledgements/NACKs, congestion control, liveness, UDP TURN,
@@ -26,9 +25,9 @@ Only bounded compressed-video/audio pools cross into the application. A sole,
 non-cloneable media consumer borrows each pool lease synchronously outside the
 input-command mutex. Network arrivals unpark it without a GUI/frame timer.
 Stop the media consumer before teardown/reconnect; never retain a lease's pointer.
-Input already framed by the retained WASM UI enters a fixed-size bounded ring.
+Native input packets enter a fixed-size bounded ring.
 A full ring refuses input explicitly; session initialization/reports remain
-transport-owned. Native AES keys never enter the WASM guest.
+transport-owned. Native AES keys remain inside the transport adapter.
 
 Removed because EvoParseq supplies these functions already: SDK decoder
 selection and threads, vendor/software video backends, decoded frame exporters,
@@ -56,15 +55,15 @@ are not part of the live BUD decoder path.
 
 UDP totals are published from the native IO shell, independently of delivered
 media/control counters. The narrow socket-accounting copy and its exact scope
-are documented in ../lowlat-net/PARSECWEBTURN.md. Browser/SCTP transport code is
+are documented in ../lowlat-net/EVOPARSEQ.md. Browser/SCTP transport code is
 omitted from this optional native-only dependency; our WebRTC path is unchanged.
 
 TURN stream integration: native IO/configuration and established-carrier telemetry
 from lowlat PR #2, revision befd5a29c7a331111f11378c0b5623de788e9769.
 No SDK ABI or decoder API is imported. Common/crypto remain at the original pin;
 core is the sibling pinned copy with TURN stream additions and unused host-only
-modules omitted, as recorded in its PARSECWEBTURN.md. See
-../../../../../../docs/bud-turn-stream.md for scope and verification.
+modules omitted, as recorded in its EVOPARSEQ.md. See
+../../../../../../docs/native-core.md for scope and verification.
 
 EvoParseq's optional USB HID input is local adapter code, not an imported
 lowlat SDK input implementation. One device lifecycle and bounded interrupt
@@ -73,7 +72,7 @@ retains local UI routing; selected HID inputs suppress their normal Parsec
 counterparts. Protocol/control, descriptor, relative/absolute mouse and physical
 keyboard state are isolated from media and crypto. No new dependency, host
 patch, probe launcher or per-input-event logging is introduced. See
-../../../../../../docs/usb-hid-input.md for behavior, scope and validation.
+../../../../../../docs/native-core.md for behavior, scope and validation.
 
 On 2026-10-22, the shell also drains successfully queued control/HID output
 produced after its normal IO pass, before entering another wait. The driver
@@ -89,8 +88,7 @@ only enabled by the native-core feature; no upstream PNG decoder, SDK, renderer,
 host-side cursor encoder or extra dependency is imported. Existing Win32 cursor
 creation and PNG decoding remain the application's.
 
-The native client is now named EvoParseq. This notice retains its historical
-filename so existing provenance links remain valid.
+This notice documents the application-owned changes used by EvoParseq.
 
 The 2026-10-25 native-core integration adds an explicit combined HEVC 4:4:4
 10-bit capability. Initialization and later encoder requests retain both flags

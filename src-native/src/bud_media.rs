@@ -1,7 +1,7 @@
 //! Opt-in BUD media handoff to the existing native decoders.
 //! No alternate decoder, renderer, decoded-frame export or GPU interop path.
 use anyhow::{ensure, Result};
-use parsec_native_bud::{
+use evoparseq_bud::{
     bud::{MediaSource, Session},
     media::{self, Rotation, Video},
 };
@@ -127,11 +127,6 @@ impl Media {
                 Ok(false)
             }
             Video::AccessUnit { header, annex_b } => {
-                #[cfg(not(feature = "native-core"))]
-                ensure!(
-                    matches!(header.rotation, Rotation::None | Rotation::Unknown),
-                    "rotated BUD presentation is not connected yet"
-                );
                 // Existing inspector handles the actual Annex B codec. Native
                 // headers from older hosts may label HEVC as H.264.
                 let Some(info) = self.inspector.receive(annex_b) else {
@@ -144,7 +139,7 @@ impl Media {
                 if self.waiting_for_keyframe && !info.idr && !info.parameters {
                     return Ok(false);
                 }
-                #[cfg(feature = "native-core")]
+
                 let accepted = self.video.submit_oriented(
                     annex_b,
                     info,
@@ -155,8 +150,7 @@ impl Media {
                         _ => 0,
                     },
                 );
-                #[cfg(not(feature = "native-core"))]
-                let accepted = self.video.submit(annex_b, info);
+
                 if accepted && info.idr {
                     self.waiting_for_keyframe = false;
                 }
@@ -221,17 +215,6 @@ impl Media {
                 self.video.recovery_request_failed(generation);
             }
         }
-    }
-
-    /// Preserve the current audio/WASM playback boundary and libopus decoder.
-    #[cfg(any(test, not(feature = "native-core")))]
-    pub fn poll_audio(
-        &self,
-        memory: &crate::memory::GuestMemory,
-        pointer: u32,
-        capacity: usize,
-    ) -> Result<usize> {
-        self.audio.poll(memory, pointer, capacity)
     }
 
     pub fn audio_pipeline(&self) -> Arc<crate::audio_stream::Pipeline> {

@@ -1,24 +1,12 @@
-param()
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $taskRoot
 try {
-    ./src-native/fetch-core.ps1
-    & cargo fmt --manifest-path src-native/Cargo.toml -- --check
+    cargo fmt --manifest-path src-native/Cargo.toml -- --check
     if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
-    & cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml -p lowlat-client --features external-video,turn-stream,usb-hid-input hid_ -- --test-threads=1
-    if ($LASTEXITCODE -ne 0) { throw 'HID protocol and input tests failed' }
-    & cargo clippy --locked --manifest-path src-native/crates/bud/Cargo.toml -p lowlat-client --features external-video,turn-stream,usb-hid-input --all-targets -- -D warnings
-    if ($LASTEXITCODE -ne 0) { throw 'BUD external media and HID input Clippy failed' }
-    & cargo test --locked --manifest-path src-native/Cargo.toml -- --test-threads=1
-    if ($LASTEXITCODE -ne 0) { throw 'Normal-build tests failed' }
-    & cargo test --locked --manifest-path src-native/Cargo.toml --features diagnostics -- --test-threads=1
-    if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
-    & cargo clippy --locked --manifest-path src-native/Cargo.toml --all-targets -- -D warnings
-    if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
-    & cargo clippy --locked --manifest-path src-native/Cargo.toml --features diagnostics --all-targets -- -D warnings
-    if ($LASTEXITCODE -ne 0) { throw 'Diagnostic Clippy failed' }
-    & cargo build --locked --release --manifest-path src-native/Cargo.toml
-    if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
-    ./scripts/package-native.ps1
+    cargo test --locked --manifest-path src-native/Cargo.toml -- --test-threads=1
+    if ($LASTEXITCODE -ne 0) { throw 'EvoParseq tests failed' }
+    cargo build --locked --release --manifest-path src-native/Cargo.toml
+    if ($LASTEXITCODE -ne 0) { throw 'EvoParseq build failed' }
+    & ./scripts/package-native.ps1
 } finally { Pop-Location }

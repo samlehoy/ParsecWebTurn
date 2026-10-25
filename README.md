@@ -7,16 +7,15 @@
 EvoParseq connects to your existing, unmodified Parsec hosts. Its new native core
 handles sign-in, computer discovery, session signaling and connection control;
 the Rust client provides networking, GPU video, audio and input directly.
-**The EvoParseq native executable does not load, execute or bundle the proprietary
-Parsec WebAssembly core.** No browser or WebView is required.
+**EvoParseq implements its client directly in native Rust and does not bundle
+proprietary Parsec client code.** No browser is required.
 
 **EvoParseq is an independent community project. It is not affiliated with,
 endorsed by, or developed by Parsec or Unity.** It is also independent of lowlat.
 An existing Parsec account and a compatible Parsec host are required.
 
-This README describes the **`codex/native-core` development branch**, formerly
-named ParsecWebTurn native core. The `main` and `dev` clients are separate;
-their published releases are not EvoParseq builds.
+This README describes the **`codex/native-core` EvoParseq development branch**.
+The repository's `main` and `dev` branches and their releases are separate.
 
 ## What it can do
 
@@ -131,15 +130,14 @@ or account tokens.**
 Use the Rust MSVC toolchain and Windows C++ Build Tools/SDK:
 
 ```powershell
-cargo build --locked --release --manifest-path src-native/Cargo.toml --no-default-features --features native-core,vendor-video
+cargo build --locked --release --manifest-path src-native/Cargo.toml
 ```
 
 The binary is `src-native/target/x86_64-pc-windows-msvc/release/evoparseq.exe`.
 CI packages it as **EvoParseq.exe**, checks the native dependency graph and runs
-regression tests without requiring the proprietary WASM core. Source for the
-application is in `src-native/src`; transport/video adapters are in
-`src-native/crates`. Historical WASM build options and research notes remain in
-this branch, but are not included in the EvoParseq native executable.
+native regression tests. Application source is in `src-native/src`;
+transport/video adapters are in `src-native/crates`. Only the current native
+runtime and its supported components are retained in this branch.
 
 ## Credits and independence
 

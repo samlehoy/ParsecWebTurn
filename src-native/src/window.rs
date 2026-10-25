@@ -1,4 +1,4 @@
-//! Native Win32 window. Its UI thread blocks in GetMessage; WASM runs separately.
+//! Native Win32 window; its UI thread blocks in GetMessage.
 use anyhow::{bail, Result};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -6,7 +6,7 @@ use std::sync::{
 };
 use windows_sys::Win32::{
     Foundation::*,
-    Graphics::{Gdi::*, OpenGL::*},
+    Graphics::Gdi::*,
     System::{DataExchange::*, LibraryLoader::*},
     UI::Input::{KeyboardAndMouse::*, *},
     UI::WindowsAndMessaging::*,
@@ -14,7 +14,6 @@ use windows_sys::Win32::{
 
 #[derive(Clone, Debug)]
 pub enum Event {
-    #[cfg(feature = "native-core")]
     NativeSession(crate::native_core::session_ui::Action),
     Size(i32, i32),
     Focus(bool),
@@ -34,20 +33,16 @@ pub enum Event {
 }
 
 pub struct Window {
-    #[cfg(feature = "native-core")]
     pub(crate) native_panel: AtomicUsize,
-    #[cfg(feature = "native-core")]
+
     pub(crate) native_session_button: AtomicUsize,
-    #[cfg(feature = "native-core")]
+
     pub(crate) native_host_video: Mutex<serde_json::Value>,
-    #[cfg(feature = "native-core")]
+
     pub(crate) native_host_video_pending: AtomicBool,
     pub stats: Arc<crate::stats::Shared>,
     stats_page: AtomicUsize,
-    pub updates: Arc<crate::updater::State>,
-    updates_page: AtomicUsize,
-    core_version: Arc<crate::core_version::State>,
-    about_page: AtomicUsize,
+
     connection_settings: Mutex<Option<Arc<crate::connection_settings::Manager>>>,
     settings_page: AtomicUsize,
     // Covers construction and destruction as well as the visible page. Its HWND
@@ -59,16 +54,7 @@ pub struct Window {
     pub active_contexts: AtomicUsize,
     pub events: crate::event_queue::Queue<Event>,
     pub dimensions: Mutex<(i32, i32)>,
-    #[cfg(any(test, not(feature = "native-core")))]
-    pub overlay: Mutex<crate::overlay::Shared>,
-    #[cfg(any(test, not(feature = "native-core")))]
-    pub software_overlay_enabled: AtomicBool,
-    #[cfg(any(test, not(feature = "native-core")))]
-    software_pending: Mutex<crate::overlay_software::Pending>,
-    #[cfg(any(test, not(feature = "native-core")))]
-    software_presenter: Mutex<crate::overlay_software::Presenter>,
-    #[cfg(any(test, not(feature = "native-core")))]
-    pub graphics: Mutex<Option<crate::graphics::GraphicsReport>>,
+
     pub audio_registry: Mutex<crate::audio_windows::Registry>,
     pub video_report: Mutex<Option<crate::video_output::Snapshot>>,
     video_hwnd: AtomicUsize,
@@ -76,17 +62,9 @@ pub struct Window {
     video_ready: AtomicBool,
     video_generation: Mutex<u64>,
     video_visible: AtomicBool,
-    #[cfg(any(test, feature = "diagnostics"))]
-    pub capture: Mutex<Option<std::path::PathBuf>>,
-    #[cfg(any(test, feature = "diagnostics"))]
-    pub synthetic_login: bool,
-    #[cfg(any(test, feature = "diagnostics"))]
-    pub script_steps: AtomicUsize,
-    pub run_seconds: u64,
-    pub live: bool,
+
     pub online: bool,
-    #[cfg(any(test, feature = "diagnostics"))]
-    pub network_origin_audit: bool,
+
     pub stop: Arc<crate::lifecycle::StopSignal>,
     relative_mouse: AtomicBool,
     #[cfg(feature = "bud")]
@@ -100,9 +78,8 @@ pub struct Window {
     relative_anchor: Mutex<Option<(i32, i32)>>,
     has_focus: AtomicBool,
     clipboard_pending: AtomicBool,
-    input_state: Mutex<crate::core_input::State>,
-    #[cfg(any(test, not(feature = "native-core")))]
-    core_hotkeys: Mutex<Option<crate::core_hotkeys::Binding>>,
+    input_state: Mutex<crate::input_state::State>,
+
     mouse_clipped: AtomicBool,
     input_suspended: AtomicBool,
     host_cursor: Mutex<Option<(i32, i32, bool)>>,
@@ -125,48 +102,9 @@ pub struct Window {
 
 impl Window {
     unsafe fn open_about(&self) {
-        #[cfg(feature = "native-core")]
-        {
-            crate::branding::about(self.handle());
-            return;
-        }
-        #[cfg(not(feature = "native-core"))]
-        {
-            self.core_version.check();
-            let existing = self.about_page.load(Ordering::Acquire) as HWND;
-            if !existing.is_null() {
-                ShowWindow(existing, SW_RESTORE);
-                SetForegroundWindow(existing);
-                return;
-            }
-            let page = crate::updater_ui::open_about(self.handle(), self.core_version.clone());
-            self.about_page.store(page as usize, Ordering::Release);
-        }
+        crate::branding::about(self.handle());
     }
-    unsafe fn open_updates(&self, check: bool, activate: bool) {
-        #[cfg(feature = "native-core")]
-        {
-            let _ = (check, activate);
-            self.open_about();
-            return;
-        }
-        #[cfg(not(feature = "native-core"))]
-        {
-            if check {
-                self.updates.check(false);
-            }
-            let existing = self.updates_page.load(Ordering::Acquire) as HWND;
-            if !existing.is_null() {
-                if activate {
-                    ShowWindow(existing, SW_RESTORE);
-                    SetForegroundWindow(existing);
-                }
-                return;
-            }
-            let page = crate::updater_ui::open(self.handle(), self.updates.clone(), activate);
-            self.updates_page.store(page as usize, Ordering::Release);
-        }
-    }
+
     unsafe fn open_stats(&self) {
         let existing = self.stats_page.load(Ordering::Acquire) as HWND;
         if !existing.is_null() {
@@ -177,48 +115,26 @@ impl Window {
         let page = crate::stats_ui::open(self.handle(), self.stats.clone());
         self.stats_page.store(page as usize, Ordering::Release);
     }
-    pub fn create(
-        synthetic_login: bool,
-        live: bool,
-        online: bool,
-        network_origin_audit: bool,
-    ) -> Result<Arc<Self>> {
-        Self::create_mode(synthetic_login, live, online, network_origin_audit, true)
-    }
 
-    // The standalone D3D11 test has no OpenGL UI and must not depend on WGL.
-    #[cfg(feature = "diagnostics")]
-    pub fn create_video_probe() -> Result<Arc<Self>> {
-        Self::create_mode(false, true, false, false, false)
-    }
+    // The native window uses Win32/GDI controls beside the GPU video surface.
 
-    #[cfg(feature = "native-core")]
     pub fn create_native() -> Result<Arc<Self>> {
-        Self::create_mode(false, true, true, false, false)
+        Self::create_mode(true)
     }
 
-    fn create_mode(
-        synthetic_login: bool,
-        live: bool,
-        online: bool,
-        _network_origin_audit: bool,
-        opengl_required: bool,
-    ) -> Result<Arc<Self>> {
+    fn create_mode(online: bool) -> Result<Arc<Self>> {
         let state = Arc::new(Self {
             stats: Default::default(),
-            #[cfg(feature = "native-core")]
+
             native_panel: AtomicUsize::new(0),
-            #[cfg(feature = "native-core")]
+
             native_session_button: AtomicUsize::new(0),
-            #[cfg(feature = "native-core")]
+
             native_host_video: Mutex::new(serde_json::Value::Null),
-            #[cfg(feature = "native-core")]
+
             native_host_video_pending: AtomicBool::new(false),
             stats_page: AtomicUsize::new(0),
-            updates: Default::default(),
-            updates_page: AtomicUsize::new(0),
-            core_version: Default::default(),
-            about_page: AtomicUsize::new(0),
+
             connection_settings: Default::default(),
             settings_page: AtomicUsize::new(0),
             settings_active: AtomicBool::new(false),
@@ -228,16 +144,7 @@ impl Window {
             active_contexts: AtomicUsize::new(0),
             events: Default::default(),
             dimensions: Mutex::new((1024, 720)),
-            #[cfg(any(test, not(feature = "native-core")))]
-            graphics: Default::default(),
-            #[cfg(any(test, not(feature = "native-core")))]
-            overlay: Default::default(),
-            #[cfg(any(test, not(feature = "native-core")))]
-            software_overlay_enabled: AtomicBool::new(true),
-            #[cfg(any(test, not(feature = "native-core")))]
-            software_pending: Default::default(),
-            #[cfg(any(test, not(feature = "native-core")))]
-            software_presenter: Default::default(),
+
             video_report: Default::default(),
             audio_registry: Default::default(),
             video_hwnd: AtomicUsize::new(0),
@@ -245,17 +152,13 @@ impl Window {
             video_ready: AtomicBool::new(false),
             video_generation: Mutex::new(0),
             video_visible: AtomicBool::new(true),
-            #[cfg(any(test, feature = "diagnostics"))]
-            capture: Default::default(),
-            #[cfg(any(test, feature = "diagnostics"))]
+
+            #[cfg(test)]
             synthetic_login,
-            #[cfg(any(test, feature = "diagnostics"))]
-            script_steps: AtomicUsize::new(0),
-            run_seconds: if synthetic_login { 20 } else { 8 },
+
             live,
             online,
-            #[cfg(any(test, feature = "diagnostics"))]
-            network_origin_audit: _network_origin_audit,
+
             stop: Default::default(),
             relative_mouse: AtomicBool::new(false),
             #[cfg(feature = "bud")]
@@ -270,8 +173,7 @@ impl Window {
             has_focus: AtomicBool::new(false),
             clipboard_pending: AtomicBool::new(false),
             input_state: Default::default(),
-            #[cfg(any(test, not(feature = "native-core")))]
-            core_hotkeys: Default::default(),
+
             mouse_clipped: AtomicBool::new(false),
             input_suspended: AtomicBool::new(false),
             host_cursor: Default::default(),
@@ -296,17 +198,16 @@ impl Window {
         std::thread::spawn(move || {
             // SAFETY: all window creation/destruction and message dispatch run
             // on this thread. Arc keeps the userdata alive until dispatch ends.
-            let outcome = unsafe { create_window(&ui, opengl_required) };
+            let outcome = unsafe { create_window(&ui) };
             match outcome {
                 Ok(hwnd) => {
                     ui.hwnd.store(hwnd as usize, Ordering::Release);
                     let _ = tx.send(Ok(()));
                     unsafe {
                         let mut msg: MSG = std::mem::zeroed();
-                        #[cfg(feature = "native-core")]
+
                         let mut native_shortcuts = std::collections::HashSet::new();
                         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
-                            #[cfg(feature = "native-core")]
                             {
                                 if msg.message == WM_ACTIVATEAPP && msg.wParam == 0 {
                                     native_shortcuts.clear();
@@ -333,7 +234,7 @@ impl Window {
                                     }
                                 }
                             }
-                            #[cfg(feature = "native-core")]
+
                             if crate::native_core::session_ui::dialog(hwnd, &msg) {
                                 continue;
                             }
@@ -360,27 +261,7 @@ impl Window {
                                     continue;
                                 }
                             }
-                            let updates = [
-                                ui.updates_page.load(Ordering::Acquire),
-                                ui.about_page.load(Ordering::Acquire),
-                            ]
-                            .into_iter()
-                            .map(|h| h as HWND)
-                            .find(|h| {
-                                !h.is_null() && (msg.hwnd == *h || IsChild(*h, msg.hwnd) != 0)
-                            })
-                            .unwrap_or(std::ptr::null_mut());
-                            if !updates.is_null()
-                                && (msg.hwnd == updates || IsChild(updates, msg.hwnd) != 0)
-                            {
-                                if msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE as usize {
-                                    PostMessageW(updates, WM_CLOSE, 0, 0);
-                                    continue;
-                                }
-                                if IsDialogMessageW(updates, &msg) != 0 {
-                                    continue;
-                                }
-                            }
+
                             TranslateMessage(&msg);
                             DispatchMessageW(&msg);
                         }
@@ -400,39 +281,23 @@ impl Window {
     pub fn handle(&self) -> HWND {
         self.hwnd.load(Ordering::Acquire) as HWND
     }
-    #[cfg(any(test, not(feature = "native-core")))]
-    pub fn bind_core_hotkeys(&self, binding: crate::core_hotkeys::Binding) {
-        *self.core_hotkeys.lock().unwrap_or_else(|e| e.into_inner()) = Some(binding);
-    }
+
     fn core_owns_key(&self, code: &str, mods: i32) -> bool {
-        #[cfg(any(test, not(feature = "native-core")))]
-        {
-            self.core_hotkeys
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-                .is_some_and(|binding| binding.owns(code, mods).unwrap_or(true))
-        }
-        #[cfg(all(not(test), feature = "native-core"))]
+        #[cfg(not(test))]
         {
             let _ = (code, mods);
             false
         }
     }
     fn native_menu_allows_input(&self) -> bool {
-        #[cfg(feature = "native-core")]
         {
             self.native_panel.load(Ordering::Acquire) == 0
-        }
-        #[cfg(not(feature = "native-core"))]
-        {
-            true
         }
     }
     pub fn settings_open(&self) -> bool {
         self.settings_active.load(Ordering::Acquire)
     }
-    #[cfg(feature = "native-core")]
+
     pub fn native_input_allowed(&self) -> bool {
         self.native_menu_allows_input()
             && self.has_focus.load(Ordering::Acquire)
@@ -619,24 +484,7 @@ impl Window {
         self.set_relative_mouse(false);
         self.set_keyboard_grab(false);
     }
-    #[cfg(any(test, not(feature = "native-core")))]
-    pub fn publish_software_overlay(&self, frame: &crate::overlay::Frame) {
-        if !self.software_overlay_enabled.load(Ordering::Acquire)
-            || !self.video_ready.load(Ordering::Acquire)
-        {
-            return;
-        }
-        // Rasterize on the GUI render worker, never on the input/UI/video worker.
-        let surface = crate::overlay_software::rasterize(frame);
-        let mut pending = self
-            .software_pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        pending.surface = surface;
-        if !pending.posted {
-            pending.posted = unsafe { PostMessageW(self.handle(), WM_APP + 14, 0, 0) != 0 };
-        }
-    }
+
     unsafe fn show_video_surface(&self) {
         let hwnd = self.video_hwnd.load(Ordering::Acquire) as HWND;
         if !hwnd.is_null() {
@@ -645,15 +493,8 @@ impl Window {
                 && self.video_visible.load(Ordering::Acquire)
                 && !self.closing.load(Ordering::Acquire);
             ShowWindow(hwnd, if show { SW_SHOWNA } else { SW_HIDE });
-            #[cfg(any(test, not(feature = "native-core")))]
-            if !show {
-                self.software_presenter
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .hide();
-            }
         }
-        #[cfg(feature = "native-core")]
+
         crate::native_core::session_ui::raise(self);
         self.apply_input_capture();
     }
@@ -829,7 +670,7 @@ impl Window {
             PostMessageW(self.handle(), WM_APP + 12, 0, 0);
         }
     }
-    pub fn set_input_state(&self, state: crate::core_input::State) {
+    pub fn set_input_state(&self, state: crate::input_state::State) {
         let mut current = self.input_state.lock().unwrap_or_else(|e| e.into_inner());
         let keyboard_changed = self
             .keyboard_requested
@@ -927,7 +768,7 @@ impl Window {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                     {
-                        // Native Matoya holds relative capture at one screen
+                        // The native input model holds relative capture at one screen
                         // pixel; movement comes from Raw Input, not OS position.
                         let x = x.clamp(rect.left, rect.right - 1);
                         let y = y.clamp(rect.top, rect.bottom - 1);
@@ -1090,11 +931,11 @@ impl Window {
             }
         }
     }
-    #[cfg(feature = "native-core")]
+
     pub fn native_fullscreen(&self) -> bool {
         self.fullscreen_active.load(Ordering::Acquire)
     }
-    #[cfg(feature = "native-core")]
+
     pub fn native_toggle_overlay(&self) {
         unsafe {
             PostMessageW(
@@ -1105,7 +946,7 @@ impl Window {
             );
         }
     }
-    #[cfg(feature = "native-core")]
+
     pub fn native_session_button_hidden(&self) -> bool {
         self.connection_settings
             .lock()
@@ -1113,7 +954,7 @@ impl Window {
             .as_ref()
             .is_some_and(|manager| manager.native_session_button_hidden())
     }
-    #[cfg(feature = "native-core")]
+
     pub fn native_refresh_overlay(&self) {
         unsafe {
             PostMessageW(
@@ -1124,7 +965,7 @@ impl Window {
             );
         }
     }
-    #[cfg(feature = "native-core")]
+
     pub fn native_display_size(&self) -> (u32, u32) {
         unsafe {
             let monitor = MonitorFromWindow(self.handle(), MONITOR_DEFAULTTONEAREST);
@@ -1209,7 +1050,7 @@ impl Window {
     }
 }
 
-unsafe fn create_window(state: &Arc<Window>, opengl_required: bool) -> Result<HWND> {
+unsafe fn create_window(state: &Arc<Window>) -> Result<HWND> {
     let instance = GetModuleHandleW(std::ptr::null());
     let name: Vec<u16> = "EvoParseqNative\0".encode_utf16().collect();
     let class = WNDCLASSW {
@@ -1218,9 +1059,8 @@ unsafe fn create_window(state: &Arc<Window>, opengl_required: bool) -> Result<HW
         hInstance: instance,
         hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
         hIcon: crate::branding::icon(),
-        // The native core has no WASM UI repainting this background while
+        // The native UI does not repaint this background while
         // signaling and the first decoder frame are still pending.
-        #[cfg(feature = "native-core")]
         hbrBackground: GetStockObject(BLACK_BRUSH) as HBRUSH,
         lpszClassName: name.as_ptr(),
         ..std::mem::zeroed()
@@ -1246,33 +1086,7 @@ unsafe fn create_window(state: &Arc<Window>, opengl_required: bool) -> Result<HW
     if hwnd.is_null() {
         bail!("CreateWindowExW failed: {}", GetLastError());
     }
-    if opengl_required {
-        let dc = GetDC(hwnd);
-        let descriptor = PIXELFORMATDESCRIPTOR {
-            nSize: std::mem::size_of::<PIXELFORMATDESCRIPTOR>() as u16,
-            nVersion: 1,
-            dwFlags: PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER,
-            iPixelType: PFD_TYPE_RGBA,
-            cColorBits: 32,
-            cAlphaBits: 8,
-            ..std::mem::zeroed()
-        };
-        let format = ChoosePixelFormat(dc, &descriptor);
-        let mut actual: PIXELFORMATDESCRIPTOR = std::mem::zeroed();
-        let described = DescribePixelFormat(
-            dc,
-            format,
-            std::mem::size_of_val(&actual) as u32,
-            &mut actual,
-        );
-        let configured =
-            format != 0 && described != 0 && SetPixelFormat(dc, format, &descriptor) != 0;
-        ReleaseDC(hwnd, dc);
-        if !configured || actual.dwFlags & PFD_GENERIC_FORMAT != 0 {
-            DestroyWindow(hwnd);
-            bail!("A native accelerated OpenGL pixel format is required; no software fallback");
-        }
-    }
+
     let mut rect: RECT = std::mem::zeroed();
     GetClientRect(hwnd, &mut rect);
     *state.dimensions.lock().unwrap_or_else(|e| e.into_inner()) = (rect.right, rect.bottom);
@@ -1297,14 +1111,13 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
         let x = lp as i16 as i32;
         let y = (lp >> 16) as i16 as i32;
         match message {
-            #[cfg(feature = "native-core")]
             WM_ERASEBKGND => {
                 let mut rect = std::mem::zeroed();
                 GetClientRect(hwnd, &mut rect);
                 FillRect(wp as HDC, &rect, GetStockObject(BLACK_BRUSH) as HBRUSH);
                 return 1;
             }
-            #[cfg(feature = "native-core")]
+
             WM_PAINT => {
                 let mut paint: PAINTSTRUCT = std::mem::zeroed();
                 let dc = BeginPaint(hwnd, &mut paint);
@@ -1312,38 +1125,16 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 EndPaint(hwnd, &paint);
                 return 0;
             }
-            crate::updater_ui::CLOSED => {
-                let _ = s
-                    .about_page
-                    .compare_exchange(wp, 0, Ordering::AcqRel, Ordering::Acquire);
-                let _ = s
-                    .updates_page
-                    .compare_exchange(wp, 0, Ordering::AcqRel, Ordering::Acquire);
-                return 0;
-            }
-            crate::updater_ui::START => {
-                SetTimer(hwnd, crate::updater_ui::NOTIFY_TIMER, 1000, None);
-                return 0;
-            }
-            WM_TIMER if wp == crate::updater_ui::NOTIFY_TIMER => {
-                if !s.closing.load(Ordering::Acquire) && s.updates.take_notification() {
-                    s.open_updates(false, false);
-                }
-                if s.updates.view().phase != crate::updater::Phase::Checking {
-                    KillTimer(hwnd, crate::updater_ui::NOTIFY_TIMER);
-                }
-                return 0;
-            }
-            #[cfg(feature = "native-core")]
+
             m if m == crate::native_core::session_ui::VISIBILITY => {
                 crate::native_core::session_ui::raise(s);
                 return 0;
             }
-            #[cfg(feature = "native-core")]
+
             WM_DRAWITEM if crate::native_core::ui::draw_button(lp) => {
                 return 1;
             }
-            #[cfg(feature = "native-core")]
+
             WM_COMMAND
                 if matches!(
                     wp & 0xffff,
@@ -1378,8 +1169,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 }
                 return 0;
             }
-            WM_COMMAND if wp & 0xffff == crate::updater_ui::OPEN => {
-                s.open_updates(true, true);
+            WM_COMMAND if wp & 0xffff == crate::branding::ABOUT => {
+                s.open_about();
                 return 0;
             }
             m if m == WM_APP + 10 => {
@@ -1394,7 +1185,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             m if m == WM_APP + 8 => {
                 crate::connection_settings_ui::install_menu(hwnd);
-                #[cfg(feature = "native-core")]
+
                 crate::native_core::session_ui::install(s);
                 return 0;
             }
@@ -1541,7 +1332,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             m if m == WM_APP + 5 => {
                 if s.video_hwnd.load(Ordering::Acquire) == 0 && !s.closing.load(Ordering::Acquire) {
-                    let class: Vec<u16> = "ParsecNativeVideoSurface\0".encode_utf16().collect();
+                    let class: Vec<u16> = "EvoParseqVideoSurface\0".encode_utf16().collect();
                     let (width, height) = *s.dimensions.lock().unwrap_or_else(|e| e.into_inner());
                     // Disabled child receives no input: parent retains its
                     // documented keyboard/mouse handling and window shortcuts.
@@ -1590,42 +1381,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 s.queue_clipboard();
                 return 0;
             }
-            #[cfg(any(test, not(feature = "native-core")))]
-            m if m == WM_APP + 14 => {
-                let surface = {
-                    let mut pending = s.software_pending.lock().unwrap_or_else(|e| e.into_inner());
-                    pending.posted = false;
-                    pending.surface.take()
-                };
-                let mut presenter = s
-                    .software_presenter
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                let size = *s.dimensions.lock().unwrap_or_else(|e| e.into_inner());
-                if s.video_ready.load(Ordering::Acquire)
-                    && s.video_visible.load(Ordering::Acquire)
-                    && IsIconic(hwnd) == 0
-                    && !s.settings_open()
-                    && !s.closing.load(Ordering::Acquire)
-                {
-                    if let Some(surface) =
-                        surface.filter(|surface| surface.size == (size.0 as u32, size.1 as u32))
-                    {
-                        if !presenter.show(hwnd, &surface) {
-                            s.overlay
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .report
-                                .failure = Some("software-gui-composition-failed");
-                        }
-                    } else {
-                        presenter.hide();
-                    }
-                } else {
-                    presenter.hide();
-                }
-                return 0;
-            }
+
             m if m == WM_APP + 13 => {
                 if let Some(code) =
                     crate::input::code(wp as u32, ((lp >> 16) & 255) as u8, lp & (1 << 24) != 0)
@@ -1691,11 +1447,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
             WM_SIZE => {
-                #[cfg(any(test, not(feature = "native-core")))]
-                s.software_presenter
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .hide();
                 let requested =
                     s.wake_lock_snapshot().requested && !s.closing.load(Ordering::Acquire);
                 s.apply_wake_lock(requested, wp as u32 != SIZE_MINIMIZED);
@@ -1726,23 +1477,17 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                         SWP_NOACTIVATE | SWP_NOZORDER,
                     );
                 }
-                #[cfg(feature = "native-core")]
+
                 crate::native_core::session_ui::raise(s);
                 s.push(Event::Size(w, h));
                 s.apply_input_capture();
             }
             WM_MOVE => {
-                #[cfg(feature = "native-core")]
                 crate::native_core::session_ui::raise(s);
-                #[cfg(any(test, not(feature = "native-core")))]
-                s.software_presenter
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .hide();
+
                 s.apply_input_capture();
             }
             WM_SETFOCUS => {
-                #[cfg(feature = "native-core")]
                 PostMessageW(hwnd, crate::native_core::session_ui::VISIBILITY, 0, 0);
                 s.has_focus.store(true, Ordering::Release);
                 // Foreground activation can still be in progress while this
@@ -1759,7 +1504,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             WM_ENTERMENULOOP | WM_ENTERSIZEMOVE => {
                 s.input_suspended.store(true, Ordering::Release);
-                #[cfg(feature = "native-core")]
+
                 s.push(Event::HidInputRelease);
                 #[cfg(feature = "bud")]
                 s.apply_hid_capture(false);
@@ -1770,7 +1515,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 s.apply_input_capture();
             }
             WM_KILLFOCUS => {
-                #[cfg(feature = "native-core")]
                 PostMessageW(hwnd, crate::native_core::session_ui::VISIBILITY, 0, 0);
                 s.has_focus.store(false, Ordering::Release);
                 #[cfg(feature = "bud")]
@@ -1861,40 +1605,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 s.push(Event::Scroll((wp >> 16) as i16 as i32, 0));
                 return 0;
             }
-            WM_DESTROY => {
-                #[cfg(feature = "native-core")]
-                {
-                    // Independent stats is not auto-destroyed by Win32 ownership.
-                    let stats = s.stats_page.swap(0, Ordering::AcqRel) as HWND;
-                    if !stats.is_null() {
-                        DestroyWindow(stats);
-                    }
-                }
-                if s.online {
-                    RemoveClipboardFormatListener(hwnd);
-                }
-                KillTimer(hwnd, crate::updater_ui::NOTIFY_TIMER);
-                s.input_suspended.store(true, Ordering::Release);
-                #[cfg(feature = "bud")]
-                s.apply_hid_capture(false);
-                #[cfg(any(test, not(feature = "native-core")))]
-                s.software_presenter
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .destroy();
-                s.keyboard_grab
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .set(hwnd, false);
-                s.apply_relative_mouse(false);
-                s.apply_wake_lock(false, false);
-                // Cursor resources are created, replaced and freed on this UI
-                // thread. The remaining Arc state owns no native cursor handle.
-                *s.cursor.lock().unwrap_or_else(|e| e.into_inner()) = Default::default();
-                *s.cursor_pending.lock().unwrap_or_else(|e| e.into_inner()) = Default::default();
-                PostQuitMessage(0);
-                return 0;
-            }
+
             _ => {}
         }
     }
@@ -1970,7 +1681,7 @@ mod tests {
                 foreground: GetForegroundWindow() as usize,
             }
         };
-        let window = Window::create_mode(false, false, false, false, false).unwrap();
+        let window = Window::create_mode(false).unwrap();
         #[track_caller]
         fn wait(mut ready: impl FnMut() -> bool) {
             let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -2044,7 +1755,7 @@ mod tests {
                 SendMessageW(window.handle(), WM_LBUTTONUP, 0, (200 << 16) | 200);
             }
             window.events.drain();
-            window.set_input_state(crate::core_input::State {
+            window.set_input_state(crate::input_state::State {
                 detached: true,
                 ..Default::default()
             });
@@ -2075,137 +1786,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an accelerated OpenGL desktop; run the isolated GUI harness explicitly"]
-    #[cfg(not(feature = "native-core"))]
-    fn idle_core_gui_presents_after_back_without_extra_input() {
-        let mut nonce = [0; 16];
-        getrandom::fill(&mut nonce).unwrap();
-        let suffix: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
-        let path = std::env::temp_dir().join(format!("parsec-settings-redraw-{suffix}.json"));
-        assert!(!path.exists());
-        // Original embedded core, anonymous in-memory filesystem, networking
-        // disabled. No production profile, credentials or host are involved.
-        let window = Window::create_mode(false, true, false, false, true).unwrap();
-        window.install_connection_settings(crate::connection_settings::Manager::open(path.clone()));
-        let worker_window = window.clone();
-        let runtime = std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024)
-            .spawn(move || -> anyhow::Result<()> {
-                let engine = wasmtime::Engine::new(&crate::core_config::config())?;
-                let module = crate::core_runtime::load(&engine)?;
-                let (mut store, instance) =
-                    crate::instantiate_mode(&engine, &module, Some(worker_window.clone()))?;
-                let startup = instance
-                    .get_typed_func::<(), ()>(&mut store, "_start")?
-                    .call(&mut store, ());
-                let outcome = if store.data().event_loop.is_some() {
-                    crate::desktop::run(&mut store, &instance)
-                } else {
-                    startup
-                };
-                store
-                    .data()
-                    .backend
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .destroy();
-                worker_window.request_stop();
-                engine.increment_epoch();
-                if let Some(runtime) = &store.data().threads {
-                    runtime.http.shutdown();
-                    runtime.websocket.shutdown();
-                }
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-                while worker_window.active_contexts.load(Ordering::Acquire) != 0
-                    && std::time::Instant::now() < deadline
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                anyhow::ensure!(
-                    worker_window.active_contexts.load(Ordering::Acquire) == 0,
-                    "GUI context did not stop"
-                );
-                worker_window.close();
-                match outcome {
-                    Err(error) if crate::lifecycle::is_cancellation(&error) => Ok(()),
-                    other => other,
-                }
-            })
-            .unwrap();
-        let frames = || {
-            window
-                .graphics
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-                .map_or(0, |g| g.frames_presented)
-        };
-        let wait = |ready: &dyn Fn() -> bool, seconds: u64| -> anyhow::Result<()> {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
-            while !ready() {
-                anyhow::ensure!(!runtime.is_finished(), "Core GUI stopped unexpectedly");
-                anyhow::ensure!(
-                    std::time::Instant::now() < deadline,
-                    "Core GUI transition timed out"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            Ok(())
-        };
-        let result = (|| -> anyhow::Result<()> {
-            wait(&|| frames() > 0, 10)?;
-            for _ in 0..3 {
-                unsafe {
-                    anyhow::ensure!(
-                        PostMessageW(
-                            window.handle(),
-                            WM_COMMAND,
-                            crate::connection_settings_ui::OPEN,
-                            0
-                        ) != 0
-                    );
-                }
-                wait(
-                    &|| {
-                        window.settings_page.load(Ordering::Acquire) != 0
-                            && !window.input_suspended.load(Ordering::Acquire)
-                    },
-                    5,
-                )?;
-                let page = window.settings_page.load(Ordering::Acquire) as HWND;
-                let size = *window.dimensions.lock().unwrap_or_else(|e| e.into_inner());
-                // Let an idle GUI observe coverage; Back must produce a real
-                // SwapBuffers afterward, not merely enqueue a notification.
-                std::thread::sleep(std::time::Duration::from_millis(250));
-                let before = frames();
-                unsafe {
-                    let class: Vec<u16> = "BUTTON\0".encode_utf16().collect();
-                    let label: Vec<u16> = "Back\0".encode_utf16().collect();
-                    let back =
-                        FindWindowExW(page, std::ptr::null_mut(), class.as_ptr(), label.as_ptr());
-                    anyhow::ensure!(!back.is_null());
-                    SendMessageW(page, WM_COMMAND, GetDlgCtrlID(back) as usize, back as isize);
-                }
-                // No mouse, keyboard, activation or size event is injected.
-                wait(&|| !window.settings_open() && frames() > before, 3)?;
-                anyhow::ensure!(unsafe { IsWindow(page) } == 0);
-                anyhow::ensure!(
-                    *window.dimensions.lock().unwrap_or_else(|e| e.into_inner()) == size
-                );
-            }
-            anyhow::ensure!(!path.exists());
-            Ok(())
-        })();
-        window.request_stop();
-        let finished = runtime.join().unwrap();
-        if window.active_contexts.load(Ordering::Acquire) == 0 {
-            window.close();
-        }
-        result.unwrap();
-        finished.unwrap();
-    }
-
-    #[test]
     #[ignore = "foreground desktop test; run separately so other window tests cannot steal focus"]
     fn immersive_native_capture_lifecycle() {
         struct Restore {
@@ -2233,7 +1813,7 @@ mod tests {
                 cursor,
             }
         };
-        let window = Window::create_mode(false, false, false, false, false).unwrap();
+        let window = Window::create_mode(false).unwrap();
         #[track_caller]
         fn wait(mut check: impl FnMut() -> bool) {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
@@ -2250,8 +1830,8 @@ mod tests {
                 SetForegroundWindow(window.handle());
             }
             wait(|| unsafe { GetForegroundWindow() == window.handle() });
-            let mode = |mouse, keyboard| crate::core_input::State {
-                mode: crate::core_input::Mode { mouse, keyboard },
+            let mode = |mouse, keyboard| crate::input_state::State {
+                mode: crate::input_state::Mode { mouse, keyboard },
                 ..Default::default()
             };
             let clipped = || window.mouse_clipped.load(Ordering::Acquire);
@@ -2315,7 +1895,7 @@ mod tests {
             wait(|| !clipped());
             window.set_relative_mouse(true);
             wait(|| relative() && clipped());
-            window.set_input_state(crate::core_input::State {
+            window.set_input_state(crate::input_state::State {
                 warp_disabled: true,
                 ..mode(false, false)
             });
@@ -2435,7 +2015,7 @@ mod tests {
             wait(relative);
             window.set_input_state(mode(true, true));
             wait(|| relative() && clipped() && keyboard());
-            window.set_input_state(crate::core_input::State {
+            window.set_input_state(crate::input_state::State {
                 detached: true,
                 ..mode(true, true)
             });
@@ -2486,77 +2066,10 @@ mod tests {
             std::panic::resume_unwind(panic);
         }
     }
-    #[test]
-    fn worker_yield_returns_to_guest_cleanup_and_notifies_join_on_repeated_sessions() {
-        let window = Window::create_mode(false, false, false, false, false).unwrap();
-        unsafe {
-            ShowWindow(window.handle(), SW_HIDE);
-        }
-        let result = (|| -> anyhow::Result<()> {
-            let engine = wasmtime::Engine::new(&crate::core_config::config())?;
-            // Models the relevant guest contract without an account, a codec,
-            // audio hardware or private pthread-layout writes from the host.
-            let module = wasmtime::Module::new(
-                &engine,
-                r#"(module
-                (import "env" "memory" (memory 1 1 shared))
-                (import "env" "web_run_and_yield" (func $yield (param i32 i32)))
-                (table (export "__indirect_function_table") 1 funcref)
-                (elem (i32.const 0) $tick)
-                (func $tick (param i32) (result i32)
-                    i32.const 12 i32.const 1 i32.atomic.rmw.add drop
-                    i32.const 0 i32.atomic.load i32.eqz)
-                (func (export "wasi_thread_start") (param i32 i32)
-                    i32.const 0 i32.const 0 call $yield
-                    ;; Real WASM audio/thread cleanup also follows the yield.
-                    i32.const 4 i32.const 1 i32.atomic.store
-                    i32.const 8 i32.const 0 i32.atomic.store
-                    i32.const 8 i32.const 1 memory.atomic.notify drop))"#,
-            )?;
-            let (store, _) = crate::instantiate_mode(&engine, &module, Some(window.clone()))?;
-            let runtime = store.data().threads.as_ref().unwrap();
-            let memory = &runtime.memory;
-            for _ in 0..3 {
-                for (ptr, value) in [(0, 0), (4, 0), (8, 1), (12, 0)] {
-                    memory.sync_word(ptr)?.store(value, Ordering::SeqCst);
-                }
-                let id = runtime.spawn(0);
-                anyhow::ensure!(id > 0, "worker spawn failed");
-                let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
-                while memory.sync_word(12)?.load(Ordering::SeqCst) < 2 {
-                    anyhow::ensure!(std::time::Instant::now() < until, "callback did not run");
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                }
-                memory.sync_word(0)?.store(1, Ordering::SeqCst);
-                memory
-                    .0
-                    .atomic_wait32(8, 1, Some(std::time::Duration::from_secs(2)))?;
-                anyhow::ensure!(
-                    memory.sync_word(8)?.load(Ordering::SeqCst) == 0,
-                    "guest join remained blocked after callback completion"
-                );
-                anyhow::ensure!(
-                    memory.sync_word(4)?.load(Ordering::SeqCst) == 1,
-                    "guest cleanup following yield was skipped"
-                );
-                loop {
-                    let records = runtime.snapshot();
-                    if let Some(record) = records.iter().find(|r| r.id == id && r.finished) {
-                        anyhow::ensure!(record.error.is_none(), "guest worker failed");
-                        break;
-                    }
-                    anyhow::ensure!(std::time::Instant::now() < until, "worker did not finish");
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                }
-            }
-            Ok(())
-        })();
-        window.close();
-        result.unwrap();
-    }
+
     #[test]
     fn disconnect_retires_video_and_old_workers_cannot_reveal_or_hide_new_session() {
-        let window = Window::create_mode(false, false, false, false, false).unwrap();
+        let window = Window::create_mode(false).unwrap();
         unsafe {
             ShowWindow(window.handle(), SW_HIDE);
         }

@@ -1,18 +1,11 @@
 //! Explicit BUD lifecycle. RTC attempts never enter this adapter.
 use anyhow::{ensure, Context, Result};
-use parsec_native_bud::{
+use evoparseq_bud::{
     bud::{Event, Outcome, Route, Session},
     signaling::Signaling,
 };
 use serde_json::{json, Value};
 pub type SignalingWrite = Arc<dyn Fn(String) -> bool + Send + Sync>;
-// Legacy guest completion is a callback, not a dependency of the BUD worker
-// on a Wasmtime buffer. Native account signaling uses None.
-type OfferOutput = Arc<dyn for<'a> Fn(Option<[&'a str; 3]>) -> Result<bool> + Send + Sync>;
-#[cfg(any(test, not(feature = "native-core")))]
-fn guest_output(output: crate::attempt::Output) -> OfferOutput {
-    Arc::new(move |values| output.finish_values(values))
-}
 
 type SharedAudio = Arc<Mutex<Option<Arc<crate::audio_stream::Pipeline>>>>;
 
@@ -35,7 +28,7 @@ struct State {
     template: Option<Value>,
     writer: Option<SignalingWrite>,
     established: bool,
-    guest_answer_sent: bool,
+    answer_sent: bool,
     events: VecDeque<Value>,
     controls: VecDeque<bytes::Bytes>,
     ingress: crate::media_ingress::Ingress,
@@ -93,28 +86,11 @@ pub struct Attempt {
     cancel: Arc<AtomicBool>,
     thread: std::thread::Thread,
     hid_input: (bool, bool),
-    #[cfg(feature = "native-core")]
+
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Attempt {
-    #[cfg(any(test, not(feature = "native-core")))]
-    pub fn spawn(
-        id: &str,
-        output: crate::attempt::Output,
-        window: Arc<crate::window::Window>,
-        manager: Arc<crate::connection_settings::Manager>,
-    ) -> Result<Self> {
-        Self::spawn_inner(
-            id,
-            Some(guest_output(output)),
-            window,
-            manager,
-            State::default(),
-        )
-    }
-
-    #[cfg(feature = "native-core")]
     pub fn spawn_native(
         id: &str,
         peer: &str,
@@ -122,8 +98,7 @@ impl Attempt {
         window: Arc<crate::window::Window>,
         manager: Arc<crate::connection_settings::Manager>,
     ) -> Result<Self> {
-        // Same offer/candidate/retry worker as the WASM-backed client. Only
-        // the owner of the initial account envelope changes.
+        // Account signaling and media share one offer/candidate/retry worker.
         ensure!(
             !peer.is_empty() && peer.len() <= 256,
             "invalid native peer id"
@@ -132,7 +107,6 @@ impl Attempt {
             "to":peer,"attempt_id":id,"secret":"","data":{}}});
         Self::spawn_inner(
             id,
-            None,
             window,
             manager,
             State {
@@ -145,7 +119,6 @@ impl Attempt {
 
     fn spawn_inner(
         id: &str,
-        output: Option<OfferOutput>,
         window: Arc<crate::window::Window>,
         manager: Arc<crate::connection_settings::Manager>,
         initial: State,
@@ -167,9 +140,9 @@ impl Attempt {
             cancel.clone(),
         );
         let attempt_id = id.to_owned();
-        let worker = std::thread::Builder::new().name("parsec-bud-media".into()).spawn(move || {
+        let worker = std::thread::Builder::new().name("evoparseq-bud-media".into()).spawn(move || {
             let mut stage = "start";
-            let result = run(&attempt_id, &output, &window, &manager, &worker_state, &worker_session, &worker_audio, &worker_cancel, incoming, &mut stage, hid_input);
+            let result = run(&attempt_id, &window, &manager, &worker_state, &worker_session, &worker_audio, &worker_cancel, incoming, &mut stage, hid_input);
 
             if result.is_err() {
                 if !worker_cancel.load(Ordering::Acquire) {
@@ -182,7 +155,7 @@ impl Attempt {
                 state.events.clear();
                 state.controls.clear();
                 state.events.push_back(json!({"type":7,"status":-6200,"state":4,"attemptID":attempt_id,"duration":0}));
-                if !state.output_finished { state.output_finished = true; if let Some(output) = &output { let _ = output(None); } }
+                state.output_finished = true;
                 }
             }
             withdraw_pending(&worker_state);
@@ -192,8 +165,7 @@ impl Attempt {
         })?;
         let thread = worker.thread().clone();
         // The worker owns its shutdown. Never join it under Backend/UI locks.
-        #[cfg(not(feature = "native-core"))]
-        drop(worker);
+
         Ok(Self {
             id: id.into(),
             state,
@@ -203,7 +175,7 @@ impl Attempt {
             cancel,
             thread,
             hid_input,
-            #[cfg(feature = "native-core")]
+
             worker: Some(worker),
         })
     }
@@ -212,7 +184,6 @@ impl Attempt {
         self.hid_input.0
     }
 
-    #[cfg(feature = "native-core")]
     pub fn native_connected(&self) -> bool {
         self.state
             .lock()
@@ -224,7 +195,6 @@ impl Attempt {
         self.hid_input.0 || self.hid_input.1
     }
 
-    #[cfg(feature = "native-core")]
     pub fn host_status(&self) -> Option<i32> {
         self.state
             .lock()
@@ -285,7 +255,7 @@ impl Attempt {
         {
             return Ok(None);
         }
-        let duplicate_answer = state.guest_answer_sent && value["action"] == "answer_relay";
+        let duplicate_answer = state.answer_sent && value["action"] == "answer_relay";
         drop(state);
         ensure!(text.len() <= 16 * 1024, "BUD signaling exceeds limit");
         if value["action"] == "answer_relay" && value["payload"]["approved"] == true {
@@ -300,7 +270,7 @@ impl Attempt {
             .context("BUD signaling queue unavailable")?;
         self.thread.unpark();
         // Native attempt termination belongs to the BUD worker. Forwarding it
-        // to the retained web guest would cancel the whole connection before
+        // to the signaling consumer would cancel the whole connection before
         // that worker can replace a failed direct attempt with a relay offer.
         if value["action"] == "close" {
             return Ok(Some(String::new()));
@@ -309,7 +279,7 @@ impl Attempt {
             self.state
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .guest_answer_sent = true;
+                .answer_sent = true;
             if duplicate_answer {
                 return Ok(Some(String::new()));
             }
@@ -348,7 +318,7 @@ impl Attempt {
         }
         session.send_control(frame)
     }
-    #[cfg(feature = "native-core")]
+
     pub fn native_input(
         &self,
         packet: &[u8],
@@ -362,16 +332,6 @@ impl Attempt {
         self.send(absolute.as_deref().unwrap_or(packet))
     }
 
-    #[cfg(any(test, not(feature = "native-core")))]
-    pub fn poll_audio(
-        &self,
-        memory: &crate::memory::GuestMemory,
-        pointer: u32,
-        capacity: usize,
-    ) -> Result<usize> {
-        let audio = self.audio.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        audio.map_or(Ok(0), |audio| audio.poll(memory, pointer, capacity))
-    }
     pub fn audio_pipeline(&self) -> Option<Arc<crate::audio_stream::Pipeline>> {
         self.audio.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
@@ -414,9 +374,9 @@ impl Drop for Attempt {
             self.cancel.store(true, Ordering::Release);
             self.thread.unpark();
         }
-        #[cfg(feature = "native-core")]
+
         if let Some(worker) = self.worker.take() {
-            // Native bootstrap has no guest threads keeping the process alive.
+            // Complete authenticated departure before process exit when possible.
             // Allow authenticated departure/HID removal before process exit,
             // outside every state/session lock, with a bounded startup-cancel wait.
             let until = Instant::now() + Duration::from_secs(2);
@@ -487,7 +447,7 @@ fn switch_offer(state: &Mutex<State>, cancel: &AtomicBool, id: &str, data: Value
     Ok(true)
 }
 
-// A cancelled relay retry may not have reached the retained guest yet. Retire
+// A cancelled relay retry may not have reached the signaling consumer yet. Retire
 // its native account offer here, outside the UI/session locks. Established
 // sessions leave through the SDK's existing authenticated teardown instead.
 fn withdraw_pending(state: &Mutex<State>) {
@@ -509,26 +469,14 @@ fn withdraw_pending(state: &Mutex<State>) {
     }
 }
 
-// Serialize guest completion against retirement. A delayed offer must never
-// write credentials or wake a guest buffer reused by the next attempt.
-fn complete_offer(
-    state: &Mutex<State>,
-    cancel: &AtomicBool,
-    output: &Option<OfferOutput>,
-    offer: Value,
-    values: [&str; 3],
-) -> Result<bool> {
+// Serialize account offer completion against retirement and reconnect.
+fn complete_offer(state: &Mutex<State>, cancel: &AtomicBool, offer: Value) -> Result<bool> {
     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
     if cancel.load(Ordering::Acquire) {
         return Ok(false);
     }
     ensure!(!state.output_finished, "BUD offer already completed");
     state.output_finished = true;
-    if let Some(output) = output {
-        ensure!(output(Some(values))?, "BUD credential output too small");
-        state.offer = Some(offer);
-        return Ok(true);
-    }
     let mut message = state
         .template
         .clone()
@@ -593,8 +541,8 @@ async fn relay_route(
     turn_relays(manager.resolve_bud_relay(settings).await?).await
 }
 
-fn relay_carrier(url: &webrtc::ice::url::Url) -> Option<parsec_native_bud::bud::RelayTransport> {
-    use parsec_native_bud::bud::RelayTransport;
+fn relay_carrier(url: &webrtc::ice::url::Url) -> Option<evoparseq_bud::bud::RelayTransport> {
+    use evoparseq_bud::bud::RelayTransport;
     use webrtc::ice::url::{ProtoType, SchemeType};
     match (url.scheme, url.proto) {
         (SchemeType::Turn, ProtoType::Udp) => Some(RelayTransport::Udp),
@@ -615,8 +563,8 @@ async fn turn_relays(
             let url = webrtc::ice::url::Url::parse_url(raw)?;
             if let Some(carrier) = relay_carrier(&url) {
                 let priority = match carrier {
-                    parsec_native_bud::bud::RelayTransport::Udp => 0,
-                    parsec_native_bud::bud::RelayTransport::Tls { .. } => 1,
+                    evoparseq_bud::bud::RelayTransport::Udp => 0,
+                    evoparseq_bud::bud::RelayTransport::Tls { .. } => 1,
                     _ if url.port == 80 => 2,
                     _ => 3,
                 };
@@ -657,7 +605,7 @@ async fn turn_relays(
 }
 
 fn log_route_attempt(route: &Route) {
-    use parsec_native_bud::bud::RelayTransport;
+    use evoparseq_bud::bud::RelayTransport;
     let carrier = match route {
         Route::Direct { .. } => None,
         Route::Turn(relay) => Some(match &relay.transport {
@@ -676,7 +624,6 @@ fn log_route_attempt(route: &Route) {
 #[allow(clippy::too_many_arguments)]
 fn run(
     id: &str,
-    output: &Option<OfferOutput>,
     window: &Arc<crate::window::Window>,
     manager: &crate::connection_settings::Manager,
     state: &Arc<Mutex<State>>,
@@ -706,7 +653,7 @@ fn run(
     // Probe before the lifecycle lock: a slow driver must not stall Cancel.
     let hevc_available =
         settings.prefer_hevc && crate::video_windows::hevc_available(window.video_gpu().as_ref());
-    let chroma_444 = cfg!(feature = "native-core")
+    let chroma_444 = true
         && hevc_available
         && settings.experimental_chroma_444
         && crate::video_windows::hevc_444_available(
@@ -764,13 +711,11 @@ fn run(
     let mut signaling = Signaling::new("host", id)?;
     *audio.lock().unwrap_or_else(|e| e.into_inner()) = Some(media.audio_pipeline());
     *shared_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
-    *stage = "initial_guest_offer_completion";
+    *stage = "initial_account_offer_completion";
     if !complete_offer(
         state,
         cancel,
-        output,
         signaling.offer(&creds)["payload"]["data"].take(),
-        [&creds.ufrag, &creds.pwd, &creds.fingerprint],
     )? {
         return Ok(());
     }
@@ -802,7 +747,7 @@ fn run(
             }
             *stage = "native_signal_processing";
             if let Err(error) = signaling.receive(&text, session) {
-                let native = error.downcast_ref::<parsec_native_bud::bud::AnswerFailure>();
+                let native = error.downcast_ref::<evoparseq_bud::bud::AnswerFailure>();
                 let io = native.and_then(|e| e.io_details());
                 crate::event_log::record(
                     "ERROR",
@@ -988,7 +933,6 @@ fn run(
             }
         }
         let mut ingress = media.ingress();
-        ingress.network_rtt = transport.rtt_ms.map(|ms| (Instant::now(), ms));
         ingress.video_packets_received =
             shared.ingress.video_packets_received + pumped.video_messages as u64;
         ingress.audio_packets_received =
@@ -1046,16 +990,16 @@ fn run(
             );
             last_stats = Instant::now();
         }
-        #[cfg(feature = "native-core")]
+
         let native_pending = !shared.controls.is_empty() || !shared.events.is_empty();
         drop(shared);
-        #[cfg(feature = "native-core")]
+
         if native_pending {
             window.events.wake_consumer();
         }
         if cursor_ready {
             // Wake only after the unchanged FIFO contains the host event and
-            // after releasing the worker state lock. The WASM still consumes
+            // after releasing the worker state lock. The session still consumes
             // that event and owns its visibility/capture decisions.
             window.events.push(crate::window::Event::CursorReady);
         }
@@ -1177,7 +1121,7 @@ mod tests {
         let bus = std::sync::Arc::new(crate::stats::Shared::default());
         let statistics = super::Statistics::start(bus.clone());
         bus.host_timing.set_requested(statistics.generation, true);
-        let event = parsec_native_bud::bud::Event::ExternalControl {
+        let event = evoparseq_bud::bud::Event::ExternalControl {
             bytes: crate::frame_timing::tests::packet(1, 0, &[8., 0., 20.]),
         };
         for _ in 0..10_000 {
@@ -1191,11 +1135,8 @@ mod tests {
                 .count,
             10_000
         );
-        assert!(
-            !statistics.consume_timing(&parsec_native_bud::bud::Event::ExternalControl {
-                bytes: vec![0; 13]
-            })
-        );
+        assert!(!statistics
+            .consume_timing(&evoparseq_bud::bud::Event::ExternalControl { bytes: vec![0; 13] }));
         let newer = super::Statistics::start(bus.clone());
         bus.host_timing.set_requested(newer.generation, true);
         assert!(statistics.consume_timing(&event));
@@ -1207,7 +1148,7 @@ mod tests {
     use super::*;
     #[test]
     fn turn_urls_prefer_udp_then_tls_then_tcp80_without_rewriting_ports() {
-        use parsec_native_bud::bud::RelayTransport;
+        use evoparseq_bud::bud::RelayTransport;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1264,7 +1205,7 @@ mod tests {
                 cancel: Default::default(),
                 thread: std::thread::current(),
                 hid_input: (false, false),
-                #[cfg(feature = "native-core")]
+
                 worker: None,
             },
             receiver,
@@ -1311,15 +1252,15 @@ mod tests {
         assert!(attempt.outgoing("__ping__", None).unwrap().is_none());
     }
     #[test]
-    fn native_answer_keeps_aes_out_of_guest_and_rejects_stale_delivery() {
+    fn native_answer_keeps_aes_out_of_consumer_and_rejects_stale_delivery() {
         let (attempt, incoming) = isolated();
         attempt.state.lock().unwrap().web_mode = Some(json!(2));
         let wire = json!({"action":"answer_relay","payload":{"attempt_id":"isolated","approved":true,"data":{"mode":1,"creds":{"aes256":"native-key-sentinel","ice_ufrag":"abc"}}}}).to_string();
-        let guest: Value =
+        let consumer: Value =
             serde_json::from_str(&attempt.incoming(&wire).unwrap().unwrap()).unwrap();
         assert_eq!(incoming.try_recv().unwrap(), wire);
-        assert_eq!(guest["payload"]["data"]["mode"], 2);
-        assert!(guest["payload"]["data"]["creds"].get("aes256").is_none());
+        assert_eq!(consumer["payload"]["data"]["mode"], 2);
+        assert!(consumer["payload"]["data"]["creds"].get("aes256").is_none());
         assert!(attempt
             .incoming(r#"{"action":"answer_relay","payload":{"attempt_id":"stale"}}"#)
             .unwrap()
@@ -1359,9 +1300,9 @@ mod tests {
         assert_eq!(attempt.incoming(r#"{"action":"answer_relay","payload":{"attempt_id":"isolated","approved":true,"data":{}}}"#).unwrap(), Some(String::new()));
         assert!(incoming.try_recv().is_err());
         let response = json!({"action":"answer_relay","payload":{"attempt_id":"isolated-turn-1","approved":true,"data":{"mode":1,"creds":{"aes256":"key"}}}}).to_string();
-        let guest: Value =
+        let consumer: Value =
             serde_json::from_str(&attempt.incoming(&response).unwrap().unwrap()).unwrap();
-        assert_eq!(guest["payload"]["attempt_id"], "isolated");
+        assert_eq!(consumer["payload"]["attempt_id"], "isolated");
         assert_eq!(incoming.try_recv().unwrap(), response);
         assert_eq!(attempt.outgoing(r#"{"action":"candex","payload":{"attempt_id":"isolated","data":{"ip":"stale"}}}"#, None).unwrap(), Some(String::new()));
         attempt.state.lock().unwrap().established = true;
@@ -1384,7 +1325,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_close_is_owned_by_worker_and_cannot_cancel_guest_before_relay_retry() {
+    fn direct_close_is_owned_by_worker_and_cannot_cancel_consumer_before_relay_retry() {
         let (attempt, incoming) = isolated();
         let close = r#"{"action":"close","payload":{"attempt_id":"isolated"}}"#;
         assert_eq!(attempt.incoming(close).unwrap(), Some(String::new()));
@@ -1437,59 +1378,11 @@ mod tests {
     }
 
     #[test]
-    fn malformed_active_answer_fails_without_mutating_guest_or_queue() {
+    fn malformed_active_answer_fails_without_mutating_consumer_or_queue() {
         let (attempt, incoming) = isolated();
         attempt.state.lock().unwrap().web_mode = Some(json!(2));
         assert!(attempt.incoming(r#"{"action":"answer_relay","payload":{"attempt_id":"isolated","approved":true,"data":42}}"#).is_err());
         assert!(incoming.try_recv().is_err());
-    }
-
-    #[test]
-    fn retired_offer_cannot_overwrite_reused_guest_buffers() {
-        let mut config = wasmtime::Config::new();
-        config.wasm_threads(true);
-        let memory = crate::memory::GuestMemory(
-            wasmtime::SharedMemory::new(
-                &wasmtime::Engine::new(&config).unwrap(),
-                wasmtime::MemoryType::shared(1, 1),
-            )
-            .unwrap(),
-        );
-        let output = guest_output(
-            crate::attempt::Output::new(memory.clone(), [100, 400, 700], 128, 64, 80).unwrap(),
-        );
-        memory.c_string(100, 128, "next-attempt-sentinel").unwrap();
-        let state = Mutex::new(State::default());
-        let cancelled = AtomicBool::new(true);
-        assert!(!complete_offer(
-            &state,
-            &cancelled,
-            &Some(output.clone()),
-            json!({"mode":1}),
-            ["old", "old", "old"]
-        )
-        .unwrap());
-        assert_eq!(memory.string(100, 128).unwrap(), "next-attempt-sentinel");
-        assert_eq!(memory.u32(64).unwrap(), 0);
-        cancelled.store(false, Ordering::Release);
-        assert!(complete_offer(
-            &state,
-            &cancelled,
-            &Some(output.clone()),
-            json!({"mode":1}),
-            ["new", "pwd", "fp"]
-        )
-        .unwrap());
-        assert_eq!(memory.string(100, 128).unwrap(), "new");
-        assert!(complete_offer(
-            &state,
-            &cancelled,
-            &Some(output.clone()),
-            json!({"mode":1}),
-            ["duplicate", "pwd", "fp"]
-        )
-        .is_err());
-        assert_eq!(memory.string(100, 128).unwrap(), "new");
     }
 
     #[test]
@@ -1501,9 +1394,8 @@ mod tests {
         assert!(settings.bud);
     }
 
-    #[cfg(feature = "native-core")]
     #[test]
-    fn native_offer_uses_existing_account_envelope_without_guest_memory() {
+    fn native_offer_uses_existing_account_envelope() {
         let writes = Arc::new(Mutex::new(Vec::<Value>::new()));
         let captured = writes.clone();
         let writer: SignalingWrite = Arc::new(move |text| {
@@ -1520,14 +1412,9 @@ mod tests {
             ..Default::default()
         });
         let cancel = AtomicBool::new(false);
-        assert!(complete_offer(
-            &state,
-            &cancel,
-            &None,
-            json!({"mode":1,"creds":{"fixture":true}}),
-            ["unused"; 3]
-        )
-        .unwrap());
+        assert!(
+            complete_offer(&state, &cancel, json!({"mode":1,"creds":{"fixture":true}})).unwrap()
+        );
         let sent = writes.lock().unwrap();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0]["payload"]["to"], "fixture-host");

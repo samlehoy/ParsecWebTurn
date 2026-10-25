@@ -13,13 +13,13 @@ const CRYPTO_TARGET: &str = "dtls::crypto";
 const LIMIT: usize = 16;
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 const ICE_TARGET: &str = "webrtc_ice::agent::agent_internal";
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 const SELECTOR_TARGET: &str = "webrtc_ice::agent::agent_selector";
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 const TURN_TARGET: &str = "turn::client::relay_conn";
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 const CHECK_LABELS: [&str; 15] = [
     "binding_check_attempt_events",
     "stun_send_failure_events",
@@ -38,7 +38,7 @@ const CHECK_LABELS: [&str; 15] = [
     "oversized_log_events",
 ];
 
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 fn check_categories(target: &str, message: &str) -> Vec<usize> {
     let body = message.split_once("]: ").map_or(message, |(_, body)| body);
     if target == ICE_TARGET {
@@ -101,15 +101,7 @@ fn check_categories(target: &str, message: &str) -> Vec<usize> {
     Vec::new()
 }
 
-#[cfg(feature = "diagnostics")]
-pub struct IceTraceWindow([u64; CHECK_LABELS.len()]);
-
-#[cfg(feature = "diagnostics")]
-pub fn start_ice_window() -> Option<IceTraceWindow> {
-    enabled().then(|| IceTraceWindow(*COLLECTOR.checks.lock().unwrap_or_else(|e| e.into_inner())))
-}
-
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 fn check_delta(
     before: &[u64; CHECK_LABELS.len()],
     after: &[u64; CHECK_LABELS.len()],
@@ -127,16 +119,7 @@ fn check_delta(
         .into()
 }
 
-#[cfg(feature = "diagnostics")]
-pub fn finish_ice_window(window: Option<IceTraceWindow>) -> serde_json::Value {
-    let Some(window) = window else {
-        return serde_json::Value::Null;
-    };
-    let after = COLLECTOR.checks.lock().unwrap_or_else(|e| e.into_inner());
-    serde_json::json!({"source":"pinned-library-log-events-experimental", "process_scoped_time_window":true, "wire_transmission_proven":false, "counters":check_delta(&window.0, &after)})
-}
-
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 pub fn ice_pair_summary(report: &webrtc::stats::StatsReport) -> serde_json::Value {
     use webrtc::{ice::candidate::CandidatePairState as S, stats::StatsReportType};
     let mut states = [0u64; 5];
@@ -161,35 +144,6 @@ pub fn ice_pair_summary(report: &webrtc::stats::StatsReport) -> serde_json::Valu
     serde_json::json!({"source":"webrtc-public-stats", "pairs_by_state":{"unspecified":states[0],"waiting":states[1],"in_progress":states[2],"failed":states[3],"succeeded":states[4]},"nominated_pairs":nominated,"authenticated_responses":responses,"requests_sent":null,"requests_received":null,"packets_sent":null,"packets_received":null})
 }
 
-#[cfg(feature = "diagnostics")]
-pub async fn peer_ice_summary(
-    peer: &webrtc::peer_connection::RTCPeerConnection,
-) -> serde_json::Value {
-    let report = peer.get_stats().await;
-    let mut summary = ice_pair_summary(&report);
-    let selected = peer
-        .sctp()
-        .transport()
-        .ice_transport()
-        .get_selected_candidate_pair()
-        .await;
-    summary["selected_path"] = selected.map_or(serde_json::Value::Null, |pair| {
-        let local = pair.local();
-        let relay_transport = report.reports.values().find_map(|value| {
-            if let webrtc::stats::StatsReportType::LocalCandidate(candidate) = value {
-                if candidate.id == local.stats_id {
-                    return match candidate.relay_protocol.as_str() {
-                        "udp" => Some("udp"), "tcp" => Some("tcp"), "tls" => Some("tls"), _ => None,
-                    };
-                }
-            }
-            None
-        });
-        serde_json::json!({"local_candidate_type":local.typ.to_string(),"remote_candidate_type":pair.remote().typ.to_string(),"peer_transport":local.protocol.to_string(),"turn_transport":relay_transport})
-    });
-    summary
-}
-
 #[derive(Clone, serde::Serialize)]
 pub struct Event {
     stage: &'static str,
@@ -198,34 +152,14 @@ pub struct Event {
 
 struct Collector {
     events: Mutex<(Vec<Event>, usize)>,
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     checks: Mutex<[u64; CHECK_LABELS.len()]>,
 }
 static COLLECTOR: Collector = Collector {
     events: Mutex::new((Vec::new(), 0)),
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     checks: Mutex::new([0; CHECK_LABELS.len()]),
 };
-
-#[cfg(feature = "diagnostics")]
-#[derive(serde::Serialize)]
-pub struct Snapshot {
-    source: &'static str,
-    process_scoped: bool,
-    logger_installed: bool,
-    events: Vec<Event>,
-    omitted: usize,
-}
-
-#[cfg(feature = "diagnostics")]
-pub fn enable() -> bool {
-    let installed = log::set_logger(&COLLECTOR).is_ok();
-    if installed {
-        log::set_max_level(log::LevelFilter::Trace);
-        ENABLED.store(true, Ordering::Release);
-    }
-    installed
-}
 
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Acquire)
@@ -239,18 +173,6 @@ pub fn contains_reason(reason: &str) -> bool {
         .0
         .iter()
         .any(|event| event.reason == reason)
-}
-
-#[cfg(feature = "diagnostics")]
-pub fn snapshot(installed: bool) -> Snapshot {
-    let events = COLLECTOR.events.lock().unwrap_or_else(|e| e.into_inner());
-    Snapshot {
-        source: "webrtc-rs-0.14.0-log-experimental",
-        process_scoped: true,
-        logger_installed: installed,
-        events: events.0.clone(),
-        omitted: events.1,
-    }
 }
 
 // Bounded transient formatting, including for unknown/dynamic library errors.
@@ -360,7 +282,7 @@ fn classify(target: &str, message: &str) -> Option<Event> {
 
 impl log::Log for Collector {
     fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-        #[cfg(any(test, feature = "diagnostics"))]
+        #[cfg(test)]
         if [ICE_TARGET, SELECTOR_TARGET, TURN_TARGET].contains(&metadata.target()) {
             return true;
         }
@@ -376,7 +298,7 @@ impl log::Log for Collector {
             len: 0,
         };
         if write!(&mut buffer, "{}", record.args()).is_err() {
-            #[cfg(any(test, feature = "diagnostics"))]
+            #[cfg(test)]
             {
                 let mut checks = self.checks.lock().unwrap_or_else(|e| e.into_inner());
                 checks[14] = checks[14].saturating_add(1);
@@ -386,7 +308,7 @@ impl log::Log for Collector {
         let Ok(message) = std::str::from_utf8(&buffer.bytes[..buffer.len]) else {
             return;
         };
-        #[cfg(any(test, feature = "diagnostics"))]
+        #[cfg(test)]
         {
             let categories = check_categories(record.target(), message);
             if !categories.is_empty() {

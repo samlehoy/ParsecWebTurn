@@ -3,7 +3,7 @@
 The user's standing requirement is to keep current and future development standards-compliant and maintainable.
 
 - Use W3C/IETF standards for WebRTC, ICE, STUN and TURN behavior. Preserve native WebIDL validation and the client's connection policy.
-- Use documented, supported Rust and target-platform APIs for platform functionality (currently Windows; Linux/Android when added). Platform APIs are not automatically web standards; describe that distinction accurately. The main and dev source trees contain the native client; the former Tauri/WebView2 implementation remains on the legacy branch and in tagged history.
+- Use documented, supported Rust and target-platform APIs for platform functionality (currently Windows; Linux/Android when added). Platform APIs are not automatically web standards; describe that distinction accurately. This branch contains the independent EvoParseq native Rust client.
 - Do not introduce production dependencies on private Chromium interfaces, internal browser pages or undocumented switches. The user permits documented vendor diagnostics as an optional extension: keep them disabled by default, clearly label their experimental/vendor status, isolate failures, and retain a standards-based fallback. Never use unstable diagnostic output as a required production contract or a definitive routing proof.
 - Missing telemetry is unknown, not negative evidence. Report confirmed direct/TURN routing only when the selected active connection provides sufficient evidence; preserve uncertainty otherwise.
 - Keep diagnostic tests isolated from real credentials and profiles. Do not expose production remote debugging ports, weaken browser security/privacy or require administrator rights for ordinary use.

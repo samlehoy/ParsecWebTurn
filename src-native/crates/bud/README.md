@@ -12,6 +12,6 @@ there is no silent fallback from BUD to WebRTC. Compressed media enters the same
 native decoder/audio pipeline as WebRTC, without exporting decoded pixels.
 
 The transport-only lowlat-client and lowlat-net subsets are pinned and documented
-in vendor/*/PARSECWEBTURN.md. Their MIT licenses are retained. Regression tests
+in vendor/*/EVOPARSEQ.md. Their MIT licenses are retained. Regression tests
 exercise encrypted direct and UDP TURN paths using synthetic local credentials.
 One-off GPU investigations and their optional dependencies have been removed.

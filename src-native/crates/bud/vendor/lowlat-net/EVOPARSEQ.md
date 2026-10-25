@@ -55,5 +55,4 @@ TCP/TLS backpressure is unchanged. The real loopback regression checks
 ordered delivery and byte/datagram accounting without an added sender wake.
 Carrier acceptance is not proof of peer receipt. No new dependency is added.
 
-The native client is now named EvoParseq. This notice retains its historical
-filename so existing provenance links remain valid.
+This notice documents the application-owned changes used by EvoParseq.

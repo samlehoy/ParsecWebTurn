@@ -88,7 +88,7 @@ impl Attempt {
         }
         let settings = manager.view().0;
         let (target, attempt_id, publish) = (peer.to_owned(), id.to_owned(), writer.clone());
-        let output = crate::attempt::Output::Native(Arc::new(move |description| {
+        let output = crate::attempt::Output::new(Arc::new(move |description| {
             Ok(description.is_some_and(|description| {
                 publish(offer(&target, &attempt_id, &description.credentials))
             }))

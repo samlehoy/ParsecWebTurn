@@ -309,7 +309,7 @@ mod tests {
     fn refresh_request_preserves_startup_codec_flags_and_primary_stream() {
         for allow_hevc in [false, true] {
             let config = Config {
-                video_protocol: crate::backend::VideoProtocol {
+                video_protocol: crate::video_stream::VideoProtocol {
                     version: 0,
                     message_size: 11,
                     version_offset: 0,
@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn hevc_changes_only_the_verified_init_capability_bit() {
         let mut config = Config {
-            video_protocol: crate::backend::VideoProtocol {
+            video_protocol: crate::video_stream::VideoProtocol {
                 version: 0,
                 message_size: 11,
                 version_offset: 0,
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn guest_reconfiguration_cannot_erase_main10_or_enable_444() {
         let config = Config {
-            video_protocol: crate::backend::VideoProtocol {
+            video_protocol: crate::video_stream::VideoProtocol {
                 version: 0,
                 message_size: 11,
                 version_offset: 0,

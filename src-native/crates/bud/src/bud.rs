@@ -1,4 +1,4 @@
-//! BUD lifecycle below account signaling, separate from the web WASM contract.
+//! BUD lifecycle below native account signaling.
 use std::net::SocketAddr;
 
 use anyhow::{Result, anyhow, ensure};

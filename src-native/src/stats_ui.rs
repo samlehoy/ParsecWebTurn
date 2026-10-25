@@ -96,11 +96,7 @@ pub unsafe fn open(parent: HWND, bus: Arc<Shared>) -> HWND {
         CW_USEDEFAULT,
         760,
         820,
-        if cfg!(feature = "native-core") {
-            null_mut()
-        } else {
-            parent
-        },
+        null_mut(),
         null_mut(),
         instance,
         ptr.cast(),
@@ -842,7 +838,6 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
     if !ptr.is_null() {
         let page = &mut *ptr;
         match message {
-            #[cfg(feature = "native-core")]
             WM_ACTIVATE => {
                 PostMessageW(
                     page.notify,
@@ -1064,7 +1059,7 @@ mod tests {
     #[cfg(feature = "bud")]
     #[test]
     fn bud_statistics_use_native_counters_and_hide_ice_dtls_and_unknowns() {
-        let mut native = parsec_native_bud::bud::Snapshot {
+        let mut native = evoparseq_bud::bud::Snapshot {
             connected: true,
             relay: true,
             relay_transport: Some("tls"),
@@ -1162,13 +1157,11 @@ mod tests {
             );
             let hwnd = open(parent, bus.clone());
             assert!(!hwnd.is_null());
-            #[cfg(feature = "native-core")]
+
             assert!(
                 GetWindow(hwnd, GW_OWNER).is_null(),
                 "Native stats must be an independent window"
             );
-            #[cfg(not(feature = "native-core"))]
-            assert_eq!(GetWindow(hwnd, GW_OWNER), parent);
 
             let mut title = [0u16; 64];
             let length = GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32);
@@ -1197,7 +1190,7 @@ mod tests {
             #[cfg(feature = "bud")]
             {
                 let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Page;
-                (*state).sample.bud = Some(parsec_native_bud::bud::Snapshot::default());
+                (*state).sample.bud = Some(evoparseq_bud::bud::Snapshot::default());
                 RedrawWindow(hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_UPDATENOW);
                 SendMessageW(hwnd, WM_VSCROLL, SB_BOTTOM as usize, 0);
                 capture(hwnd, "stats-bud-bottom");

@@ -2,7 +2,7 @@ name: Native transport and video backends
 on:
   workflow_dispatch:
   push:
-    branches: [dev, main]
+    branches: [codex/native-core]
     paths: ['src-native/crates/**', '.github/workflows/native-backends.yml', 'scripts/test-bud-turn-stream.sh']
   pull_request:
     paths: ['src-native/crates/**', '.github/workflows/native-backends.yml', 'scripts/test-bud-turn-stream.sh']
@@ -35,18 +35,18 @@ jobs:
           sudo apt-get install -y coturn
           sudo systemctl stop coturn || true
           fixture_ip=$(hostname -I | awk '{print $1}')
-          echo "PWT_TEST_TURN=$fixture_ip:3478" >> "$GITHUB_ENV"
+          echo "EVOPARSEQ_TEST_TURN=$fixture_ip:3478" >> "$GITHUB_ENV"
           turnserver -c /dev/null --listening-ip="$fixture_ip" --relay-ip="$fixture_ip" \
             --listening-port=3478 --min-port=59160 --max-port=59260 \
             --realm=pwt-fixture --user=pwt-fixture:isolated-fixture-only \
             --lt-cred-mech --no-tls --no-dtls \
             --no-cli --pidfile=/tmp/pwt-experimental-turn.pid \
-            --log-file=/tmp/pwt-experimental-turn.log >/tmp/pwt-turn-stdout.log 2>&1 &
+            --log-file=/tmp/pwt-experimental-turn.log >/tmp/evoparseq-turn-stdout.log 2>&1 &
           for i in $(seq 1 50); do
             if ss -uln | grep -q ':3478 '; then exit 0; fi
             sleep 0.1
           done
-          cat /tmp/pwt-turn-stdout.log
+          cat /tmp/evoparseq-turn-stdout.log
           exit 1
       - name: Check isolated adapters
         shell: pwsh

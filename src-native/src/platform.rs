@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::sync::Mutex;
 
 pub const MAX_TEXT: usize = 1024 * 1024;
-// The pinned core's remote clipboard buffer includes one trailing NUL byte.
+// The remote text protocol reserves one trailing NUL byte.
 const REMOTE_TEXT: usize = 102399;
 
 fn remote_text(mut text: String) -> String {
@@ -48,7 +48,7 @@ impl Services {
         }
     }
 
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     pub fn snapshot(&self) -> Snapshot {
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }

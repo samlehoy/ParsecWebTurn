@@ -113,7 +113,7 @@ unsafe extern "system" fn callback(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     0
                 }
                 | if down { 0 } else { 1 << 31 };
-            // The hook never calls WASM, waits or takes application locks.
+            // The hook never waits or takes application locks.
             if PostMessageW(hwnd, WM_APP + 13, vk as usize, packed as isize) != 0 {
                 if let Some(key) = captured {
                     key.store(down, Ordering::Relaxed);

@@ -480,7 +480,7 @@ impl Pipeline {
             } else {
                 let accepted =
                     q.submit_codec(buffer, info.idr, info.parameters, timestamp, info.codec);
-                #[cfg(feature = "native-core")]
+
                 if accepted {
                     q.set_last_rotation(_rotation);
                 }
@@ -1102,9 +1102,9 @@ struct Session {
     low_latency_request_accepted: bool,
     decoder: Option<IMFTransform>,
     #[cfg(feature = "vendor-video")]
-    vendor: Option<parsec_gpu_video::Decoder>,
+    vendor: Option<evoparseq_video::Decoder>,
     #[cfg(feature = "vendor-video")]
-    display: Option<parsec_gpu_video::display::Session>,
+    display: Option<evoparseq_video::display::Session>,
     zero_copy_status: Option<String>,
     fallback: Option<String>,
     _manager: Option<IMFDXGIDeviceManager>,
@@ -1204,9 +1204,9 @@ impl Session {
                     if _zero_copy {
                         zero_copy_status = Some("4:4:4 uses normal GPU rendering".into());
                     }
-                    parsec_gpu_video::Mode::DirectD3d11
+                    evoparseq_video::Mode::DirectD3d11
                 } else {
-                    let Some(mode) = parsec_gpu_video::preferred(adapter.VendorId, true) else {
+                    let Some(mode) = evoparseq_video::preferred(adapter.VendorId, true) else {
                         return Ok(None);
                     };
                     mode
@@ -1216,9 +1216,9 @@ impl Session {
                 drop((probe_context, probe));
                 if _zero_copy
                     && config.chroma == 1
-                    && parsec_gpu_video::original_surface_vendor_allowed(adapter.VendorId)
+                    && evoparseq_video::original_surface_vendor_allowed(adapter.VendorId)
                 {
-                    match parsec_gpu_video::display::Session::open(luid, hwnd) {
+                    match evoparseq_video::display::Session::open(luid, hwnd) {
                         Ok(display) => {
                             return Ok(Some(Self {
                                 hevc,
@@ -1244,7 +1244,7 @@ impl Session {
                     }
                 }
                 let vendor =
-                    parsec_gpu_video::Decoder::open(mode, luid, (config.width, config.height))?;
+                    evoparseq_video::Decoder::open(mode, luid, (config.width, config.height))?;
                 let device = vendor.native_device()?;
                 let context = device.GetImmediateContext()?;
                 let renderer = Renderer::create_on_device(hwnd, device, context, presentation_mode)
@@ -1890,17 +1890,14 @@ struct Renderer {
     adapter: String,
     verify_synthetic_pixels: bool,
     synthetic_pixels_verified: bool,
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     rgb10_ramp_levels: Option<usize>,
     size: (u32, u32),
     output_format: DXGI_FORMAT,
     ten_bit_attempted: bool,
     ten_bit_fallback: Option<String>,
     processor: Option<ProcessorCache>,
-    #[cfg(any(test, not(feature = "native-core")))]
-    overlay: Option<crate::overlay_windows::Renderer>,
-    #[cfg(any(test, not(feature = "native-core")))]
-    overlay_failed: bool,
+
     // Fields drop in declaration order; keep the final flush after all views.
     cleanup: ContextCleanup,
 }
@@ -2075,22 +2072,19 @@ impl Renderer {
             adapter: adapter_name,
             verify_synthetic_pixels: false,
             synthetic_pixels_verified: false,
-            #[cfg(any(test, feature = "diagnostics"))]
+            #[cfg(test)]
             rgb10_ramp_levels: None,
             size,
             output_format: DXGI_FORMAT_B8G8R8A8_UNORM,
             ten_bit_attempted: false,
             ten_bit_fallback: None,
             processor: None,
-            #[cfg(any(test, not(feature = "native-core")))]
-            overlay: None,
-            #[cfg(any(test, not(feature = "native-core")))]
-            overlay_failed: false,
+
             cleanup: ContextCleanup(context),
         })
     }
     // Offline synthetic fixture only. Live paths never map/read pixel buffers.
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     unsafe fn verify_pixels(&self, back: &ID3D11Texture2D, size: (u32, u32)) -> Result<bool> {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         back.GetDesc(&mut desc);
@@ -2136,7 +2130,7 @@ impl Renderer {
 
     // Synthetic ramp only, read before Present discards the backbuffer. This
     // diagnostic is never enabled for decoded live/account video.
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     unsafe fn count_rgb10_levels(&self, back: &ID3D11Texture2D) -> Result<usize> {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         back.GetDesc(&mut desc);
@@ -2172,26 +2166,6 @@ impl Renderer {
         Ok(levels.len())
     }
 
-    #[cfg(feature = "diagnostics")]
-    unsafe fn present(
-        &mut self,
-        texture: &ID3D11Texture2D,
-        subresource: u32,
-        source: RECT,
-        color: u32,
-        shared: &Shared,
-        window: &crate::window::Window,
-    ) -> Result<Presentation> {
-        self.present_ready(
-            texture,
-            subresource,
-            source,
-            color,
-            shared,
-            window,
-            Instant::now(),
-        )
-    }
     #[allow(clippy::too_many_arguments)] // GPU surface and its observed CPU-ready boundary.
     unsafe fn present_ready(
         &mut self,
@@ -2595,44 +2569,12 @@ impl Renderer {
                 None
             };
         });
-        #[cfg(any(test, not(feature = "native-core")))]
-        if !self.overlay_failed
-            && !window
-                .software_overlay_enabled
-                .load(std::sync::atomic::Ordering::Acquire)
-        {
-            let frame = {
-                window
-                    .overlay
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .frame
-                    .clone()
-            };
-            if !frame.batches.is_empty() {
-                let result = (|| -> windows::core::Result<u64> {
-                    if self.overlay.is_none() {
-                        self.overlay =
-                            Some(crate::overlay_windows::Renderer::create(&self.device)?);
-                    }
-                    self.overlay.as_mut().unwrap().draw(frame, &back, size)
-                })();
-                let mut overlay = window.overlay.lock().unwrap_or_else(|e| e.into_inner());
-                match result {
-                    Ok(count) => overlay.report.draw_calls_composited += count,
-                    Err(_) => {
-                        overlay.report.failure = Some("d3d11-gui-composition-failed");
-                        self.overlay_failed = true;
-                        self.overlay = None;
-                    }
-                }
-            }
-        }
-        #[cfg(any(test, feature = "diagnostics"))]
+
+        #[cfg(test)]
         if self.verify_synthetic_pixels && !self.synthetic_pixels_verified {
             self.synthetic_pixels_verified = self.verify_pixels(&back, size)?;
         }
-        #[cfg(any(test, feature = "diagnostics"))]
+        #[cfg(test)]
         if self.rgb10_ramp_levels.is_some() && self.output_format == DXGI_FORMAT_R10G10B10A2_UNORM {
             self.rgb10_ramp_levels = Some(self.count_rgb10_levels(&back)?);
         }
@@ -2646,611 +2588,6 @@ impl Renderer {
         });
         Ok(self.try_present(shared)?.unwrap_or(Presentation::Busy))
     }
-}
-
-/// Offline synthetic NV12 surfaces: exercise all timing modes and queue flags,
-/// including a resize. CPU timings cannot establish scanout latency gains.
-#[cfg(feature = "diagnostics")]
-pub fn probe_presentation_timing() -> anyhow::Result<serde_json::Value> {
-    let window = crate::window::Window::create_video_probe()?;
-    let outcome = (|| -> anyhow::Result<serde_json::Value> {
-        let hwnd = window.ensure_video_surface()?;
-        let mut cases = Vec::new();
-        for (mode, bud) in [
-            (PresentationMode::Automatic, false),
-            (PresentationMode::LowLatency, false),
-            (PresentationMode::Vsync, false),
-            (PresentationMode::Automatic, true),
-        ] {
-            let result = unsafe {
-                (|| -> Result<serde_json::Value> {
-                    let mut renderer = Renderer::create(HWND(hwnd as *mut _), None, mode)?;
-                    let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new(), None));
-                    let data = [128u8; 64 * 96];
-                    let desc = D3D11_TEXTURE2D_DESC {
-                        Width: 64,
-                        Height: 64,
-                        MipLevels: 1,
-                        ArraySize: 1,
-                        Format: DXGI_FORMAT_NV12,
-                        SampleDesc: DXGI_SAMPLE_DESC {
-                            Count: 1,
-                            Quality: 0,
-                        },
-                        ..Default::default()
-                    };
-                    let initial = D3D11_SUBRESOURCE_DATA {
-                        pSysMem: data.as_ptr().cast(),
-                        SysMemPitch: 64,
-                        ..Default::default()
-                    };
-                    let mut texture = None;
-                    api(
-                        "timing-fixture-texture",
-                        renderer
-                            .device
-                            .CreateTexture2D(&desc, Some(&initial), Some(&mut texture)),
-                    )?;
-                    let texture = texture.ok_or_else(|| unavailable("timing-fixture-texture"))?;
-                    let mut presented = 0;
-                    let mut busy = 0;
-                    for index in 0..48 {
-                        if index == 24 {
-                            windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
-                                hwnd as _,
-                                std::ptr::null_mut(),
-                                0,
-                                0,
-                                800,
-                                600,
-                                windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOMOVE
-                                    | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOZORDER
-                                    | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE,
-                            );
-                        }
-                        match renderer.present(
-                            &texture,
-                            0,
-                            RECT {
-                                left: 0,
-                                top: 0,
-                                right: 64,
-                                bottom: 64,
-                            },
-                            crate::video_color::processor_color(Some(1), Some(2)),
-                            &shared,
-                            &window,
-                        )? {
-                            Presentation::Presented => presented += 1,
-                            Presentation::Busy => busy += 1,
-                            Presentation::NotVisible => {}
-                        }
-                        // Fixture cadence only; live decoder workers never sleep for display.
-                        std::thread::sleep(Duration::from_millis(4));
-                    }
-                    let before = shared
-                        .0
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .report
-                        .local_timing
-                        .presentation_prepare
-                        .count;
-                    {
-                        let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
-                        q.bud_catch_up = bud;
-                        for index in 0..24 {
-                            q.submit_codec(
-                                vec![0],
-                                index == 0,
-                                false,
-                                index,
-                                crate::video_stream::Codec::H264,
-                            );
-                        }
-                    }
-                    let burst_started = Instant::now();
-                    for _ in 0..24 {
-                        let _ = shared.0.lock().unwrap_or_else(|e| e.into_inner()).pop();
-                        renderer.present(
-                            &texture,
-                            0,
-                            RECT {
-                                left: 0,
-                                top: 0,
-                                right: 64,
-                                bottom: 64,
-                            },
-                            crate::video_color::processor_color(Some(1), Some(2)),
-                            &shared,
-                            &window,
-                        )?;
-                    }
-                    let burst_ms = burst_started.elapsed().as_secs_f64() * 1000.;
-                    let prepared_before_retry = shared
-                        .0
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .report
-                        .local_timing
-                        .presentation_prepare
-                        .count;
-                    let until = Instant::now() + Duration::from_millis(500);
-                    let mut idle_retries = 0;
-                    while renderer.pending_present && Instant::now() < until {
-                        let _ = renderer.try_present(&shared)?;
-                        idle_retries += 1;
-                        if renderer.pending_present {
-                            std::thread::sleep(Duration::from_millis(2));
-                        }
-                    }
-                    let snapshot = shared
-                        .0
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .report
-                        .clone();
-                    if snapshot.local_timing.presentation_prepare.count != prepared_before_retry {
-                        return Err(unavailable("timing-fixture-repeated-conversion"));
-                    }
-                    let display_work = snapshot.local_timing.presentation_prepare.count - before;
-                    if mode == PresentationMode::Automatic
-                        && display_work != if bud { 2 } else { 24 }
-                    {
-                        return Err(unavailable("timing-fixture-burst-display-count"));
-                    }
-                    Ok(
-                        serde_json::json!({"requested":mode,"effective":renderer.timing_status,
-                    "bud_catch_up":bud,"burst_cpu_wall_ms":burst_ms,"burst_display_preparations":display_work,
-                    "idle_retries":idle_retries,"pending_after_idle_retry":renderer.pending_present,"idle_retry_extra_conversions":0,
-                    "burst_input_messages_consumed":24,"synthetic_surface_not_decoder":true,
-                    "queue_control":renderer.latency_event.is_some(),"presented":presented,"busy":busy,
-                    "local_timing":snapshot.local_timing}),
-                    )
-                })()
-            };
-            cases.push(match result {
-                Ok(report) => report,
-                Err(error) if matches!(error.stage, "timing-fixture-burst-display-count" | "timing-fixture-repeated-conversion") => {
-                    anyhow::bail!("Synthetic display catch-up did not preserve its expected work count");
-                }
-                Err(error) => serde_json::json!({"requested":mode,"unavailable_stage":error.stage,"hresult":error.hresult}),
-            });
-        }
-        Ok(
-            serde_json::json!({"cases":cases,"cpu_readback":false,"live_video":false,
-            "instrumentation_cost":crate::video_output::timing_cost_probe(),
-            "gpu_execution_measured":false,"scanout_measured":false,"memory":crate::performance::own_memory()}),
-        )
-    })();
-    window.request_stop();
-    window.close();
-    outcome
-}
-
-/// Synthetic surfaces prove precision before Present and 8/10-bit transitions.
-/// Readback here never sees live/account video.
-#[cfg(feature = "diagnostics")]
-pub fn probe_rgb10_output() -> anyhow::Result<serde_json::Value> {
-    let window = crate::window::Window::create_video_probe()?;
-    let result = (|| -> anyhow::Result<serde_json::Value> {
-        let hwnd = window.ensure_video_surface()?;
-        unsafe {
-            let mut renderer =
-                Renderer::create(HWND(hwnd as *mut _), None, PresentationMode::Automatic)
-                    .map_err(|e| anyhow::anyhow!("GPU RGB output probe: {e:?}"))?;
-            renderer.rgb10_ramp_levels = Some(0);
-            let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new(), None));
-            let source = RECT {
-                left: 0,
-                top: 0,
-                right: 1024,
-                bottom: 64,
-            };
-            let mut results = Vec::new();
-            for (index, (ten_bit, limited)) in [
-                (false, false),
-                (true, false),
-                (true, true),
-                (false, false),
-                (true, false),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                if index == 4 {
-                    renderer.ten_bit_fallback =
-                        Some("Synthetic unsupported-output fallback".into());
-                    renderer.processor = None;
-                }
-                let format = if ten_bit {
-                    DXGI_FORMAT_P010
-                } else {
-                    DXGI_FORMAT_NV12
-                };
-                let pitch = if ten_bit { 2048 } else { 1024 };
-                let mut data = vec![0u8; pitch * 96];
-                for y in 0..96 {
-                    for x in 0..1024 {
-                        if ten_bit {
-                            let sample = if y >= 64 {
-                                512
-                            } else if limited {
-                                64 + x * 876 / 1023
-                            } else {
-                                x
-                            };
-                            let value = ((sample as u16) << 6).to_le_bytes();
-                            data[y * pitch + x * 2..y * pitch + x * 2 + 2].copy_from_slice(&value);
-                        } else {
-                            data[y * pitch + x] = if y >= 64 { 128 } else { (x / 4) as u8 };
-                        }
-                    }
-                }
-                let desc = D3D11_TEXTURE2D_DESC {
-                    Width: 1024,
-                    Height: 64,
-                    MipLevels: 1,
-                    ArraySize: 1,
-                    Format: format,
-                    SampleDesc: DXGI_SAMPLE_DESC {
-                        Count: 1,
-                        Quality: 0,
-                    },
-                    ..Default::default()
-                };
-                let initial = D3D11_SUBRESOURCE_DATA {
-                    pSysMem: data.as_ptr().cast(),
-                    SysMemPitch: pitch as u32,
-                    ..Default::default()
-                };
-                let mut texture = None;
-                renderer
-                    .device
-                    .CreateTexture2D(&desc, Some(&initial), Some(&mut texture))?;
-                renderer
-                    .present(
-                        &texture.unwrap(),
-                        0,
-                        source,
-                        crate::video_color::processor_color(
-                            Some(1),
-                            Some(if limited { 2 } else { 1 }),
-                        ),
-                        &shared,
-                        &window,
-                    )
-                    .map_err(|e| anyhow::anyhow!("RGB output probe: {e:?}"))?;
-                let snapshot = shared
-                    .0
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .report
-                    .clone();
-                let rgb10 = snapshot.display_rgb_bit_depth == Some(10);
-                if ten_bit && index != 4 && rgb10 {
-                    anyhow::ensure!(
-                        renderer.rgb10_ramp_levels.is_some_and(|n| n > 256),
-                        "RGB10 output must retain more than 256 distinct ramp levels"
-                    );
-                }
-                if !ten_bit || index == 4 {
-                    anyhow::ensure!(
-                        snapshot.display_rgb_bit_depth == Some(8),
-                        "8-bit output/fallback failed"
-                    );
-                }
-                results.push(
-                    serde_json::json!({"p010_input":ten_bit,"limited_range":limited,
-                    "forced_fallback":index == 4,"rgb_bit_depth":snapshot.display_rgb_bit_depth,
-                    "fallback":snapshot.display_output_fallback,
-                    "distinct_red_levels":if rgb10 { renderer.rgb10_ramp_levels } else { None }}),
-                );
-            }
-            Ok(
-                serde_json::json!({"scope":"synthetic-rgb10-output","cases":results,
-                "external_requests_enabled":false,"real_account_used":false,
-                "synthetic_readback_only":true,"cpu_readback_live_enabled":false}),
-            )
-        }
-    })();
-    window.close();
-    result
-}
-
-/// No account, network or real content: create and release the actual GPU path.
-#[cfg(feature = "diagnostics")]
-pub fn probe(sustained: bool) -> anyhow::Result<serde_json::Value> {
-    use std::sync::atomic::Ordering;
-    let window = crate::window::Window::create_video_probe()?;
-    // Test a real alpha-blended D3D11 GUI pass over GPU-decoded video.
-    let texture = Arc::new(crate::overlay::Texture {
-        version: 1,
-        width: 1,
-        height: 1,
-        rgba: vec![255; 4],
-    });
-    let mut vertices = Vec::new();
-    for (x, y) in [
-        (-1.0f32, 1.0f32),
-        (-0.75, 1.0),
-        (-0.75, 0.75),
-        (-1.0, 1.0),
-        (-0.75, 0.75),
-        (-1.0, 0.75),
-    ] {
-        vertices.extend_from_slice(&x.to_le_bytes());
-        vertices.extend_from_slice(&y.to_le_bytes());
-        vertices.extend_from_slice(&[0; 8]);
-        vertices.extend_from_slice(&[255, 0, 0, 255]);
-    }
-    let client = *window.dimensions.lock().unwrap_or_else(|e| e.into_inner());
-    window
-        .overlay
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .frame = Arc::new(crate::overlay::Frame {
-        size: (client.0 as u32, client.1 as u32),
-        batches: vec![crate::overlay::Batch {
-            vertices,
-            texture,
-            clip: [0, 0, client.0, client.1],
-        }],
-    });
-    let pipeline = Pipeline::start_mode(window.clone(), true, false);
-    let fixture = include_bytes!("../fixtures/synthetic-1920x1080.h264");
-    let mut starts = Vec::new();
-    for i in 0..fixture.len().saturating_sub(4) {
-        if fixture[i..].starts_with(&[0, 0, 0, 1]) && fixture[i + 4] & 31 == 9 {
-            starts.push(i);
-        }
-    }
-    anyhow::ensure!(starts.len() == 8, "synthetic fixture access unit count");
-    starts.push(fixture.len());
-    let mut inspector = crate::video_stream::Inspector::default();
-    let cycles = if sustained { 128 } else { 1 };
-    'feeding: for cycle in 0..cycles {
-        if sustained && cycle == cycles / 2 {
-            // Exercise release of cached backbuffer views before ResizeBuffers.
-            unsafe {
-                windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
-                    window.handle(),
-                    std::ptr::null_mut(),
-                    0,
-                    0,
-                    900,
-                    640,
-                    windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOMOVE
-                        | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOZORDER
-                        | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE,
-                );
-            }
-        }
-        for pair in starts.windows(2) {
-            let bytes = &fixture[pair[0]..pair[1]];
-            let info = inspector
-                .receive(bytes)
-                .ok_or_else(|| anyhow::anyhow!("invalid synthetic Annex B fixture"))?;
-            pipeline.submit(bytes, info);
-            std::thread::sleep(if sustained {
-                Duration::from_micros(8333)
-            } else {
-                Duration::from_millis(40)
-            });
-            if pipeline.snapshot().failure_stage.is_some() {
-                break 'feeding;
-            }
-        }
-    }
-    let framing = inspector.snapshot();
-    anyhow::ensure!(
-        framing.idr_messages > 0 && framing.sps_profile_idc == Some(100),
-        "synthetic high-profile reference-picture fixture"
-    );
-    let until = Instant::now() + Duration::from_secs(12);
-    while Instant::now() < until {
-        let report = pipeline.snapshot();
-        if report.failure_stage.is_some()
-            || (report.frames_decoded == cycles * 8
-                && report.frames_presented > 0
-                && report.synthetic_pixel_variation_verified)
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    pipeline.stop();
-    let until = Instant::now() + Duration::from_secs(3);
-    while !pipeline.snapshot().worker_finished && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let report = pipeline.snapshot();
-    let released = window.active_contexts.load(Ordering::Acquire) == 0;
-    if released {
-        window.close();
-    }
-    let until = Instant::now() + Duration::from_secs(1);
-    while !window.handle().is_null() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    Ok(
-        serde_json::json!({"scope":"synthetic-native-h264-d3d11", "external_requests_enabled":false,"real_account_used":false,
-        "cpu_readback_live_enabled":false,"synthetic_overlay":window.overlay.lock().unwrap_or_else(|e|e.into_inner()).report.clone(),"sustained":sustained,"synthetic_fixture_frames":cycles*8,"synthetic_fixture_idr_frames":framing.idr_messages,"video":report,
-        "native_window_released":window.handle().is_null(),"gpu_resources_released":released}),
-    )
-}
-
-#[cfg(feature = "diagnostics")]
-pub fn probe_recovery() -> anyhow::Result<serde_json::Value> {
-    // Hosted Windows runners expose D3D11 without the video interface. Report
-    // this precise capability limitation; never skip an actual decoder failure.
-    let (device, capability_context) = unsafe { create_device(None) }
-        .map_err(|e| anyhow::anyhow!("recovery capability preflight: {}", e.stage))?;
-    if let Err(error) = device.cast::<ID3D11VideoDevice>() {
-        if error.code() == windows::Win32::Foundation::E_NOINTERFACE {
-            return Ok(serde_json::json!({"scope":"synthetic-native-h264-recovery",
-                "supported":false,"reason":"D3D11 video interface unavailable",
-                "external_requests_enabled":false,"real_account_used":false}));
-        }
-        return Err(error.into());
-    }
-    drop((device, capability_context));
-    let window = crate::window::Window::create_video_probe().unwrap();
-    let pipeline = Pipeline::start(window.clone());
-    let fixture = include_bytes!("../fixtures/synthetic-1920x1080.h264");
-    let mut starts: Vec<_> = (0..fixture.len().saturating_sub(4))
-        .filter(|&i| fixture[i..].starts_with(&[0, 0, 0, 1]) && fixture[i + 4] & 31 == 9)
-        .collect();
-    starts.push(fixture.len());
-    let mut inspector = crate::video_stream::Inspector::default();
-    let result = (|| -> anyhow::Result<()> {
-        for pair in starts.windows(2) {
-            let bytes = &fixture[pair[0]..pair[1]];
-            anyhow::ensure!(pipeline.submit(bytes, inspector.receive(bytes).unwrap()));
-            std::thread::sleep(Duration::from_millis(40));
-        }
-        let until = Instant::now() + Duration::from_secs(5);
-        while pipeline.snapshot().frames_decoded < 8 && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        anyhow::ensure!(
-            pipeline.snapshot().frames_decoded == 8,
-            "initial synthetic decode"
-        );
-        anyhow::ensure!(pipeline.shared.0.lock().unwrap().recover(Instant::now()));
-        pipeline.shared.1.notify_one();
-        anyhow::ensure!(pipeline.take_keyframe_request().is_some());
-        for (index, pair) in starts.windows(2).enumerate() {
-            let mut bytes = &fixture[pair[0]..pair[1]];
-            if index == 0 {
-                // Omit SPS/PPS deliberately: only the saved parameters can
-                // initialize the new decoder before this IDR picture.
-                let idr = (0..bytes.len().saturating_sub(4))
-                    .find(|&i| {
-                        (bytes[i..].starts_with(&[0, 0, 0, 1]) && bytes[i + 4] & 31 == 5)
-                            || (bytes[i..].starts_with(&[0, 0, 1]) && bytes[i + 3] & 31 == 5)
-                    })
-                    .ok_or_else(|| anyhow::anyhow!("synthetic IDR missing"))?;
-                bytes = &bytes[idr..];
-            }
-            anyhow::ensure!(pipeline.submit(bytes, inspector.receive(bytes).unwrap()));
-            std::thread::sleep(Duration::from_millis(40));
-        }
-        let until = Instant::now() + Duration::from_secs(5);
-        while pipeline.snapshot().frames_decoded < 16 && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let report = pipeline.snapshot();
-        anyhow::ensure!(
-            report.failure_stage.is_none(),
-            "recovery failed: {:?}",
-            report.failure_stage
-        );
-        anyhow::ensure!(
-            report.frames_decoded == 16 && !report.recovering,
-            "recovery did not decode all frames"
-        );
-        Ok(())
-    })();
-    pipeline.stop();
-    let until = Instant::now() + Duration::from_secs(3);
-    while !pipeline.snapshot().worker_finished && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    window.close();
-    result?;
-    anyhow::ensure!(
-        pipeline.snapshot().resources_released,
-        "recovery resource cleanup"
-    );
-    Ok(
-        serde_json::json!({"scope":"synthetic-native-h264-recovery", "supported":true,
-        "external_requests_enabled":false, "real_account_used":false,
-        "cpu_readback_live_enabled":false, "video":pipeline.snapshot()}),
-    )
-}
-
-#[cfg(feature = "diagnostics")]
-pub fn probe_main10() -> anyhow::Result<serde_json::Value> {
-    if !hevc_ten_bit_available(None) {
-        return Ok(
-            serde_json::json!({"scope":"synthetic-main10-gpu","supported":false,
-            "reason":"Main 10/P010 GPU decode and conversion unavailable"}),
-        );
-    }
-    let window = crate::window::Window::create_video_probe()?;
-    let pipeline = Pipeline::start(window.clone());
-    let mut inspector = crate::video_stream::Inspector::default();
-    inspector.enable_hevc(true);
-    let result = (|| -> anyhow::Result<()> {
-        let mut fixture: &[u8] = include_bytes!("../fixtures/synthetic-720p-hevc10.bin");
-        let mut count = 0u64;
-        while !fixture.is_empty() {
-            anyhow::ensure!(fixture.len() >= 4, "truncated fixture size");
-            let len = u32::from_le_bytes(fixture[..4].try_into()?) as usize;
-            fixture = &fixture[4..];
-            anyhow::ensure!(len <= fixture.len(), "truncated fixture unit");
-            let bytes = &fixture[..len];
-            fixture = &fixture[len..];
-            if count == 0 {
-                let sps = crate::video_stream::hevc_configuration(bytes)
-                    .ok_or_else(|| anyhow::anyhow!("Main 10 fixture SPS missing"))?;
-                anyhow::ensure!(
-                    sps.profile == 2 && sps.bit_depth == 10 && sps.chroma == 1,
-                    "fixture must be Main 10 4:2:0"
-                );
-            }
-            anyhow::ensure!(
-                pipeline.submit(
-                    bytes,
-                    inspector
-                        .receive(bytes)
-                        .ok_or_else(|| anyhow::anyhow!("fixture inspection failed"))?
-                ),
-                "fixture submission failed"
-            );
-            count += 1;
-            std::thread::sleep(Duration::from_millis(33));
-        }
-        let until = Instant::now() + Duration::from_secs(5);
-        while pipeline.snapshot().frames_decoded < count.saturating_sub(1) && Instant::now() < until
-        {
-            if pipeline.snapshot().failure_stage.is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let report = pipeline.snapshot();
-        anyhow::ensure!(
-            report.failure_stage.is_none(),
-            "Main 10 GPU pipeline failed: {:?}",
-            report.failure_stage
-        );
-        // The live streaming MFT may retain one picture until the next input;
-        // this test does not inject an EOS/drain into the live pipeline.
-        anyhow::ensure!(
-            report.frames_decoded >= count.saturating_sub(1)
-                && report.decoded_bit_depth == Some(10)
-                && report.gpu_surface_output,
-            "Main 10 must produce P010 GPU output without dropping the stream"
-        );
-        Ok(())
-    })();
-    pipeline.stop();
-    let until = Instant::now() + Duration::from_secs(3);
-    while !pipeline.snapshot().worker_finished && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    window.close();
-    result?;
-    anyhow::ensure!(
-        pipeline.snapshot().resources_released,
-        "Main 10 resources not released"
-    );
-    Ok(
-        serde_json::json!({"scope":"synthetic-main10-gpu","supported":true,
-        "pixel_readback":false,"external_requests_enabled":false,"video":pipeline.snapshot()}),
-    )
 }
 
 #[cfg(test)]
@@ -3325,17 +2662,7 @@ mod tests {
             );
         }
     }
-    #[cfg(feature = "diagnostics")]
-    #[test]
-    fn decoder_recovers_with_cached_parameters_and_a_headerless_keyframe() {
-        let report = probe_recovery().unwrap();
-        if report["supported"] == false {
-            eprintln!("GPU recovery fixture unavailable: {}", report["reason"]);
-            return;
-        }
-        assert_eq!(report["video"]["frames_decoded"], 16);
-        assert_eq!(report["video"]["recovering"], false);
-    }
+
     #[test]
     fn processor_accepts_decoder_ayuv_surfaces_without_a_repacking_step() {
         let mut desc = D3D11_TEXTURE2D_DESC {

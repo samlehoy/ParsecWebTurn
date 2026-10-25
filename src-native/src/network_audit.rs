@@ -1,10 +1,10 @@
 //! Bounded metadata; destination origins require explicit diagnostic opt-in.
 //! Never retain URL credentials, paths, queries, headers or bodies.
 use reqwest::Url;
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 use {serde::Serialize, std::sync::Mutex};
 
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Service {
@@ -15,7 +15,7 @@ pub enum Service {
     Loopback,
     Other,
 }
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Route {
@@ -26,7 +26,7 @@ pub enum Route {
     StaticData,
     Other,
 }
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
@@ -36,7 +36,7 @@ pub enum Protocol {
     Wss,
     Other,
 }
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Method {
@@ -50,14 +50,14 @@ pub enum Method {
     Connect,
     Other,
 }
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Bridge {
     Http,
     WebSocket,
 }
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 #[derive(Clone, Serialize)]
 pub struct Intent {
     bridge: Bridge,
@@ -72,7 +72,7 @@ pub struct Intent {
     body_bytes: usize,
     policy_allowed: bool,
 }
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
     pub intents: Vec<Intent>,
@@ -80,15 +80,15 @@ pub struct Snapshot {
 }
 #[derive(Default)]
 pub struct Audit {
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     snapshot: Mutex<Snapshot>,
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     destination_origins: bool,
 }
 impl Audit {
     /// Diagnostic mode only: origins exclude userinfo, paths and query tokens.
     /// This changes reporting, never connection authorization.
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     pub fn with_destination_origins() -> Self {
         Self {
             destination_origins: true,
@@ -104,7 +104,7 @@ impl Audit {
         _allowed: bool,
     ) {
         // Normal builds preserve the shared bridge API without collecting traces.
-        #[cfg(any(test, feature = "diagnostics"))]
+        #[cfg(test)]
         self.record_bridge(
             _url,
             _method,
@@ -115,10 +115,10 @@ impl Audit {
         );
     }
     pub fn record_websocket(&self, _url: &Url, _allowed: bool) {
-        #[cfg(any(test, feature = "diagnostics"))]
+        #[cfg(test)]
         self.record_bridge(_url, "GET", false, 0, _allowed, Bridge::WebSocket);
     }
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     fn record_bridge(
         &self,
         url: &Url,
@@ -182,7 +182,7 @@ impl Audit {
             policy_allowed: allowed,
         });
     }
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     pub fn snapshot(&self) -> Snapshot {
         self.snapshot
             .lock()

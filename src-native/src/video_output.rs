@@ -42,21 +42,6 @@ pub struct LocalTiming {
     pub output_service_ns: u128,
 }
 
-#[cfg(feature = "diagnostics")]
-pub fn timing_cost_probe() -> serde_json::Value {
-    let mut timing = LocalTiming::default();
-    let started = Instant::now();
-    // Fixed memory, no output allocation until the final report.
-    for _ in 0..100_000 {
-        let at = Instant::now();
-        timing.decoder_service.record(at.elapsed());
-        std::hint::black_box(&timing);
-    }
-    serde_json::json!({"iterations":100_000,"wall_ns_per_iteration":started.elapsed().as_nanos() as f64 / 100_000.,
-        "accumulator_bytes":std::mem::size_of::<LocalTiming>(),"identity_table_bytes":std::mem::size_of::<InFlight>(),
-        "scope":"clock read and accumulator update only; not full pipeline overhead"})
-}
-
 #[derive(Clone, Copy)]
 struct PendingInput {
     sequence: usize,
@@ -299,7 +284,6 @@ impl Queue {
         true
     }
 
-    #[cfg(feature = "native-core")]
     pub fn set_last_rotation(&mut self, rotation: u8) {
         if let Some(frame) = self.frames.back_mut() {
             frame.rotation = rotation;

@@ -244,6 +244,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "evoparseq-bud"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "lowlat-client",
+ "lowlat-core",
+ "lowlat-crypto",
+ "lowlat-net",
+ "rustls",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -518,20 +532,6 @@ dependencies = [
  "elliptic-curve",
  "primeorder",
  "sha2",
-]
-
-[[package]]
-name = "parsec-native-bud"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "lowlat-client",
- "lowlat-core",
- "lowlat-crypto",
- "lowlat-net",
- "rustls",
- "serde_json",
- "tokio",
 ]
 
 [[package]]

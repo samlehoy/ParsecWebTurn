@@ -26,7 +26,7 @@ pub const ABOUT: usize = 4300;
 const HEADER_EXTRA: i32 = 20;
 const SAVE: usize = 4101;
 const BACK: usize = 4102;
-#[cfg(feature = "native-core")]
+
 const HIDE_SESSION_BUTTON: usize = 4135;
 const PROVIDER: usize = 4103;
 const STUN_ONLY: usize = 4104;
@@ -60,7 +60,7 @@ const HELP: usize = 4200;
 const NETWORK_TAB: usize = 4201;
 const VIDEO_TAB: usize = 4121;
 const TEN_BIT: usize = 4122;
-#[cfg(feature = "native-core")]
+
 const CHROMA_444: usize = 4136;
 const EVENT_LOG: usize = 4123;
 const AUDIO_TAB: usize = 4124;
@@ -156,7 +156,7 @@ pub unsafe fn install_menu(parent: HWND) {
     AppendMenuW(
         help,
         MF_STRING,
-        crate::updater_ui::OPEN,
+        crate::branding::ABOUT,
         wide("Check for updates").as_ptr(),
     );
     AppendMenuW(menu, MF_POPUP, help as usize, wide("Help").as_ptr());
@@ -583,7 +583,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         crate::connection_settings::PresentationMode::Vsync => 2,
     };
     SendMessageW(timing, CB_SETCURSEL, selection, 0);
-    #[cfg(feature = "native-core")]
+
     {
         row_label(hwnd, page, "Chroma", "NVIDIA tested; Intel not live-validated. AMD unavailable.\nHEVC 8/10-bit; requires compatible host and GPU.\nNormal GPU rendering; host may send 4:2:0 instead.", 720, 0, 64);
         add(
@@ -905,13 +905,7 @@ unsafe fn layout(hwnd: HWND) {
         Tab::Network => 1056 + BUD_EXTRA,
         Tab::Audio => 750,
         Tab::Input => 570,
-        Tab::Video => {
-            if cfg!(feature = "native-core") {
-                936
-            } else {
-                728
-            }
-        }
+        Tab::Video => 936,
     };
     let height = footer + 122 + HEADER_EXTRA;
     page.scroll = page.scroll.clamp(0, (height - client.bottom).max(0));
@@ -1119,7 +1113,7 @@ unsafe fn update_enabled(hwnd: HWND) {
     #[cfg(not(feature = "bud"))]
     EnableWindow(GetDlgItem(hwnd, AUDIO_SURROUND as i32), 0);
     let hevc = checked(hwnd, HEVC) as i32;
-    #[cfg(feature = "native-core")]
+
     {
         let page = &*(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Page);
         let selection = SendMessageW(GetDlgItem(hwnd, GPU as i32), CB_GETCURSEL, 0, 0);
@@ -1140,7 +1134,7 @@ unsafe fn update_enabled(hwnd: HWND) {
             hevc * i32::from(allowed),
         );
     }
-    let full_chroma = cfg!(feature = "native-core") && checked(hwnd, 4136);
+    let full_chroma = true && checked(hwnd, 4136);
     EnableWindow(GetDlgItem(hwnd, TEN_BIT as i32), hevc);
     #[cfg(feature = "vendor-video")]
     EnableWindow(
@@ -1174,11 +1168,11 @@ unsafe fn update_enabled(hwnd: HWND) {
 }
 unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
     let mut s = page.saved.clone();
-    #[cfg(feature = "native-core")]
+
     {
         s.native_core.hide_session_button = checked(hwnd, HIDE_SESSION_BUTTON);
     }
-    #[cfg(feature = "native-core")]
+
     {
         s.experimental_chroma_444 = checked(hwnd, CHROMA_444);
     }
@@ -1254,7 +1248,7 @@ unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
         checked(hwnd, FORGET_TOKEN),
     )?;
     page.saved = page.manager.view().0;
-    #[cfg(feature = "native-core")]
+
     PostMessageW(
         GetParent(hwnd),
         crate::native_core::session_ui::VISIBILITY,
@@ -1475,7 +1469,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     update_enabled(hwnd);
                     return 0;
                 }
-                #[cfg(feature = "native-core")]
+
                 CHROMA_444 if (wp >> 16) as u32 == BN_CLICKED => {
                     update_enabled(hwnd);
                     return 0;
@@ -1550,11 +1544,11 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
 mod tests {
     use super::*;
     #[test]
-    fn native_controls_save_and_reopen_without_guest_or_real_profile() {
+    fn native_controls_save_and_reopen_without_real_profile() {
         let mut nonce = [0; 16];
         getrandom::fill(&mut nonce).unwrap();
         let suffix: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
-        let directory = std::env::temp_dir().join(format!("parsec-settings-ui-{suffix}"));
+        let directory = std::env::temp_dir().join(format!("evoparseq-settings-ui-{suffix}"));
         std::fs::create_dir(&directory).unwrap();
         let manager = Manager::open(directory.join("settings.json"));
         unsafe {
@@ -1578,7 +1572,7 @@ mod tests {
             let help = GetSubMenu(GetMenu(parent), 2);
             assert!(!help.is_null());
             assert_eq!(GetMenuItemID(help, 0), ABOUT as u32);
-            assert_eq!(GetMenuItemID(help, 1), crate::updater_ui::OPEN as u32);
+            assert_eq!(GetMenuItemID(help, 1), crate::branding::ABOUT as u32);
             let page = open(parent, manager.clone());
             assert!(!page.is_null());
             assert_ne!(
@@ -1640,7 +1634,7 @@ mod tests {
             assert_no_overlaps(page);
             capture(page, "video");
             assert_combo_label_visible(page, GPU);
-            #[cfg(feature = "native-core")]
+
             {
                 // Synthetic adapter identities: no production GPU settings are changed.
                 let state = &mut *(GetWindowLongPtrW(page, GWLP_USERDATA) as *mut Page);

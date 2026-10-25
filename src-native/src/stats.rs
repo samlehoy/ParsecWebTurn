@@ -11,7 +11,7 @@ use webrtc::{peer_connection::RTCPeerConnection, stats::StatsReportType};
 #[derive(Clone)]
 pub struct Sample {
     #[cfg(feature = "bud")]
-    pub bud: Option<parsec_native_bud::bud::Snapshot>,
+    pub bud: Option<evoparseq_bud::bud::Snapshot>,
     pub at: Instant,
     pub generation: u64,
     pub state: String,
@@ -71,7 +71,6 @@ impl Default for Sample {
 }
 #[derive(Default)]
 pub struct Shared {
-    #[cfg(feature = "native-core")]
     pub overlay_visible: AtomicBool,
     #[cfg(windows)]
     pub host_timing: crate::frame_timing::Shared,
@@ -89,7 +88,6 @@ impl Shared {
         self.visible.load(Ordering::Acquire) || crate::event_log::enabled()
     }
     pub fn sample_requested(&self) -> bool {
-        #[cfg(feature = "native-core")]
         if self.overlay_visible.load(Ordering::Acquire) {
             return true;
         }
@@ -406,7 +404,7 @@ mod tests {
         let mut sample = Sample {
             generation: 1,
             state: "Connected (BUD)".into(),
-            bud: Some(parsec_native_bud::bud::Snapshot {
+            bud: Some(evoparseq_bud::bud::Snapshot {
                 connected: true,
                 ..Default::default()
             }),

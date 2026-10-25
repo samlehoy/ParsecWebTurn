@@ -1,7 +1,6 @@
-//! Pinned Matoya cursor ABI, backed by documented Win32 cursor APIs.
-//! Guest image buffers are copied; all window cursor ownership stays on its UI thread.
-#[cfg(any(test, not(feature = "native-core")))]
-use crate::memory::GuestMemory;
+//! Native cursor messages, backed by documented Win32 cursor APIs.
+//! Cursor image buffers are copied; window cursor ownership stays on its UI thread.
+
 use anyhow::{bail, Context, Result};
 use windows_sys::Win32::{Graphics::Gdi::*, UI::WindowsAndMessaging::*};
 
@@ -16,7 +15,6 @@ pub struct Frame {
     rgba: Vec<u8>,
 }
 impl Frame {
-    #[cfg(feature = "native-core")]
     pub fn native_png(bytes: &[u8], x: i32, y: i32) -> Result<Self> {
         Self::png(bytes.to_vec(), x, y)
     }
@@ -97,41 +95,6 @@ pub fn handles(name: &str) -> bool {
         name,
         "web_set_png_cursor" | "web_set_rgba_cursor" | "web_show_cursor" | "web_use_default_cursor"
     )
-}
-#[cfg(any(test, not(feature = "native-core")))]
-pub fn decode(memory: &GuestMemory, name: &str, args: &[wasmtime::Val]) -> Result<Request> {
-    let int = |i| {
-        args.get(i)
-            .and_then(wasmtime::Val::i32)
-            .context("cursor ABI expected i32")
-    };
-    Ok(match name {
-        "web_show_cursor" => Request::Visible(int(0)? != 0),
-        "web_use_default_cursor" => Request::Default(int(0)? != 0),
-        "web_set_png_cursor" | "web_set_rgba_cursor" if int(0)? == 0 => Request::Image(None),
-        "web_set_png_cursor" => {
-            let size = usize::try_from(int(1)?)?;
-            if size > MAX_ENCODED {
-                bail!("encoded cursor exceeds limit");
-            }
-            Request::Image(Some(Frame::png(
-                memory.read(int(0)? as u32, size)?,
-                int(2)?,
-                int(3)?,
-            )?))
-        }
-        "web_set_rgba_cursor" => {
-            let (w, h) = (int(1)? as u32, int(2)? as u32);
-            Request::Image(Some(Frame::rgba(
-                memory.read(int(0)? as u32, Frame::size(w, h)?)?,
-                w,
-                h,
-                int(3)?,
-                int(4)?,
-            )?))
-        }
-        _ => bail!("unknown cursor import"),
-    })
 }
 
 struct OwnedCursor(usize);
@@ -364,39 +327,5 @@ mod tests {
             assert!(state.custom.is_none());
             assert!(!state.handle().is_null());
         }
-    }
-    #[test]
-    fn actual_guest_imports_allow_reset_and_reject_bad_images_without_trapping() {
-        let mut config = wasmtime::Config::new();
-        config
-            .wasm_threads(true)
-            .consume_fuel(true)
-            .epoch_interruption(true);
-        let engine = wasmtime::Engine::new(&config).unwrap();
-        let module = wasmtime::Module::new(
-            &engine,
-            r#"(module
-            (import "env" "memory" (memory 1 1 shared))
-            (import "env" "web_set_png_cursor" (func $png (param i32 i32 i32 i32)))
-            (import "env" "web_set_rgba_cursor" (func $rgba (param i32 i32 i32 i32 i32)))
-            (import "env" "web_show_cursor" (func $show (param i32)))
-            (import "env" "web_use_default_cursor" (func $default (param i32)))
-            (func (export "test")
-                i32.const 0 i32.const -1 i32.const 0 i32.const 0 call $png
-                i32.const 65535 i32.const 16 i32.const 0 i32.const 0 call $png
-                i32.const 65535 i32.const 32 i32.const 32 i32.const 0 i32.const 0 call $rgba
-                i32.const 0 call $show i32.const 1 call $show
-                i32.const 1 call $default i32.const 0 call $default))"#,
-        )
-        .unwrap();
-        let (mut store, instance) = crate::instantiate(&engine, &module).unwrap();
-        instance
-            .get_typed_func::<(), ()>(&mut store, "test")
-            .unwrap()
-            .call(&mut store, ())
-            .unwrap();
-        assert!(store.data().boundary.is_none());
-        assert_eq!(store.data().calls["env::web_set_png_cursor"], 2);
-        assert_eq!(store.data().calls["env::web_set_rgba_cursor"], 1);
     }
 }

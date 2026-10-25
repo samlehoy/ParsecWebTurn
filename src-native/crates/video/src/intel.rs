@@ -236,7 +236,7 @@ impl Backend {
                     Decoded::MoreData => break,
                     Decoded::Warning => {
                         // A positive status without a surface is not failure.
-                        // Separate parameter packets (common on the WASM path)
+                        // Separate parameter packets
                         // can be fully consumed this way. Do not retry an empty
                         // input until our own watchdog falsely reports a stall.
                         if bits.DataLength == 0 { break; }

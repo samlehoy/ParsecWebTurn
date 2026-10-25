@@ -73,8 +73,8 @@ impl Video {
         ensure!(self.immersive <= 3, "Invalid immersive mode");
         Ok(())
     }
-    pub fn mode(&self) -> crate::core_input::Mode {
-        crate::core_input::Mode {
+    pub fn mode(&self) -> crate::input_state::Mode {
+        crate::input_state::Mode {
             mouse: matches!(self.immersive, 1 | 3),
             keyboard: matches!(self.immersive, 1 | 2),
         }
@@ -144,7 +144,7 @@ mod tests {
                 immersive: mode,
                 ..Default::default()
             };
-            assert_eq!(v.mode(), crate::core_input::Mode { mouse, keyboard });
+            assert_eq!(v.mode(), crate::input_state::Mode { mouse, keyboard });
             assert!(!v.has_host_settings());
         }
         let token = "fixture-session-not-a-real-account";
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn ordinary_settings_save_cannot_restore_a_signed_out_session() {
         let path = std::env::temp_dir().join(format!(
-            "parsec-native-profile-{}-{}.json",
+            "evoparseq-profile-{}-{}.json",
             std::process::id(),
             crate::bud_attempt::native_attempt_id().unwrap()
         ));

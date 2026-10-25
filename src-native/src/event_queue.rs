@@ -10,7 +10,7 @@ const CAPACITY: usize = 256;
 struct State<T> {
     events: VecDeque<T>,
     stopped: bool,
-    #[cfg(feature = "native-core")]
+
     consumer: Option<std::thread::Thread>,
 }
 
@@ -25,7 +25,7 @@ impl<T> Default for Queue<T> {
             state: Mutex::new(State {
                 events: VecDeque::with_capacity(CAPACITY),
                 stopped: false,
-                #[cfg(feature = "native-core")]
+
                 consumer: None,
             }),
             changed: Condvar::new(),
@@ -42,7 +42,7 @@ impl<T> Queue<T> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if !state.stopped && state.events.len() < CAPACITY {
             state.events.push_back(event);
-            #[cfg(feature = "native-core")]
+
             if let Some(consumer) = &state.consumer {
                 consumer.unpark();
             }
@@ -54,7 +54,6 @@ impl<T> Queue<T> {
         }
     }
 
-    #[cfg(feature = "native-core")]
     pub fn set_consumer(&self, consumer: std::thread::Thread) {
         self.state
             .lock()
@@ -62,7 +61,6 @@ impl<T> Queue<T> {
             .consumer = Some(consumer);
     }
 
-    #[cfg(feature = "native-core")]
     pub fn wake_consumer(&self) {
         if let Some(consumer) = &self
             .state
@@ -108,7 +106,7 @@ impl<T> Queue<T> {
 
     pub fn stop(&self) {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).stopped = true;
-        #[cfg(feature = "native-core")]
+
         self.wake_consumer();
         self.changed.notify_all();
     }
@@ -121,7 +119,7 @@ mod tests {
         sync::{mpsc, Arc},
         time::Duration,
     };
-    #[cfg(feature = "native-core")]
+
     #[test]
     fn native_consumer_is_woken_for_input_and_stop_without_polling() {
         let queue = Arc::new(Queue::<u8>::default());

@@ -22,16 +22,13 @@ jobs:
         with:
           workspaces: src-native
           cache-on-failure: true
-      - name: Verify native-only build without a proprietary core file
+      - name: Verify EvoParseq native build
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if (Test-Path -LiteralPath src-native/vendor/parsecd.wasm) {
-            Remove-Item -LiteralPath src-native/vendor/parsecd.wasm
-          }
           cargo fmt --manifest-path src-native/Cargo.toml -- --check
           if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
-          $nativeTree = cargo tree --locked --manifest-path src-native/Cargo.toml --no-default-features --features native-core,vendor-video --edges normal,build --prefix none
+          $nativeTree = cargo tree --locked --manifest-path src-native/Cargo.toml --target x86_64-pc-windows-msvc --edges normal,build,dev --prefix none
           if ($LASTEXITCODE -ne 0) { throw 'Native dependency audit failed' }
           if ($nativeTree | Select-String '^(wasmtime|cranelift|glow|lowlat-(sdk|host|daemon|capture|encode))') { throw 'Unexpected legacy/host dependency in native runtime build' }
           # The upstream Opus buildscript does not track CMake toolchain changes.
@@ -40,14 +37,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Opus cache reset failed' }
           cargo clean --manifest-path src-native/Cargo.toml --release -p libopus_sys
           if ($LASTEXITCODE -ne 0) { throw 'Release Opus cache reset failed' }
-          $env:PWT_NATIVE_UI_CAPTURE = Join-Path (Get-Location) "dist/native-core/session-panel.png"
+          $env:EVOPARSEQ_UI_CAPTURE = Join-Path (Get-Location) "dist/native-core/session-panel.png"
           cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml -p lowlat-client --features external-video,turn-stream,usb-hid-input -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw 'BUD control and HID regression tests failed' }
           cargo test --locked --manifest-path src-native/crates/video/Cargo.toml -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw 'GPU surface format and ownership regression tests failed' }
-          cargo test --locked --manifest-path src-native/Cargo.toml --no-default-features --features native-core,vendor-video -- --test-threads=1
+          cargo test --locked --manifest-path src-native/Cargo.toml -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw 'Native core and shared regression tests failed' }
-          cargo build --locked --release --manifest-path src-native/Cargo.toml --no-default-features --features native-core,vendor-video
+          cargo build --locked --release --manifest-path src-native/Cargo.toml
           if ($LASTEXITCODE -ne 0) { throw 'Native core build failed' }
           New-Item -ItemType Directory -Path dist/native-core -Force | Out-Null
           $nativeTree | Set-Content -LiteralPath dist/native-core/dependencies.txt -Encoding utf8

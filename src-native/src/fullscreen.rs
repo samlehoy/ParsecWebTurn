@@ -111,7 +111,7 @@ unsafe fn set_style(hwnd: HWND, style: isize) -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 pub fn probe() -> Result<serde_json::Value> {
     struct OwnedWindow(HWND);
     impl Drop for OwnedWindow {
@@ -203,84 +203,20 @@ pub fn probe() -> Result<serde_json::Value> {
         DestroyMenu(menu);
     }
     drop(window);
-    guest_probe()?;
+
     Ok(
-        serde_json::json!({"schema":1,"scope":"isolated-native-fullscreen-and-guest-import", "fullscreen_roundtrips":5,"native_geometry_restored":true,"native_style_restored":true,"idempotent_requests_verified":true,"guest_import_verified":true,"window_event_feedback_verified":false,"real_account_used":false,"parsec_host_connected":false}),
+        serde_json::json!({"schema":1,"scope":"isolated-native-fullscreen-", "fullscreen_roundtrips":5,"native_geometry_restored":true,"native_style_restored":true,"idempotent_requests_verified":true,"window_event_feedback_verified":false,"real_account_used":false,"parsec_host_connected":false}),
     )
 }
-#[cfg(any(test, feature = "diagnostics"))]
-fn guest_probe() -> Result<()> {
-    let mut config = wasmtime::Config::new();
-    config
-        .wasm_threads(true)
-        .consume_fuel(true)
-        .epoch_interruption(true);
-    let engine = wasmtime::Engine::new(&config)?;
-    let module = wasmtime::Module::new(
-        &engine,
-        r#"(module
-        (import "env" "memory" (memory 1 1 shared))
-        (import "env" "web_set_fullscreen" (func $set (param i32)))
-        (func (export "test") i32.const 0 call $set i32.const 1 call $set i32.const 0 call $set))"#,
-    )?;
-    let (mut store, instance) = crate::instantiate(&engine, &module)?;
-    instance
-        .get_typed_func::<(), ()>(&mut store, "test")?
-        .call(&mut store, ())?;
-    if store.data().boundary.is_some()
-        || store.data().calls.get("env::web_set_fullscreen") != Some(&3)
-    {
-        bail!("guest fullscreen import failed");
-    }
-    Ok(())
-}
+
 #[cfg(test)]
 mod tests {
+
     #[test]
-    fn inactive_optional_capabilities_can_be_released_but_not_acquired() {
-        let mut config = wasmtime::Config::new();
-        config
-            .wasm_threads(true)
-            .consume_fuel(true)
-            .epoch_interruption(true);
-        let engine = wasmtime::Engine::new(&config).unwrap();
-        for name in ["web_set_pointer_lock", "web_set_kb_grab"] {
-            let module = wasmtime::Module::new(
-                &engine,
-                format!(
-                    r#"(module
-                (import "env" "memory" (memory 1 1 shared))
-                (import "env" "{name}" (func $set (param i32)))
-                (func (export "set") (param i32) local.get 0 call $set))"#
-                ),
-            )
-            .unwrap();
-            let (mut store, instance) = crate::instantiate(&engine, &module).unwrap();
-            let set = instance
-                .get_typed_func::<i32, ()>(&mut store, "set")
-                .unwrap();
-            for _ in 0..3 {
-                set.call(&mut store, 0).unwrap();
-            }
-            assert!(store.data().boundary.is_none());
-            #[cfg(windows)]
-            if name == "web_set_kb_grab" {
-                set.call(&mut store, 1).unwrap();
-                assert!(store.data().boundary.is_none());
-                continue;
-            }
-            assert!(set.call(&mut store, 1).is_err());
-            assert_eq!(
-                store.data().boundary.as_deref(),
-                Some(format!("env::{name}").as_str())
-            );
-        }
-    }
-    #[test]
-    fn native_fullscreen_restores_geometry_and_guest_import_does_not_trap() {
+    fn native_fullscreen_restores_geometry() {
         let report = super::probe().unwrap();
         assert_eq!(report["native_geometry_restored"], true);
-        assert_eq!(report["guest_import_verified"], true);
+
         assert_eq!(report["parsec_host_connected"], false);
     }
 }

@@ -60,7 +60,7 @@ fn remote_ufrag(value: &str) -> Result<()> {
 
 /// Aggregate categories only: no bytes, positions, prefixes, suffixes or hashes.
 /// In particular, '=' and URL-safe Base64 punctuation are not RFC 8839 ice-char.
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 fn token_shape(value: &str, min: usize) -> serde_json::Value {
     let mut counts = [0usize; 8];
     for byte in value.bytes() {
@@ -104,7 +104,7 @@ impl Credentials {
     }
 
     /// Shapes and fixed categories only, never credential bytes or hashes.
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     pub fn diagnostic(&self) -> serde_json::Value {
         serde_json::json!({
             "ufrag_bytes":self.ufrag.len(), "password_bytes":self.password.len(),
@@ -168,7 +168,7 @@ impl Description {
         Self::parse(sdp, false)
     }
     /// Remote-only parsing for the isolated Parsec interoperability fixture.
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     pub fn from_parsec_remote_sdp(sdp: &str) -> Result<Self> {
         Self::parse(sdp, true)
     }
@@ -250,7 +250,7 @@ impl Candidate {
         })
     }
 
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     pub fn from_sdp_line(line: &str) -> Result<Self> {
         if line.len() > 1024 {
             bail!("candidate line exceeds the adapter limit");

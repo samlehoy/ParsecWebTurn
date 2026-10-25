@@ -2,7 +2,7 @@
 
 MIT-licensed nomi-san/lowlat core at
 `5f8db5689e55de0d396b0520824caa9fc053dd86`. The original license is retained.
-This is the existing open protocol dependency, not the proprietary Parsec WASM.
+This is the pinned open-source protocol dependency.
 
 Only `relay.rs`, `turn.rs` and new `turn/stream.rs` receive the TURN changes from
 [lowlat PR #2](https://github.com/nomi-san/lowlat/pull/2), pinned to
