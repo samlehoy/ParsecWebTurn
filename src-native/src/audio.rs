@@ -73,6 +73,14 @@ pub fn dispatch(
                     None => 0,
                 };
                 output.output_available = handle != 0;
+                if handle != 0 {
+                    let playback = window
+                        .audio_registry
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(handle)?;
+                    window.stats.set_audio(std::sync::Arc::downgrade(&playback));
+                }
                 output.unavailable_reason = if handle == 0 {
                     Some("wasapi-device-or-format-unavailable")
                 } else {
@@ -103,7 +111,7 @@ pub fn dispatch(
                 caller.data_mut().audio_output.output_available = false;
             }
             _ => {
-                let output = window
+                let mut output = window
                     .audio_registry
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -121,14 +129,85 @@ pub fn dispatch(
                             args.get(1)
                                 .and_then(Val::i32)
                                 .context("missing audio PCM")? as u32;
-                        let bytes = memory.read(address, frames as usize * 4)?;
-                        let pcm: Vec<i16> = bytes
-                            .as_chunks::<2>()
-                            .0
-                            .iter()
-                            .map(|b| i16::from_le_bytes([b[0], b[1]]))
-                            .collect();
-                        output.queue(&pcm);
+                        #[cfg(feature = "bud")]
+                        let pipeline = caller
+                            .data()
+                            .backend
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .bud_attempt
+                            .as_ref()
+                            .and_then(|attempt| attempt.audio_pipeline());
+                        #[cfg(not(feature = "bud"))]
+                        let pipeline: Option<
+                            std::sync::Arc<crate::audio_stream::Pipeline>,
+                        > = None;
+                        let handoff = pipeline
+                            .as_ref()
+                            .and_then(|p| p.take_handoff(address, frames as usize));
+                        let layout = handoff
+                            .as_ref()
+                            .map_or(crate::audio_layout::Layout::STEREO, |b| b.layout);
+                        let rejected = window
+                            .audio_registry
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .rejected(pointer, layout);
+                        if output.layout != layout && !rejected {
+                            let limits = output.snapshot();
+                            match crate::audio_windows::Playback::create_layout(
+                                window.clone(),
+                                limits.minimum_ms,
+                                limits.maximum_ms,
+                                layout,
+                            ) {
+                                Ok(replacement) => {
+                                    let old = window
+                                        .audio_registry
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .replace(pointer, replacement)?;
+                                    old.stop();
+                                    output = window
+                                        .audio_registry
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .get(pointer)?;
+                                    window.stats.set_audio(std::sync::Arc::downgrade(&output));
+                                }
+                                Err(_) => {
+                                    window
+                                        .audio_registry
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .reject(pointer, layout);
+                                    crate::event_log::record(
+                                        "ERROR",
+                                        "audio_layout_unavailable",
+                                        serde_json::json!({"channels":layout.channels,"channel_mask":layout.mask,"stereo_fallback":output.layout == crate::audio_layout::Layout::STEREO}),
+                                    );
+                                }
+                            }
+                        }
+                        if let Some(block) = handoff {
+                            if output.layout == block.layout {
+                                output.queue(&block.pcm);
+                            } else if output.layout == crate::audio_layout::Layout::STEREO {
+                                output.queue(&block.layout.stereo_mix(&block.pcm));
+                            }
+                            if let Some(pipeline) = pipeline {
+                                pipeline.recycle_handoff(block);
+                            }
+                        } else if output.layout == crate::audio_layout::Layout::STEREO {
+                            let bytes = memory.read(address, frames as usize * 4)?;
+                            let pcm: Vec<i16> = bytes
+                                .as_chunks::<2>()
+                                .0
+                                .iter()
+                                .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                                .collect();
+                            output.queue(&pcm);
+                        }
                     }
                     "MTY_AudioReset" => output.reset(),
                     "MTY_AudioGetQueued" => {

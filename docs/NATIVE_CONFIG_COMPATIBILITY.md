@@ -74,4 +74,4 @@ allocation follows the current upstream ICE implementation. `stuns:` discovery,
 HTTP proxy tunneling and RFC 6062 TCP allocations are not supported.
 
 See the [isolated transport patch](../src-native/vendor/webrtc-ice-0.14.0/LOCAL-CHANGES.md)
-and [TURN integration tests](../tests/turn-integration/README.md).
+and [TURN integration tests](../src-native/tests/turn-integration/README.md).

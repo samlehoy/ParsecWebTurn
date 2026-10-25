@@ -13,6 +13,62 @@ use windows::{
     },
 };
 
+/// One documented, allocation-free query of this process. No working-set trim.
+#[derive(Clone, Copy, Default, serde::Serialize)]
+pub struct MemoryUsage {
+    pub working_set_bytes: usize,
+    pub private_committed_bytes: usize,
+    pub private_working_set_bytes: Option<usize>,
+}
+pub fn own_memory() -> Option<MemoryUsage> {
+    use windows::Win32::System::{ProcessStatus::*, Threading::GetCurrentProcess};
+    unsafe {
+        let mut ex = PROCESS_MEMORY_COUNTERS_EX2 {
+            cb: size_of::<PROCESS_MEMORY_COUNTERS_EX2>() as u32,
+            ..Default::default()
+        };
+        if GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            (&mut ex as *mut PROCESS_MEMORY_COUNTERS_EX2).cast(),
+            ex.cb,
+        )
+        .is_ok()
+        {
+            return Some(MemoryUsage {
+                working_set_bytes: ex.WorkingSetSize,
+                private_committed_bytes: ex.PrivateUsage,
+                private_working_set_bytes: Some(ex.PrivateWorkingSetSize),
+            });
+        }
+        let mut ex = PROCESS_MEMORY_COUNTERS_EX {
+            cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+            ..Default::default()
+        };
+        GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            (&mut ex as *mut PROCESS_MEMORY_COUNTERS_EX).cast(),
+            ex.cb,
+        )
+        .ok()?;
+        Some(MemoryUsage {
+            working_set_bytes: ex.WorkingSetSize,
+            private_committed_bytes: ex.PrivateUsage,
+            private_working_set_bytes: None,
+        })
+    }
+}
+pub fn record_memory(stage: &'static str, wasm_bytes: Option<usize>) {
+    if crate::event_log::enabled() {
+        crate::event_log::record(
+            "INFO",
+            "memory_snapshot",
+            serde_json::json!({
+                "stage":stage,"process":own_memory(),"wasm_linear_bytes":wasm_bytes,
+            }),
+        );
+    }
+}
+
 #[derive(Default)]
 pub struct Processes {
     pub all: Vec<u32>,

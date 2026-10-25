@@ -53,11 +53,30 @@ fn run() -> Result<()> {
         bail!("Unsupported argument");
     };
     let connection_settings = connection_settings::Manager::open(root.join("settings.json"));
+    if event_log::initialize(
+        root.join("client-events.jsonl"),
+        connection_settings.view().0.event_logging,
+    )
+    .is_err()
+    {
+        let _ = event_log::initialize(root.join("client-events.jsonl"), false);
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+                std::ptr::null_mut(),
+                "Event logging could not be started. The client will continue without it. Check the data directory.\0".encode_utf16().collect::<Vec<_>>().as_ptr(),
+                "ParsecWebTurn\0".encode_utf16().collect::<Vec<_>>().as_ptr(),
+                windows_sys::Win32::UI::WindowsAndMessaging::MB_OK | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONWARNING,
+            );
+        }
+    }
+    let _event_log = event_log::Guard;
     let profile = profile::Profile::user()?;
     let mut saved = profile.load()?;
     saved.profile = Some(profile.clone());
+    performance::record_memory("before_core_load", None);
     let engine = Engine::new(&core_config::config())?;
     let module = core_runtime::load(&engine)?;
+    performance::record_memory("core_loaded", None);
     let window = window::Window::create(false, true, true, false)?;
     window
         .software_overlay_enabled
@@ -93,6 +112,10 @@ fn run() -> Result<()> {
         backend.connection_settings = Some(connection_settings);
     }
     let outcome = (|| -> Result<()> {
+        performance::record_memory(
+            "before_guest_start",
+            Some(store.data().memory.0.data_size()),
+        );
         #[cfg(test)]
         {
             store.data_mut().execution_stage = Some("guest-start");
@@ -132,6 +155,13 @@ fn run() -> Result<()> {
     }
     if window.active_contexts.load(Ordering::Acquire) == 0 {
         window.close();
+    }
+    if saved_result.is_err() {
+        event_log::record(
+            "ERROR",
+            "profile_save_failed",
+            serde_json::json!({"stage":"shutdown"}),
+        );
     }
     saved_result?;
     match outcome {

@@ -4,11 +4,16 @@
 )]
 #![warn(unused_crate_dependencies)]
 mod attempt;
+#[cfg(all(windows, feature = "bud"))]
+mod bud_attempt;
+#[cfg(all(windows, feature = "bud"))]
+pub mod bud_media;
 const APP_TITLE: &str = "ParsecWebTurn";
 const PARSEC_CORE_VERSION: &str = "150-104a";
 #[cfg(any(test, feature = "diagnostics"))]
 mod attempt_probe;
 mod audio;
+mod audio_layout;
 mod audio_stream;
 #[cfg(windows)]
 mod audio_windows;
@@ -37,11 +42,14 @@ mod cursor;
 mod data_only_policy_tests;
 #[cfg(windows)]
 mod desktop;
+mod event_log;
 #[cfg(any(windows, test))]
 mod event_queue;
 #[cfg(any(test, feature = "diagnostics"))]
 mod execution_diagnostics;
 mod filesystem;
+#[cfg(windows)]
+mod frame_timing;
 #[cfg(windows)]
 mod fullscreen;
 #[cfg(windows)]
@@ -50,12 +58,13 @@ mod gpu_windows;
 mod graphics;
 #[cfg(windows)]
 mod gui_visibility;
+#[cfg(all(windows, feature = "bud"))]
+mod hid_input;
 mod host;
 mod http;
 #[cfg(any(test, feature = "diagnostics"))]
 mod http_probe;
 mod input;
-#[cfg(windows)]
 #[cfg(windows)]
 mod keyboard_grab;
 mod lifecycle;
@@ -103,6 +112,8 @@ mod transport_diagnostics;
 mod updater;
 #[cfg(windows)]
 mod updater_ui;
+#[cfg(any(windows, test))]
+mod video_color;
 mod video_output;
 mod video_stream;
 #[cfg(windows)]
@@ -373,6 +384,49 @@ mod tests {
         assert_eq!(m.u32(108).unwrap(), 0);
         assert_eq!(m.read(128, 4).unwrap(), vec![0, 0, 255, 255]);
         assert_eq!(m.u32(140).unwrap(), 0);
+        // Exercise the real seven-pointer import, including its packed byte
+        // fields and padding. No native GPU, account or transport is required.
+        {
+            let mut backend = main.data().backend.lock().unwrap();
+            backend.status = Some(0);
+            backend.encode_latency = 2.68;
+            backend.media_ingress.network_rtt = Some((std::time::Instant::now(), 42.5));
+            let mut video = video_output::Snapshot {
+                width: Some(1920),
+                height: Some(1080),
+                frames_decoded: 1,
+                frames_presented: 1,
+                nominal_range: Some(1),
+                ..Default::default()
+            };
+            video
+                .local_timing
+                .decoder_residence
+                .record(std::time::Duration::from_micros(3250));
+            backend.media_ingress.video_output = Some(video);
+        }
+        instance
+            .get_typed_func::<(), ()>(&mut main, "metrics")
+            .unwrap()
+            .call(&mut main, ())
+            .unwrap();
+        let metric = |pointer| f32::from_le_bytes(m.read(pointer, 4).unwrap().try_into().unwrap());
+        assert_eq!((m.u32(120).unwrap(), m.u32(124).unwrap()), (1920, 1080));
+        assert_eq!(m.read(128, 4).unwrap(), vec![0, 1, 255, 255]);
+        assert_eq!(metric(132), 3.25);
+        assert_eq!(metric(136), 2.68);
+        assert_eq!(metric(140), 42.5);
+        {
+            let mut backend = main.data().backend.lock().unwrap();
+            backend.status = Some(-3);
+        }
+        instance
+            .get_typed_func::<(), ()>(&mut main, "metrics")
+            .unwrap()
+            .call(&mut main, ())
+            .unwrap();
+        assert_eq!(metric(132), 0.0);
+        assert_eq!(metric(140), 0.0);
         other
             .get_typed_func::<(), ()>(&mut worker, "destroy")
             .unwrap()
@@ -518,6 +572,55 @@ mod tests {
             store.data().memory.string(pointer as u32, 15).unwrap(),
             "web.parsec.app"
         );
+    }
+
+    #[test]
+    fn native_picker_launch_shows_guidance_and_returns_to_guest() {
+        struct Desktop(std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>);
+        impl crate::platform::Desktop for Desktop {
+            fn read_text(&self) -> Option<String> {
+                None
+            }
+            fn write_text(&self, _: &str) -> bool {
+                false
+            }
+            fn open_url(&self, _: &str) -> bool {
+                panic!("must not launch an external app")
+            }
+            fn alert(&self, title: &str, message: &str) -> bool {
+                self.0.lock().unwrap().push((title.into(), message.into()));
+                true
+            }
+        }
+        let engine = Engine::new(&crate::core_config::config()).unwrap();
+        let module = Module::new(
+            &engine,
+            r#"(module
+            (import "env" "memory" (memory 1 1 shared))
+            (import "env" "web_parsec_protocol" (func $launch (param i32)))
+            (func (export "probe") (result i32)
+                i32.const 256 call $launch i32.const 42))"#,
+        )
+        .unwrap();
+        let (mut store, instance) = instantiate(&engine, &module).unwrap();
+        let shown = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        store.data_mut().platform = std::sync::Arc::new(crate::platform::Services::new(Box::new(
+            Desktop(shown.clone()),
+        )));
+        assert_eq!(
+            instance
+                .get_typed_func::<(), i32>(&mut store, "probe")
+                .unwrap()
+                .call(&mut store, ())
+                .unwrap(),
+            42
+        );
+        assert!(store.data().boundary.is_none());
+        let messages = shown.lock().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].0, "Choose web mode");
+        assert!(messages[0].1.contains("web/browser connection option"));
+        assert!(messages[0].1.contains("BUD"));
     }
 
     #[test]

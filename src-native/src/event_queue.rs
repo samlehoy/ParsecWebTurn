@@ -5,6 +5,7 @@ use std::{
     sync::{Condvar, Mutex},
     time::Instant,
 };
+const CAPACITY: usize = 256;
 
 struct State<T> {
     events: VecDeque<T>,
@@ -20,7 +21,7 @@ impl<T> Default for Queue<T> {
     fn default() -> Self {
         Self {
             state: Mutex::new(State {
-                events: VecDeque::new(),
+                events: VecDeque::with_capacity(CAPACITY),
                 stopped: false,
             }),
             changed: Condvar::new(),
@@ -30,20 +31,38 @@ impl<T> Default for Queue<T> {
 
 impl<T> Queue<T> {
     pub fn push(&self, event: T) {
+        self.try_push(event);
+    }
+
+    pub fn try_push(&self, event: T) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if !state.stopped && state.events.len() < 256 {
+        if !state.stopped && state.events.len() < CAPACITY {
             state.events.push_back(event);
+            drop(state);
             self.changed.notify_one();
+            true
+        } else {
+            false
         }
     }
 
+    /// Swap storage in constant time; the consumer processes outside the input
+    /// mutex. Both bounded allocations are retained across successive batches.
+    pub fn take_batch(&self, batch: &mut VecDeque<T>) {
+        assert!(
+            batch.is_empty(),
+            "input batch must be consumed before reuse"
+        );
+        batch.reserve(CAPACITY);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::swap(&mut state.events, batch);
+    }
+
+    #[cfg(test)]
     pub fn drain(&self) -> Vec<T> {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .events
-            .drain(..)
-            .collect()
+        let mut batch = VecDeque::new();
+        self.take_batch(&mut batch);
+        batch.into_iter().collect()
     }
 
     pub fn wait_until(&self, deadline: Instant) {
@@ -72,6 +91,45 @@ mod tests {
         sync::{mpsc, Arc},
         time::Duration,
     };
+
+    #[test]
+    fn repeated_full_batches_reuse_two_allocations_and_preserve_fifo() {
+        let queue = Queue::default();
+        let mut batch = VecDeque::new();
+        let mut addresses = std::collections::BTreeSet::new();
+        for round in 0..128 {
+            for item in 0..CAPACITY {
+                queue.push(round * CAPACITY + item);
+            }
+            queue.take_batch(&mut batch);
+            assert_eq!(batch.len(), CAPACITY);
+            addresses.insert(batch.as_slices().0.as_ptr() as usize);
+            for item in 0..CAPACITY {
+                assert_eq!(batch.pop_front(), Some(round * CAPACITY + item));
+            }
+        }
+        assert_eq!(addresses.len(), 2, "input storage was reallocated");
+    }
+
+    #[test]
+    fn producer_can_fill_next_batch_while_consumer_owns_previous_one() {
+        let queue = Arc::new(Queue::default());
+        queue.push(1);
+        let mut batch = VecDeque::new();
+        queue.take_batch(&mut batch);
+        let producer = queue.clone();
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            producer.push(2);
+            producer.push(3);
+            tx.send(()).unwrap();
+        });
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(batch.pop_front(), Some(1));
+        queue.take_batch(&mut batch);
+        assert_eq!(batch.into_iter().collect::<Vec<_>>(), vec![2, 3]);
+        worker.join().unwrap();
+    }
 
     #[test]
     fn queued_events_and_shutdown_are_not_lost_before_wait() {
@@ -128,14 +186,14 @@ mod tests {
     fn capacity_order_and_idle_deadline_are_preserved() {
         let queue = Queue::default();
         for i in 0..300 {
-            queue.push(i);
+            assert_eq!(queue.try_push(i), i < 256);
         }
         assert_eq!(queue.drain(), (0..256).collect::<Vec<_>>());
         let deadline = Instant::now() + Duration::from_millis(10);
         queue.wait_until(deadline);
         assert!(Instant::now() >= deadline);
         queue.stop();
-        queue.push(42);
+        assert!(!queue.try_push(42));
         assert!(queue.drain().is_empty());
     }
 }

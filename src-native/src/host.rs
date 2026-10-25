@@ -42,6 +42,8 @@ pub struct HostState {
     pub guest_worker: bool,
     pub title: Option<String>,
     pub app_pointer: Option<u32>,
+    #[serde(skip)]
+    pub clipboard_notification: bool,
     #[cfg(any(test, feature = "diagnostics"))]
     pub filesystem_requests: Vec<(String, String, i32)>,
     #[serde(skip)]
@@ -84,6 +86,7 @@ impl HostState {
             guest_worker: false,
             title: None,
             app_pointer: None,
+            clipboard_notification: false,
             #[cfg(any(test, feature = "diagnostics"))]
             filesystem_requests: Vec::new(),
             keys: BTreeMap::new(),
@@ -133,6 +136,7 @@ pub fn implemented(module: &str, name: &str) -> bool {
                 | "MTY_GetRandomBytes"
                 | "MTY_WaitPtr"
                 | "MTY_HandleProtocol"
+                | "web_parsec_protocol"
                 | "web_get_clipboard"
                 | "web_set_clipboard"
                 | "web_alert"
@@ -290,6 +294,11 @@ pub fn dispatch(
     #[cfg(windows)]
     if module == "env" && name == "web_set_fullscreen" {
         let enable = int(args, 0)? != 0;
+        crate::event_log::record(
+            "INFO",
+            "fullscreen_requested",
+            serde_json::json!({"enabled":enable}),
+        );
         if let Some(window) = &caller.data().window {
             window.set_fullscreen(enable);
         }
@@ -368,6 +377,15 @@ pub fn dispatch(
                     (!live).then_some(std::time::Duration::from_secs(5)),
                 )?;
             }
+            "web_parsec_protocol" => {
+                // This picker action normally launches the installed Parsec
+                // client. Keep the guest running and guide the user instead.
+                // Its host identifier is deliberately neither read nor logged.
+                caller.data().platform.alert(
+                    "Choose web mode",
+                    "ParsecWebTurn uses the Parsec web core. Choose the web/browser connection option in the computer picker. This also applies when BUD is enabled.",
+                );
+            }
             "MTY_HandleProtocol" => {
                 let url = m.string(ptr(args, 0)?, 16 * 1024 + 1)?;
                 caller.data().platform.open_url(&url);
@@ -382,7 +400,17 @@ pub fn dispatch(
                 caller.data().platform.write_text(&text);
             }
             "web_get_clipboard" => {
-                let text = caller.data().platform.read_text();
+                let text = if caller.data().clipboard_notification {
+                    let Some(text) = caller.data().platform.read_notification_text() else {
+                        // An unavailable/locked clipboard is not an empty copy.
+                        // The original clipboard-change handler skips a null read.
+                        result(results, 0);
+                        return Ok(());
+                    };
+                    text
+                } else {
+                    caller.data().platform.read_text()
+                };
                 let alloc = caller
                     .get_export("mty_system_alloc")
                     .and_then(|e| e.into_func())
@@ -521,6 +549,13 @@ pub fn dispatch(
                 .lock()
                 .map_err(|_| anyhow::anyhow!("virtual filesystem lock poisoned"))?;
             let errno = filesystem_call(&m, &mut fs, name, args)?;
+            if errno != 0 && errno != crate::filesystem::NOENT {
+                crate::event_log::record(
+                    "WARN",
+                    "profile_filesystem_operation_failed",
+                    serde_json::json!({"operation":name,"wasi_errno":errno}),
+                );
+            }
             if errno == 0 && matches!(name, "path_unlink_file" | "path_remove_directory") {
                 fs.flush()?;
             }
@@ -705,6 +740,46 @@ fn backend_call(
                         ptr(args, 5)?,
                         ptr(args, 6)?,
                     )?;
+                    #[cfg(all(windows, feature = "bud"))]
+                    if b.connection_settings
+                        .as_ref()
+                        .is_some_and(|m| m.view().0.bud)
+                    {
+                        if b.status != Some(-3)
+                            || b.bud_attempt.is_some()
+                            || b.native_attempt.is_some()
+                        {
+                            output.finish_values(None)?;
+                        } else {
+                            b.prepare_attempt();
+                            let window = caller
+                                .data()
+                                .window
+                                .clone()
+                                .context("BUD requires a native window")?;
+                            let manager = b
+                                .connection_settings
+                                .clone()
+                                .context("BUD settings unavailable")?;
+                            match crate::bud_attempt::Attempt::spawn(
+                                &id,
+                                output.clone(),
+                                window,
+                                manager,
+                            ) {
+                                Ok(attempt) => {
+                                    b.bud_attempt = Some(attempt);
+                                    b.status = Some(20);
+                                    b.attempt_id = id;
+                                    b.attempt_started = Some(Instant::now());
+                                }
+                                Err(_) => {
+                                    output.finish_values(None)?;
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     if b.status != Some(-3) || b.native_attempt.is_some() {
                         output.finish(None)?;
                     } else {
@@ -713,6 +788,10 @@ fn backend_call(
                         // needs this backend lock or a Wasmtime Store/Caller.
                         let config = b.video_protocol.as_ref().map(|p| crate::control::Config {
                             video_protocol: p.clone(),
+                            ten_bit: b
+                                .connection_settings
+                                .as_ref()
+                                .is_some_and(|m| m.view().0.experimental_ten_bit),
                             allow_hevc: b
                                 .connection_settings
                                 .as_ref()
@@ -834,6 +913,22 @@ fn backend_call(
                         #[cfg(not(windows))]
                         let viewport = None;
                         if let Some(frame) = b.prepare_input_with_viewport(&message, viewport)? {
+                            #[cfg(all(windows, feature = "bud"))]
+                            if let Some(attempt) = &b.bud_attempt {
+                                let normalized = if attempt.hid_mouse_enabled() {
+                                    crate::hid_input::absolute_motion(&frame, viewport)?
+                                } else {
+                                    None
+                                };
+                                let frame = normalized.unwrap_or(frame);
+                                if attempt.send(&frame).is_err() {
+                                    attempt.fail();
+                                    b.fail_native_attempt(
+                                        crate::attempt::FailureStage::ChannelSend,
+                                    )?;
+                                }
+                                return Ok(());
+                            }
                             b.native_attempt
                                 .as_ref()
                                 .context("native control attempt missing")?
@@ -847,6 +942,17 @@ fn backend_call(
                     let text = m.string(ptr(args, 1)?, 1024 * 1024)?;
                     b.pump_native_events()?;
                     if b.status == Some(0) {
+                        #[cfg(all(windows, feature = "bud"))]
+                        if let Some(attempt) = &b.bud_attempt {
+                            if attempt
+                                .send(&crate::control::text(17, int(args, 0)?, &text)?)
+                                .is_err()
+                            {
+                                attempt.fail();
+                                b.fail_native_attempt(crate::attempt::FailureStage::ChannelSend)?;
+                            }
+                            return Ok(());
+                        }
                         b.native_attempt
                             .as_ref()
                             .context("native control attempt missing")?
@@ -915,7 +1021,9 @@ fn backend_call(
                 }
                 "parsec_web_get_metrics" => {
                     b.pump_native_events()?;
-                    // Idle values from X's constructor, NOT measured telemetry.
+                    // Zero is the pinned overlay's unavailable sentinel. Only
+                    // fill the documented output arguments, never adjacent
+                    // private guest fields (e.g. the absent bitrate output).
                     for i in [0, 1, 4, 5, 6] {
                         m.set_u32(ptr(args, i)?, 0)?;
                     }
@@ -923,6 +1031,12 @@ fn backend_call(
                         m.write(ptr(args, i)?, &[0])?;
                     }
                     m.write(ptr(args, 5)?, &b.encode_latency.to_le_bytes())?;
+                    if b.status == Some(0) {
+                        m.write(
+                            ptr(args, 6)?,
+                            &b.media_ingress.overlay_network_ms().to_le_bytes(),
+                        )?;
+                    }
                     if let Some(v) = b
                         .media_ingress
                         .video_output
@@ -931,6 +1045,17 @@ fn backend_call(
                     {
                         m.set_u32(ptr(args, 0)?, v.width.unwrap_or(0))?;
                         m.set_u32(ptr(args, 1)?, v.height.unwrap_or(0))?;
+                        let timing = &v.local_timing.decoder_residence;
+                        if b.status == Some(0)
+                            && v.failure_stage.is_none()
+                            && timing.count > 0
+                            && timing.latest_ms.is_finite()
+                            && (0.0..=f64::from(f32::MAX)).contains(&timing.latest_ms)
+                        {
+                            // Native input -> observed decoder output, like
+                            // WebCodecs input -> output; not GPU execution time.
+                            m.write(ptr(args, 4)?, &(timing.latest_ms as f32).to_le_bytes())?;
+                        }
                         // The active decoded format is NV12 (4:2:0). MF range metadata is optional.
                         m.write(ptr(args, 3)?, &[u8::from(v.nominal_range == Some(1))])?;
                     }
@@ -956,6 +1081,14 @@ fn backend_call(
                     let capacity = usize::try_from(int(args, 1)?)?;
                     if capacity > 1024 * 1024 {
                         bail!("audio poll capacity exceeds limit");
+                    }
+                    #[cfg(all(windows, feature = "bud"))]
+                    if let Some(attempt) = &b.bud_attempt {
+                        result(
+                            results,
+                            attempt.poll_audio(m, ptr(args, 0)?, capacity)? as i32,
+                        );
+                        return Ok(());
                     }
                     let frames = match &b.native_attempt {
                         Some(attempt) => attempt.poll_audio(m, ptr(args, 0)?, capacity)?,

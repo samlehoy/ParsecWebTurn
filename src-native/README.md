@@ -12,3 +12,10 @@ The vendored WebRTC dependency and its narrowly scoped compatibility changes are
 
 Native STUN/TURN settings use the [legacy-compatible configuration contract](../docs/NATIVE_CONFIG_COMPATIBILITY.md).
 TURN UDP/TCP/TLS integration is documented in the [ICE patch notes](vendor/webrtc-ice-0.14.0/LOCAL-CHANGES.md).
+
+The default dev build also includes the GPU backends in `crates/video` and the
+transport-only BUD adapter in `crates/bud`. WebRTC stays selected by default;
+BUD and original-surface presentation require their Settings checkboxes.
+The former top-level experimental/video crates and standalone comparison
+executables have been consolidated or retired. Backend regressions remain
+isolated from the account/profile and live network.

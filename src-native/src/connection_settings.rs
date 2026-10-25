@@ -19,6 +19,15 @@ use webrtc::{
 pub const PARSEC_STUN: &str = "stun:stun.parsec.gg:3478";
 const MAX_FILE: usize = 65536;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PresentationMode {
+    #[default]
+    Automatic,
+    LowLatency,
+    Vsync,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GpuPreference {
@@ -48,7 +57,26 @@ impl GpuPreference {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
+    #[cfg(feature = "bud")]
+    #[serde(alias = "experimentalBud")]
+    pub bud: bool,
+    #[cfg(feature = "bud")]
+    pub experimental_hid_mouse: bool,
+    #[cfg(feature = "bud")]
+    pub experimental_hid_keyboard: bool,
     pub prefer_hevc: bool,
+    pub presentation_mode: PresentationMode,
+    pub experimental_ten_bit: bool,
+    pub event_logging: bool,
+    #[serde(alias = "experimentalAudioBuffer")]
+    pub custom_audio_buffer: bool,
+    pub audio_min_buffer_ms: u32,
+    pub audio_max_buffer_ms: u32,
+    #[serde(alias = "experimentalRawAudio")]
+    pub allow_raw_audio: bool,
+    pub experimental_surround_audio: bool,
+    #[cfg(feature = "vendor-video")]
+    pub experimental_zero_copy: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video_gpu: Option<GpuPreference>,
     pub provider: String,
@@ -72,7 +100,23 @@ impl Default for Settings {
     // Legacy defaults apply to existing JSON; a new native installation uses fresh().
     fn default() -> Self {
         Self {
+            #[cfg(feature = "bud")]
+            bud: false,
+            #[cfg(feature = "bud")]
+            experimental_hid_mouse: false,
+            #[cfg(feature = "bud")]
+            experimental_hid_keyboard: false,
             prefer_hevc: false,
+            presentation_mode: PresentationMode::Automatic,
+            experimental_ten_bit: false,
+            event_logging: false,
+            custom_audio_buffer: false,
+            audio_min_buffer_ms: 75,
+            audio_max_buffer_ms: 150,
+            allow_raw_audio: false,
+            experimental_surround_audio: false,
+            #[cfg(feature = "vendor-video")]
+            experimental_zero_copy: false,
             video_gpu: None,
             provider: "cloudflare".into(),
             custom_urls: vec![],
@@ -92,6 +136,15 @@ impl Default for Settings {
     }
 }
 impl Settings {
+    #[cfg(feature = "bud")]
+    pub fn hid_mouse_enabled(&self) -> bool {
+        self.bud && self.experimental_hid_mouse
+    }
+
+    #[cfg(feature = "bud")]
+    pub fn hid_keyboard_enabled(&self) -> bool {
+        self.bud && self.experimental_hid_keyboard
+    }
     #[cfg(any(test, windows, not(feature = "diagnostics")))]
     fn fresh() -> Self {
         Self {
@@ -128,6 +181,13 @@ impl Settings {
         })
     }
     pub fn validate(&self) -> Result<()> {
+        if self.custom_audio_buffer
+            && (self.audio_max_buffer_ms == 0
+                || self.audio_max_buffer_ms > 500
+                || self.audio_min_buffer_ms > self.audio_max_buffer_ms)
+        {
+            bail!("Audio buffer must satisfy 0 <= minimum <= maximum <= 500 ms, with maximum above zero");
+        }
         if self.force_relay && self.stun_only {
             bail!("Force TURN relay cannot be combined with STUN only");
         }
@@ -164,7 +224,7 @@ impl Settings {
                 bail!("Enter a valid Cloudflare API token");
             }
             if !(60..=172800).contains(&self.ttl) {
-                bail!("Credential lifetime must be 60–172800 seconds");
+                bail!("Credential lifetime must be 60Ă˘â‚¬â€ś172800 seconds");
             }
         }
         Ok(())
@@ -317,8 +377,11 @@ impl Manager {
             bail!("Settings exceed 64 KiB");
         }
         atomic_write(&self.path, &raw)?;
+        let logging = settings.event_logging;
         *self.state.lock().unwrap_or_else(|e| e.into_inner()) = (settings, None);
         *self.cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        crate::event_log::configure(logging)
+            .context("Settings saved, but the event log could not be opened")?;
         Ok(())
     }
     #[cfg(test)]
@@ -329,6 +392,29 @@ impl Manager {
         }
         self.resolve_settings(&settings).await
     }
+    /// Explicit BUD adapter: freeze preferences and credentials together.
+    #[cfg(all(windows, feature = "bud"))]
+    pub async fn resolve_bud(&self) -> Result<(Settings, Vec<RTCIceServer>)> {
+        let (settings, error) = self.view();
+        if error.is_some() {
+            bail!("Fix connection settings before connecting");
+        }
+        let servers = if settings.force_relay {
+            self.resolve_settings(&settings).await?
+        } else {
+            settings.stun_servers()
+        };
+        Ok((settings, servers))
+    }
+
+    #[cfg(all(windows, feature = "bud"))]
+    pub async fn resolve_bud_relay(&self, settings: &Settings) -> Result<Vec<RTCIceServer>> {
+        if settings.stun_only {
+            bail!("TURN is disabled by STUN-only settings");
+        }
+        self.resolve_settings(settings).await
+    }
+
     /// Resolve credentials and routing from the same settings snapshot.
     pub async fn resolve_configuration(
         &self,
@@ -517,6 +603,93 @@ fn atomic_write(path: &std::path::Path, raw: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "bud")]
+    #[test]
+    fn promoted_settings_accept_old_keys_and_save_current_names() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"provider":"custom","experimentalBud":true,"experimentalAudioBuffer":true,"experimentalRawAudio":true,"audioMinBufferMs":20,"audioMaxBufferMs":60,"experimentalSurroundAudio":true}"#,
+        )
+        .unwrap();
+        assert!(settings.bud && settings.custom_audio_buffer && settings.allow_raw_audio);
+        assert!(settings.experimental_surround_audio);
+        assert_eq!(
+            (settings.audio_min_buffer_ms, settings.audio_max_buffer_ms),
+            (20, 60)
+        );
+        settings.validate().unwrap();
+        let saved = serde_json::to_value(&settings).unwrap();
+        for key in ["bud", "customAudioBuffer", "allowRawAudio"] {
+            assert_eq!(saved[key], true);
+        }
+        for key in [
+            "experimentalBud",
+            "experimentalAudioBuffer",
+            "experimentalRawAudio",
+        ] {
+            assert!(saved.get(key).is_none());
+        }
+        let restored: Settings = serde_json::from_value(saved).unwrap();
+        assert!(restored.bud && restored.custom_audio_buffer && restored.allow_raw_audio);
+    }
+    #[cfg(feature = "bud")]
+    #[test]
+    fn hid_input_preference_roundtrips_without_enabling_webrtc_input() {
+        let mut s: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!s.hid_mouse_enabled());
+        s.experimental_hid_mouse = true;
+        assert!(!s.hid_mouse_enabled());
+        let restored: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(restored.experimental_hid_mouse);
+        assert!(!restored.hid_mouse_enabled());
+        s.bud = true;
+        assert!(s.hid_mouse_enabled());
+    }
+
+    #[test]
+    fn audio_defaults_and_limits_preserve_automatic_settings() {
+        let mut settings = super::Settings::fresh();
+        assert!(!settings.custom_audio_buffer);
+        assert!(!settings.allow_raw_audio);
+        assert_eq!(
+            (settings.audio_min_buffer_ms, settings.audio_max_buffer_ms),
+            (75, 150)
+        );
+        settings.custom_audio_buffer = true;
+        settings.audio_min_buffer_ms = 20;
+        settings.audio_max_buffer_ms = 60;
+        assert!(settings.validate().is_ok());
+        settings.audio_min_buffer_ms = 61;
+        assert!(settings.validate().is_err());
+        settings.audio_min_buffer_ms = 0;
+        settings.audio_max_buffer_ms = 0;
+        assert!(settings.validate().is_err());
+        settings.audio_max_buffer_ms = 501;
+        assert!(settings.validate().is_err());
+        settings.custom_audio_buffer = false;
+        assert!(settings.validate().is_ok());
+    }
+    #[test]
+    fn legacy_settings_keep_existing_presentation_and_modes_roundtrip() {
+        assert_eq!(
+            serde_json::from_str::<Settings>("{}")
+                .unwrap()
+                .presentation_mode,
+            PresentationMode::Automatic
+        );
+        for mode in [
+            PresentationMode::Automatic,
+            PresentationMode::LowLatency,
+            PresentationMode::Vsync,
+        ] {
+            let settings = Settings {
+                presentation_mode: mode,
+                ..Default::default()
+            };
+            let restored: Settings =
+                serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+            assert_eq!(restored.presentation_mode, mode);
+        }
+    }
     use super::*;
 
     #[tokio::test]

@@ -53,6 +53,7 @@ pub fn dispatch(
                 bail!("GPU context already initialized");
             }
             caller.data_mut().graphics = Some(crate::graphics::Graphics::create(window)?);
+            crate::performance::record_memory("graphics_initialized", Some(m.0.data_size()));
         }
         "web_present" => caller
             .data_mut()
@@ -212,6 +213,8 @@ fn run_worker_callback(caller: &mut Caller<'_, HostState>, index: u32, opaque: i
     };
     let until = Instant::now() + Duration::from_secs(window.run_seconds);
     let mut first = true;
+    let memory_warmup_at = Instant::now() + Duration::from_secs(3);
+    let mut memory_warmup_recorded = false;
     while !window.closing.load(Ordering::Acquire) && (window.live || Instant::now() < until) {
         let started = Instant::now();
         caller.set_fuel(if first { 500_000_000 } else { 50_000_000 })?;
@@ -237,6 +240,21 @@ fn run_worker_callback(caller: &mut Caller<'_, HostState>, index: u32, opaque: i
         if callback.call(&mut *caller, opaque)? == 0 {
             return Ok(());
         }
+        if caller.data().graphics.is_some() {
+            if first {
+                crate::performance::record_memory(
+                    "first_graphics_callback",
+                    Some(caller.data().memory.0.data_size()),
+                );
+            }
+            if !memory_warmup_recorded && started >= memory_warmup_at {
+                memory_warmup_recorded = true;
+                crate::performance::record_memory(
+                    "graphics_warmup",
+                    Some(caller.data().memory.0.data_size()),
+                );
+            }
+        }
         first = false;
         // Worker callbacks (including the pinned audio loop) already wait via
         // libc nanosleep. They are not display callbacks: a 60 Hz throttle here
@@ -258,14 +276,205 @@ struct CallbackCadence {
     period: Duration,
 }
 impl CallbackCadence {
-    fn due(&mut self, now: Instant) -> bool {
-        if now < self.next {
+    fn due(&mut self, now: Instant, cursor_ready: bool) -> bool {
+        if !cursor_ready && now < self.next {
             return false;
         }
         // Skip overdue ticks instead of running a burst of catch-up callbacks.
         self.next = now + self.period;
         true
     }
+}
+
+fn dispatch_input_event(
+    store: &mut Store<HostState>,
+    instance: &Instance,
+    app: i32,
+    event: Event,
+) -> Result<()> {
+    // Clipboard contents must arrive before a paste key on the same ordered
+    // control path, including when BUD translates keyboard input to USB HID.
+    if matches!(&event, Event::Key(true, "KeyV", mods) if mods & 14 == 2)
+        || matches!(&event, Event::Key(true, "Insert", mods) if mods & 15 == 1)
+    {
+        sync_clipboard(store, instance, app);
+    }
+    #[cfg(feature = "bud")]
+    if matches!(&event, Event::Focus(false) | Event::HidInputRelease) {
+        // Explicit focus release also resets the USB devices' held input
+        // and queued movement. The core's own focus/UI path still runs below.
+        let backend = store
+            .data()
+            .backend
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(attempt) = &backend.bud_attempt {
+            if attempt.hid_input_enabled()
+                && attempt.send(&crate::control::header(24, 0, 0, 0)).is_err()
+            {
+                // Failed cleanup ends the connection instead of keeping a held button.
+                attempt.fail();
+            }
+        }
+    }
+    #[cfg(feature = "bud")]
+    if let Event::RelativeMode(active) = &event {
+        let backend = store
+            .data()
+            .backend
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(attempt) = &backend.bud_attempt {
+            // Adapter-only mode control follows actual native capture, before
+            // subsequent motion/buttons. Never sent on WebRTC or to the host.
+            if attempt.hid_mouse_enabled()
+                && attempt
+                    .send(&crate::control::header(3, 3, i32::from(*active), 0))
+                    .is_err()
+            {
+                attempt.fail();
+            }
+        }
+    }
+    let (name, values, count) = match event {
+        Event::CursorReady => return Ok(()),
+        Event::Clipboard => {
+            if let Some(window) = &store.data().window {
+                window.take_clipboard_event();
+            }
+            sync_clipboard(store, instance, app);
+            return Ok(());
+        }
+        #[cfg(feature = "bud")]
+        Event::HidInputRelease => return Ok(()),
+        Event::Fullscreen(active) => (
+            "mty_window_update_fullscreen",
+            [app, active as i32, 0, 0, 0],
+            2,
+        ),
+        Event::Size(w, h) => {
+            export(
+                store,
+                instance,
+                "mty_window_update_size",
+                &[
+                    Val::I32(app),
+                    Val::F64((w as f64).to_bits()),
+                    Val::F64((h as f64).to_bits()),
+                ],
+            )?;
+            ("mty_window_size", [app, 0, 0, 0, 0], 1)
+        }
+        Event::Focus(f) => {
+            export(
+                store,
+                instance,
+                "mty_window_update_focus",
+                &[Val::I32(app), Val::I32(f as i32)],
+            )?;
+            ("mty_window_focus", [app, f as i32, 0, 0, 0], 2)
+        }
+        Event::RelativeMode(active) => (
+            "mty_window_update_relative_mouse",
+            [app, active as i32, 0, 0, 0],
+            2,
+        ),
+        Event::RelativeMotion(x, y) => ("mty_window_motion", [app, 1, x, y, 0], 4),
+        Event::Motion(x, y) => ("mty_window_motion", [app, 0, x, y, 0], 4),
+        Event::Button(down, button, x, y) => {
+            ("mty_window_button", [app, down as i32, button, x, y], 5)
+        }
+        Event::Scroll(x, y) => ("mty_window_scroll", [app, x, y, 0, 0], 3),
+        Event::Key(down, code, mods) => {
+            let Some(key) = store.data().key_codes.get(code).copied() else {
+                return Ok(());
+            };
+            ("mty_window_keyboard", [app, down as i32, key, 0, mods], 5)
+        }
+        Event::Text(code) => {
+            let Some(ch) = char::from_u32(code) else {
+                return Ok(());
+            };
+            if ch.is_control() {
+                return Ok(());
+            }
+            let mut bytes = [0; 4];
+            ch.encode_utf8(&mut bytes);
+            (
+                "mty_window_keyboard",
+                [app, 1, 0, u32::from_le_bytes(bytes) as i32, 0],
+                5,
+            )
+        }
+    };
+    let arguments = values.map(Val::I32);
+    export(store, instance, name, &arguments[..count])
+}
+
+fn sync_clipboard(store: &mut Store<HostState>, instance: &Instance, app: i32) {
+    if !store
+        .data()
+        .window
+        .as_ref()
+        .is_some_and(|w| w.clipboard_allowed())
+        || store
+            .data()
+            .backend
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .status
+            != Some(0)
+    {
+        return;
+    }
+    if dispatch_clipboard_event(store, instance, app as u32).is_err() {
+        crate::event_log::record(
+            "WARN",
+            "clipboard_notification_failed",
+            serde_json::json!({}),
+        );
+    }
+}
+
+/// Native Matoya MTY_EVENT_CLIPBOARD (16), using the immutable 150-104a
+/// window-callback ABI, just as its exported mty_window_* shims do. No core
+/// memory structures or code are patched. The core checks client_clipboard
+/// and sends user-data ID 7 through the selected existing transport.
+pub(crate) fn dispatch_clipboard_event(
+    store: &mut Store<HostState>,
+    instance: &Instance,
+    app: u32,
+) -> Result<()> {
+    let memory = store.data().memory.clone();
+    let at = |offset| {
+        app.checked_add(offset)
+            .context("clipboard app address overflow")
+    };
+    let index = memory.u32(at(40)?)?;
+    let opaque = memory.u32(at(884)?)?;
+    let table = instance
+        .get_table(&mut *store, "__indirect_function_table")
+        .context("clipboard callback table missing")?;
+    let callback = match table.get(&mut *store, u64::from(index)) {
+        Some(wasmtime::Ref::Func(Some(f))) => f.typed::<(i32, i32), ()>(&*store)?,
+        _ => bail!("clipboard callback unavailable"),
+    };
+    let alloc = instance.get_typed_func::<(i32, i32), i32>(&mut *store, "mty_system_alloc")?;
+    let free = instance.get_typed_func::<i32, ()>(&mut *store, "mty_system_free")?;
+    let event = alloc.call(&mut *store, (216, 1))?;
+    if event == 0 {
+        bail!("clipboard event allocation failed");
+    }
+    let mut bytes = [0; 216];
+    bytes[..4].copy_from_slice(&16u32.to_le_bytes());
+    let outcome = memory.write(event as u32, &bytes).and_then(|()| {
+        let old = std::mem::replace(&mut store.data_mut().clipboard_notification, true);
+        let result = callback.call(&mut *store, (event, opaque as i32));
+        store.data_mut().clipboard_notification = old;
+        result
+    });
+    let released = free.call(&mut *store, event);
+    outcome.and(released)
 }
 
 fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> Result<()> {
@@ -301,6 +510,7 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
         next: Instant::now(),
         period: frame_period,
     };
+    let mut input_batch = std::collections::VecDeque::new();
     while !window.closing.load(Ordering::Acquire) && (window.live || Instant::now() < until) {
         let frame_started = Instant::now();
         // The first render callback decompresses/rasterizes the embedded font
@@ -311,6 +521,7 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
         } else {
             50_000_000
         })?;
+        let mut cursor_ready = false;
         if input {
             #[cfg(any(test, feature = "diagnostics"))]
             if window.synthetic_login {
@@ -365,75 +576,18 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
                 }
             }
             let app = store.data().app_pointer.context("app pointer missing")? as i32;
-            let events = window.events.drain();
-            for event in events {
-                let (name, values) = match event {
-                    Event::Fullscreen(active) => {
-                        ("mty_window_update_fullscreen", vec![app, active as i32])
-                    }
-                    Event::Size(w, h) => {
-                        export(
-                            store,
-                            instance,
-                            "mty_window_update_size",
-                            &[
-                                Val::I32(app),
-                                Val::F64((w as f64).to_bits()),
-                                Val::F64((h as f64).to_bits()),
-                            ],
-                        )?;
-                        ("mty_window_size", vec![app])
-                    }
-                    Event::Focus(f) => {
-                        export(
-                            store,
-                            instance,
-                            "mty_window_update_focus",
-                            &[Val::I32(app), Val::I32(f as i32)],
-                        )?;
-                        ("mty_window_focus", vec![app, f as i32])
-                    }
-                    Event::RelativeMode(active) => {
-                        ("mty_window_update_relative_mouse", vec![app, active as i32])
-                    }
-                    Event::RelativeMotion(x, y) => ("mty_window_motion", vec![app, 1, x, y]),
-                    Event::Motion(x, y) => ("mty_window_motion", vec![app, 0, x, y]),
-                    Event::Button(down, button, x, y) => {
-                        ("mty_window_button", vec![app, down as i32, button, x, y])
-                    }
-                    Event::Scroll(x, y) => ("mty_window_scroll", vec![app, x, y]),
-                    Event::Key(down, code, mods) => {
-                        let Some(key) = store.data().key_codes.get(code).copied() else {
-                            continue;
-                        };
-                        ("mty_window_keyboard", vec![app, down as i32, key, 0, mods])
-                    }
-                    Event::Text(code) => {
-                        let Some(ch) = char::from_u32(code) else {
-                            continue;
-                        };
-                        if ch.is_control() {
-                            continue;
-                        }
-                        let mut bytes = [0; 4];
-                        ch.encode_utf8(&mut bytes);
-                        (
-                            "mty_window_keyboard",
-                            vec![app, 1, 0, u32::from_le_bytes(bytes) as i32, 0],
-                        )
-                    }
-                };
-                export(
-                    store,
-                    instance,
-                    name,
-                    &values.into_iter().map(Val::I32).collect::<Vec<_>>(),
-                )?;
+            window.events.take_batch(&mut input_batch);
+            for event in input_batch.drain(..) {
+                cursor_ready |= matches!(&event, Event::CursorReady);
+                dispatch_input_event(store, instance, app, event)?;
             }
         }
         // Input exports can send synchronously, without waiting for the next
-        // regular callback. Waking on input must not accelerate UI ticks.
-        if !input || cadence.due(Instant::now()) {
+        // regular callback. Ordinary input never accelerates UI ticks. A host
+        // cursor capture transition may bring one callback forward; cadence
+        // then starts from that callback, avoiding a redundant follow-up tick.
+        // The separate graphics worker and all video presentation are unchanged.
+        if !input || cadence.due(Instant::now(), cursor_ready) {
             #[cfg(any(test, feature = "diagnostics"))]
             {
                 store.data_mut().execution_stage = Some("event-loop-callback");
@@ -450,6 +604,16 @@ fn run_loop(store: &mut Store<HostState>, instance: &Instance, input: bool) -> R
                     ..Default::default()
                 });
                 window.set_input_state(state);
+            }
+            if first {
+                crate::performance::record_memory(
+                    if input {
+                        "first_input_callback"
+                    } else {
+                        "first_ui_callback"
+                    },
+                    Some(store.data().memory.0.data_size()),
+                );
             }
             first = false;
         }
@@ -477,6 +641,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stack_input_arguments_preserve_the_guest_abi_and_signed_motion() {
+        let mut config = wasmtime::Config::new();
+        config
+            .wasm_threads(true)
+            .consume_fuel(true)
+            .epoch_interruption(true);
+        let engine = wasmtime::Engine::new(&config).unwrap();
+        let mut wat = String::from("(module (import \"env\" \"memory\" (memory 1 1 shared))");
+        for (name, count) in [
+            ("mty_window_motion", 4),
+            ("mty_window_button", 5),
+            ("mty_window_scroll", 3),
+            ("mty_window_keyboard", 5),
+            ("mty_window_update_fullscreen", 2),
+            ("mty_window_update_relative_mouse", 2),
+        ] {
+            wat.push_str(&format!(
+                "(func (export \"{name}\") (param {} )",
+                "i32 ".repeat(count)
+            ));
+            for argument in 0..count {
+                wat.push_str(&format!(
+                    " i32.const {} local.get {argument} i32.store",
+                    argument * 4
+                ));
+            }
+            wat.push_str(&format!(" i32.const 32 i32.const {count} i32.store)"));
+        }
+        wat.push(')');
+        let module = wasmtime::Module::new(&engine, wat).unwrap();
+        let (mut store, instance) = crate::instantiate(&engine, &module).unwrap();
+        store.data_mut().key_codes.insert("KeyA".into(), 99);
+        for (event, expected) in [
+            (Event::RelativeMotion(-7, 13), vec![42, 1, -7, 13]),
+            (Event::Motion(123, 456), vec![42, 0, 123, 456]),
+            (Event::Button(false, 2, 17, 19), vec![42, 0, 2, 17, 19]),
+            (Event::Scroll(-1, 3), vec![42, -1, 3]),
+            (Event::Key(true, "KeyA", 5), vec![42, 1, 99, 0, 5]),
+            (Event::Text('a' as u32), vec![42, 1, 0, 97, 0]),
+            (Event::Fullscreen(true), vec![42, 1]),
+            (Event::RelativeMode(false), vec![42, 0]),
+        ] {
+            let memory = store.data().memory.clone();
+            memory.write(0, &[0xff; 36]).unwrap();
+            dispatch_input_event(&mut store, &instance, 42, event).unwrap();
+            assert_eq!(memory.u32(32).unwrap() as usize, expected.len());
+            for (index, expected) in expected.into_iter().enumerate() {
+                assert_eq!(memory.u32((index * 4) as u32).unwrap() as i32, expected);
+            }
+        }
+        let memory = store.data().memory.clone();
+        memory.write(0, &[0xff; 36]).unwrap();
+        dispatch_input_event(&mut store, &instance, 42, Event::CursorReady).unwrap();
+        assert_eq!(memory.read(0, 36).unwrap(), vec![0xff; 36]);
+    }
+
+    #[test]
     fn input_wakeups_do_not_accelerate_regular_callbacks_or_trigger_catchup() {
         let start = Instant::now();
         let period = Duration::from_nanos(1_000_000_000 / 60);
@@ -484,18 +705,36 @@ mod tests {
             next: start,
             period,
         };
-        assert!(cadence.due(start));
+        assert!(cadence.due(start, false));
         for _ in 0..60 {
             let deadline = cadence.next;
             for us in 1..1000 {
-                assert!(!cadence.due(deadline - period + Duration::from_micros(us)));
+                assert!(!cadence.due(deadline - period + Duration::from_micros(us), false));
                 assert_eq!(cadence.next, deadline);
             }
-            assert!(cadence.due(deadline));
+            assert!(cadence.due(deadline, false));
         }
         let late = cadence.next + Duration::from_secs(2);
-        assert!(cadence.due(late));
+        assert!(cadence.due(late, false));
         assert_eq!(cadence.next, late + period);
-        assert!(!cadence.due(late));
+        assert!(!cadence.due(late, false));
+    }
+
+    #[test]
+    fn host_cursor_wakeup_brings_callback_forward_without_a_followup_tick() {
+        let start = Instant::now();
+        let period = Duration::from_nanos(1_000_000_000 / 60);
+        let mut cadence = CallbackCadence {
+            next: start,
+            period,
+        };
+        assert!(cadence.due(start, false));
+        let original_deadline = cadence.next;
+        let arrival = start + Duration::from_millis(2);
+        assert!(!cadence.due(arrival, false));
+        assert!(cadence.due(arrival, true));
+        assert!(!cadence.due(original_deadline, false));
+        assert!(!cadence.due(arrival, false));
+        assert!(cadence.due(arrival + period, false));
     }
 }

@@ -554,12 +554,66 @@ pub fn dispatch(
                 Some(socket) => socket.read(&memory, output, size, timeout(arg(args, 1)?))?,
                 None => 3,
             };
+            #[cfg(all(windows, feature = "bud"))]
+            if code == 0 {
+                let text = memory.string(output, size)?;
+                let backend = caller
+                    .data()
+                    .backend
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if let Some(attempt) = &backend.bud_attempt {
+                    match attempt.incoming(&text) {
+                        Ok(Some(rewritten)) => {
+                            if rewritten.is_empty() {
+                                out[0] = Val::I32(2);
+                                return Ok(());
+                            }
+                            memory.c_string(output, size, &rewritten)?;
+                        }
+                        Ok(None) => {}
+                        Err(_) => {
+                            attempt.fail();
+                            out[0] = Val::I32(3);
+                            return Ok(());
+                        }
+                    }
+                }
+            }
             out[0] = Val::I32(code);
         }
         "MTY_WebSocketWrite" => {
             out[0] = Val::I32(0);
             if let Some(socket) = network.socket(arg(args, 0)?) {
                 if let Ok(text) = memory.string(arg(args, 1)?, MAX_MESSAGE + 1) {
+                    #[cfg(all(windows, feature = "bud"))]
+                    let text = {
+                        let backend = caller
+                            .data()
+                            .backend
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        match &backend.bud_attempt {
+                            Some(attempt) => match attempt.outgoing(
+                                &text,
+                                Some({
+                                    let socket = socket.clone();
+                                    Arc::new(move |text| socket.write(text))
+                                }),
+                            ) {
+                                Ok(Some(rewritten)) if rewritten.is_empty() => {
+                                    out[0] = Val::I32(1);
+                                    return Ok(());
+                                }
+                                Ok(rewritten) => rewritten.unwrap_or(text),
+                                Err(_) => {
+                                    attempt.fail();
+                                    return Ok(());
+                                }
+                            },
+                            None => text,
+                        }
+                    };
                     out[0] = Val::I32(i32::from(socket.write(text)));
                 }
             }

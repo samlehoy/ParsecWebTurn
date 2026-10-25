@@ -1,0 +1,144 @@
+{
+  "scope": "synthetic GPU conversion only; diagnostic readback; no live client/profile/network",
+  "results": [
+    {
+      "gpu": "AMD Radeon 780M Graphics",
+      "source_range": "limited",
+      "d3d_range": 1,
+      "black_bgr": [
+        0,
+        0,
+        0
+      ],
+      "white_bgr": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "gpu": "AMD Radeon 780M Graphics",
+      "source_range": "full",
+      "d3d_range": 2,
+      "black_bgr": [
+        0,
+        0,
+        0
+      ],
+      "white_bgr": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "gpu": "AMD Radeon 780M Graphics",
+      "source_range": "limited",
+      "d3d_range": 2,
+      "black_bgr": [
+        16,
+        16,
+        16
+      ],
+      "white_bgr": [
+        235,
+        235,
+        235
+      ]
+    },
+    {
+      "gpu": "NVIDIA GeForce RTX 3060",
+      "source_range": "limited",
+      "d3d_range": 1,
+      "black_bgr": [
+        0,
+        0,
+        0
+      ],
+      "white_bgr": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "gpu": "NVIDIA GeForce RTX 3060",
+      "source_range": "full",
+      "d3d_range": 2,
+      "black_bgr": [
+        0,
+        0,
+        0
+      ],
+      "white_bgr": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "gpu": "NVIDIA GeForce RTX 3060",
+      "source_range": "limited",
+      "d3d_range": 2,
+      "black_bgr": [
+        16,
+        16,
+        16
+      ],
+      "white_bgr": [
+        235,
+        235,
+        235
+      ]
+    },
+    {
+      "gpu": "AMD Radeon 780M Graphics",
+      "source_range": "limited",
+      "d3d_range": 1,
+      "black_bgr": [
+        0,
+        0,
+        0
+      ],
+      "white_bgr": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "gpu": "AMD Radeon 780M Graphics",
+      "source_range": "full",
+      "d3d_range": 2,
+      "black_bgr": [
+        0,
+        0,
+        0
+      ],
+      "white_bgr": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "gpu": "AMD Radeon 780M Graphics",
+      "source_range": "limited",
+      "d3d_range": 2,
+      "black_bgr": [
+        16,
+        16,
+        16
+      ],
+      "white_bgr": [
+        235,
+        235,
+        235
+      ]
+    },
+    {
+      "gpu": "Microsoft Basic Render Driver",
+      "error": "HRESULT 0x887a0004 at line 42"
+    }
+  ]
+}

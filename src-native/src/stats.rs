@@ -1,4 +1,5 @@
-//! Read-only native telemetry. No payloads, IP addresses, credentials or certificates.
+//! Native telemetry; detailed host reports follow diagnostic visibility/logging.
+//! No payloads, IP addresses, credentials or certificates are recorded here.
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -9,6 +10,8 @@ use std::{
 use webrtc::{peer_connection::RTCPeerConnection, stats::StatsReportType};
 #[derive(Clone)]
 pub struct Sample {
+    #[cfg(feature = "bud")]
+    pub bud: Option<parsec_native_bud::bud::Snapshot>,
     pub at: Instant,
     pub generation: u64,
     pub state: String,
@@ -24,6 +27,11 @@ pub struct Sample {
     pub sent: Option<u64>,
     pub audio_bytes: u64,
     pub audio_ready: bool,
+    pub audio_codec: Option<&'static str>,
+    pub audio_layout: Option<crate::audio_layout::Layout>,
+    pub audio_decoded_queue_ms: Option<f64>,
+    #[cfg(windows)]
+    pub audio_playback: Option<crate::audio_windows::Snapshot>,
     pub video: Option<crate::video_output::Snapshot>,
     pub profile: Option<u8>,
     pub codec: Option<crate::video_stream::Codec>,
@@ -32,6 +40,8 @@ pub struct Sample {
 impl Default for Sample {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "bud")]
+            bud: None,
             at: Instant::now(),
             generation: 0,
             state: "Waiting for a connection".into(),
@@ -47,6 +57,11 @@ impl Default for Sample {
             sent: None,
             audio_bytes: 0,
             audio_ready: false,
+            audio_codec: None,
+            audio_layout: None,
+            audio_decoded_queue_ms: None,
+            #[cfg(windows)]
+            audio_playback: None,
             video: None,
             profile: None,
             codec: None,
@@ -56,27 +71,131 @@ impl Default for Sample {
 }
 #[derive(Default)]
 pub struct Shared {
+    #[cfg(windows)]
+    pub host_timing: crate::frame_timing::Shared,
+    #[cfg(windows)]
+    audio: Mutex<Option<std::sync::Weak<crate::audio_windows::Playback>>>,
     pub visible: AtomicBool,
     latest: Mutex<(u64, Option<Sample>)>,
 }
 impl Shared {
+    #[cfg(windows)]
+    pub fn set_audio(&self, audio: std::sync::Weak<crate::audio_windows::Playback>) {
+        *self.audio.lock().unwrap_or_else(|e| e.into_inner()) = Some(audio);
+    }
     pub fn requested(&self) -> bool {
-        self.visible.load(Ordering::Acquire)
+        self.visible.load(Ordering::Acquire) || crate::event_log::enabled()
     }
     pub fn begin(&self) -> u64 {
         let mut data = self.latest.lock().unwrap_or_else(|e| e.into_inner());
         data.0 += 1;
+        #[cfg(windows)]
+        self.host_timing.begin(data.0);
         data.1 = Some(Sample {
             generation: data.0,
             state: "Connecting".into(),
             ..Default::default()
         });
+        crate::event_log::record(
+            "INFO",
+            "connection_started",
+            serde_json::json!({"generation":data.0}),
+        );
         data.0
     }
     pub fn publish(&self, generation: u64, mut sample: Sample) {
+        #[cfg(windows)]
+        {
+            sample.audio_playback = self
+                .audio
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .and_then(|a| a.upgrade())
+                .map(|a| a.snapshot());
+        }
         let mut data = self.latest.lock().unwrap_or_else(|e| e.into_inner());
         if data.0 == generation {
             sample.generation = generation;
+            #[cfg(windows)]
+            if crate::event_log::enabled()
+                && sample.audio_playback.as_ref().is_some_and(|audio| {
+                    data.1
+                        .as_ref()
+                        .and_then(|old| old.audio_playback.as_ref())
+                        .is_none_or(|old| {
+                            old.underruns != audio.underruns
+                                || old.layout != audio.layout
+                                || old.frames_dropped != audio.frames_dropped
+                                || old.failure_hresult != audio.failure_hresult
+                        })
+                        || data
+                            .1
+                            .as_ref()
+                            .is_some_and(|old| old.audio_codec != sample.audio_codec)
+                })
+            {
+                let audio = sample.audio_playback.as_ref().unwrap();
+                crate::event_log::record(
+                    "INFO",
+                    "audio_playback_state",
+                    serde_json::json!({
+                        "codec":sample.audio_codec,"queued_frames":audio.queued_frames,
+                        "channels":audio.layout.map(|v| v.channels),"channel_mask":audio.layout.map(|v| v.mask),
+                        "device_padding":audio.device_padding,"device_capacity":audio.device_capacity_frames,
+                        "minimum_ms":audio.minimum_ms,"maximum_ms":audio.maximum_ms,
+                        "custom":audio.custom_buffer,"low_latency_device":audio.low_latency_device,
+                        "underruns":audio.underruns,"dropped_frames":audio.frames_dropped,
+                        "hresult":audio.failure_hresult,"decoded_queue_ms":sample.audio_decoded_queue_ms
+                    }),
+                );
+            }
+            if crate::event_log::enabled()
+                && data.1.as_ref().is_none_or(|old| {
+                    old.state != sample.state
+                        || old.route != sample.route
+                        || old.protocol != sample.protocol
+                })
+            {
+                crate::event_log::record(
+                    "INFO",
+                    "connection_state_changed",
+                    serde_json::json!({
+                        "generation":generation,"state":sample.state,"route":sample.route,
+                        "previous_route":data.1.as_ref().map(|old|old.route),"transport":sample.protocol,
+                        "turn_transport":sample.turn_protocol,"dtls":sample.dtls,
+                    }),
+                );
+            }
+            if crate::event_log::enabled()
+                && sample.video.as_ref().is_some_and(|v| {
+                    data.1
+                        .as_ref()
+                        .and_then(|old| old.video.as_ref())
+                        .is_none_or(|old| {
+                            old.decoder != v.decoder
+                                || old.decoder_fallback != v.decoder_fallback
+                                || old.display_rgb_bit_depth != v.display_rgb_bit_depth
+                                || old.display_output_fallback != v.display_output_fallback
+                                || old.failure_stage != v.failure_stage
+                        })
+                })
+            {
+                let v = sample.video.as_ref().unwrap();
+                crate::event_log::record(
+                    if v.failure_stage.is_some() {
+                        "ERROR"
+                    } else {
+                        "INFO"
+                    },
+                    "decoder_state_changed",
+                    serde_json::json!({
+                        "generation":generation,"decoder":v.decoder,"fallback":v.decoder_fallback.is_some(),
+                        "stage":v.failure_stage,"hresult":v.failure_hresult,"decoded_bit_depth":v.decoded_bit_depth,
+                        "display_rgb_bit_depth":v.display_rgb_bit_depth,"display_output_fallback":v.display_output_fallback,
+                    }),
+                );
+            }
             data.1 = Some(sample);
         }
     }
@@ -88,6 +207,8 @@ impl Shared {
             .clone()
     }
     pub fn finish(&self, generation: u64) {
+        #[cfg(windows)]
+        self.host_timing.end(generation);
         self.publish(
             generation,
             Sample {
@@ -168,6 +289,15 @@ pub async fn network(peer: &RTCPeerConnection) -> Sample {
     }
     sample
 }
+impl Sample {
+    fn connected(&self) -> bool {
+        #[cfg(feature = "bud")]
+        if let Some(bud) = &self.bud {
+            return bud.connected;
+        }
+        self.state == "connected"
+    }
+}
 #[derive(Default)]
 pub struct Rates {
     previous: Option<Sample>,
@@ -185,8 +315,8 @@ impl Rates {
         if let Some(old) = &self.previous {
             let seconds = sample.at.saturating_duration_since(old.at).as_secs_f64();
             if sample.generation == old.generation
-                && sample.state == "connected"
-                && old.state == "connected"
+                && sample.connected()
+                && old.connected()
                 && seconds > 0.0
             {
                 let rate = |now: Option<u64>, before: Option<u64>, scale: f64| {
@@ -255,6 +385,44 @@ mod tests {
         s.received = Some(1000);
         assert!(rates.update(&s).incoming.is_none());
     }
+    #[cfg(feature = "bud")]
+    #[test]
+    fn bud_rates_use_native_connection_state_and_existing_decoder_counters() {
+        let mut rates = Rates::default();
+        let mut sample = Sample {
+            generation: 1,
+            state: "Connected (BUD)".into(),
+            bud: Some(parsec_native_bud::bud::Snapshot {
+                connected: true,
+                ..Default::default()
+            }),
+            received: Some(100),
+            sent: Some(200),
+            audio_bytes: 10,
+            video: Some(crate::video_output::Snapshot {
+                decoder_initialized: true,
+                frames_decoded: 10,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(rates.update(&sample).fps.is_none());
+        sample.at += std::time::Duration::from_secs(2);
+        sample.received = Some(250_100);
+        sample.sent = Some(25_200);
+        sample.audio_bytes = 32_010;
+        sample.video.as_mut().unwrap().frames_decoded = 130;
+        let values = rates.update(&sample);
+        assert_eq!(values.fps, Some(60.0));
+        assert_eq!(values.incoming, Some(1.0));
+        assert_eq!(values.audio, Some(128.0));
+        assert!((values.outgoing.unwrap() - 0.1).abs() < 1e-12);
+        sample.at += std::time::Duration::from_secs(1);
+        sample.bud.as_mut().unwrap().connected = false;
+        let stopped = rates.update(&sample);
+        assert!(stopped.fps.is_none() && stopped.incoming.is_none());
+    }
+
     #[test]
     fn late_old_session_never_overwrites_new_session() {
         let bus = Shared::default();

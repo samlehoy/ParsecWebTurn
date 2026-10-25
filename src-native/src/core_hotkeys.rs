@@ -128,6 +128,14 @@ mod tests {
                           event: i32,
                           _: i32| {
                         let m = &caller.data().memory;
+                        if m.u32(event as u32).unwrap() == 16 {
+                            assert!(caller.data().clipboard_notification);
+                            assert!(m
+                                .read(event as u32 + 4, 212)
+                                .unwrap()
+                                .iter()
+                                .all(|b| *b == 0));
+                        }
                         events.lock().unwrap().push((
                             m.u32(event as u32).unwrap(),
                             m.u32(event as u32 + 8).unwrap(),
@@ -159,9 +167,11 @@ mod tests {
                 keyboard
                     .call(&mut store, (app as i32, 1, key, 0, 0))
                     .unwrap();
+                crate::desktop::dispatch_clipboard_event(&mut store, &instance, app).unwrap();
+                assert!(!store.data().clipboard_notification);
                 assert_eq!(
                     *captured.lock().unwrap(),
-                    [(6, 2), (0, key as u32), (5, key as u32)]
+                    [(6, 2), (0, key as u32), (5, key as u32), (16, 0)]
                 );
                 // Rebinding and recording take effect immediately, without a Rust cache.
                 memory.set_u32(buckets, 0).unwrap();

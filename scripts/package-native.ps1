@@ -35,7 +35,7 @@ try {
         $taskImport += 20
     }
     $taskBinaryText = [Text.Encoding]::Latin1.GetString($taskBinary)
-    foreach ($taskMarker in @('video-hardware-probe', 'login-audit', 'synthetic-session-value', 'private-password-token-url')) {
+    foreach ($taskMarker in @('video-hardware-probe', 'login-audit', 'synthetic-session-value', 'private-password-token-url', 'PARSEC_BUD_DIAGNOSTICS', 'cursor-visibility-trace.json', 'cursor-post-turn-output-flush', 'hid_button_report')) {
         if ($taskBinaryText.Contains($taskMarker)) { throw "Diagnostic marker in normal executable: $taskMarker" }
     }
     $taskFixture = [IO.File]::ReadAllBytes((Join-Path $taskRoot 'src-native/fixtures/synthetic-1920x1080.h264'))
@@ -63,7 +63,14 @@ try {
     Copy-Item src-native/vendor/webrtc-0.14.0/LOCAL-CHANGES.md (Join-Path $taskPackage 'WEBRTC-LOCAL-CHANGES.md')
     Copy-Item src-native/vendor/webrtc-ice-0.14.0/LOCAL-CHANGES.md (Join-Path $taskPackage 'ICE-LOCAL-CHANGES.md')
     Copy-Item src-native/vendor/turn-0.11.0/LOCAL-CHANGES.md (Join-Path $taskPackage 'TURN-LOCAL-CHANGES.md')
+    Copy-Item src-native/crates/bud/vendor/lowlat-client/LICENSE (Join-Path $taskPackage 'LOWLAT-LICENSE.txt')
+    Copy-Item src-native/crates/bud/vendor/lowlat-client/PARSECWEBTURN.md (Join-Path $taskPackage 'BUD-LOCAL-CHANGES.md')
+    Copy-Item src-native/crates/bud/vendor/lowlat-net/PARSECWEBTURN.md (Join-Path $taskPackage 'BUD-NET-LOCAL-CHANGES.md')
+    Copy-Item src-native/crates/video/LICENSE-lowlat (Join-Path $taskPackage 'GPU-LOWLAT-LICENSE.txt')
     $taskCargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+    $taskCell = Get-ChildItem -Path (Join-Path $taskCargoHome 'registry/src/*/self_cell-1.3.0') -Directory | Select-Object -First 1
+    if (!$taskCell) { throw 'GPU lifetime helper license directory missing' }
+    Copy-Item (Join-Path $taskCell.FullName 'LICENSE-APACHE') (Join-Path $taskPackage 'SELF-CELL-LICENSE-APACHE.txt')
     $taskOpus = Get-ChildItem -Path (Join-Path $taskCargoHome 'registry/src/*/libopus_sys-0.3.3') -Directory | Select-Object -First 1
     if (!$taskOpus) { throw 'Bundled Opus license directory missing' }
     Copy-Item (Join-Path $taskOpus.FullName 'LICENSE') (Join-Path $taskPackage 'LIBOPUS-SYS-LICENSE.txt')

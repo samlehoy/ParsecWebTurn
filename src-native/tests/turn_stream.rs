@@ -14,6 +14,167 @@ fn binding() -> Vec<u8> {
     packet
 }
 
+fn channel(payload: usize, value: u8) -> Vec<u8> {
+    let mut packet = vec![value; 4 + payload];
+    packet[..2].copy_from_slice(&[0x40, 1]);
+    packet[2..4].copy_from_slice(&(payload as u16).to_be_bytes());
+    packet
+}
+
+fn framed(packet: &[u8]) -> Vec<u8> {
+    let mut result = packet.to_vec();
+    result.resize((result.len() + 3) & !3, 0);
+    result
+}
+
+#[tokio::test]
+async fn tcp_receive_burst_preserves_tails_and_maximum_frame_lengths() {
+    timeout(Duration::from_secs(10), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut packets = vec![binding()];
+        for length in 0..300 {
+            packets.push(channel(length, length as u8));
+        }
+        packets.push(channel(u16::MAX as usize, 0x6a));
+        let mut maximum_stun = binding();
+        maximum_stun[2..4].copy_from_slice(&65532u16.to_be_bytes());
+        // Repeated unknown optional attributes with zero-length bodies.
+        for _ in 0..65532 / 4 {
+            maximum_stun.extend_from_slice(&[0x80, 0x22, 0, 0]);
+        }
+        packets.push(maximum_stun);
+        packets.push(binding());
+        let wire: Vec<u8> = packets.iter().flat_map(|p| framed(p)).collect();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            for chunk in wire.chunks(65531) {
+                socket.write_all(chunk).await.unwrap();
+                tokio::task::yield_now().await;
+            }
+        });
+        let stream = TurnStream::dial("127.0.0.1", address.port(), false)
+            .await
+            .unwrap();
+        let mut output = vec![0; 65556];
+        for expected in packets {
+            let count = stream.recv(&mut output).await.unwrap();
+            assert_eq!(&output[..count], expected);
+        }
+        server.await.unwrap();
+        assert!(stream.recv(&mut output).await.is_err());
+        assert!(stream.recv(&mut output).await.is_err());
+        stream.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn framed_send_normalizes_padding_and_reuses_storage_for_large_messages() {
+    timeout(Duration::from_secs(10), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut packets = vec![binding()];
+        for length in [0, 1, 2, 3, 4, 65535, 2, 1] {
+            let packet = channel(length, 0x5a);
+            packets.push(packet.clone());
+            if !packet.len().is_multiple_of(4) {
+                // Caller-supplied padding must still be normalized to zero.
+                let mut padded = packet;
+                padded.resize((padded.len() + 3) & !3, 0xef);
+                packets.push(padded);
+            }
+        }
+        let expected: Vec<u8> = packets
+            .iter()
+            .flat_map(|packet| {
+                let size = if packet[0] >> 6 == 0 {
+                    packet.len()
+                } else {
+                    4 + u16::from_be_bytes([packet[2], packet[3]]) as usize
+                };
+                framed(&packet[..size])
+            })
+            .collect();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut actual = vec![0; expected.len()];
+            socket.read_exact(&mut actual).await.unwrap();
+            assert_eq!(actual, expected);
+            socket.write_all(&binding()).await.unwrap();
+        });
+        let stream = TurnStream::dial("127.0.0.1", address.port(), false)
+            .await
+            .unwrap();
+        for packet in packets {
+            assert_eq!(stream.send(&packet).await.unwrap(), packet.len());
+        }
+        assert_eq!(stream.recv(&mut [0; 20]).await.unwrap(), 20);
+        server.await.unwrap();
+        stream.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn tcp_truncated_headers_bodies_padding_and_small_outputs_are_terminal() {
+    let complete = framed(&channel(3, 0x5a));
+    for prefix in 0..complete.len() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let stream = TurnStream::dial("127.0.0.1", address.port(), false)
+            .await
+            .unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        socket.write_all(&complete[..prefix]).await.unwrap();
+        socket.shutdown().await.unwrap();
+        assert!(timeout(Duration::from_secs(2), stream.recv(&mut [0; 100]))
+            .await
+            .unwrap()
+            .is_err());
+        assert!(stream.recv(&mut [0; 100]).await.is_err());
+        stream.close().await.unwrap();
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let stream = TurnStream::dial("127.0.0.1", address.port(), false)
+        .await
+        .unwrap();
+    let (mut socket, _) = listener.accept().await.unwrap();
+    socket.write_all(&complete).await.unwrap();
+    assert!(stream.recv(&mut [0; 6]).await.is_err());
+    assert!(stream.recv(&mut [0; 100]).await.is_err());
+    stream.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn canceled_tcp_receive_retains_its_partial_frame() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let stream = TurnStream::dial("127.0.0.1", address.port(), false)
+        .await
+        .unwrap();
+    let (mut socket, _) = listener.accept().await.unwrap();
+    let wire = framed(&channel(3, 0x5a));
+    for range in [0..3, 3..6] {
+        socket.write_all(&wire[range]).await.unwrap();
+        assert!(
+            timeout(Duration::from_millis(10), stream.recv(&mut [0; 100]))
+                .await
+                .is_err()
+        );
+    }
+    socket.write_all(&wire[6..]).await.unwrap();
+    socket.write_all(&binding()).await.unwrap();
+    let mut output = [0; 100];
+    assert_eq!(stream.recv(&mut output).await.unwrap(), 7);
+    assert_eq!(&output[..7], &wire[..7]);
+    assert_eq!(stream.recv(&mut output).await.unwrap(), 20);
+    stream.close().await.unwrap();
+}
+
 async fn binding_client(
     stream: Arc<TurnStream>,
     address: std::net::SocketAddr,

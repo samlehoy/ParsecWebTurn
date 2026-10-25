@@ -119,13 +119,17 @@ impl Output {
     pub fn finish(&self, credentials: Option<&Description>) -> Result<bool> {
         // Validate every size before writing any credential. Failure leaves the
         // buffers empty, so stale credentials cannot look like a valid offer.
-        let values = credentials.map(|d| {
+        self.finish_values(credentials.map(|d| {
             [
-                &d.credentials.ufrag,
-                &d.credentials.password,
-                &d.credentials.fingerprint,
+                d.credentials.ufrag.as_str(),
+                d.credentials.password.as_str(),
+                d.credentials.fingerprint.as_str(),
             ]
-        });
+        }))
+    }
+
+    /// Shared guest-memory completion only; does not construct an RTC description.
+    pub fn finish_values(&self, values: Option<[&str; 3]>) -> Result<bool> {
         let fits = values
             .as_ref()
             .is_some_and(|values| values.iter().all(|v| v.len() < self.capacity));
@@ -196,6 +200,8 @@ struct Progress {
 struct Completion {
     #[cfg(windows)]
     telemetry: Option<(Arc<crate::stats::Shared>, u64)>,
+    #[cfg(windows)]
+    timing_active: bool,
     started_at: std::time::Instant,
     closing: bool,
     output: Option<Output>,
@@ -215,6 +221,8 @@ struct Completion {
 
 enum Delivery {
     Queued,
+    #[cfg(windows)]
+    Timing(Option<(Arc<crate::stats::Shared>, u64)>),
     Audio(Option<crate::audio_stream::Sender>),
     Video {
         inspector: Arc<Mutex<crate::video_stream::Inspector>>,
@@ -226,6 +234,13 @@ impl Delivery {
     fn submit(self, bytes: &[u8]) -> Option<bool> {
         match self {
             Self::Queued => None,
+            #[cfg(windows)]
+            Self::Timing(link) => {
+                if let Some((bus, generation)) = link {
+                    bus.host_timing.receive(generation, bytes);
+                }
+                None
+            }
             Self::Audio(audio) => Some(!audio.is_some_and(|sender| sender.submit(bytes))),
             Self::Video {
                 inspector,
@@ -318,6 +333,10 @@ impl Completion {
             self.progress.channel_bytes_received[i].saturating_add(bytes.len() as u64);
         self.progress.channel_max_message_bytes[i] =
             self.progress.channel_max_message_bytes[i].max(bytes.len());
+        #[cfg(windows)]
+        if channel == 0 && self.discard_unavailable_media && crate::frame_timing::is_report(bytes) {
+            return Some(Delivery::Timing(self.telemetry.clone()));
+        }
         if channel != 0 && self.discard_unavailable_media {
             if channel == 1 {
                 return Some(Delivery::Video {
@@ -334,10 +353,22 @@ impl Completion {
             self.fail_channel(FailureStage::InboundQueueFull, channel);
             return None;
         }
-        self.message_bytes += bytes.len();
-        self.messages
-            .push_back((channel, text, Bytes::copy_from_slice(bytes)));
         Some(Delivery::Queued)
+    }
+
+    fn queue_received(&mut self, channel: u16, text: bool, bytes: Bytes) -> bool {
+        // Own the already copied payload; never copy a detached read buffer
+        // while holding the connection lock.
+        if self.cancelled || self.closing || self.progress.failed {
+            return false;
+        }
+        if self.messages.len() >= 16 || self.message_bytes + bytes.len() > 4 * MAX_CHANNEL_MESSAGE {
+            self.fail_channel(FailureStage::InboundQueueFull, channel);
+            return false;
+        }
+        self.message_bytes += bytes.len();
+        self.messages.push_back((channel, text, bytes));
+        true
     }
 
     #[cfg(test)]
@@ -345,6 +376,9 @@ impl Completion {
         let Some(delivery) = self.prepare_receive(channel, text, bytes) else {
             return false;
         };
+        if matches!(delivery, Delivery::Queued) {
+            return self.queue_received(channel, text, Bytes::copy_from_slice(bytes));
+        }
         if let Some(discarded) = delivery.submit(bytes) {
             self.media_ingress.record(channel, bytes.len(), discarded);
         }
@@ -361,6 +395,13 @@ async fn read_channel(
     channel: Arc<webrtc::data::data_channel::DataChannel>,
 ) {
     let mut buffer = vec![0; MAX_CHANNEL_MESSAGE];
+    // This session mode is immutable. Native media goes straight to its sink;
+    // only control/probe receipts need an owned copy for the guest queue.
+    let native_mode = shared
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .discard_unavailable_media;
+    let queue_receipts = id == 0 || !native_mode;
     loop {
         let read = channel.read_data_channel(&mut buffer).await;
         let len = read.as_ref().map_or(0, |(len, _)| *len);
@@ -370,10 +411,24 @@ async fn read_channel(
                 state.fail_channel(FailureStage::DataChannelClosed, id);
                 None
             }
-            Ok((len, text)) => shared
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .prepare_receive(id, text, &buffer[..len]),
+            Ok((len, text)) => {
+                #[cfg(windows)]
+                let timing =
+                    native_mode && id == 0 && crate::frame_timing::is_report(&buffer[..len]);
+                #[cfg(not(windows))]
+                let timing = false;
+                let payload = (queue_receipts && !timing && !text && len <= MAX_CHANNEL_MESSAGE)
+                    .then(|| Bytes::copy_from_slice(&buffer[..len]));
+                let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+                match state.prepare_receive(id, text, &buffer[..len]) {
+                    Some(Delivery::Queued) => payload.and_then(|payload| {
+                        state
+                            .queue_received(id, text, payload)
+                            .then_some(Delivery::Queued)
+                    }),
+                    delivery => delivery,
+                }
+            }
             Err(_) => {
                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                 state.fail_channel(FailureStage::DataChannelRead, id);
@@ -482,6 +537,8 @@ impl Attempt {
         let completion = Arc::new(Mutex::new(Completion {
             #[cfg(windows)]
             telemetry: None,
+            #[cfg(windows)]
+            timing_active: false,
             started_at: std::time::Instant::now(),
             closing: false,
             output: Some(output),
@@ -647,7 +704,9 @@ impl Attempt {
             }
         }
         let generation = window.stats.begin();
-        let audio = crate::audio_stream::Pipeline::start();
+        let audio = crate::audio_stream::Pipeline::start_with_budget(
+            window.audio_buffer().map(|(_, max)| max),
+        );
         let video = Arc::new(crate::video_windows::Pipeline::start(window.clone()));
         let mut state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
         if state.cancelled || state.closing || state.video_output.is_some() {
@@ -861,6 +920,9 @@ fn worker(
                 .and_then(|m| m.view().0.video_gpu);
             config.allow_hevc =
                 config.allow_hevc && crate::video_windows::hevc_available(gpu.as_ref());
+            config.ten_bit = config.allow_hevc
+                && config.ten_bit
+                && crate::video_windows::hevc_ten_bit_available(gpu.as_ref());
         }
         #[cfg(not(windows))]
         {
@@ -875,6 +937,11 @@ fn worker(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .enable_hevc(config.allow_hevc);
+        crate::event_log::record(
+            "INFO",
+            "video_capabilities_declared",
+            serde_json::json!({"transport":"WebRTC","flags":config.video_flags(),"hevc":config.allow_hevc,"main10":config.ten_bit}),
+        );
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -948,9 +1015,6 @@ fn worker(
                 let Some((bus, generation)) = link else {
                     continue;
                 };
-                if !bus.requested() {
-                    continue;
-                }
                 let Some(peer) = weak.upgrade() else {
                     break;
                 };
@@ -960,6 +1024,22 @@ fn worker(
                 else {
                     continue;
                 };
+                {
+                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                    if s.cancelled || s.closing {
+                        break;
+                    }
+                    s.media_ingress.network_rtt = if sample.state == "connected" {
+                        sample.rtt_ms.map(|ms| (sample.at, ms))
+                    } else {
+                        None
+                    };
+                }
+                // The guest overlay also needs RTT with the native stats window
+                // closed. Reuse this existing 1 Hz task, not the per-frame import.
+                if !bus.requested() {
+                    continue;
+                }
                 let (video, inspector) = {
                     let s = state.lock().unwrap_or_else(|e| e.into_inner());
                     if s.cancelled || s.closing {
@@ -967,6 +1047,12 @@ fn worker(
                     }
                     sample.audio_bytes = s.progress.channel_bytes_received[2];
                     sample.audio_ready = s.audio_stream.is_some();
+                    if let Some(audio) = &s.audio_stream {
+                        let report = audio.snapshot();
+                        sample.audio_codec = report.codec;
+                        sample.audio_layout = report.layout;
+                        sample.audio_decoded_queue_ms = Some(report.queued_frames as f64 / 48.0);
+                    }
                     (s.video_output.clone(), s.video_stream.clone())
                 };
                 let framing = inspector
@@ -1134,6 +1220,8 @@ fn worker(
         if !ready {
             bail!("native offer publication failed or was cancelled");
         }
+        #[cfg(windows)]
+        let timing_task = runtime.spawn(collect_host_timing(shared.clone(), channels[0].clone()));
         let mut deadline = EstablishmentDeadline::new(std::time::Instant::now());
         #[cfg(windows)]
         let mut next_video_recovery_check = std::time::Instant::now();
@@ -1188,6 +1276,11 @@ fn worker(
                 break;
             }
             if matches!(command, Command::Disconnect) {
+                #[cfg(windows)]
+                {
+                    timing_task.abort();
+                    runtime.block_on(stop_host_timing(shared, &channels[0]));
+                }
                 let _ = runtime.block_on(send_disconnect(&channels[0]));
                 break;
             }
@@ -1261,6 +1354,14 @@ fn worker(
                             }
                         }
                         Command::Send(id, payload) => {
+                            let payload = if id == 0 {
+                                config.as_ref().map_or_else(
+                                    || payload.clone(),
+                                    |c| c.encoder_request(payload.clone()),
+                                )
+                            } else {
+                                payload
+                            };
                             let channel = &channels[usize::from(id)];
                             if channel.ready_state() != RTCDataChannelState::Open {
                                 return Err(FailureStage::ChannelSend.into());
@@ -1294,6 +1395,14 @@ fn worker(
                 .await
             })??;
         }
+        #[cfg(windows)]
+        {
+            timing_task.abort();
+            runtime.block_on(async {
+                let _ = timing_task.await;
+                stop_host_timing(shared, &channels[0]).await;
+            });
+        }
         drop((offer, channels));
         Ok(())
     })();
@@ -1325,6 +1434,21 @@ fn worker(
                 .copied()
                 .unwrap_or(FailureStage::Worker);
             state.progress.failure_stage.get_or_insert(stage);
+            #[cfg(windows)]
+            let logged_route = state
+                .telemetry
+                .as_ref()
+                .and_then(|(bus, _)| bus.read())
+                .map(|s| s.route);
+            #[cfg(not(windows))]
+            let logged_route: Option<&str> = None;
+            if !state.cancelled && !matches!(stage, FailureStage::Cancelled) {
+                crate::event_log::record(
+                    "ERROR",
+                    "connection_failed",
+                    serde_json::json!({"transport":"WebRTC","stage":stage.to_string(),"route":logged_route}),
+                );
+            }
             if state.progress.failure_elapsed_ms.is_none() {
                 state.progress.failure_elapsed_ms = Some(state.elapsed_ms());
             }
@@ -1364,6 +1488,92 @@ fn worker(
         bail!("native offer peer did not close within the deadline");
     }
     outcome
+}
+
+#[cfg(windows)]
+async fn stop_host_timing(
+    state: &Mutex<Completion>,
+    channel: &webrtc::data_channel::RTCDataChannel,
+) {
+    let (link, active) = {
+        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            state.telemetry.clone(),
+            std::mem::take(&mut state.timing_active),
+        )
+    };
+    if active {
+        let _ = tokio::time::timeout(
+            Duration::from_millis(250),
+            channel.send(&Bytes::copy_from_slice(&crate::frame_timing::request(
+                false,
+            ))),
+        )
+        .await;
+    }
+    if let Some((bus, generation)) = link {
+        bus.host_timing.end(generation);
+    }
+}
+
+#[cfg(windows)]
+async fn collect_host_timing(
+    state: Arc<Mutex<Completion>>,
+    channel: Arc<webrtc::data_channel::RTCDataChannel>,
+) {
+    let mut requests = crate::frame_timing::Requests::default();
+    loop {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let link = {
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
+            if s.cancelled || s.closing || s.progress.failed {
+                break;
+            }
+            if !s.progress.control_ready {
+                continue;
+            }
+            s.telemetry.clone()
+        };
+        let Some((bus, generation)) = link else {
+            continue;
+        };
+        if !bus.host_timing.current(generation) {
+            break;
+        }
+        let desired = bus.requested();
+        let Some(payload) = requests.update(desired) else {
+            continue;
+        };
+        if desired {
+            state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .timing_active = true;
+        }
+        bus.host_timing.set_requested(generation, desired);
+        if !matches!(
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                channel.send(&Bytes::copy_from_slice(&payload))
+            )
+            .await,
+            Ok(Ok(_))
+        ) {
+            bus.host_timing.failed(generation);
+            crate::event_log::record(
+                "WARN",
+                "host_timing_request_failed",
+                serde_json::json!({"transport":"WebRTC"}),
+            );
+            break;
+        }
+        if !desired {
+            state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .timing_active = false;
+        }
+    }
 }
 
 pub(crate) async fn send_disconnect(channel: &webrtc::data_channel::RTCDataChannel) -> Result<()> {
@@ -1601,6 +1811,8 @@ mod tests {
         Completion {
             #[cfg(windows)]
             telemetry: None,
+            #[cfg(windows)]
+            timing_active: false,
             started_at: std::time::Instant::now(),
             closing: false,
             output: None,
@@ -1618,6 +1830,37 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn host_timing_bursts_bypass_the_control_queue_without_changing_normal_delivery() {
+        let bus = Arc::new(crate::stats::Shared::default());
+        let generation = bus.begin();
+        bus.host_timing.set_requested(generation, true);
+        let mut state = empty_completion();
+        state.telemetry = Some((bus.clone(), generation));
+        state.discard_unavailable_media = true;
+        let frame = crate::frame_timing::tests::packet(0, 0, &[12., 2., 16., 4.]);
+        for _ in 0..10_000 {
+            assert!(state.receive(0, false, &frame));
+        }
+        assert!(!state.progress.failed);
+        assert!(state.messages.is_empty());
+        assert_eq!(state.message_bytes, 0);
+        assert_eq!(
+            bus.host_timing.snapshot(generation).video[0]
+                .as_ref()
+                .unwrap()
+                .count,
+            10_000
+        );
+        assert!(state.receive(0, false, &[0; 13]));
+        assert_eq!(state.messages.len(), 1);
+        // Synthetic transport probes still retain arbitrary control receipts.
+        let mut probe = empty_completion();
+        assert!(probe.receive(0, false, &frame));
+        assert_eq!(probe.messages.len(), 1);
+    }
+
     #[test]
     fn captured_audio_delivery_is_safe_after_cancellation_without_holding_connection_lock() {
         let mut state = empty_completion();
@@ -1632,6 +1875,49 @@ mod tests {
         assert_eq!(delivery.submit(&[0xf8, 0xff, 0xfe]), Some(true));
         assert!(audio.snapshot().worker_finished);
         assert_eq!(audio.snapshot().queued_samples, 0);
+    }
+
+    #[test]
+    fn receipt_queue_takes_ownership_and_rejects_retired_deliveries() {
+        let mut state = empty_completion();
+        let payload = Bytes::from(vec![0x5a; MAX_CHANNEL_MESSAGE]);
+        let pointer = payload.as_ptr();
+        assert!(state.queue_received(0, false, payload));
+        assert_eq!(state.messages.front().unwrap().2.as_ptr(), pointer);
+        assert_eq!(state.message_bytes, MAX_CHANNEL_MESSAGE);
+        for closing in [false, true] {
+            let mut retired = empty_completion();
+            assert!(matches!(
+                retired.prepare_receive(0, false, b"control"),
+                Some(Delivery::Queued)
+            ));
+            retired.closing = closing;
+            retired.cancelled = !closing;
+            assert!(!retired.queue_received(0, false, Bytes::from_static(b"control")));
+            assert!(retired.messages.is_empty());
+            assert_eq!(retired.message_bytes, 0);
+        }
+    }
+
+    #[test]
+    fn prepared_receipts_still_enforce_the_shared_queue_budget() {
+        let mut state = empty_completion();
+        for _ in 0..2 {
+            assert!(matches!(
+                state.prepare_receive(0, false, b"control"),
+                Some(Delivery::Queued)
+            ));
+        }
+        for _ in 0..16 {
+            assert!(state.queue_received(0, false, Bytes::from_static(b"control")));
+        }
+        assert!(!state.queue_received(0, false, Bytes::from_static(b"overflow")));
+        assert_eq!(state.messages.len(), 16);
+        assert_eq!(state.message_bytes, 16 * 7);
+        assert!(matches!(
+            state.progress.failure_stage,
+            Some(FailureStage::InboundQueueFull)
+        ));
     }
 
     #[test]

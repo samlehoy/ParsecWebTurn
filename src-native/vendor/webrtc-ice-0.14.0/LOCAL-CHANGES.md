@@ -28,6 +28,13 @@ relay-only setting available to the user.
   and TLS: no UDP retransmissions, a 39.5-second transaction timeout, and immediate
   pending-request failure on transport closure (RFC 8489 section 6.2.2).
 - `src/lib.rs` exports the transport for isolated regression tests.
+- Measured stream buffering: plain TCP uses one bounded reusable receive
+  buffer (64 KiB plus TURN header allowance), returning each available frame
+  without waiting to fill it. TLS retains direct reads into the caller because
+  rustls already buffers records. Padded ChannelData uses reusable storage to
+  write the message and zero padding together; aligned messages and STUN keep
+  their direct write. No batching timer, send queue or dependency is added.
+  See `docs/turn-buffer-comparison.md` for the measurements and their limits.
 - Read-only native telemetry: relay candidates retain their allocation URL (without
   credentials) and actual client-to-server transport. Authenticated, transaction-
   and source-matched STUN success responses update RTT and response counters for
@@ -41,7 +48,7 @@ connection and does not reproduce every enterprise trust policy. No HTTP proxy
 or CONNECT tunneling is added. `stuns:` discovery remains unsupported.
 
 Tests: `src-native/tests/turn_stream.rs` verifies framing, padding, malformed
-frames, shutdown and untrusted TLS rejection. `tests/turn-integration` uses a
+frames, shutdown and untrusted TLS rejection. `src-native/tests/turn-integration` uses a
 separate loopback coturn server and a temporary trusted CA to exchange real
 DTLS/SCTP messages over UDP, TCP and TLS, and reject hostname mismatch. It is
 never embedded in the client executable.

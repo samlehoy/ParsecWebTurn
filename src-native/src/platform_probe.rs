@@ -94,9 +94,23 @@ pub fn probe() -> Result<serde_json::Value> {
         bail!("Platform counter mismatch");
     }
     store.data_mut().platform = Default::default();
+    store.data_mut().clipboard_notification = true;
+    if read.call(&mut store, ())? != 0 {
+        bail!("Unavailable clipboard notification must not clear remote text");
+    }
+    store.data_mut().clipboard_notification = false;
     let empty = read.call(&mut store, ())? as u32;
     if empty == 0 || !memory.string(empty, 1)?.is_empty() || store.data().boundary.is_some() {
         bail!("Disabled clipboard did not return guest-owned empty text");
+    }
+    store.data_mut().platform = Arc::new(crate::platform::Services::new(Box::new(Fixture(
+        Mutex::new(String::new()),
+    ))));
+    store.data_mut().clipboard_notification = true;
+    let copied_empty = read.call(&mut store, ())? as u32;
+    store.data_mut().clipboard_notification = false;
+    if copied_empty == 0 || !memory.string(copied_empty, 1)?.is_empty() {
+        bail!("An actual empty clipboard remains distinct from unavailable text");
     }
     let report = serde_json::json!({
         "schema": 1, "unicode_clipboard_imports_verified": true,

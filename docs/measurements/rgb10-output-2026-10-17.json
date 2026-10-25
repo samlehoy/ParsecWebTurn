@@ -1,0 +1,49 @@
+{
+  "cases": [
+    {
+      "distinct_red_levels": null,
+      "fallback": null,
+      "forced_fallback": false,
+      "limited_range": false,
+      "p010_input": false,
+      "rgb_bit_depth": 8
+    },
+    {
+      "distinct_red_levels": 1022,
+      "fallback": null,
+      "forced_fallback": false,
+      "limited_range": false,
+      "p010_input": true,
+      "rgb_bit_depth": 10
+    },
+    {
+      "distinct_red_levels": 875,
+      "fallback": null,
+      "forced_fallback": false,
+      "limited_range": true,
+      "p010_input": true,
+      "rgb_bit_depth": 10
+    },
+    {
+      "distinct_red_levels": null,
+      "fallback": null,
+      "forced_fallback": false,
+      "limited_range": false,
+      "p010_input": false,
+      "rgb_bit_depth": 8
+    },
+    {
+      "distinct_red_levels": null,
+      "fallback": "Synthetic unsupported-output fallback",
+      "forced_fallback": true,
+      "limited_range": false,
+      "p010_input": true,
+      "rgb_bit_depth": 8
+    }
+  ],
+  "cpu_readback_live_enabled": false,
+  "external_requests_enabled": false,
+  "real_account_used": false,
+  "scope": "synthetic-rgb10-output",
+  "synthetic_readback_only": true
+}
