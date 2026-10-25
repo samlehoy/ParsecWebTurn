@@ -143,7 +143,8 @@ live confirmation. Failures record the vendor fallback reason for diagnosis.
 
 The Session menu queries the stock host's output list (application sub-ID 10,
 reply 12) and current owner configuration (9, reply 11). Selecting a listed
-physical or virtual output fetches fresh settings, changes `video[0].output`, releases the previous output's forced size
+physical or virtual output fetches both the current output list and fresh settings,
+waits for both replies, revalidates the selected ID, changes `video[0].output`, and releases the previous output's forced size
 (`resolutionX/Y: 0`), and sends the complete preserved configuration (11). The write is sent once;
 read-only queries confirm the selected identity for up to five seconds. Other
 video slots and unknown host settings are preserved. Refresh handles output

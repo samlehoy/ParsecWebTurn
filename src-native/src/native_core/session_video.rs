@@ -76,7 +76,37 @@ impl HostSettings {
             .unwrap_or_else(|e| e.into_inner())
             .current = self.config.output_id().map(str::to_owned);
         session_ui::displays_changed(window);
-        if let Some(id) = self.pending_output.take() {
+        if !self.send_output(attempt, window) {
+            return;
+        }
+        let observed = self.observed(window);
+        crate::event_log::record("INFO", "native_host_video_configuration", observed.clone());
+        *window
+            .native_host_video
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = observed;
+        if !self.ensure_hid_primary(attempt, window) {
+            return;
+        }
+        if !self.busy() {
+            session_ui::reported(window);
+        }
+        if self.confirmation.is_none() {
+            self.send_pending(attempt, window);
+        }
+    }
+
+    fn take_output(&mut self) -> Option<String> {
+        // Match the host's output IDs and complete settings from the same
+        // refresh. Either reply can arrive first; neither cached half suffices.
+        if self.query_deadline.is_some() || self.outputs_deadline.is_some() {
+            return None;
+        }
+        self.pending_output.take()
+    }
+
+    fn send_output(&mut self, attempt: &Attempt, window: &Window) -> bool {
+        if let Some(id) = self.take_output() {
             let result = (|| -> Result<()> {
                 window
                     .native_displays
@@ -94,24 +124,10 @@ impl HostSettings {
             );
             if result.is_err() {
                 self.failed(window);
-                return;
+                return false;
             }
         }
-        let observed = self.observed(window);
-        crate::event_log::record("INFO", "native_host_video_configuration", observed.clone());
-        *window
-            .native_host_video
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = observed;
-        if !self.ensure_hid_primary(attempt, window) {
-            return;
-        }
-        if !self.busy() {
-            session_ui::reported(window);
-        }
-        if self.confirmation.is_none() {
-            self.send_pending(attempt, window);
-        }
+        true
     }
     fn send_pending(&mut self, attempt: &Attempt, window: &Window) {
         let Some(next) = self.take_pending() else {
@@ -171,7 +187,7 @@ impl HostSettings {
             displays.outputs.clear();
             drop(displays);
             self.hid_primary_ready(attempt, window, false);
-            if attempt.hid_mouse_enabled() {
+            if self.pending_output.take().is_some() || attempt.hid_mouse_enabled() {
                 self.pending = None;
                 self.failed(window);
             }
@@ -308,7 +324,7 @@ impl HostSettings {
         false
     }
 
-    fn query_outputs(&mut self, attempt: &Attempt, window: &Window) {
+    fn query_outputs(&mut self, attempt: &Attempt, window: &Window) -> bool {
         self.hid_primary_ready(attempt, window, false);
         let sent = attempt
             .send(&host_displays::query().expect("Empty display query fits control frame"))
@@ -332,6 +348,7 @@ impl HostSettings {
                 serde_json::json!({}),
             );
         }
+        sent
     }
     pub fn receive_outputs(&mut self, bytes: &[u8], attempt: &Attempt, window: &Window) {
         self.outputs_deadline = None;
@@ -350,6 +367,10 @@ impl HostSettings {
             "native_host_displays_received",
             serde_json::json!({"valid":valid,"count":count}),
         );
+        if !self.send_output(attempt, window) {
+            session_ui::displays_changed(window);
+            return;
+        }
         if self.ensure_hid_primary(attempt, window) && self.confirmation.is_none() {
             self.send_pending(attempt, window);
         }
@@ -376,8 +397,12 @@ impl HostSettings {
             return Ok(false);
         }
         drop(displays);
-        // Read fresh settings before patching only output; never overwrite a
-        // host-side change with an old cached complete configuration.
+        // Refresh both halves, as the stock-host/lowlat transaction does.
+        // Virtual-display IDs may change after the picker was populated.
+        ensure!(
+            self.query_outputs(attempt, window),
+            "Could not refresh host displays"
+        );
         attempt.send(&host_video::query()?)?;
         self.pending_output = Some(id.to_owned());
         self.query_deadline = Some(Instant::now() + QUERY_TIMEOUT);
@@ -453,6 +478,36 @@ impl HostSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn display_selection_waits_for_both_fresh_replies_in_either_order() {
+        for config_first in [false, true] {
+            let deadline = Instant::now() + QUERY_TIMEOUT;
+            let mut settings = HostSettings {
+                pending_output: Some("secondary".into()),
+                query_deadline: Some(deadline),
+                outputs_deadline: Some(deadline),
+                ..Default::default()
+            };
+            // A usable cached configuration must not satisfy the new request.
+            settings
+                .config
+                .receive(br#"{"video":[{"output":"old","hostOS":1}]}"#)
+                .unwrap();
+            assert!(settings.take_output().is_none());
+            if config_first {
+                settings.query_deadline = None;
+            } else {
+                settings.outputs_deadline = None;
+            }
+            assert!(settings.take_output().is_none());
+            assert!(settings.pending_output.is_some());
+            settings.query_deadline = None;
+            settings.outputs_deadline = None;
+            assert_eq!(settings.take_output().as_deref(), Some("secondary"));
+            assert!(settings.take_output().is_none());
+        }
+    }
+
     #[test]
     fn output_list_reply_cannot_consume_video_request_before_host_config() {
         let mut settings = HostSettings {
