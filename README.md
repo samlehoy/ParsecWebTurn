@@ -9,12 +9,12 @@ installer is needed: run **ParsecWebTurn.exe**.
 **The Parsec WASM core is unmodified. Rust provides the surrounding runtime and
 platform integrations; this is not a rewrite of the proprietary Parsec client.**
 
-[Download v0.9.4-dev.7](https://github.com/vampywiz17/ParsecWebTurn/releases/tag/v0.9.4-dev.7)
+[Download v0.9.4](https://github.com/vampywiz17/ParsecWebTurn/releases/tag/v0.9.4)
 · [Latest stable release](https://github.com/vampywiz17/ParsecWebTurn/releases/latest)
 · [Changelog](CHANGELOG.md)
 
-This README describes `dev`; `main` contains the stable client. The earlier
-WebView2 version remains on the [legacy branch](https://github.com/vampywiz17/ParsecWebTurn/tree/legacy).
+This README describes the **v0.9.4 stable client** on `main`; `dev` is used for
+further development. The earlier WebView2 version remains on the [legacy branch](https://github.com/vampywiz17/ParsecWebTurn/tree/legacy).
 For stability-first use, choose **WebRTC with H.264** and leave experimental
 options disabled, or use the stable release.
 
@@ -169,15 +169,14 @@ pinned core and checks the currently served version without replacing it.
 
 ## Status and roadmap
 
-BUD, custom audio buffering, raw PCM permission and host timing no longer carry
-an experimental label as of **v0.9.4-dev.6**. Vendor HEVC, Zero copy, 10-bit HEVC,
+BUD, custom audio buffering, raw PCM permission and host timing are included
+without an experimental label in **v0.9.4**. Vendor HEVC, Zero copy, 10-bit HEVC,
 display timing, multichannel audio and USB HID input remain experimental, with
 the validation limits above.
 
-Extensive Intel/AMD/NVIDIA testing now focuses on normal rendering, Zero copy
-and H.265/HEVC, including 10-bit. The next stable release is targeted for the
-second half of next week (October 29-November 1, 2026), provided the supported
-combinations prove stable and any blocking issues are resolved.
+The maintainer completed Intel/AMD/NVIDIA video testing before this stable
+release. Results apply to supported combinations actually tested; the capability
+requirements and specific validation limits above still apply.
 
 HID mouse/keyboard are implemented; gamepad verification and further native menu
 integration remain pending. Vulkan/Linux are planned; D3D12 and Android/Android TV
