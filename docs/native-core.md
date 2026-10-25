@@ -188,3 +188,13 @@ video requests wait for the complete host config even when the output-list reply
 arrives first. Host configuration logs include display ordinals/counts rather
 than private output identities to distinguish configuration confirmation from
 successful media decoding.
+
+
+With event logging enabled, BUD encoder rebuilds also produce at most two
+`video_transition_sample` events, approximately one and five seconds after the
+boundary. They sample existing input/decode/Present counters and window readiness
+through the existing telemetry poll; there is no frame readback, rendering call,
+new timer/thread or continuous frame logging. Counter deltas are diagnostic
+progress, not proof of the selected monitor's pixel content, GPU completion or
+scanout; an old in-flight frame can finish at a boundary. No visibility, pacing,
+codec preference or recovery behavior is changed by this probe.

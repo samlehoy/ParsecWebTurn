@@ -429,6 +429,20 @@ impl Window {
         self.set_video_ready(false);
         *generation
     }
+    pub(crate) fn video_readiness_for(&self, expected: u64) -> Option<(bool, bool)> {
+        let generation = self
+            .video_generation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if *generation != expected || self.closing.load(Ordering::Acquire) {
+            return None;
+        }
+        let hwnd = self.video_hwnd.load(Ordering::Acquire) as HWND;
+        Some((
+            self.video_ready.load(Ordering::Acquire),
+            !hwnd.is_null() && unsafe { IsWindowVisible(hwnd) != 0 },
+        ))
+    }
     pub fn set_video_ready_for(&self, expected: u64, ready: bool) {
         let generation = self
             .video_generation

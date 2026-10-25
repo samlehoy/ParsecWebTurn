@@ -491,11 +491,13 @@ impl Pipeline {
     /// owns GPU teardown; the network consumer never touches a decoded frame.
     #[cfg(feature = "bud")]
     pub fn encoder_rebuilt(&self) {
-        self.shared
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .encoder_rebuilt(Instant::now());
+        let now = Instant::now();
+        {
+            let mut q = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            if q.encoder_rebuilt(now) && crate::event_log::enabled() {
+                q.watch_transition(now);
+            }
+        }
         self.shared.1.notify_one();
         if let Some(wake) = &self.shared.2 {
             wake.notify();
@@ -518,12 +520,36 @@ impl Pipeline {
         }
     }
     pub fn snapshot(&self) -> Snapshot {
-        self.shared
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .report
-            .clone()
+        let (report, transition) = {
+            let mut q = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            let transition = q.transition_sample(Instant::now);
+            (q.report.clone(), transition)
+        };
+        // Existing telemetry polling services this probe. Build/write JSON
+        // outside the decoder queue lock, never on a decoded-frame callback.
+        if let Some((
+            generation,
+            elapsed_ms,
+            [queued, submitted, decoded, presented, busy, occluded],
+        )) = transition
+        {
+            let visibility = self.window.video_readiness_for(self.surface_generation);
+            crate::event_log::record(
+                "INFO",
+                "video_transition_sample",
+                serde_json::json!({
+                    "encoder_epoch":generation,"elapsed_ms":elapsed_ms,
+                    "counter_delta":{"queued":queued,"submitted":submitted,"decoded":decoded,"presented":presented,"busy":busy,"not_visible":occluded},
+                    "queue_depth":report.queue_depth,"waiting_for_idr":report.waiting_for_idr,
+                    "decoder_initialized":report.decoder_initialized,"codec":report.codec,
+                    "decoder":report.decoder,"bit_depth":report.decoded_bit_depth,"chroma":report.decoded_chroma,
+                    "width":report.width,"height":report.height,"display_timing":report.presentation_mode,
+                    "video_ready":visibility.map(|v|v.0),"surface_visible":visibility.map(|v|v.1),
+                    "failure_stage":report.failure_stage,
+                }),
+            );
+        }
+        report
     }
     pub fn stop(&self) {
         self.window.finish_video(self.surface_generation);
