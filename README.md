@@ -98,9 +98,11 @@ experimental options disabled for the most conservative configuration.
   Supports mouse buttons, dragging, scrolling, relative camera input and keyboard
   forwarding. HID mouse input disables the display selector. Use the host primary
   display (or one active physical/virtual display) and matching keyboard layouts.
-  The host output list does not identify the primary display: it must already be
-  the captured output; automatic primary-output selection is not implemented.
+  On stock Windows hosts the client requests the primary output when necessary,
+  and pauses HID mouse forwarding until the host reports that output selected.
   Absolute desktop reports remain bounded; relative camera input is unchanged.
+  The primary-output restriction has synthetic coverage; live multi-monitor
+  validation is still required.
   No host patch is required; the host needs its supported USB driver.
 - **Raw PCM:** BUD only; the host must allow it (`network_raw_audio=1`). WebRTC
   audio remains stereo Opus. Multichannel playback has **synthetic test coverage

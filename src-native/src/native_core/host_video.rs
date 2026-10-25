@@ -114,6 +114,13 @@ impl Config {
         }
         crate::control::text(17, 11, &value.to_string())
     }
+    pub fn windows_host(&self) -> bool {
+        // Stock Windows host's sub-ID 9 handler calls its serializer with 1,
+        // which is written to every video slot's hostOS field.
+        self.value
+            .as_ref()
+            .is_some_and(|v| v["video"][0]["hostOS"].as_u64() == Some(1))
+    }
     pub fn output_id(&self) -> Option<&str> {
         self.value.as_ref()?["video"][0]["output"].as_str()
     }
@@ -146,6 +153,21 @@ pub fn diagnostic(bytes: &[u8]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn host_os_is_verified_instead_of_assuming_every_peer_is_windows() {
+        let mut config = Config::default();
+        assert!(!config.windows_host());
+        for (os, windows) in [(0, false), (1, true), (2, false)] {
+            config
+                .receive(
+                    serde_json::json!({"video":[{"hostOS":os}]})
+                        .to_string()
+                        .as_bytes(),
+                )
+                .unwrap();
+            assert_eq!(config.windows_host(), windows);
+        }
+    }
     #[test]
     fn output_switch_preserves_settings_and_confirms_identity_not_old_dimensions() {
         let initial = serde_json::json!({"virtualMicrophone":1,"extra":"keep","video":[{"output":"old","encoderFPS":60,"resolutionX":1920,"resolutionY":1080,"other":42},{"output":"untouched"}]});

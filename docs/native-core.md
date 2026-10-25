@@ -159,8 +159,21 @@ virtual multi-output switching still needs validation against a stock host.
 HID mouse mode disables the selector in the UI and rejects requests in the
 session controller. It keeps the existing primary-monitor-normalized absolute
 reports, clamped to 0..32767; camera-relative reports retain their existing path.
-HID keyboard alone does not disable switching. **The host must already capture
-its primary display for HID mouse use.** The examined host list does not report
-primary identity, so the client cannot yet identify/force that output, or verify
-an externally changed capture target. Disabling the selector is not proof of
-that condition. No relative-desktop or normal-injection fallback is introduced.
+HID keyboard alone does not disable switching. On the examined stock Windows
+host, the list preserves DXGI adapter/output enumeration order. Both Microsoft
+APIs document primary-first enumeration; the host serializes `hostOS: 1`.
+The client uses this Windows-specific contract to request the first output when
+necessary, preserving all other settings, and pauses HID mouse forwarding until
+the reported output agrees. Unknown OS, missing/invalid list or failed
+confirmation leaves the mouse paused with a visible explanation; refresh can
+retry. Releases and keyboard forwarding remain available. Primary selection is
+not inferred from display names, ID syntax or the client's own monitor layout.
+See [reference evidence](NATIVE_REFERENCES.md#stock-windows-host-display-order).
+
+This has synthetic/CI coverage; live multi-monitor validation is still needed.
+Changing the host's primary monitor or capture configuration outside the client
+requires refreshing the list or reconnecting: there is no host topology-change
+subscription in the examined contract. The restriction governs this client's
+absolute desktop reports and output selector, not physical input by someone at
+the host or the operating system's cursor confinement during a game. No
+relative-desktop or normal-injection fallback is introduced.

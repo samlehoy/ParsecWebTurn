@@ -29,3 +29,29 @@ reference is `e548d48c81ae50937940b2b47f700557cd9d50a4`.
 
 Refer to [native architecture](native-core.md) and the [root README](../README.md)
 for implemented behavior and the distinction between live and synthetic testing.
+
+
+## Stock Windows host display order
+
+Single-stream output selection follows lowlat's
+[owner configuration transaction](https://github.com/nomi-san/lowlat/blob/3a48023fc08492806fe10ea149f745a569599ff0/examples/client/session.cc#L147)
+(application query/reply pairs 10/12 for outputs and 9/11 for settings; write 11).
+No lowlat SDK/session/UI implementation or dependency was added.
+
+Read-only inspection of stock `parsecd-150-105c.dll`, SHA-256
+`dbd59739cfb84a239860a30480b91281f0ebd316dfb5bf58bd4539e82c92c425`,
+corroborated the output reply at RVA `0x71988` and its enumerator `0x2a90`.
+The enumerator calls `IDXGIFactory1::EnumAdapters1` (vtable slot 12), then
+`IDXGIAdapter::EnumOutputs` (slot 7), appending outputs in that order. The reply
+serializes this array without sorting. The settings-query handler at `0x71926`
+passes `1` to the serializer at `0xa7c00`, which writes `hostOS` in each slot.
+No stock binary bytes or implementation were copied into the client.
+
+Microsoft documents primary-first order for both
+[EnumAdapters1](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgifactory1-enumadapters1)
+and [EnumOutputs](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiadapter-enumoutputs).
+Together with the examined host enumeration, this supports interpreting its
+first listed output as primary. This is a Windows stock-host compatibility
+contract, not a general property of every remote JSON display list. Other host
+OS values do not enable HID primary selection. Live multi-output verification
+is still required, including virtual displays and primary/display hotplug changes.

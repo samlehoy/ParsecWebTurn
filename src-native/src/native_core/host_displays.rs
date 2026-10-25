@@ -16,7 +16,27 @@ pub struct Displays {
     pub loading: bool,
     pub hid_mouse: bool,
 }
+#[derive(Debug, PartialEq, Eq)]
+pub enum Primary<'a> {
+    Waiting,
+    Ready,
+    Select(&'a str),
+}
 impl Displays {
+    pub fn primary(&self, windows_host: bool, current: Option<&str>) -> Primary<'_> {
+        if !windows_host || self.loading {
+            return Primary::Waiting;
+        }
+        let Some(first) = self.outputs.first() else {
+            return Primary::Waiting;
+        };
+        if current == Some(first.id.as_str()) {
+            Primary::Ready
+        } else {
+            Primary::Select(&first.id)
+        }
+    }
+
     pub fn validate_selection(&self, id: &str, hid_mouse: bool) -> Result<()> {
         ensure!(
             !hid_mouse,
@@ -53,6 +73,22 @@ pub fn query() -> Result<bytes::Bytes> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn windows_primary_selection_waits_for_both_reports_and_keeps_dxgi_order() {
+        let mut displays = Displays::default();
+        assert_eq!(displays.primary(true, Some("secondary")), Primary::Waiting);
+        displays.outputs =
+            parse(br#"[{"id":"z-primary","name":"Main"},{"id":"a-secondary","name":"Other"}]"#)
+                .unwrap();
+        assert_eq!(displays.primary(false, None), Primary::Waiting);
+        assert_eq!(
+            displays.primary(true, Some("a-secondary")),
+            Primary::Select("z-primary")
+        );
+        assert_eq!(displays.primary(true, Some("z-primary")), Primary::Ready);
+        displays.loading = true;
+        assert_eq!(displays.primary(true, Some("z-primary")), Primary::Waiting);
+    }
     #[test]
     fn hid_and_stale_lists_cannot_select_an_output() {
         let mut state = Displays {

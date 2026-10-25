@@ -203,8 +203,11 @@ fn stream(
                     payload: Some(range),
                 } if event["type"] == 3 && event["id"] == 12 => {
                     let bytes = &frame[range];
-                    host_settings
-                        .receive_outputs(bytes.strip_suffix(&[0]).unwrap_or(bytes), window);
+                    host_settings.receive_outputs(
+                        bytes.strip_suffix(&[0]).unwrap_or(bytes),
+                        &attempt,
+                        window,
+                    );
                 }
                 crate::control::Message::Buffer {
                     event,

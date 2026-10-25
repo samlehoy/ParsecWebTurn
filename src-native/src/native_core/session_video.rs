@@ -22,6 +22,9 @@ pub(super) struct HostSettings {
 
 impl HostSettings {
     pub fn new(video: &Video, window: &Window) -> Self {
+        window
+            .native_hid_primary_ready
+            .store(false, Ordering::Release);
         let pending = video.has_host_settings().then(|| video.clone());
         if pending.is_some() {
             session_ui::waiting(window);
@@ -57,6 +60,7 @@ impl HostSettings {
     pub fn receive(&mut self, bytes: &[u8], attempt: &Attempt, window: &Window) {
         self.query_deadline = None;
         if self.config.receive(bytes).is_err() {
+            self.hid_primary_ready(attempt, window, false);
             self.pending = None;
             self.pending_output = None;
             crate::event_log::record(
@@ -103,9 +107,17 @@ impl HostSettings {
             .native_host_video
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = observed;
+        if !self.ensure_hid_primary(attempt, window) {
+            return;
+        }
         if !self.busy() {
             session_ui::reported(window);
         }
+        if self.confirmation.is_none() {
+            self.send_pending(attempt, window);
+        }
+    }
+    fn send_pending(&mut self, attempt: &Attempt, window: &Window) {
         let Some(next) = self.pending.take() else {
             return;
         };
@@ -139,6 +151,11 @@ impl HostSettings {
             displays.loading = false;
             displays.outputs.clear();
             drop(displays);
+            self.hid_primary_ready(attempt, window, false);
+            if attempt.hid_mouse_enabled() {
+                self.pending = None;
+                self.failed(window);
+            }
             session_ui::displays_changed(window);
             crate::event_log::record(
                 "WARN",
@@ -152,6 +169,7 @@ impl HostSettings {
                 host_video::Verification::Query => {
                     if attempt.send(&host_video::query()?).is_err() {
                         self.confirmation = None;
+                        self.pending = None;
                         session_ui::finished(window, false);
                     }
                 }
@@ -169,6 +187,11 @@ impl HostSettings {
                         self.config.observed(),
                     );
                     session_ui::finished(window, confirmed);
+                    if confirmed && self.ensure_hid_primary(attempt, window) {
+                        self.send_pending(attempt, window);
+                    } else if !confirmed {
+                        self.pending = None;
+                    }
                 }
                 host_video::Verification::Waiting => {}
             }
@@ -190,7 +213,84 @@ impl HostSettings {
         Ok(())
     }
 
+    fn hid_primary_ready(&self, attempt: &Attempt, window: &Window, ready: bool) {
+        if !attempt.hid_mouse_enabled() {
+            return;
+        }
+        let previous = window
+            .native_hid_primary_ready
+            .swap(ready, Ordering::AcqRel);
+        if previous != ready {
+            if previous {
+                let _ = attempt.send(&crate::control::header(24, 0, 0, 0));
+            }
+            crate::event_log::record(
+                if ready { "INFO" } else { "WARN" },
+                "hid_primary_display_state",
+                serde_json::json!({"ready":ready}),
+            );
+            session_ui::displays_changed(window);
+        }
+    }
+    fn ensure_hid_primary(&mut self, attempt: &Attempt, window: &Window) -> bool {
+        if !attempt.hid_mouse_enabled() {
+            return true;
+        }
+        let primary = {
+            let displays = window
+                .native_displays
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            // Verified stock Windows host preserves EnumAdapters1/EnumOutputs
+            // order. Both DXGI APIs specify primary first; other OSes are unknown.
+            match displays.primary(self.config.windows_host(), self.config.output_id()) {
+                host_displays::Primary::Ready => {
+                    drop(displays);
+                    self.hid_primary_ready(attempt, window, true);
+                    return true;
+                }
+                host_displays::Primary::Waiting => None,
+                host_displays::Primary::Select(id) => Some(id.to_owned()),
+            }
+        };
+        self.hid_primary_ready(attempt, window, false);
+        let Some(id) = primary else {
+            let displays = window
+                .native_displays
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let unavailable = self.config.ready() && !displays.loading;
+            drop(displays);
+            if unavailable {
+                self.pending = None;
+                self.failed(window);
+            }
+            return false;
+        };
+        if self.confirmation.is_some() {
+            return false;
+        }
+        let result = self
+            .config
+            .select_output(&id)
+            .and_then(|frame| attempt.send(&frame));
+        crate::event_log::record(
+            if result.is_ok() { "INFO" } else { "WARN" },
+            "hid_primary_display_requested",
+            serde_json::json!({"sent":result.is_ok()}),
+        );
+        if result.is_ok() {
+            self.confirmation = Some(host_video::Confirmation::output(&id, Instant::now()));
+            session_ui::waiting(window);
+        } else {
+            self.pending = None;
+            self.failed(window);
+        }
+        false
+    }
+
     fn query_outputs(&mut self, attempt: &Attempt, window: &Window) {
+        self.hid_primary_ready(attempt, window, false);
         let sent = attempt
             .send(&host_displays::query().expect("Empty display query fits control frame"))
             .is_ok();
@@ -214,7 +314,7 @@ impl HostSettings {
             );
         }
     }
-    pub fn receive_outputs(&mut self, bytes: &[u8], window: &Window) {
+    pub fn receive_outputs(&mut self, bytes: &[u8], attempt: &Attempt, window: &Window) {
         self.outputs_deadline = None;
         let result = host_displays::parse(bytes);
         let valid = result.is_ok();
@@ -231,6 +331,9 @@ impl HostSettings {
             "native_host_displays_received",
             serde_json::json!({"valid":valid,"count":count}),
         );
+        if self.ensure_hid_primary(attempt, window) && self.confirmation.is_none() {
+            self.send_pending(attempt, window);
+        }
         session_ui::displays_changed(window);
     }
     pub fn refresh_outputs(&mut self, attempt: &Attempt, window: &Window) -> Result<()> {

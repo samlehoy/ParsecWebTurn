@@ -256,7 +256,11 @@ unsafe fn update_displays(hwnd: HWND, panel: &mut Panel) {
         i32::from(!displays.loading && !busy),
     );
     let hint = if displays.hid_mouse {
-        "HID mouse: switching disabled. Use the host's primary display."
+        if window.native_hid_primary_ready.load(Ordering::Acquire) {
+            "HID mouse: primary host display only. Switching disabled."
+        } else {
+            "HID mouse paused until the primary host display is verified."
+        }
     } else {
         "Host display (physical or virtual). Switching uses this stream."
     };

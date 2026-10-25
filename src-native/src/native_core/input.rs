@@ -87,6 +87,14 @@ fn usage(code: &str) -> Option<i32> {
     })
 }
 
+fn primary_allows(event: &Event, ready: bool) -> bool {
+    ready
+        || !matches!(
+            event,
+            Event::Motion(..) | Event::RelativeMotion(..) | Event::Button(..) | Event::Scroll(..)
+        )
+}
+
 // Side-specific modifier bits from lowlat.h, not the browser's compact mask.
 #[derive(Default)]
 pub struct Input {
@@ -150,6 +158,18 @@ impl Input {
         if matches!(event, Event::RelativeMode(_)) && !attempt.hid_mouse_enabled() {
             return Ok(());
         }
+        // No mouse packet may target an unverified captured output. Device
+        // enumeration, key forwarding and release commands remain independent.
+        if attempt.hid_mouse_enabled()
+            && !primary_allows(
+                event,
+                window
+                    .native_hid_primary_ready
+                    .load(std::sync::atomic::Ordering::Acquire),
+            )
+        {
+            return Ok(());
+        }
         let viewport = window.presented_viewport();
         let Some(packet) = self.frame(event, viewport) else {
             return Ok(());
@@ -166,6 +186,26 @@ impl Input {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unverified_primary_blocks_mouse_but_keeps_releases_and_keyboard() {
+        for event in [
+            Event::Motion(1, 2),
+            Event::RelativeMotion(3, 4),
+            Event::Button(true, 0, 0, 0),
+            Event::Scroll(0, 120),
+        ] {
+            assert!(!primary_allows(&event, false));
+            assert!(primary_allows(&event, true));
+        }
+        for event in [
+            Event::Key(true, "KeyA", 0),
+            Event::Focus(false),
+            Event::HidInputRelease,
+            Event::RelativeMode(false),
+        ] {
+            assert!(primary_allows(&event, false));
+        }
+    }
     #[test]
     fn physical_usages_preserve_hungarian_iso_key_and_modifiers() {
         for (code, expected) in [

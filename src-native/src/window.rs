@@ -41,6 +41,7 @@ pub struct Window {
     pub(crate) native_displays: Mutex<crate::native_core::host_displays::Displays>,
 
     pub(crate) native_host_video_pending: AtomicBool,
+    pub(crate) native_hid_primary_ready: AtomicBool,
     pub stats: Arc<crate::stats::Shared>,
     stats_page: AtomicUsize,
 
@@ -132,6 +133,7 @@ impl Window {
             native_displays: Mutex::new(Default::default()),
 
             native_host_video_pending: AtomicBool::new(false),
+            native_hid_primary_ready: AtomicBool::new(false),
             stats_page: AtomicUsize::new(0),
 
             connection_settings: Default::default(),
