@@ -789,15 +789,28 @@ pub fn choose(
                         .unwrap()
                         .to_rgb8();
                     let after = image::open(restored).unwrap().to_rgb8();
-                    for y in 24..70 {
-                        for x in 32..72 {
+                    // WM_PRINT's child rendering includes the native frame
+                    // offset. Use actual child/window geometry, not client
+                    // layout constants, for this offline bitmap comparison.
+                    let mut bounds = RECT::default();
+                    let mut parent = RECT::default();
+                    GetWindowRect(GetDlgItem(hwnd, WORDMARK_ICON as i32), &mut bounds);
+                    GetWindowRect(hwnd, &mut parent);
+                    let left = (bounds.left - parent.left) as u32;
+                    let top = (bounds.top - parent.top) as u32;
+                    for y in top..top + 46 {
+                        for x in left..left + 40 {
                             assert_eq!(
                                 initial.get_pixel(x, y),
                                 after.get_pixel(x, y),
                                 "Wordmark changed after Settings at {x},{y}"
                             );
-                            if y < 27 || y >= 67 {
-                                assert_eq!(after.get_pixel(x, y).0, [240, 243, 245]);
+                            if y < top + 3 || y >= top + 43 {
+                                assert_eq!(
+                                    after.get_pixel(x, y).0,
+                                    [240, 243, 245],
+                                    "Missing accent bar at {x},{y}"
+                                );
                             }
                         }
                     }
