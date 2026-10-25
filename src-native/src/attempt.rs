@@ -58,7 +58,6 @@ pub enum FailureStage {
     InboundQueueFull,
     ControlStartup,
     ChannelSend,
-    InboundControl,
     IceTransport,
     DtlsTransport,
     PeerTransport,
@@ -66,12 +65,7 @@ pub enum FailureStage {
     SetRemoteDescription,
     CandidateGate,
     AddIceCandidate,
-    RemoteBegin,
     AttemptMismatch,
-    RemoteCandidate,
-    CandidateAddress,
-    CandidatePort,
-    CandidateEndpoint,
     CommandQueueFull,
     CommandQueueClosed,
     Cancelled,
@@ -619,31 +613,6 @@ impl Attempt {
             .control_ready
     }
 
-    pub fn media_ingress(&self) -> crate::media_ingress::Ingress {
-        let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
-        let mut ingress = state.media_ingress.clone();
-        let inspector = state.video_stream.clone();
-        if let Some(audio) = &state.audio_stream {
-            let report = audio.snapshot();
-            ingress.audio_decoder_available = report.packets_decoded > 0;
-            ingress.audio_output = Some(report);
-        }
-        #[cfg(windows)]
-        let video = state.video_output.clone();
-        drop(state);
-        ingress.video_stream = inspector
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .snapshot();
-        #[cfg(windows)]
-        if let Some(pipeline) = video {
-            let output = pipeline.snapshot();
-            ingress.video_decoder_available = output.frames_decoded > 0;
-            ingress.video_output = Some(output);
-        }
-        ingress
-    }
-
     #[cfg(windows)]
     pub fn start_video(&self, window: Arc<crate::window::Window>) {
         {
@@ -667,19 +636,6 @@ impl Attempt {
         state.telemetry = Some((window.stats.clone(), generation));
         state.audio_stream = Some(audio);
         state.video_output = Some(video);
-    }
-
-    pub fn configure_video_protocol(&self, protocol: crate::video_stream::VideoProtocol) {
-        let inspector = self
-            .completion
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .video_stream
-            .clone();
-        inspector
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .configure(protocol);
     }
 
     pub fn audio_receiver(&self) -> Option<crate::audio_stream::NativeReceiver> {

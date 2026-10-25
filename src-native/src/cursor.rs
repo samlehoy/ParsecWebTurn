@@ -72,20 +72,17 @@ impl Frame {
 pub enum Request {
     Image(Option<Frame>),
     Visible(bool),
-    Default(bool),
 }
 #[derive(Default)]
 pub struct Pending {
     image: Option<Option<Frame>>,
     visible: Option<bool>,
-    default: Option<bool>,
 }
 impl Pending {
     pub fn submit(&mut self, request: Request) {
         match request {
             Request::Image(image) => self.image = Some(image),
             Request::Visible(visible) => self.visible = Some(visible),
-            Request::Default(default) => self.default = Some(default),
         }
     }
 }
@@ -179,14 +176,12 @@ fn create(frame: &Frame) -> Result<OwnedCursor> {
 pub struct State {
     custom: Option<OwnedCursor>,
     visible: bool,
-    default: bool,
 }
 impl Default for State {
     fn default() -> Self {
         Self {
             custom: None,
             visible: true,
-            default: false,
         }
     }
 }
@@ -202,9 +197,6 @@ impl State {
         });
         if let Some(visible) = pending.visible {
             self.visible = visible;
-        }
-        if let Some(default) = pending.default {
-            self.default = default;
         }
         if retired
             .as_ref()
@@ -223,10 +215,8 @@ impl State {
         if !self.visible {
             return std::ptr::null_mut();
         }
-        if !self.default {
-            if let Some(cursor) = &self.custom {
-                return cursor.0 as HCURSOR;
-            }
+        if let Some(cursor) = &self.custom {
+            return cursor.0 as HCURSOR;
         }
         unsafe { LoadCursorW(std::ptr::null_mut(), IDC_ARROW) }
     }
@@ -305,7 +295,7 @@ mod tests {
                 assert_eq!((info.fIcon, info.xHotspot, info.yHotspot), (0, 4, 2));
             }
             let mut pending = Pending::default();
-            pending.submit(Request::Default(true));
+            pending.submit(Request::Image(None));
             state.apply(pending);
             assert_ne!(state.handle() as usize, custom);
             let mut pending = Pending::default();
@@ -315,7 +305,6 @@ mod tests {
             let mut pending = Pending::default();
             pending.submit(Request::Image(None));
             pending.submit(Request::Visible(true));
-            pending.submit(Request::Default(false));
             state.apply(pending);
             assert!(state.custom.is_none());
             assert!(!state.handle().is_null());

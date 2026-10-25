@@ -55,11 +55,8 @@ mod tests {
             client: (1024, 768),
         };
         for (x, y, expected) in [(0, 96, (0, 0)), (1024, 672, (32767, 32767))] {
-            let packet = crate::control::input_with_viewport(
-                &serde_json::json!({"type":4,"relative":false,"x":x,"y":y}),
-                Some(viewport),
-            )
-            .unwrap();
+            let (source_x, source_y) = viewport.map(x, y).unwrap();
+            let packet = crate::control::header(3, 0, source_x, source_y);
             assert_eq!(
                 absolute_motion(&packet, Some(viewport)).unwrap().unwrap(),
                 crate::control::header(3, 2, expected.0, expected.1)

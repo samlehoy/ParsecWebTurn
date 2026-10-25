@@ -34,8 +34,6 @@ mod frame_timing;
 mod fullscreen;
 #[cfg(windows)]
 mod gpu_windows;
-#[cfg(windows)]
-mod gui_visibility;
 #[cfg(all(windows, feature = "bud"))]
 mod hid_input;
 mod input;
@@ -48,8 +46,6 @@ mod media_ingress;
 mod media_scheduling;
 #[cfg(windows)]
 mod native_core;
-mod network_audit;
-mod network_policy;
 #[cfg(windows)]
 mod performance;
 mod platform;

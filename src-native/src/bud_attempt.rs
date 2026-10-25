@@ -20,15 +20,12 @@ use std::{
 
 #[derive(Default)]
 struct State {
-    offer: Option<Value>,
     output_finished: bool,
-    offer_mode: Option<Value>,
     wire_id: String,
     retired_wires: Vec<String>,
     template: Option<Value>,
     writer: Option<SignalingWrite>,
     established: bool,
-    answer_sent: bool,
     events: VecDeque<Value>,
     controls: VecDeque<bytes::Bytes>,
     ingress: crate::media_ingress::Ingress,
@@ -191,56 +188,21 @@ impl Attempt {
             .established
     }
 
-    pub fn hid_input_enabled(&self) -> bool {
-        self.hid_input.0 || self.hid_input.1
-    }
-
     pub fn host_status(&self) -> Option<i32> {
         self.state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .host_status
     }
-    pub fn outgoing(&self, text: &str, writer: Option<SignalingWrite>) -> Result<Option<String>> {
-        let Ok(mut value) = serde_json::from_str::<Value>(text) else {
-            return Ok(None);
-        };
-        if value["payload"]["attempt_id"].as_str() != Some(self.id.as_str()) {
-            return Ok(None);
-        }
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if value["action"] == "offer" {
-            if let Some(writer) = writer {
-                state.writer = Some(writer);
-            }
-            state.template = Some(value.clone());
-            state.offer_mode = value["payload"]["data"].get("mode").cloned();
-            let offer = state.offer.as_ref().context("BUD offer not ready")?;
-            // Preserve account destination, authorization secret, and envelope.
-            value["payload"]["data"] = offer.clone();
-            if !state.wire_id.is_empty() {
-                value["payload"]["attempt_id"] = json!(state.wire_id);
-            }
-            return Ok(Some(serde_json::to_string(&value)?));
-        }
-        if value["action"] == "candex" {
-            return Ok(Some(String::new()));
-        }
-        if value["action"] == "offer_cancel" && !state.wire_id.is_empty() {
-            value["payload"]["attempt_id"] = json!(state.wire_id);
-            return Ok(Some(serde_json::to_string(&value)?));
-        }
-        Ok(None)
-    }
 
-    pub fn incoming(&self, text: &str) -> Result<Option<String>> {
-        let Ok(mut value) = serde_json::from_str::<Value>(text) else {
-            return Ok(None);
+    pub fn incoming(&self, text: &str) -> Result<()> {
+        let Ok(value) = serde_json::from_str::<Value>(text) else {
+            return Ok(());
         };
         let wire = value["payload"]["attempt_id"].as_str().unwrap_or("");
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.retired_wires.iter().any(|id| id == wire) {
-            return Ok(Some(String::new()));
+            return Ok(());
         }
         let current = if state.wire_id.is_empty() {
             self.id.as_str()
@@ -253,9 +215,8 @@ impl Attempt {
                 Some("answer_relay" | "candex_relay" | "close")
             )
         {
-            return Ok(None);
+            return Ok(());
         }
-        let duplicate_answer = state.answer_sent && value["action"] == "answer_relay";
         drop(state);
         ensure!(text.len() <= 16 * 1024, "BUD signaling exceeds limit");
         if value["action"] == "answer_relay" && value["payload"]["approved"] == true {
@@ -265,42 +226,12 @@ impl Attempt {
                 "malformed BUD answer"
             );
         }
+        // The BUD worker owns termination, credentials and direct-to-relay retry.
         self.commands
             .try_send(text.to_owned())
             .context("BUD signaling queue unavailable")?;
         self.thread.unpark();
-        // Native attempt termination belongs to the BUD worker. Forwarding it
-        // to the signaling consumer would cancel the whole connection before
-        // that worker can replace a failed direct attempt with a relay offer.
-        if value["action"] == "close" {
-            return Ok(Some(String::new()));
-        }
-        if value["action"] == "answer_relay" {
-            self.state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .answer_sent = true;
-            if duplicate_answer {
-                return Ok(Some(String::new()));
-            }
-        }
-        value["payload"]["attempt_id"] = json!(self.id);
-        if value["action"] == "answer_relay" && value["payload"]["data"].is_object() {
-            let mode = self
-                .state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .offer_mode
-                .clone();
-            if let Some(mode) = mode {
-                value["payload"]["data"]["mode"] = mode;
-            }
-            if let Some(creds) = value["payload"]["data"]["creds"].as_object_mut() {
-                creds.remove("aes256");
-            }
-            return Ok(Some(serde_json::to_string(&value)?));
-        }
-        Ok(Some(serde_json::to_string(&value)?))
+        Ok(())
     }
 
     pub fn send(&self, frame: &[u8]) -> Result<()> {
@@ -348,19 +279,6 @@ impl Attempt {
             .unwrap_or_else(|e| e.into_inner())
             .controls
             .pop_front()
-    }
-    pub fn ingress(&self) -> crate::media_ingress::Ingress {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .ingress
-            .clone()
-    }
-    pub fn fail(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.failure = Some("BUD application signaling failed");
-        self.cancel.store(true, Ordering::Release);
-        self.thread.unpark();
     }
 
     pub fn failure(&self) -> Option<&'static str> {
@@ -431,7 +349,6 @@ fn switch_offer(state: &Mutex<State>, cancel: &AtomicBool, id: &str, data: Value
         ensure!(state.retired_wires.len() < 32, "BUD relay retry limit");
         let previous_id = std::mem::replace(&mut state.wire_id, id.into());
         state.retired_wires.push(previous_id);
-        state.offer = Some(data);
         state.events.clear();
         state.controls.clear();
         (
@@ -483,7 +400,6 @@ fn complete_offer(state: &Mutex<State>, cancel: &AtomicBool, offer: Value) -> Re
         .context("native account destination missing")?;
     message["payload"]["data"] = offer.clone();
     state.template = Some(message.clone());
-    state.offer = Some(offer);
     let writer = state
         .writer
         .clone()
@@ -1190,13 +1106,17 @@ mod tests {
         assert_eq!(relays[2].transport, RelayTransport::Tcp);
         assert_eq!(relays[3].transport, RelayTransport::Tcp);
     }
+    fn prepare_offer(attempt: &Attempt, text: &str, writer: SignalingWrite) {
+        let mut state = attempt.state.lock().unwrap();
+        state.template = Some(serde_json::from_str(text).unwrap());
+        state.writer = Some(writer);
+    }
     fn isolated() -> (Attempt, mpsc::Receiver<String>) {
         let (commands, receiver) = mpsc::sync_channel(2);
         (
             Attempt {
                 id: "isolated".into(),
                 state: Arc::new(Mutex::new(State {
-                    offer: Some(json!({"mode":1,"creds":{"aes256":"isolated-key-sentinel"}})),
                     ..Default::default()
                 })),
                 session: Default::default(),
@@ -1230,41 +1150,14 @@ mod tests {
     }
 
     #[test]
-    fn native_offer_preserves_authorization_and_unrelated_messages() {
-        let (attempt, _) = isolated();
-        let source = json!({"action":"offer","payload":{"attempt_id":"isolated","to":"host","secret":"authorization-sentinel","data":{"mode":2,"creds":{"ice_pwd":"web-placeholder"}}}}).to_string();
-        let wire: Value =
-            serde_json::from_str(&attempt.outgoing(&source, None).unwrap().unwrap()).unwrap();
-        assert_eq!(wire["payload"]["secret"], "authorization-sentinel");
-        assert_eq!(wire["payload"]["to"], "host");
-        assert_eq!(wire["payload"]["data"]["mode"], 1);
-        assert_eq!(
-            wire["payload"]["data"]["creds"]["aes256"],
-            "isolated-key-sentinel"
-        );
-        assert!(attempt
-            .outgoing(
-                r#"{"action":"offer","payload":{"attempt_id":"stale"}}"#,
-                None
-            )
-            .unwrap()
-            .is_none());
-        assert!(attempt.outgoing("__ping__", None).unwrap().is_none());
-    }
-    #[test]
-    fn native_answer_keeps_aes_out_of_consumer_and_rejects_stale_delivery() {
+    fn native_answer_queues_credentials_only_for_the_active_worker() {
         let (attempt, incoming) = isolated();
-        attempt.state.lock().unwrap().offer_mode = Some(json!(2));
         let wire = json!({"action":"answer_relay","payload":{"attempt_id":"isolated","approved":true,"data":{"mode":1,"creds":{"aes256":"native-key-sentinel","ice_ufrag":"abc"}}}}).to_string();
-        let consumer: Value =
-            serde_json::from_str(&attempt.incoming(&wire).unwrap().unwrap()).unwrap();
+        attempt.incoming(&wire).unwrap();
         assert_eq!(incoming.try_recv().unwrap(), wire);
-        assert_eq!(consumer["payload"]["data"]["mode"], 2);
-        assert!(consumer["payload"]["data"]["creds"].get("aes256").is_none());
-        assert!(attempt
+        attempt
             .incoming(r#"{"action":"answer_relay","payload":{"attempt_id":"stale"}}"#)
-            .unwrap()
-            .is_none());
+            .unwrap();
         assert!(incoming.try_recv().is_err());
     }
     #[test]
@@ -1281,7 +1174,7 @@ mod tests {
             true
         });
         let offer = json!({"action":"offer","payload":{"attempt_id":"isolated","to":"real-host","secret":"authorization-sentinel","data":{"mode":2}}}).to_string();
-        attempt.outgoing(&offer, Some(writer)).unwrap();
+        prepare_offer(&attempt, &offer, writer);
         assert!(switch_offer(
             &attempt.state,
             &attempt.cancel,
@@ -1297,14 +1190,11 @@ mod tests {
         assert_eq!(sent[1]["payload"]["attempt_id"], "isolated-turn-1");
         assert_eq!(sent[1]["payload"]["secret"], "authorization-sentinel");
         drop(sent);
-        assert_eq!(attempt.incoming(r#"{"action":"answer_relay","payload":{"attempt_id":"isolated","approved":true,"data":{}}}"#).unwrap(), Some(String::new()));
+        attempt.incoming(r#"{"action":"answer_relay","payload":{"attempt_id":"isolated","approved":true,"data":{}}}"#).unwrap();
         assert!(incoming.try_recv().is_err());
         let response = json!({"action":"answer_relay","payload":{"attempt_id":"isolated-turn-1","approved":true,"data":{"mode":1,"creds":{"aes256":"key"}}}}).to_string();
-        let consumer: Value =
-            serde_json::from_str(&attempt.incoming(&response).unwrap().unwrap()).unwrap();
-        assert_eq!(consumer["payload"]["attempt_id"], "isolated");
+        attempt.incoming(&response).unwrap();
         assert_eq!(incoming.try_recv().unwrap(), response);
-        assert_eq!(attempt.outgoing(r#"{"action":"candex","payload":{"attempt_id":"isolated","data":{"ip":"stale"}}}"#, None).unwrap(), Some(String::new()));
         attempt.state.lock().unwrap().established = true;
         withdraw_pending(&attempt.state);
         assert_eq!(writes.lock().unwrap().len(), 2);
@@ -1328,7 +1218,7 @@ mod tests {
     fn direct_close_is_owned_by_worker_and_cannot_cancel_consumer_before_relay_retry() {
         let (attempt, incoming) = isolated();
         let close = r#"{"action":"close","payload":{"attempt_id":"isolated"}}"#;
-        assert_eq!(attempt.incoming(close).unwrap(), Some(String::new()));
+        attempt.incoming(close).unwrap();
         let queued = incoming.try_recv().unwrap();
         assert!(native_close(&queued, "isolated"));
         assert!(!native_close(&queued, "isolated-turn-1"));
@@ -1340,10 +1230,10 @@ mod tests {
             state.retired_wires.push("isolated".into());
             state.wire_id = "isolated-turn-1".into();
         }
-        assert_eq!(attempt.incoming(close).unwrap(), Some(String::new()));
+        attempt.incoming(close).unwrap();
         assert!(incoming.try_recv().is_err());
         let relay_close = r#"{"action":"close","payload":{"attempt_id":"isolated-turn-1"}}"#;
-        assert_eq!(attempt.incoming(relay_close).unwrap(), Some(String::new()));
+        attempt.incoming(relay_close).unwrap();
         assert!(native_close(
             &incoming.try_recv().unwrap(),
             "isolated-turn-1"
@@ -1355,7 +1245,7 @@ mod tests {
         let (attempt, incoming) = isolated();
         let offer = json!({"action":"offer","payload":{"attempt_id":"isolated","to":"fixture-host","data":{}}}).to_string();
         attempt.state.lock().unwrap().wire_id = "isolated".into();
-        attempt.outgoing(&offer, Some(Arc::new(|_| true))).unwrap();
+        prepare_offer(&attempt, &offer, Arc::new(|_| true));
         for current in ["udp-attempt", "tls-attempt", "tcp-attempt"] {
             assert!(switch_offer(
                 &attempt.state,
@@ -1368,7 +1258,7 @@ mod tests {
         for retired in ["isolated", "udp-attempt", "tls-attempt"] {
             for action in ["close", "answer_relay", "candex_relay"] {
                 let signal = json!({"action":action,"payload":{"attempt_id":retired}}).to_string();
-                assert_eq!(attempt.incoming(&signal).unwrap(), Some(String::new()));
+                attempt.incoming(&signal).unwrap();
             }
         }
         assert!(incoming.try_recv().is_err());
@@ -1380,7 +1270,6 @@ mod tests {
     #[test]
     fn malformed_active_answer_fails_without_mutating_consumer_or_queue() {
         let (attempt, incoming) = isolated();
-        attempt.state.lock().unwrap().offer_mode = Some(json!(2));
         assert!(attempt.incoming(r#"{"action":"answer_relay","payload":{"attempt_id":"isolated","approved":true,"data":42}}"#).is_err());
         assert!(incoming.try_recv().is_err());
     }
@@ -1450,7 +1339,7 @@ mod tests {
             true
         });
         let offer = json!({"action":"offer","payload":{"attempt_id":"isolated","to":"host","secret":"authorization-sentinel","data":{"mode":2}}}).to_string();
-        attempt.outgoing(&offer, Some(writer)).unwrap();
+        prepare_offer(&attempt, &offer, writer);
         switch_offer(&attempt.state, &attempt.cancel, &first, json!({"mode":1})).unwrap();
         send_candidate(&attempt.state, &Event::Ready).unwrap();
         let writes = writes.lock().unwrap();
@@ -1458,11 +1347,8 @@ mod tests {
         assert_eq!(writes[2]["payload"]["attempt_id"], first);
         assert_eq!(writes[1]["payload"]["secret"], "authorization-sentinel");
         drop(writes);
-        assert_eq!(
-            attempt
-                .incoming(r#"{"action":"close","payload":{"attempt_id":"isolated"}}"#)
-                .unwrap(),
-            Some(String::new())
-        );
+        attempt
+            .incoming(r#"{"action":"close","payload":{"attempt_id":"isolated"}}"#)
+            .unwrap();
     }
 }

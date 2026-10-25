@@ -1,20 +1,24 @@
 //! One cancellation signal shared by the UI and session workers.
-use std::sync::{Condvar, Mutex};
-use std::time::Duration;
+use std::sync::Mutex;
+#[cfg(test)]
+use std::{sync::Condvar, time::Duration};
 
 #[derive(Default)]
 pub struct StopSignal {
     stopped: Mutex<bool>,
+    #[cfg(test)]
     changed: Condvar,
 }
 impl StopSignal {
     pub fn stop(&self) {
         *self.stopped.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        #[cfg(test)]
         self.changed.notify_all();
     }
     pub fn stopped(&self) -> bool {
         *self.stopped.lock().unwrap_or_else(|e| e.into_inner())
     }
+    #[cfg(test)]
     pub fn wait_timeout(&self, timeout: Duration) -> bool {
         let guard = self.stopped.lock().unwrap_or_else(|e| e.into_inner());
         *self

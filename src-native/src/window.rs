@@ -48,13 +48,11 @@ pub struct Window {
     // Covers construction and destruction as well as the visible page. Its HWND
     // is not available until open() has already painted the native controls.
     settings_active: AtomicBool,
-    pub gui_visibility: crate::gui_visibility::State,
     pub hwnd: AtomicUsize,
     pub closing: AtomicBool,
     pub events: crate::event_queue::Queue<Event>,
     pub dimensions: Mutex<(i32, i32)>,
 
-    pub audio_registry: Mutex<crate::audio_windows::Registry>,
     pub video_report: Mutex<Option<crate::video_output::Snapshot>>,
     video_hwnd: AtomicUsize,
     video_create_failed: AtomicBool,
@@ -137,14 +135,12 @@ impl Window {
             connection_settings: Default::default(),
             settings_page: AtomicUsize::new(0),
             settings_active: AtomicBool::new(false),
-            gui_visibility: Default::default(),
             hwnd: AtomicUsize::new(0),
             closing: AtomicBool::new(false),
             events: Default::default(),
             dimensions: Mutex::new((1024, 720)),
 
             video_report: Default::default(),
-            audio_registry: Default::default(),
             video_hwnd: AtomicUsize::new(0),
             video_create_failed: AtomicBool::new(false),
             video_ready: AtomicBool::new(false),
@@ -364,10 +360,8 @@ impl Window {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         if let Some(manager) = manager {
-            // Suspend GL swaps before open() creates/shows/paints the GDI child,
-            // not after it returns. The video surface must also be hidden first.
+            // Suspend input and hide video before painting the GDI settings child.
             self.settings_active.store(true, Ordering::Release);
-            self.gui_visibility.cover(true);
             self.input_suspended.store(true, Ordering::Release);
             self.apply_input_capture();
             self.apply_relative_mouse(false);
@@ -376,7 +370,6 @@ impl Window {
             self.settings_page.store(page as usize, Ordering::Release);
             if page.is_null() {
                 self.settings_active.store(false, Ordering::Release);
-                self.gui_visibility.cover(false);
                 self.redraw_client();
             }
             self.input_suspended.store(false, Ordering::Release);
@@ -848,19 +841,6 @@ impl Window {
         self.push(Event::RelativeMode(acquired));
     }
 
-    pub fn initial_geometry(&self) -> (i32, i32, i32, i32, bool) {
-        unsafe {
-            let mut origin = POINT { x: 0, y: 0 };
-            ClientToScreen(self.handle(), &mut origin);
-            (
-                origin.x,
-                origin.y,
-                GetSystemMetrics(SM_CXSCREEN),
-                GetSystemMetrics(SM_CYSCREEN),
-                GetForegroundWindow() == self.handle(),
-            )
-        }
-    }
     pub fn close(&self) {
         self.request_stop();
         unsafe {
@@ -1155,7 +1135,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                     // all its controls have actually finished destruction.
                     DestroyWindow(page);
                     s.settings_active.store(false, Ordering::Release);
-                    s.gui_visibility.cover(false);
                     SetFocus(hwnd);
                     s.show_video_surface();
                     s.redraw_client();

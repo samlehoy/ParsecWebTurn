@@ -3,7 +3,7 @@ use crate::audio_layout::Layout;
 use anyhow::{bail, Result};
 use serde::Serialize;
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::VecDeque,
     sync::{mpsc, Arc, Mutex},
     thread::JoinHandle,
 };
@@ -33,66 +33,6 @@ pub struct Snapshot {
     pub failure_hresult: Option<String>,
     pub resources_released: bool,
 }
-#[derive(Default)]
-pub struct Registry {
-    next: u32,
-    outputs: BTreeMap<u32, Arc<Playback>>,
-    completed: VecDeque<Snapshot>,
-    rejected_layouts: BTreeMap<u32, Layout>,
-}
-impl Registry {
-    pub fn retain_snapshot(&mut self, snapshot: Snapshot) {
-        if self.completed.len() == 8 {
-            self.completed.pop_front();
-        }
-        self.completed.push_back(snapshot);
-    }
-    pub fn insert(&mut self, output: Playback) -> Result<u32> {
-        if self.outputs.len() >= 4 {
-            bail!("audio context limit");
-        }
-        self.next = self
-            .next
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("audio handle overflow"))?;
-        self.outputs.insert(self.next, Arc::new(output));
-        Ok(self.next)
-    }
-    pub fn get(&self, handle: u32) -> Result<Arc<Playback>> {
-        self.outputs
-            .get(&handle)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("invalid audio context"))
-    }
-    pub fn remove(&mut self, handle: u32) -> Result<Arc<Playback>> {
-        self.rejected_layouts.remove(&handle);
-        self.outputs
-            .remove(&handle)
-            .ok_or_else(|| anyhow::anyhow!("invalid audio context"))
-    }
-    pub fn rejected(&self, handle: u32, layout: Layout) -> bool {
-        self.rejected_layouts.get(&handle) == Some(&layout)
-    }
-    pub fn reject(&mut self, handle: u32, layout: Layout) {
-        self.rejected_layouts.insert(handle, layout);
-    }
-    pub fn replace(&mut self, handle: u32, output: Playback) -> Result<Arc<Playback>> {
-        let slot = self
-            .outputs
-            .get_mut(&handle)
-            .ok_or_else(|| anyhow::anyhow!("invalid audio context"))?;
-        let old = std::mem::replace(slot, Arc::new(output));
-        self.rejected_layouts.remove(&handle);
-        Ok(old)
-    }
-}
-#[derive(Default)]
-struct State {
-    report: Snapshot,
-    pcm: VecDeque<i16>,
-    stopped: bool,
-    reset: bool,
-}
 pub struct Playback {
     pub layout: Layout,
     shared: Arc<Mutex<State>>,
@@ -101,13 +41,6 @@ pub struct Playback {
     custom_buffer: bool,
 }
 impl Playback {
-    pub fn create(
-        window: Arc<crate::window::Window>,
-        min_buffer: u32,
-        max_buffer: u32,
-    ) -> Result<Self> {
-        Self::create_layout(window, min_buffer, max_buffer, Layout::STEREO)
-    }
     pub fn create_layout(
         window: Arc<crate::window::Window>,
         min_buffer: u32,
@@ -202,10 +135,12 @@ impl Playback {
         s.report.frames_queued += frames as u64;
         s.report.queued_frames = s.pcm.len() / channels;
     }
+    #[cfg(test)]
     pub fn queued_frames(&self) -> u32 {
         let s = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         (s.pcm.len() / usize::from(self.layout.channels) + s.report.device_padding as usize) as u32
     }
+    #[cfg(test)]
     pub fn reset(&self) {
         let mut s = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         s.pcm.clear();

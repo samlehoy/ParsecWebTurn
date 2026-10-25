@@ -30,7 +30,7 @@ impl Viewport {
         let [l, t, r, b] = self.rect()?;
         let axis = |v: i32, origin: i32, span: i32, source: u32| {
             let v = ((v as f64 - origin as f64) * source as f64 / span as f64).round() as i64;
-            // Preserve the pinned browser adapter's inclusive right/bottom edge.
+            // Preserve the host input protocol's inclusive right/bottom edge.
             if v == source as i64 - 1 {
                 source as i32
             } else {

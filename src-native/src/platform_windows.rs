@@ -1,9 +1,9 @@
-//! Documented Win32 Unicode clipboard, default browser and message-box APIs.
+//! Documented Win32 Unicode clipboard ownership and text APIs.
 use crate::platform::{Desktop, MAX_TEXT};
 use windows_sys::Win32::{
     Foundation::*,
-    System::{Com::*, DataExchange::*, Memory::*},
-    UI::{Shell::*, WindowsAndMessaging::*},
+    System::{DataExchange::*, Memory::*},
+    UI::WindowsAndMessaging::*,
 };
 
 pub struct NativeDesktop(pub usize);
@@ -89,39 +89,6 @@ impl Desktop for NativeDesktop {
             }
             // SetClipboardData transfers ownership to Windows on success.
             true
-        }
-    }
-    fn open_url(&self, url: &str) -> bool {
-        unsafe {
-            let init = CoInitializeEx(
-                std::ptr::null(),
-                (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
-            );
-            if init < 0 {
-                return false;
-            }
-            let target = wide(url);
-            let verb = wide("open");
-            let result = ShellExecuteW(
-                self.owner(),
-                verb.as_ptr(),
-                target.as_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                SW_SHOWNORMAL,
-            ) as isize;
-            CoUninitialize();
-            result > 32
-        }
-    }
-    fn alert(&self, title: &str, message: &str) -> bool {
-        unsafe {
-            MessageBoxW(
-                self.owner(),
-                wide(message).as_ptr(),
-                wide(title).as_ptr(),
-                MB_OK | MB_ICONINFORMATION,
-            ) != 0
         }
     }
 }

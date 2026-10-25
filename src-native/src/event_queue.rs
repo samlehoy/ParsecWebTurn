@@ -1,10 +1,8 @@
 //! Bounded FIFO with event-driven waiting; the predicate and notification share
 //! one mutex so an event arriving just before sleep cannot be lost.
-use std::{
-    collections::VecDeque,
-    sync::{Condvar, Mutex},
-    time::Instant,
-};
+use std::{collections::VecDeque, sync::Mutex};
+#[cfg(test)]
+use std::{sync::Condvar, time::Instant};
 const CAPACITY: usize = 256;
 
 struct State<T> {
@@ -16,6 +14,7 @@ struct State<T> {
 
 pub struct Queue<T> {
     state: Mutex<State<T>>,
+    #[cfg(test)]
     changed: Condvar,
 }
 
@@ -28,6 +27,7 @@ impl<T> Default for Queue<T> {
 
                 consumer: None,
             }),
+            #[cfg(test)]
             changed: Condvar::new(),
         }
     }
@@ -47,6 +47,7 @@ impl<T> Queue<T> {
                 consumer.unpark();
             }
             drop(state);
+            #[cfg(test)]
             self.changed.notify_one();
             true
         } else {
@@ -91,6 +92,7 @@ impl<T> Queue<T> {
         batch.into_iter().collect()
     }
 
+    #[cfg(test)]
     pub fn wait_until(&self, deadline: Instant) {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         drop(
@@ -108,6 +110,7 @@ impl<T> Queue<T> {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).stopped = true;
 
         self.wake_consumer();
+        #[cfg(test)]
         self.changed.notify_all();
     }
 }

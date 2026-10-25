@@ -57,17 +57,6 @@ pub fn own_memory() -> Option<MemoryUsage> {
         })
     }
 }
-pub fn record_memory(stage: &'static str) {
-    if crate::event_log::enabled() {
-        crate::event_log::record(
-            "INFO",
-            "memory_snapshot",
-            serde_json::json!({
-                "stage":stage,"process":own_memory(),
-            }),
-        );
-    }
-}
 
 #[derive(Default)]
 pub struct Processes {

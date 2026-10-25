@@ -14,6 +14,7 @@ pub struct Ingress {
     pub audio_decoder_available: bool,
 }
 impl Ingress {
+    #[cfg(test)]
     pub fn unavailable(&mut self, channel: u16, size: usize) {
         self.record(channel, size, true);
     }

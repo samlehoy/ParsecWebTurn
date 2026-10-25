@@ -234,11 +234,4 @@ impl Media {
             ..Default::default()
         }
     }
-
-    pub fn video_snapshot(&self) -> crate::video_output::Snapshot {
-        self.video.snapshot()
-    }
-    pub fn audio_snapshot(&self) -> crate::audio_stream::Snapshot {
-        self.audio.snapshot()
-    }
 }
