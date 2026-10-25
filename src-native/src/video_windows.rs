@@ -2268,10 +2268,10 @@ impl Renderer {
         source: RECT,
         color: u32,
         shared: &Shared,
-        window: &crate::window::Window,
+        _window: &crate::window::Window,
     ) -> Result<Presentation> {
         self.ten_bit_attempted = false;
-        let result = self.present_frame(texture, subresource, source, color, shared, window);
+        let result = self.present_frame(texture, subresource, source, color, shared);
         // Retry only a rejected 10-bit output operation, never a lost device or
         // decoder error. The decoded P010 surface is retained; no re-decode/copy.
         match result {
@@ -2291,7 +2291,7 @@ impl Renderer {
                     error.hresult.as_deref().unwrap_or("unsupported")
                 ));
                 self.processor = None;
-                self.present_frame(texture, subresource, source, color, shared, window)
+                self.present_frame(texture, subresource, source, color, shared)
             }
             other => other,
         }
@@ -2304,7 +2304,6 @@ impl Renderer {
         source: RECT,
         color: u32,
         shared: &Shared,
-        window: &crate::window::Window,
     ) -> Result<Presentation> {
         let prepare_started = Instant::now();
         let width = (source.right - source.left) as u32;

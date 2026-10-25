@@ -154,9 +154,6 @@ impl Window {
             video_visible: AtomicBool::new(true),
 
             #[cfg(test)]
-            synthetic_login,
-
-            live,
             online,
 
             stop: Default::default(),
@@ -243,7 +240,6 @@ impl Window {
                                 && msg.wParam == b'S' as usize
                                 && GetKeyState(VK_CONTROL as i32) < 0
                                 && GetKeyState(VK_SHIFT as i32) < 0
-                                && !ui.core_owns_key("KeyS", modifiers())
                             {
                                 if msg.lParam & (1 << 30) == 0 {
                                     ui.open_stats();
@@ -282,13 +278,6 @@ impl Window {
         self.hwnd.load(Ordering::Acquire) as HWND
     }
 
-    fn core_owns_key(&self, code: &str, mods: i32) -> bool {
-        #[cfg(not(test))]
-        {
-            let _ = (code, mods);
-            false
-        }
-    }
     fn native_menu_allows_input(&self) -> bool {
         {
             self.native_panel.load(Ordering::Acquire) == 0
@@ -311,13 +300,6 @@ impl Window {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .detached
-    }
-    pub fn repaint_settings_after_gl_pause(&self) {
-        // The GL worker has passed its last swap. Queue one final native paint
-        // on the UI thread in case that in-flight swap covered initial paint.
-        unsafe {
-            PostMessageW(self.handle(), WM_APP + 15, 0, 0);
-        }
     }
     #[cfg(feature = "vendor-video")]
     pub fn direct_presentation_allowed(&self) -> bool {
@@ -1203,18 +1185,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 }
                 return 0;
             }
-            m if m == WM_APP + 15 => {
-                let page = s.settings_page.load(Ordering::Acquire) as HWND;
-                if !page.is_null() && s.settings_open() {
-                    RedrawWindow(
-                        page,
-                        std::ptr::null(),
-                        std::ptr::null_mut(),
-                        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW,
-                    );
-                }
-                return 0;
-            }
             WM_COMMAND if wp & 0xffff == crate::connection_settings_ui::OPEN => {
                 s.open_connection_settings();
                 return 0;
@@ -1224,9 +1194,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
             WM_KEYDOWN
-                if wp as u32 == VK_OEM_COMMA as u32
-                    && GetKeyState(VK_CONTROL as i32) < 0
-                    && !s.core_owns_key("Comma", modifiers()) =>
+                if wp as u32 == VK_OEM_COMMA as u32 && GetKeyState(VK_CONTROL as i32) < 0 =>
             {
                 if lp & (1 << 30) == 0 {
                     s.open_connection_settings();
@@ -1419,9 +1387,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 // DefWindowProc releases the foreground WM_INPUT bookkeeping.
             }
             WM_KEYDOWN
-                if wp as u32 == VK_F8 as u32
-                    && s.video_hwnd.load(Ordering::Acquire) != 0
-                    && !s.core_owns_key("F8", modifiers()) =>
+                if wp as u32 == VK_F8 as u32 && s.video_hwnd.load(Ordering::Acquire) != 0 =>
             {
                 if lp & (1 << 30) == 0 {
                     s.apply_relative_mouse(false);
@@ -1430,20 +1396,16 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 }
                 return 0;
             }
-            WM_KEYUP
-                if wp as u32 == VK_F8 as u32
-                    && s.video_hwnd.load(Ordering::Acquire) != 0
-                    && !s.core_owns_key("F8", modifiers()) =>
-            {
+            WM_KEYUP if wp as u32 == VK_F8 as u32 && s.video_hwnd.load(Ordering::Acquire) != 0 => {
                 return 0;
             }
-            WM_KEYDOWN if wp as u32 == VK_F11 as u32 && !s.core_owns_key("F11", modifiers()) => {
+            WM_KEYDOWN if wp as u32 == VK_F11 as u32 => {
                 if lp & (1 << 30) == 0 {
                     s.set_fullscreen(!s.fullscreen_active.load(Ordering::Acquire));
                 }
                 return 0;
             }
-            WM_KEYUP if wp as u32 == VK_F11 as u32 && !s.core_owns_key("F11", modifiers()) => {
+            WM_KEYUP if wp as u32 == VK_F11 as u32 => {
                 return 0;
             }
             WM_SIZE => {

@@ -1,7 +1,7 @@
 //! Native cursor messages, backed by documented Win32 cursor APIs.
 //! Cursor image buffers are copied; window cursor ownership stays on its UI thread.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use windows_sys::Win32::{Graphics::Gdi::*, UI::WindowsAndMessaging::*};
 
 const MAX_SIDE: u32 = 256;

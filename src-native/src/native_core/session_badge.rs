@@ -9,7 +9,7 @@ use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::ClientToScreen,
     System::LibraryLoader::*,
-    UI::{Controls::*, Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
+    UI::{Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
 };
 
 pub(super) const SIZE: i32 = 48;

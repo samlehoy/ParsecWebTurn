@@ -974,7 +974,7 @@ fn worker(
                     continue;
                 };
                 {
-                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                    let s = state.lock().unwrap_or_else(|e| e.into_inner());
                     if s.cancelled || s.closing {
                         break;
                     }
@@ -1669,7 +1669,6 @@ mod tests {
         );
     }
     use super::*;
-    use crate::signaling::Credentials;
 
     #[test]
     fn relay_sync_remote_first_waits_for_relay_and_later_candidates_stay_after_marker() {

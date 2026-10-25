@@ -1,5 +1,9 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 #![warn(unused_crate_dependencies)]
+// Integration-only TLS fixtures are compiled as separate test crates.
+#[cfg(test)]
+use {rcgen as _, rustls as _, tokio_rustls as _};
+
 const APP_TITLE: &str = "EvoParseq";
 mod attempt;
 mod audio_layout;

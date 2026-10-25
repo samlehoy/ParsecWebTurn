@@ -111,4 +111,3 @@ impl Cache {
         self.entries.is_empty()
     }
 }
-

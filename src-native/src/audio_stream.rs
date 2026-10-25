@@ -407,7 +407,6 @@ impl Pipeline {
         Self {
             tx: Some(tx),
             state,
-            poll_lock: Mutex::new(()),
             worker: Some(worker),
             allowed,
         }

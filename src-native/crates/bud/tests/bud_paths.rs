@@ -1,9 +1,9 @@
 //! Real UDP connectivity gates. Two native clients are connectivity peers,
 //! not a stock host/media fixture: this proves the adapter's route and lifecycle
 //! only. The separately configured coturn test must not use real credentials.
+use evoparseq_bud::bud::{RelayTransport, Route, Session};
 use lowlat_client::{Event, Peer};
 use lowlat_core::conn::Kind;
-use evoparseq_bud::bud::{RelayTransport, Route, Session};
 use std::time::{Duration, Instant};
 
 fn peer(ours: lowlat_crypto::Credentials) -> Peer {

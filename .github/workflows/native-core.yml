@@ -51,6 +51,11 @@ jobs:
           Copy-Item -LiteralPath src-native/target/x86_64-pc-windows-msvc/release/evoparseq.exe -Destination dist/native-core/EvoParseq.exe
           & ./dist/native-core/EvoParseq.exe --version
           if ($LASTEXITCODE -ne 0) { throw 'Native version probe failed' }
+          & ./scripts/package-native.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Portable packaging failed' }
+          $packageVersion = (Get-Content VERSION -Raw).Trim()
+          $packageRoot = Get-ChildItem -Path "dist/evoparseq-package-*/EvoParseq-v$packageVersion-win64" -Directory | Select-Object -Last 1
+          Copy-Item -Path (Join-Path $packageRoot.FullName '*') -Destination dist/native-core -Force
           Copy-Item -LiteralPath docs/native-core.md -Destination dist/native-core/README.md
           Copy-Item -LiteralPath LICENSE -Destination dist/native-core/LICENSE
           Copy-Item -LiteralPath src-native/crates/bud/vendor/lowlat-client/LICENSE -Destination dist/native-core/LOWLAT-LICENSE.txt
