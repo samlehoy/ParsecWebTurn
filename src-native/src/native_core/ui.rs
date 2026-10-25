@@ -12,7 +12,7 @@ use windows_sys::Win32::{
     Graphics::Gdi::*,
     System::{
         LibraryLoader::*,
-        SystemServices::{SS_CENTERIMAGE, SS_ICON, SS_REALSIZEIMAGE},
+        SystemServices::{SS_CENTERIMAGE, SS_OWNERDRAW},
     },
     UI::{Controls::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
@@ -26,6 +26,7 @@ const SETTINGS: usize = 7;
 const DONE: usize = 0x6e01;
 const AUTO_REFRESH: usize = 0x6e02;
 const WORDMARK_BLUE: usize = 0x6e03;
+const WORDMARK_ICON: usize = 8;
 #[cfg(test)]
 thread_local! {static UI_FIXTURE:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
 
@@ -291,7 +292,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             }
 
             WM_DRAWITEM => {
-                if draw_button(lp) {
+                if draw_wordmark(lp, f) || draw_button(lp) {
                     return 1;
                 }
             }
@@ -548,15 +549,9 @@ pub fn choose(
             &f,
             "STATIC",
             "",
-            8,
-            SS_ICON | SS_CENTERIMAGE | SS_REALSIZEIMAGE,
+            WORDMARK_ICON,
+            SS_OWNERDRAW,
             [32, 24, 40, 46],
-        );
-        SendMessageW(
-            mark,
-            STM_SETICON,
-            crate::branding::launcher_icon() as usize,
-            0,
         );
         f.common_controls.push(mark);
         for (label, id, rect) in [
@@ -782,6 +777,31 @@ pub fn choose(
                     assert_eq!(IsWindowVisible(control) != 0, picker);
                 }
                 assert_eq!(text(f.peer), selected);
+                if let Some(path) = std::env::var_os("EVOPARSEQ_UI_CAPTURE") {
+                    let path = std::path::PathBuf::from(path);
+                    let restored = path.with_file_name(if picker {
+                        "picker-restored.png"
+                    } else {
+                        "sign-in-restored.png"
+                    });
+                    capture_fixture(hwnd, &restored).unwrap();
+                    let initial = image::open(path.with_file_name("sign-in.png"))
+                        .unwrap()
+                        .to_rgb8();
+                    let after = image::open(restored).unwrap().to_rgb8();
+                    for y in 24..70 {
+                        for x in 32..72 {
+                            assert_eq!(
+                                initial.get_pixel(x, y),
+                                after.get_pixel(x, y),
+                                "Wordmark changed after Settings at {x},{y}"
+                            );
+                            if y < 27 || y >= 67 {
+                                assert_eq!(after.get_pixel(x, y).0, [240, 243, 245]);
+                            }
+                        }
+                    }
+                }
             }
             f.session = None; // Do not run explicit account logout for the fixture.
             DestroyWindow(hwnd);
@@ -806,6 +826,42 @@ pub fn choose(
         }
         Ok(f.result.take())
     }
+}
+
+/// Paint every pixel, including icon padding. SS_ICON's centered padding
+/// could retain a light/default brush after the Settings hide/show cycle.
+unsafe fn draw_wordmark(lp: LPARAM, f: &Form) -> bool {
+    if lp == 0 {
+        return false;
+    }
+    let item = &*(lp as *const DRAWITEMSTRUCT);
+    if item.CtlType != ODT_STATIC || item.CtlID != WORDMARK_ICON as u32 {
+        return false;
+    }
+    FillRect(item.hDC, &item.rcItem, f.brush);
+    let bounds = item.rcItem;
+    DrawIconEx(
+        item.hDC,
+        bounds.left,
+        bounds.top + 3,
+        crate::branding::launcher_icon(),
+        40,
+        40,
+        0,
+        null_mut(),
+        DI_NORMAL,
+    );
+    // Keep the two liked accent bars as intentional decoration, not leftovers.
+    let brush = GetStockObject(DC_BRUSH) as HBRUSH;
+    let previous = SetDCBrushColor(item.hDC, FG);
+    let mut bar = bounds;
+    bar.bottom = bar.top + 3;
+    FillRect(item.hDC, &bar, brush);
+    bar = bounds;
+    bar.top = bar.bottom - 3;
+    FillRect(item.hDC, &bar, brush);
+    SetDCBrushColor(item.hDC, previous);
+    true
 }
 
 pub(crate) unsafe fn draw_button(lp: LPARAM) -> bool {
