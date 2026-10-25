@@ -487,6 +487,20 @@ impl Pipeline {
         }
         accepted
     }
+    /// Called only at an explicit BUD encoder-generation boundary. The worker
+    /// owns GPU teardown; the network consumer never touches a decoded frame.
+    #[cfg(feature = "bud")]
+    pub fn encoder_rebuilt(&self) {
+        self.shared
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .encoder_rebuilt(Instant::now());
+        self.shared.1.notify_one();
+        if let Some(wake) = &self.shared.2 {
+            wake.notify();
+        }
+    }
     pub fn take_keyframe_request(&self) -> Option<u64> {
         let mut q = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
         q.take_keyframe_request(Instant::now())
@@ -559,6 +573,7 @@ fn run(
     let mut headers = Vec::new();
     let mut header_bytes = 0usize;
     let mut generation = 0;
+    let mut stream_generation = 0;
     let mut parameters = crate::video_stream::ParameterCache::default();
     let mut awaiting_random_access = true;
     let mut vendor_failed = false;
@@ -571,7 +586,7 @@ fn run(
     let zero_requested = false;
     loop {
         let retry_display = session.as_ref().is_some_and(Session::has_pending_display);
-        let (next_generation, frame) = {
+        let (next_generation, next_stream, frame) = {
             let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
             while q.report.queue_depth == 0
                 && !q.stopped
@@ -618,8 +633,13 @@ fn run(
             {
                 break;
             }
-            (q.reset_generation, q.pop())
+            (q.reset_generation, q.stream_generation, q.pop())
         };
+        if next_stream != stream_generation {
+            stream_generation = next_stream;
+            // Old codec headers must never bootstrap a new host encoder.
+            parameters = Default::default();
+        }
         if next_generation != generation {
             generation = next_generation;
             awaiting_random_access = true;

@@ -186,6 +186,7 @@ pub struct Queue {
     free_buffers: Vec<Vec<u8>>,
     free_bytes: usize,
     pub reset_generation: u64,
+    pub stream_generation: u64,
     recovery_started: Option<Instant>,
     recovery_attempts: u8,
     request_pending: bool,
@@ -205,6 +206,7 @@ impl Default for Queue {
             free_buffers: Vec::new(),
             free_bytes: 0,
             reset_generation: 0,
+            stream_generation: 0,
             recovery_started: None,
             recovery_attempts: 0,
             request_pending: false,
@@ -265,6 +267,11 @@ impl Queue {
             return false;
         }
         if idr {
+            // A BUD rebuild already supplied the requested key. Keep the
+            // existing WebRTC recovery/request policy (stream_generation=0).
+            if self.stream_generation != 0 {
+                self.request_pending = false;
+            }
             self.report.waiting_for_idr = false;
         }
         self.report.frames_queued = self.report.frames_queued.saturating_add(1);
@@ -317,6 +324,22 @@ impl Queue {
             self.free_bytes += buffer.capacity();
             self.free_buffers.push(buffer);
         }
+    }
+
+    /// An explicit encoder rebuild starts a new reference chain and may use a
+    /// different codec. Retire old compressed work before any new payload is
+    /// queued; this is not a decoder failure and consumes no recovery attempt.
+    pub fn encoder_rebuilt(&mut self, now: Instant) -> bool {
+        if self.stopped || self.report.failure_stage.is_some() {
+            return false;
+        }
+        self.clear();
+        self.stream_generation = self.stream_generation.wrapping_add(1);
+        self.reset_generation = self.reset_generation.wrapping_add(1);
+        self.report.codec = None;
+        self.report.waiting_for_idr = true;
+        self.begin_format_change(now, true);
+        true
     }
 
     pub fn recover(&mut self, now: Instant) -> bool {
@@ -426,6 +449,41 @@ impl Queue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn announced_encoder_rebuild_retires_old_codec_without_spending_error_budget() {
+        use crate::video_stream::Codec;
+        let mut q = Queue::default();
+        for turn in 0..8 {
+            let old = if turn % 2 == 0 {
+                Codec::Hevc
+            } else {
+                Codec::H264
+            };
+            assert!(q.submit_codec(vec![1], true, true, 0, old));
+            let previous = q.reset_generation;
+            assert!(q.encoder_rebuilt(Instant::now()));
+            assert_eq!(q.reset_generation, previous + 1);
+            assert_eq!(q.stream_generation, previous + 1);
+            assert_eq!(q.report.queue_depth, 0);
+            assert_eq!(q.report.codec, None);
+            assert_eq!(q.recovery_attempts, 0);
+            let next = if old == Codec::Hevc {
+                Codec::H264
+            } else {
+                Codec::Hevc
+            };
+            let bytes = vec![2];
+            let pointer = bytes.as_ptr();
+            assert!(q.submit_codec(bytes, true, true, 1, next));
+            assert_eq!(q.take_keyframe_request(Instant::now()), None);
+            let frame = q.pop().unwrap();
+            assert_eq!(frame.codec, next);
+            assert_eq!(frame.bytes.as_ptr(), pointer);
+            q.recovered();
+        }
+        q.stopped = true;
+        assert!(!q.encoder_rebuilt(Instant::now()));
+    }
     #[test]
     fn local_timing_is_bounded_and_measures_queue_age_without_sleeping() {
         let mut q = Queue::default();

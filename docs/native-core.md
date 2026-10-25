@@ -177,3 +177,14 @@ subscription in the examined contract. The restriction governs this client's
 absolute desktop reports and output selector, not physical input by someone at
 the host or the operating system's cursor confinement during a game. No
 relative-desktop or normal-injection fallback is introduced.
+
+
+An announced BUD encoder rebuild (metadata or an encoder-generation change)
+retires the old compressed queue, decoder and cached codec parameters before the
+new keyframe. H.264/HEVC changes across this boundary can reuse the video worker
+and presentation window; unannounced codec changes remain rejected. This does
+not consume decoder-error recovery attempts or add decoded-frame copies. Initial
+video requests wait for the complete host config even when the output-list reply
+arrives first. Host configuration logs include display ordinals/counts rather
+than private output identities to distinguish configuration confirmation from
+successful media decoding.

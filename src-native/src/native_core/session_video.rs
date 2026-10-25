@@ -10,6 +10,7 @@ use std::{
 
 const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[derive(Default)]
 pub(super) struct HostSettings {
     config: host_video::Config,
     query_deadline: Option<Instant>,
@@ -30,13 +31,8 @@ impl HostSettings {
             session_ui::waiting(window);
         }
         Self {
-            config: host_video::Config::default(),
-            query_deadline: None,
-            confirmation: None,
             pending,
-            requested_display: None,
-            pending_output: None,
-            outputs_deadline: None,
+            ..Default::default()
         }
     }
 
@@ -101,7 +97,7 @@ impl HostSettings {
                 return;
             }
         }
-        let observed = self.config.observed();
+        let observed = self.observed(window);
         crate::event_log::record("INFO", "native_host_video_configuration", observed.clone());
         *window
             .native_host_video
@@ -118,7 +114,7 @@ impl HostSettings {
         }
     }
     fn send_pending(&mut self, attempt: &Attempt, window: &Window) {
-        let Some(next) = self.pending.take() else {
+        let Some(next) = self.take_pending() else {
             return;
         };
         let size = window.native_display_size();
@@ -136,6 +132,29 @@ impl HostSettings {
                 self.failed(window);
             }
         }
+    }
+
+    fn take_pending(&mut self) -> Option<Video> {
+        // Output-list and configuration replies may arrive in either order.
+        // Never consume the initial request without its complete patch base.
+        if !self.config.ready() {
+            return None;
+        }
+        self.pending.take()
+    }
+    fn observed(&self, window: &Window) -> serde_json::Value {
+        let mut report = self.config.observed();
+        let displays = window
+            .native_displays
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        report["display_index"] = serde_json::json!(displays
+            .outputs
+            .iter()
+            .position(|o| Some(o.id.as_str()) == self.config.output_id())
+            .map(|i| i + 1));
+        report["display_count"] = serde_json::json!(displays.outputs.len());
+        report
     }
 
     pub fn poll(&mut self, attempt: &Attempt, window: &Window) -> Result<()> {
@@ -184,7 +203,7 @@ impl HostSettings {
                         } else {
                             "native_host_video_not_confirmed"
                         },
-                        self.config.observed(),
+                        self.observed(window),
                     );
                     session_ui::finished(window, confirmed);
                     if confirmed && self.ensure_hid_primary(attempt, window) {
@@ -428,5 +447,28 @@ impl HostSettings {
         );
         self.confirmation = Some(confirmation);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn output_list_reply_cannot_consume_video_request_before_host_config() {
+        let mut settings = HostSettings {
+            pending: Some(Video {
+                fps: Some(60),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(settings.take_pending().is_none());
+        assert!(settings.pending.is_some());
+        settings
+            .config
+            .receive(br#"{"video":[{"output":"fixture","hostOS":1}]}"#)
+            .unwrap();
+        assert_eq!(settings.take_pending().unwrap().fps, Some(60));
+        assert!(settings.take_pending().is_none());
     }
 }

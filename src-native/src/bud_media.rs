@@ -34,6 +34,8 @@ pub struct Media {
     audio_sender: crate::audio_stream::Sender,
     inspector: crate::video_stream::Inspector,
     waiting_for_keyframe: bool,
+    encoder_generation: Option<u32>,
+    metadata_rebuilt: bool,
     hevc_available: bool,
     ten_bit_available: bool,
     chroma_444_available: bool,
@@ -83,12 +85,22 @@ impl Media {
                 audio_sender,
                 inspector,
                 waiting_for_keyframe: true,
+                encoder_generation: None,
+                metadata_rebuilt: false,
                 hevc_available,
                 ten_bit_available: hevc_available && ten_bit,
                 chroma_444_available: hevc_available && chroma_444,
             },
             session,
         ))
+    }
+
+    fn restart_encoder(&mut self) {
+        self.waiting_for_keyframe = true;
+        self.inspector = Default::default();
+        self.inspector.enable_hevc(self.hevc_available);
+        self.video.encoder_rebuilt();
+        crate::event_log::record("INFO", "bud_video_encoder_rebuilt", serde_json::json!({}));
     }
 
     fn video_message(&mut self, message: &[u8]) -> Result<bool> {
@@ -120,13 +132,21 @@ impl Media {
         match parsed {
             Video::Metadata(metadata) => {
                 if metadata.rebuilt {
-                    self.waiting_for_keyframe = true;
-                    self.inspector = Default::default();
-                    self.inspector.enable_hevc(self.hevc_available);
+                    self.restart_encoder();
+                    self.metadata_rebuilt = true;
                 }
                 Ok(false)
             }
             Video::AccessUnit { header, annex_b } => {
+                if self
+                    .encoder_generation
+                    .is_some_and(|previous| previous != header.frame_id)
+                    && !self.metadata_rebuilt
+                {
+                    self.restart_encoder();
+                }
+                self.encoder_generation = Some(header.frame_id);
+                self.metadata_rebuilt = false;
                 // Existing inspector handles the actual Annex B codec. Native
                 // headers from older hosts may label HEVC as H.264.
                 let Some(info) = self.inspector.receive(annex_b) else {
