@@ -137,3 +137,30 @@ intermediate decoded texture or additional color conversion pass is introduced.
 The regression test validates the format/array/geometry boundary without
 claiming successful hardware 4:4:4 decoding. Actual GPU/driver output still needs
 live confirmation. Failures record the vendor fallback reason for diagnosis.
+
+
+## Host display selection
+
+The Session menu queries the stock host's output list (application sub-ID 10,
+reply 12) and current owner configuration (9, reply 11). Selecting a listed
+physical or virtual output fetches fresh settings, changes only `video[0].output`
+and sends the complete preserved configuration (11). The write is sent once;
+read-only queries confirm the selected identity for up to five seconds. Other
+video slots and unknown host settings are preserved. Refresh handles output
+hotplug; a missing/invalid list leaves the stream running. Output IDs are neither
+persisted as client preferences nor written to the event log.
+
+This selects one existing stream, not simultaneous multiple stream windows or
+creation of virtual displays. BUD and WebRTC reuse their existing reliable
+control path and unchanged GPU decoding/presentation. No new dependency, image
+copy, frame readback or per-frame display query is introduced. Live physical and
+virtual multi-output switching still needs validation against a stock host.
+
+HID mouse mode disables the selector in the UI and rejects requests in the
+session controller. It keeps the existing primary-monitor-normalized absolute
+reports, clamped to 0..32767; camera-relative reports retain their existing path.
+HID keyboard alone does not disable switching. **The host must already capture
+its primary display for HID mouse use.** The examined host list does not report
+primary identity, so the client cannot yet identify/force that output, or verify
+an externally changed capture target. Disabling the selector is not proof of
+that condition. No relative-desktop or normal-injection fallback is introduced.

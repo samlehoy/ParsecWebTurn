@@ -1,6 +1,6 @@
 //! Host settings transactions only; decoding/presentation stay on their workers.
 use super::transport::Attempt;
-use super::{host_video, profile::Video, session_ui};
+use super::{host_displays, host_video, profile::Video, session_ui};
 use crate::window::Window;
 use anyhow::{ensure, Result};
 use std::{
@@ -16,6 +16,8 @@ pub(super) struct HostSettings {
     confirmation: Option<host_video::Confirmation>,
     pending: Option<Video>,
     requested_display: Option<(u32, u32)>,
+    pending_output: Option<String>,
+    outputs_deadline: Option<Instant>,
 }
 
 impl HostSettings {
@@ -30,14 +32,17 @@ impl HostSettings {
             confirmation: None,
             pending,
             requested_display: None,
+            pending_output: None,
+            outputs_deadline: None,
         }
     }
 
     fn busy(&self) -> bool {
-        self.confirmation.is_some() || self.pending.is_some()
+        self.confirmation.is_some() || self.pending.is_some() || self.pending_output.is_some()
     }
 
-    pub fn connected(&mut self, attempt: &Attempt) -> Result<()> {
+    pub fn connected(&mut self, attempt: &Attempt, window: &Window) -> Result<()> {
+        self.query_outputs(attempt, window);
         self.query_deadline = Some(Instant::now() + QUERY_TIMEOUT);
         if attempt.send(&host_video::query()?).is_err() {
             crate::event_log::record(
@@ -53,6 +58,7 @@ impl HostSettings {
         self.query_deadline = None;
         if self.config.receive(bytes).is_err() {
             self.pending = None;
+            self.pending_output = None;
             crate::event_log::record(
                 "WARN",
                 "native_host_video_configuration_invalid",
@@ -64,6 +70,33 @@ impl HostSettings {
             return;
         }
 
+        window
+            .native_displays
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .current = self.config.output_id().map(str::to_owned);
+        session_ui::displays_changed(window);
+        if let Some(id) = self.pending_output.take() {
+            let result = (|| -> Result<()> {
+                window
+                    .native_displays
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .validate_selection(&id, attempt.hid_mouse_enabled())?;
+                attempt.send(&self.config.select_output(&id)?)?;
+                self.confirmation = Some(host_video::Confirmation::output(&id, Instant::now()));
+                Ok(())
+            })();
+            crate::event_log::record(
+                if result.is_ok() { "INFO" } else { "WARN" },
+                "native_host_display_requested",
+                serde_json::json!({"sent":result.is_ok()}),
+            );
+            if result.is_err() {
+                self.failed(window);
+                return;
+            }
+        }
         let observed = self.config.observed();
         crate::event_log::record("INFO", "native_host_video_configuration", observed.clone());
         *window
@@ -94,6 +127,26 @@ impl HostSettings {
     }
 
     pub fn poll(&mut self, attempt: &Attempt, window: &Window) -> Result<()> {
+        if self
+            .outputs_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.outputs_deadline = None;
+            let mut displays = window
+                .native_displays
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            displays.loading = false;
+            displays.outputs.clear();
+            drop(displays);
+            session_ui::displays_changed(window);
+            crate::event_log::record(
+                "WARN",
+                "native_host_display_query_timeout",
+                serde_json::json!({}),
+            );
+        }
+
         if let Some(verify) = self.confirmation.as_mut() {
             match verify.poll(&self.config, Instant::now()) {
                 host_video::Verification::Query => {
@@ -126,6 +179,7 @@ impl HostSettings {
         {
             self.query_deadline = None;
             self.pending = None;
+            self.pending_output = None;
             crate::event_log::record(
                 "WARN",
                 "native_host_video_query_timeout",
@@ -133,6 +187,79 @@ impl HostSettings {
             );
             self.failed(window);
         }
+        Ok(())
+    }
+
+    fn query_outputs(&mut self, attempt: &Attempt, window: &Window) {
+        let sent = attempt
+            .send(&host_displays::query().expect("Empty display query fits control frame"))
+            .is_ok();
+        self.outputs_deadline = sent.then(|| Instant::now() + QUERY_TIMEOUT);
+        let mut displays = window
+            .native_displays
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        displays.loading = sent;
+        displays.hid_mouse = attempt.hid_mouse_enabled();
+        if !sent {
+            displays.outputs.clear();
+        }
+        drop(displays);
+        session_ui::displays_changed(window);
+        if !sent {
+            crate::event_log::record(
+                "WARN",
+                "native_host_display_query_failed",
+                serde_json::json!({}),
+            );
+        }
+    }
+    pub fn receive_outputs(&mut self, bytes: &[u8], window: &Window) {
+        self.outputs_deadline = None;
+        let result = host_displays::parse(bytes);
+        let valid = result.is_ok();
+        let mut displays = window
+            .native_displays
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        displays.outputs = result.unwrap_or_default();
+        displays.loading = false;
+        let count = displays.outputs.len();
+        drop(displays);
+        crate::event_log::record(
+            if valid { "INFO" } else { "WARN" },
+            "native_host_displays_received",
+            serde_json::json!({"valid":valid,"count":count}),
+        );
+        session_ui::displays_changed(window);
+    }
+    pub fn refresh_outputs(&mut self, attempt: &Attempt, window: &Window) -> Result<()> {
+        ensure!(!self.busy(), "Waiting for the previous host request");
+        self.query_outputs(attempt, window);
+        attempt.send(&host_video::query()?)?;
+        Ok(())
+    }
+    pub fn select_output(&mut self, attempt: &Attempt, window: &Window, id: &str) -> Result<()> {
+        ensure!(
+            !attempt.hid_mouse_enabled(),
+            "Display switching is unavailable with HID mouse input"
+        );
+        ensure!(!self.busy(), "Waiting for the previous host request");
+        let displays = window
+            .native_displays
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        displays.validate_selection(id, attempt.hid_mouse_enabled())?;
+        if displays.current.as_deref() == Some(id) {
+            return Ok(());
+        }
+        drop(displays);
+        // Read fresh settings before patching only output; never overwrite a
+        // host-side change with an old cached complete configuration.
+        attempt.send(&host_video::query()?)?;
+        self.pending_output = Some(id.to_owned());
+        self.query_deadline = Some(Instant::now() + QUERY_TIMEOUT);
+        session_ui::waiting(window);
         Ok(())
     }
 

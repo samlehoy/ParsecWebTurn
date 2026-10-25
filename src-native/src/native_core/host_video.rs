@@ -12,6 +12,7 @@ pub struct Confirmation {
     expected: Value,
     poll_at: Instant,
     deadline: Instant,
+    output_only: bool,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum Verification {
@@ -25,12 +26,24 @@ impl Confirmation {
         let value: Value = serde_json::from_slice(&frame[13..frame.len() - 1])?;
         Ok(Self {
             expected: value["video"][0].clone(),
+            output_only: false,
             poll_at: now + Duration::from_millis(150),
             deadline: now + Duration::from_secs(5),
         })
     }
+    pub fn output(id: &str, now: Instant) -> Self {
+        Self {
+            expected: serde_json::json!({"output":id}),
+            poll_at: now + Duration::from_millis(150),
+            deadline: now + Duration::from_secs(5),
+            output_only: true,
+        }
+    }
     pub fn poll(&mut self, config: &Config, now: Instant) -> Verification {
         if config.value.as_ref().is_some_and(|v| {
+            if self.output_only {
+                return v["video"][0]["output"] == self.expected["output"];
+            }
             [
                 "encoderFPS",
                 "encoderMaxBitrate",
@@ -101,6 +114,14 @@ impl Config {
         }
         crate::control::text(17, 11, &value.to_string())
     }
+    pub fn output_id(&self) -> Option<&str> {
+        self.value.as_ref()?["video"][0]["output"].as_str()
+    }
+    pub fn select_output(&self, id: &str) -> Result<bytes::Bytes> {
+        let mut value = self.value.clone().context("Waiting for host settings")?;
+        value["video"][0]["output"] = Value::String(id.to_owned());
+        crate::control::text(17, 11, &value.to_string())
+    }
     pub fn observed(&self) -> Value {
         let v = self.value.as_ref().map(|v| &v["video"][0]);
         let number = |key: &str, max: u64| v.and_then(|v| v[key].as_u64()).filter(|n| *n <= max);
@@ -125,6 +146,34 @@ pub fn diagnostic(bytes: &[u8]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn output_switch_preserves_settings_and_confirms_identity_not_old_dimensions() {
+        let initial = serde_json::json!({"virtualMicrophone":1,"extra":"keep","video":[{"output":"old","encoderFPS":60,"resolutionX":1920,"resolutionY":1080,"other":42},{"output":"untouched"}]});
+        let mut config = Config::default();
+        config.receive(initial.to_string().as_bytes()).unwrap();
+        let frame = config.select_output("new").unwrap();
+        let mut expected = initial.clone();
+        expected["video"][0]["output"] = Value::String("new".into());
+        let sent: Value = serde_json::from_slice(&frame[13..frame.len() - 1]).unwrap();
+        assert_eq!(sent, expected);
+        let now = Instant::now();
+        let mut confirmation = Confirmation::output("new", now);
+        assert_eq!(confirmation.poll(&config, now), Verification::Waiting);
+        expected["video"][0]["resolutionX"] = 2560.into();
+        config.receive(expected.to_string().as_bytes()).unwrap();
+        assert_eq!(confirmation.poll(&config, now), Verification::Confirmed);
+        let frame = config
+            .request(
+                &Video {
+                    fps: Some(30),
+                    ..Default::default()
+                },
+                (1920, 1080),
+            )
+            .unwrap();
+        let sent: Value = serde_json::from_slice(&frame[13..frame.len() - 1]).unwrap();
+        assert_eq!(sent["video"][0]["output"], "new");
+    }
     #[test]
     fn delayed_host_apply_is_polled_without_accepting_the_previous_values() {
         let original = serde_json::json!({"video":[{"encoderFPS":60,"encoderMaxBitrate":50,"resolutionX":1920,"resolutionY":1080,"fullFPS":false,"rotated":false}]});

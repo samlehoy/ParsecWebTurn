@@ -2,6 +2,7 @@
 //! The production media, carrier, route retry and HID workers are reused.
 mod account;
 mod controls;
+pub(crate) mod host_displays;
 mod host_video;
 mod input;
 mod pointer;
@@ -165,7 +166,7 @@ fn stream(
                     attempt.name()
                 );
                 if !established {
-                    host_settings.connected(&attempt)?;
+                    host_settings.connected(&attempt, window)?;
                 }
                 established = true;
                 window.set_wake_lock(true);
@@ -196,6 +197,14 @@ fn stream(
                     let bytes = &frame[range];
                     let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
                     host_settings.receive(bytes, &attempt, window);
+                }
+                crate::control::Message::Buffer {
+                    event,
+                    payload: Some(range),
+                } if event["type"] == 3 && event["id"] == 12 => {
+                    let bytes = &frame[range];
+                    host_settings
+                        .receive_outputs(bytes.strip_suffix(&[0]).unwrap_or(bytes), window);
                 }
                 crate::control::Message::Buffer {
                     event,
@@ -331,6 +340,27 @@ fn stream(
                             serde_json::json!({"sent":result.is_ok()}),
                         );
                         session_ui::attention_result(window, result.is_ok());
+                    }
+                    session_ui::Action::SelectDisplay(id) => {
+                        let result = if established {
+                            host_settings.select_output(&attempt, window, id)
+                        } else {
+                            Err(anyhow::anyhow!("Transport is not connected"))
+                        };
+                        if result.is_err() {
+                            crate::event_log::record(
+                                "WARN",
+                                "native_host_display_request_failed",
+                                serde_json::json!({"hid":attempt.hid_mouse_enabled()}),
+                            );
+                        }
+                        host_settings.result(window, result.is_ok());
+                        session_ui::displays_changed(window);
+                    }
+                    session_ui::Action::RefreshDisplays => {
+                        if established && host_settings.refresh_outputs(&attempt, window).is_err() {
+                            session_ui::result(window, false);
+                        }
                     }
                     session_ui::Action::Apply(next) => {
                         let result = (|| -> Result<()> {

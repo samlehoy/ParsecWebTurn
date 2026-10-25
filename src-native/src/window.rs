@@ -38,6 +38,7 @@ pub struct Window {
     pub(crate) native_session_button: AtomicUsize,
 
     pub(crate) native_host_video: Mutex<serde_json::Value>,
+    pub(crate) native_displays: Mutex<crate::native_core::host_displays::Displays>,
 
     pub(crate) native_host_video_pending: AtomicBool,
     pub stats: Arc<crate::stats::Shared>,
@@ -128,6 +129,7 @@ impl Window {
             native_session_button: AtomicUsize::new(0),
 
             native_host_video: Mutex::new(serde_json::Value::Null),
+            native_displays: Mutex::new(Default::default()),
 
             native_host_video_pending: AtomicBool::new(false),
             stats_page: AtomicUsize::new(0),

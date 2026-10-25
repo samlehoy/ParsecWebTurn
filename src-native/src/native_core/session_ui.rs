@@ -26,12 +26,18 @@ const STATUS: i32 = 4606;
 const HIDE_BUTTON: usize = 4607;
 const SECURE_ATTENTION: usize = 4608;
 const METRICS: i32 = 4609;
-const PANEL_HEIGHT: i32 = 680;
+const DISPLAY: usize = 4611;
+const REFRESH_DISPLAYS: usize = 4612;
+const DISPLAY_HINT: i32 = 4613;
+const DISPLAYS: u32 = WM_APP + 28;
+const PANEL_HEIGHT: i32 = 764;
 pub const RESULT: u32 = WM_APP + 26;
 pub const VISIBILITY: u32 = WM_APP + 27;
 #[derive(Clone, Debug)]
 pub enum Action {
     Apply(Video),
+    SelectDisplay(String),
+    RefreshDisplays,
     Disconnect,
     HideButton,
     SecureAttention,
@@ -88,6 +94,7 @@ struct Panel {
     window_owned: bool,
     scroll: i32,
     controls: [HWND; 6],
+    display_ids: Vec<String>,
     fullscreen: HWND,
     font: HFONT,
     heading: HFONT,
@@ -197,6 +204,75 @@ fn metrics(sample: Option<&crate::stats::Sample>, rates: &crate::stats::Values) 
         metric(rates.fps, "")
     )
 }
+unsafe fn update_displays(hwnd: HWND, panel: &mut Panel) {
+    let window = &*panel.window;
+    let displays = window
+        .native_displays
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let combo = GetDlgItem(hwnd, DISPLAY as i32);
+    SendMessageW(combo, WM_SETREDRAW, 0, 0);
+    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    panel.display_ids.clear();
+    let mut selected = None;
+    for output in &displays.outputs {
+        let label = format!(
+            "{}{}",
+            output.name,
+            if output.adapter.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", output.adapter)
+            }
+        );
+        let index = SendMessageW(combo, CB_ADDSTRING, 0, wide(&label).as_ptr() as isize);
+        if displays.current.as_deref() == Some(output.id.as_str()) {
+            selected = Some(index);
+        }
+        panel.display_ids.push(output.id.clone());
+    }
+    if let Some(index) = selected {
+        SendMessageW(combo, CB_SETCURSEL, index as usize, 0);
+    } else {
+        let label = if displays.loading {
+            "Loading displays..."
+        } else if displays.outputs.is_empty() {
+            "Display list unavailable"
+        } else {
+            "Select host display"
+        };
+        let index = SendMessageW(combo, CB_ADDSTRING, 0, wide(label).as_ptr() as isize);
+        SendMessageW(combo, CB_SETCURSEL, index as usize, 0);
+    }
+    let busy = window.native_host_video_pending.load(Ordering::Acquire);
+    EnableWindow(
+        combo,
+        i32::from(
+            !displays.hid_mouse && !displays.loading && !busy && !displays.outputs.is_empty(),
+        ),
+    );
+    EnableWindow(
+        GetDlgItem(hwnd, REFRESH_DISPLAYS as i32),
+        i32::from(!displays.loading && !busy),
+    );
+    let hint = if displays.hid_mouse {
+        "HID mouse: switching disabled. Use the host's primary display."
+    } else {
+        "Host display (physical or virtual). Switching uses this stream."
+    };
+    SetWindowTextW(GetDlgItem(hwnd, DISPLAY_HINT), wide(hint).as_ptr());
+    SendMessageW(combo, WM_SETREDRAW, 1, 0);
+    InvalidateRect(combo, null(), 0);
+}
+pub fn displays_changed(window: &crate::window::Window) {
+    unsafe {
+        let hwnd = panel(window);
+        if !hwnd.is_null() {
+            PostMessageW(hwnd, DISPLAYS, 0, 0);
+        }
+    }
+}
+
 unsafe fn update_metrics(hwnd: HWND, panel: &mut Panel) {
     let sample = (&*panel.window)
         .stats
@@ -333,6 +409,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 FillRect(wp as HDC, &r, p.bg);
                 return 1;
             }
+            DISPLAYS => {
+                update_displays(hwnd, p);
+                return 0;
+            }
             RESULT => {
                 let status = Status::from_message(wp);
                 EnableWindow(
@@ -344,11 +424,43 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                                 .load(Ordering::Acquire),
                     ),
                 );
+                update_displays(hwnd, p);
                 SetWindowTextW(GetDlgItem(hwnd, STATUS), wide(status.text()).as_ptr());
                 return 0;
             }
             WM_COMMAND => {
                 match wp & 0xffff {
+                    DISPLAY if (wp >> 16) == CBN_SELCHANGE as usize => {
+                        let window = &*p.window;
+                        let displays = window
+                            .native_displays
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        if displays.hid_mouse
+                            || displays.loading
+                            || window.native_host_video_pending.load(Ordering::Acquire)
+                        {
+                            return 0;
+                        }
+                        let selected =
+                            SendMessageW(GetDlgItem(hwnd, DISPLAY as i32), CB_GETCURSEL, 0, 0);
+                        if let Some(id) = usize::try_from(selected)
+                            .ok()
+                            .and_then(|index| p.display_ids.get(index))
+                            .cloned()
+                        {
+                            EnableWindow(GetDlgItem(hwnd, DISPLAY as i32), 0);
+                            EnableWindow(GetDlgItem(hwnd, REFRESH_DISPLAYS as i32), 0);
+                            window.events.push(crate::window::Event::NativeSession(
+                                Action::SelectDisplay(id),
+                            ));
+                        }
+                    }
+                    REFRESH_DISPLAYS => {
+                        (&*p.window)
+                            .events
+                            .push(crate::window::Event::NativeSession(Action::RefreshDisplays));
+                    }
                     APPLY => match collect(p) {
                         Ok(video) => {
                             EnableWindow(GetDlgItem(hwnd, APPLY as i32), 0);
@@ -605,6 +717,7 @@ pub unsafe fn toggle(
         window_owned: false,
         scroll: 0,
         controls: [null_mut(); 6],
+        display_ids: Vec::new(),
         fullscreen: null_mut(),
         font: super::ui::font(16, 400),
         heading: super::ui::font(25, 600),
@@ -656,6 +769,35 @@ pub unsafe fn toggle(
         SS_OWNERDRAW as u32,
         [24, 66, 370, 82],
     );
+    control(
+        hwnd,
+        p,
+        "COMBOBOX",
+        "",
+        DISPLAY,
+        WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
+        [24, 164, 280, 260],
+    );
+    crate::connection_settings_ui::controls::combo(GetDlgItem(hwnd, DISPLAY as i32));
+    control(
+        hwnd,
+        p,
+        "BUTTON",
+        "Refresh",
+        REFRESH_DISPLAYS,
+        BS_OWNERDRAW as u32 | WS_TABSTOP,
+        [314, 164, 80, 28],
+    );
+    control(
+        hwnd,
+        p,
+        "STATIC",
+        "",
+        DISPLAY_HINT as usize,
+        0,
+        [24, 199, 370, 44],
+    );
+    update_displays(hwnd, p);
     for (i, label) in [
         "Resolution",
         "Bandwidth (Mbps)",
@@ -674,7 +816,7 @@ pub unsafe fn toggle(
             label,
             0,
             0,
-            [24, 170 + i as i32 * 44, 150, 24],
+            [24, 254 + i as i32 * 44, 150, 24],
         );
     }
     let res = match video.resolution {
@@ -686,7 +828,7 @@ pub unsafe fn toggle(
         hwnd,
         p,
         20,
-        166,
+        250,
         &[
             "Keep host",
             "Match client display",
@@ -705,7 +847,7 @@ pub unsafe fn toggle(
         hwnd,
         p,
         21,
-        210,
+        294,
         &["5", "10", "15", "20", "30", "50", "100"],
         &video.bandwidth_mbps.unwrap().to_string(),
         true,
@@ -714,7 +856,7 @@ pub unsafe fn toggle(
         hwnd,
         p,
         22,
-        254,
+        338,
         &["30", "60", "90", "120", "144", "165", "240"],
         &video.fps.unwrap().to_string(),
         true,
@@ -723,7 +865,7 @@ pub unsafe fn toggle(
         hwnd,
         p,
         23,
-        298,
+        382,
         &["Adaptive", "Constant FPS"],
         if video.constant_fps == Some(true) {
             "Constant FPS"
@@ -736,7 +878,7 @@ pub unsafe fn toggle(
         hwnd,
         p,
         24,
-        342,
+        426,
         &["Default", "Rotated"],
         if video.rotated == Some(true) {
             "Rotated"
@@ -749,7 +891,7 @@ pub unsafe fn toggle(
         hwnd,
         p,
         25,
-        386,
+        470,
         &["Disabled", "Mouse", "Keyboard", "Mouse + keyboard"],
         match video.immersive {
             1 => "Mouse + keyboard",
@@ -766,7 +908,7 @@ pub unsafe fn toggle(
         "Fullscreen",
         30,
         BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [24, 432, 350, 30],
+        [24, 516, 350, 30],
     );
     SendMessageW(
         p.fullscreen,
@@ -781,15 +923,15 @@ pub unsafe fn toggle(
         "",
         STATUS as usize,
         0,
-        [24, 470, 370, 40],
+        [24, 554, 370, 40],
     );
     for (id, label, x, y, w) in [
-        (SETTINGS, "Settings", 24, 518, 178),
-        (APPLY, "Apply", 214, 518, 178),
-        (DISCONNECT, "Disconnect", 24, 568, 178),
-        (CLOSE, "Close", 214, 568, 178),
-        (HIDE_BUTTON, "Hide button", 24, 618, 178),
-        (SECURE_ATTENTION, "Send Ctrl+Alt+Del", 214, 618, 178),
+        (SETTINGS, "Settings", 24, 602, 178),
+        (APPLY, "Apply", 214, 602, 178),
+        (DISCONNECT, "Disconnect", 24, 652, 178),
+        (CLOSE, "Close", 214, 652, 178),
+        (HIDE_BUTTON, "Hide button", 24, 702, 178),
+        (SECURE_ATTENTION, "Send Ctrl+Alt+Del", 214, 702, 178),
     ] {
         control(
             hwnd,
@@ -1116,6 +1258,50 @@ mod tests {
                     "Session background was not painted"
                 );
             }
+            {
+                let mut displays = window
+                    .native_displays
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                displays.outputs = super::super::host_displays::parse(br#"[{"id":"primary-fixture","name":"Display 1"},{"id":"virtual-fixture","name":"Virtual display"}]"#).unwrap();
+                displays.current = Some("primary-fixture".into());
+                displays.hid_mouse = true;
+            }
+            SendMessageW(panel, DISPLAYS, 0, 0);
+            assert_eq!(IsWindowEnabled(GetDlgItem(panel, DISPLAY as i32)), 0);
+            let mut prior = std::collections::VecDeque::new();
+            window.events.take_batch(&mut prior);
+            // A forged command must not bypass a disabled HID selector.
+            SendMessageW(GetDlgItem(panel, DISPLAY as i32), CB_SETCURSEL, 1, 0);
+            SendMessageW(
+                panel,
+                WM_COMMAND,
+                DISPLAY | ((CBN_SELCHANGE as usize) << 16),
+                0,
+            );
+            window.events.take_batch(&mut prior);
+            assert!(!prior.iter().any(|e| matches!(
+                e,
+                crate::window::Event::NativeSession(Action::SelectDisplay(_))
+            )));
+            window
+                .native_displays
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .hid_mouse = false;
+            SendMessageW(panel, DISPLAYS, 0, 0);
+            assert_ne!(IsWindowEnabled(GetDlgItem(panel, DISPLAY as i32)), 0);
+            SendMessageW(GetDlgItem(panel, DISPLAY as i32), CB_SETCURSEL, 1, 0);
+            SendMessageW(
+                panel,
+                WM_COMMAND,
+                DISPLAY | ((CBN_SELCHANGE as usize) << 16),
+                0,
+            );
+            prior.clear();
+            window.events.take_batch(&mut prior);
+            assert!(prior.iter().any(|e| matches!(e,crate::window::Event::NativeSession(Action::SelectDisplay(id)) if id == "virtual-fixture")));
+            SendMessageW(panel, DISPLAYS, 0, 0);
             SendMessageW(panel, WM_COMMAND, APPLY, 0);
         }
         let mut events = std::collections::VecDeque::new();

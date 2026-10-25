@@ -28,7 +28,8 @@ The repository's `main` and `dev` branches and their releases are separate.
   and Media Foundation decoding, plus experimental NVIDIA/AMD/Intel HEVC paths.
 - **Session controls:** draggable overlay icon, resolution requests including
   Keep host / Match client, bandwidth limit, frame rate, constant FPS,
-  orientation, fullscreen and mouse/keyboard immersive mode.
+  orientation, fullscreen and mouse/keyboard immersive mode. A host display
+  selector switches the current stream between listed physical/virtual outputs.
 - **Audio:** stereo Opus, adjustable playback buffer and optional raw PCM over
   BUD. Experimental multichannel audio can request a compatible 5.1/7.1 layout.
 - **Input and clipboard:** normal mouse/keyboard forwarding, two-way Unicode text
@@ -95,7 +96,11 @@ experimental options disabled for the most conservative configuration.
   this path. Host/account terms and permissions still apply.
 - **USB HID:** BUD only, with USB/Yubikey passthrough enabled on the stock host.
   Supports mouse buttons, dragging, scrolling, relative camera input and keyboard
-  forwarding. Use one physical or virtual display and matching keyboard layouts.
+  forwarding. HID mouse input disables the display selector. Use the host primary
+  display (or one active physical/virtual display) and matching keyboard layouts.
+  The host output list does not identify the primary display: it must already be
+  the captured output; automatic primary-output selection is not implemented.
+  Absolute desktop reports remain bounded; relative camera input is unchanged.
   No host patch is required; the host needs its supported USB driver.
 - **Raw PCM:** BUD only; the host must allow it (`network_raw_audio=1`). WebRTC
   audio remains stereo Opus. Multichannel playback has **synthetic test coverage
