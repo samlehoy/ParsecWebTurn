@@ -106,6 +106,7 @@ impl Config {
             .context("Host primary stream is unavailable")?;
         for (key, v) in patch["video"][0].as_object().unwrap() {
             if video.resolution == Resolution::Host
+                && !video.has_host_settings()
                 && matches!(key.as_str(), "resolutionX" | "resolutionY")
             {
                 continue;
@@ -127,6 +128,10 @@ impl Config {
     pub fn select_output(&self, id: &str) -> Result<bytes::Bytes> {
         let mut value = self.value.clone().context("Waiting for host settings")?;
         value["video"][0]["output"] = Value::String(id.to_owned());
+        // A size forced on the previous output may not exist on this one
+        // (e.g. a fixed 800x600 VM display). Release that old mode request.
+        value["video"][0]["resolutionX"] = 0.into();
+        value["video"][0]["resolutionY"] = 0.into();
         crate::control::text(17, 11, &value.to_string())
     }
     pub fn observed(&self) -> Value {
@@ -154,6 +159,27 @@ pub fn diagnostic(bytes: &[u8]) -> Value {
 mod tests {
     use super::*;
     #[test]
+    fn explicit_keep_host_releases_previous_fixed_size_without_touching_other_slots() {
+        let base = serde_json::json!({"video":[{"output":"same","resolutionX":1920,"resolutionY":1080,"encoderFPS":60},{"output":"other","resolutionX":2560,"resolutionY":1440}]});
+        let mut config = Config::default();
+        config.receive(base.to_string().as_bytes()).unwrap();
+        let frame = config
+            .request(
+                &Video {
+                    resolution: Resolution::Host,
+                    fps: Some(60),
+                    ..Default::default()
+                },
+                (3840, 2160),
+            )
+            .unwrap();
+        let value: Value = serde_json::from_slice(&frame[13..frame.len() - 1]).unwrap();
+        let mut expected = base;
+        expected["video"][0]["resolutionX"] = 0.into();
+        expected["video"][0]["resolutionY"] = 0.into();
+        assert_eq!(value, expected);
+    }
+    #[test]
     fn host_os_is_verified_instead_of_assuming_every_peer_is_windows() {
         let mut config = Config::default();
         assert!(!config.windows_host());
@@ -176,6 +202,8 @@ mod tests {
         let frame = config.select_output("new").unwrap();
         let mut expected = initial.clone();
         expected["video"][0]["output"] = Value::String("new".into());
+        expected["video"][0]["resolutionX"] = 0.into();
+        expected["video"][0]["resolutionY"] = 0.into();
         let sent: Value = serde_json::from_slice(&frame[13..frame.len() - 1]).unwrap();
         assert_eq!(sent, expected);
         let now = Instant::now();
@@ -236,6 +264,7 @@ mod tests {
             .request(
                 &Video {
                     bandwidth_mbps: Some(10),
+                    resolution: Resolution::Fixed(1280, 720),
                     ..Default::default()
                 },
                 (1920, 1080),
@@ -287,7 +316,7 @@ mod tests {
         let mut config = Config::default();
         config.receive(base.to_string().as_bytes()).unwrap();
         for (resolution, size) in [
-            (Resolution::Host, (1920, 1080)),
+            (Resolution::Host, (0, 0)),
             (Resolution::Client, (2560, 1440)),
             (Resolution::Fixed(1280, 720), (1280, 720)),
         ] {

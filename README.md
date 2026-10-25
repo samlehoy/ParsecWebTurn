@@ -29,7 +29,8 @@ The repository's `main` and `dev` branches and their releases are separate.
 - **Session controls:** draggable overlay icon, resolution requests including
   Keep host / Match client, bandwidth limit, frame rate, constant FPS,
   orientation, fullscreen and mouse/keyboard immersive mode. A host display
-  selector switches the current stream between listed physical/virtual outputs.
+  selector switches the current stream between listed physical/virtual outputs,
+  using Keep host resolution on the selected display.
 - **Audio:** stereo Opus, adjustable playback buffer and optional raw PCM over
   BUD. Experimental multichannel audio can request a compatible 5.1/7.1 layout.
 - **Input and clipboard:** normal mouse/keyboard forwarding, two-way Unicode text

@@ -350,6 +350,23 @@ fn stream(
                         } else {
                             Err(anyhow::anyhow!("Transport is not connected"))
                         };
+                        if matches!(result, Ok(true)) {
+                            // A monitor switch releases the previous monitor's
+                            // forced resolution. Keep the live and saved UI
+                            // preference consistent with that host request.
+                            video.resolution = profile::Resolution::Host;
+                            if manager
+                                .update_native(|p| p.video.resolution = profile::Resolution::Host)
+                                .is_err()
+                            {
+                                crate::event_log::record(
+                                    "WARN",
+                                    "native_display_preference_save_failed",
+                                    serde_json::json!({}),
+                                );
+                            }
+                            session_ui::display_selected(window);
+                        }
                         if result.is_err() {
                             crate::event_log::record(
                                 "WARN",

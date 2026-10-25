@@ -262,11 +262,19 @@ unsafe fn update_displays(hwnd: HWND, panel: &mut Panel) {
             "HID mouse paused until the primary host display is verified."
         }
     } else {
-        "Host display (physical or virtual). Switching uses this stream."
+        "Switching uses the selected display's host resolution."
     };
     SetWindowTextW(GetDlgItem(hwnd, DISPLAY_HINT), wide(hint).as_ptr());
     SendMessageW(combo, WM_SETREDRAW, 1, 0);
     InvalidateRect(combo, null(), 0);
+}
+pub fn display_selected(window: &crate::window::Window) {
+    unsafe {
+        let hwnd = panel(window);
+        if !hwnd.is_null() {
+            PostMessageW(hwnd, DISPLAYS, 1, 0);
+        }
+    }
 }
 pub fn displays_changed(window: &crate::window::Window) {
     unsafe {
@@ -414,6 +422,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 return 1;
             }
             DISPLAYS => {
+                if wp == 1 {
+                    SendMessageW(p.controls[0], CB_SETCURSEL, 0, 0);
+                    SetWindowTextW(p.controls[0], wide("Keep host").as_ptr());
+                }
                 update_displays(hwnd, p);
                 return 0;
             }
@@ -1305,7 +1317,16 @@ mod tests {
             prior.clear();
             window.events.take_batch(&mut prior);
             assert!(prior.iter().any(|e| matches!(e,crate::window::Event::NativeSession(Action::SelectDisplay(id)) if id == "virtual-fixture")));
-            SendMessageW(panel, DISPLAYS, 0, 0);
+            SendMessageW(GetDlgItem(panel, 20), CB_SETCURSEL, 2, 0);
+            SendMessageW(
+                GetDlgItem(panel, 21),
+                WM_SETTEXT,
+                0,
+                wide("35").as_ptr() as isize,
+            );
+            SendMessageW(panel, DISPLAYS, 1, 0);
+            assert_eq!(text(GetDlgItem(panel, 20)), "Keep host");
+            assert_eq!(text(GetDlgItem(panel, 21)), "35");
             SendMessageW(panel, WM_COMMAND, APPLY, 0);
         }
         let mut events = std::collections::VecDeque::new();

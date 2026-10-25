@@ -90,7 +90,7 @@ impl HostSettings {
             crate::event_log::record(
                 if result.is_ok() { "INFO" } else { "WARN" },
                 "native_host_display_requested",
-                serde_json::json!({"sent":result.is_ok()}),
+                serde_json::json!({"sent":result.is_ok(),"resolution":"host"}),
             );
             if result.is_err() {
                 self.failed(window);
@@ -361,7 +361,7 @@ impl HostSettings {
         attempt.send(&host_video::query()?)?;
         Ok(())
     }
-    pub fn select_output(&mut self, attempt: &Attempt, window: &Window, id: &str) -> Result<()> {
+    pub fn select_output(&mut self, attempt: &Attempt, window: &Window, id: &str) -> Result<bool> {
         ensure!(
             !attempt.hid_mouse_enabled(),
             "Display switching is unavailable with HID mouse input"
@@ -373,7 +373,7 @@ impl HostSettings {
             .unwrap_or_else(|e| e.into_inner());
         displays.validate_selection(id, attempt.hid_mouse_enabled())?;
         if displays.current.as_deref() == Some(id) {
-            return Ok(());
+            return Ok(false);
         }
         drop(displays);
         // Read fresh settings before patching only output; never overwrite a
@@ -382,7 +382,7 @@ impl HostSettings {
         self.pending_output = Some(id.to_owned());
         self.query_deadline = Some(Instant::now() + QUERY_TIMEOUT);
         session_ui::waiting(window);
-        Ok(())
+        Ok(true)
     }
 
     pub fn apply(

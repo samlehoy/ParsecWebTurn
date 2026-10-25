@@ -143,8 +143,8 @@ live confirmation. Failures record the vendor fallback reason for diagnosis.
 
 The Session menu queries the stock host's output list (application sub-ID 10,
 reply 12) and current owner configuration (9, reply 11). Selecting a listed
-physical or virtual output fetches fresh settings, changes only `video[0].output`
-and sends the complete preserved configuration (11). The write is sent once;
+physical or virtual output fetches fresh settings, changes `video[0].output`, releases the previous output's forced size
+(`resolutionX/Y: 0`), and sends the complete preserved configuration (11). The write is sent once;
 read-only queries confirm the selected identity for up to five seconds. Other
 video slots and unknown host settings are preserved. Refresh handles output
 hotplug; a missing/invalid list leaves the stream running. Output IDs are neither
@@ -198,3 +198,15 @@ new timer/thread or continuous frame logging. Counter deltas are diagnostic
 progress, not proof of the selected monitor's pixel content, GPU completion or
 scanout; an old in-flight frame can finish at a boundary. No visibility, pacing,
 codec preference or recovery behavior is changed by this probe.
+
+
+Display selection returns the session's resolution preference to **Keep host**,
+so an old fixed/client size is not automatically forced onto a different output.
+The preference is updated in the session menu and saved profile; bandwidth, FPS,
+pacing, orientation, immersive mode and other video slots are retained. A custom
+size can be requested after selecting the display if that host output supports
+it. Applying **Keep host** now explicitly sends the zero-size/no-override request
+instead of silently retaining the last fixed request. This releases a client
+constraint; live host behavior determines the resulting Windows display mode.
+The client does not invent a display's original/maximum size from its name or
+restore modes through a new host helper.
