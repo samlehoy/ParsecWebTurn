@@ -111,12 +111,12 @@ pub struct SettingEngine {
     pub(crate) sctp_max_message_size_can_send: SctpMaxMessageSize,
 }
 
-/// Optional connected TURN TCP/TLS socket marking. Unsupported platforms send unmarked.
-pub fn set_turn_tcp_qos(&mut self, enabled: bool) {
-    self.turn_tcp_qos = enabled;
-}
-
 impl SettingEngine {
+    /// Optional connected TURN TCP/TLS socket marking. Unsupported platforms send unmarked.
+    pub fn set_turn_tcp_qos(&mut self, enabled: bool) {
+        self.turn_tcp_qos = enabled;
+    }
+
     /// Local opt-in TURN gathering policy: UDP, then TLS, then plain TCP.
     /// Each available tier gets a three-second connectivity head start.
     pub fn set_prefer_turn_udp(&mut self, enabled: bool) {
