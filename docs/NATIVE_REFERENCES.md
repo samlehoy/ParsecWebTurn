@@ -55,3 +55,27 @@ first listed output as primary. This is a Windows stock-host compatibility
 contract, not a general property of every remote JSON display list. Other host
 OS values do not enable HID primary selection. Live multi-output verification
 is still required, including virtual displays and primary/display hotplug changes.
+
+## Stock session option presets
+
+The current stock Windows host output reply contains output identifiers, names
+and adapters; its settings reply reports configured values. Neither inspected
+reply declares supported resolution, encoder-rate or bandwidth option lists.
+A current setting is not treated as a capability limit. EvoParseq therefore uses
+stock-client presets, not invented capability fields or a local-monitor scan.
+The host still determines whether a requested mode can be fulfilled.
+
+Read-only inspection of the same stock DLL and hash documented above found the
+public UI resolution labels at file offsets `0x334640..0x335a80` (client/host
+policies and 15 fixed sizes), and bandwidth labels at `0x336370..0x33715c`
+(3, 5, 7, 10, 15, 20, 25, 30, 35, 40, 45, 50 Mbps). The FPS selector builds
+six numeric choices, 30, 60, 100, 120, 144, 240, around RVA `0x15d2d..0x15fac`.
+Only these option values were recorded; no binary bytes or implementation were
+copied. The shared session model owns these presets; the Win32 view uses native
+selection-only combo boxes. A previously saved non-preset value is shown as a
+current-value cue and retained until the user explicitly selects a replacement;
+it is not inserted into the preset list.
+
+Parsec's [Windows documentation](https://support.parsec.app/hc/en-us/articles/32381199341716-Parsec-App-for-Windows)
+also explains that resolution requests depend on Windows display support, and
+that requesting an FPS does not establish support for that display refresh rate.

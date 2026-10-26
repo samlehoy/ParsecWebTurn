@@ -67,6 +67,31 @@ impl Status {
 
 pub const HOST_RESOLUTION: &str = "Keep host";
 pub const CLIENT_RESOLUTION: &str = "Match client display";
+// Stock Windows UI presets, not a host hardware capability declaration.
+// Current stock output/settings replies do not contain supported-mode lists.
+pub const RESOLUTION_CHOICES: &[&str] = &[
+    HOST_RESOLUTION,
+    CLIENT_RESOLUTION,
+    "3840 x 2160",
+    "3840 x 1600",
+    "3440 x 1440",
+    "2560 x 1600",
+    "2560 x 1440",
+    "2560 x 1080",
+    "1920 x 1200",
+    "1920 x 1080",
+    "1680 x 1050",
+    "1600 x 1200",
+    "1366 x 768",
+    "1280 x 1024",
+    "1280 x 800",
+    "1280 x 720",
+    "1024 x 768",
+];
+pub const BANDWIDTH_CHOICES: &[&str] = &[
+    "3", "5", "7", "10", "15", "20", "25", "30", "35", "40", "45", "50",
+];
+pub const FPS_CHOICES: &[&str] = &["30", "60", "100", "120", "144", "240"];
 pub fn resolution_text(resolution: Resolution) -> String {
     match resolution {
         Resolution::Host => HOST_RESOLUTION.into(),

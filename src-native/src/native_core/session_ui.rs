@@ -5,7 +5,7 @@ use super::{
     profile::Video,
     session_model::{
         resolution_text, Command, Notification, PanelFields, State, Status, View,
-        CLIENT_RESOLUTION, HOST_RESOLUTION,
+        BANDWIDTH_CHOICES, FPS_CHOICES, HOST_RESOLUTION, RESOLUTION_CHOICES,
     },
     ui::{draw_button, wide},
 };
@@ -80,6 +80,7 @@ struct Panel {
     window_owned: bool,
     scroll: i32,
     controls: [HWND; 6],
+    initial_fields: [String; 3],
     display_ids: Vec<String>,
     fullscreen: HWND,
     font: HFONT,
@@ -107,10 +108,17 @@ unsafe fn text(hwnd: HWND) -> String {
 }
 unsafe fn collect(p: &Panel) -> Result<Video> {
     let select = |i: usize| SendMessageW(p.controls[i], CB_GETCURSEL, 0, 0);
+    let field = |i: usize| {
+        if select(i) == CB_ERR as isize {
+            p.initial_fields[i].clone()
+        } else {
+            text(p.controls[i])
+        }
+    };
     PanelFields {
-        resolution: &text(p.controls[0]),
-        bandwidth: &text(p.controls[1]),
-        fps: &text(p.controls[2]),
+        resolution: &field(0),
+        bandwidth: &field(1),
+        fps: &field(2),
         constant_fps: select(3) == 1,
         rotated: select(4) == 1,
         immersive: match select(5) {
@@ -359,7 +367,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             DISPLAYS => {
                 if wp == 1 {
                     SendMessageW(p.controls[0], CB_SETCURSEL, 0, 0);
-                    SetWindowTextW(p.controls[0], wide(HOST_RESOLUTION).as_ptr());
+                    p.initial_fields[0] = HOST_RESOLUTION.into();
                 }
                 update_displays(hwnd, p);
                 return 0;
@@ -484,40 +492,31 @@ unsafe fn control(
 ) -> HWND {
     controls::create(hwnd, p.font, class, label, id, style, r)
 }
-unsafe fn combo(
-    hwnd: HWND,
-    p: &Panel,
-    id: usize,
-    y: i32,
-    items: &[&str],
-    value: &str,
-    editable: bool,
-) -> HWND {
+unsafe fn combo(hwnd: HWND, p: &Panel, id: usize, y: i32, items: &[&str], value: &str) -> HWND {
     let h = control(
         hwnd,
         p,
         "COMBOBOX",
         "",
         id,
-        WS_TABSTOP
-            | WS_VSCROLL
-            | if editable {
-                CBS_DROPDOWN as u32
-            } else {
-                CBS_DROPDOWNLIST as u32
-            },
+        WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
         [174, y, 218, 260],
     );
     crate::connection_settings_ui::controls::combo(h);
     for item in items {
         SendMessageW(h, CB_ADDSTRING, 0, wide(item).as_ptr() as isize);
     }
-    if editable {
-        SetWindowTextW(h, wide(value).as_ptr());
-        SendMessageW(h, CB_LIMITTEXT, 64, 0);
+    if let Some(index) = items.iter().position(|s| *s == value) {
+        SendMessageW(h, CB_SETCURSEL, index, 0);
     } else {
-        let n = items.iter().position(|s| *s == value).unwrap_or(0);
-        SendMessageW(h, CB_SETCURSEL, n, 0);
+        // An older saved custom value remains unchanged until explicitly chosen.
+        // It is shown as a cue, never added to the available preset options.
+        SendMessageW(
+            h,
+            CB_SETCUEBANNER,
+            0,
+            wide(&format!("Current: {value}")).as_ptr() as isize,
+        );
     }
     h
 }
@@ -632,6 +631,11 @@ pub unsafe fn toggle(
         window_owned: false,
         scroll: 0,
         controls: [null_mut(); 6],
+        initial_fields: [
+            resolution_text(video.resolution),
+            video.bandwidth_mbps.unwrap().to_string(),
+            video.fps.unwrap().to_string(),
+        ],
         display_ids: Vec::new(),
         fullscreen: null_mut(),
         font: super::ui::font(16, 400),
@@ -734,44 +738,9 @@ pub unsafe fn toggle(
             [24, 254 + i as i32 * 44, 150, 24],
         );
     }
-    let res = resolution_text(video.resolution);
-    p.controls[0] = combo(
-        hwnd,
-        p,
-        20,
-        250,
-        &[
-            HOST_RESOLUTION,
-            CLIENT_RESOLUTION,
-            "1280 x 720",
-            "1600 x 900",
-            "1920 x 1080",
-            "1920 x 1200",
-            "2560 x 1440",
-            "2560 x 1600",
-            "3840 x 2160",
-        ],
-        &res,
-        true,
-    );
-    p.controls[1] = combo(
-        hwnd,
-        p,
-        21,
-        294,
-        &["5", "10", "15", "20", "30", "50", "100"],
-        &video.bandwidth_mbps.unwrap().to_string(),
-        true,
-    );
-    p.controls[2] = combo(
-        hwnd,
-        p,
-        22,
-        338,
-        &["30", "60", "90", "120", "144", "165", "240"],
-        &video.fps.unwrap().to_string(),
-        true,
-    );
+    p.controls[0] = combo(hwnd, p, 20, 250, RESOLUTION_CHOICES, &p.initial_fields[0]);
+    p.controls[1] = combo(hwnd, p, 21, 294, BANDWIDTH_CHOICES, &p.initial_fields[1]);
+    p.controls[2] = combo(hwnd, p, 22, 338, FPS_CHOICES, &p.initial_fields[2]);
     p.controls[3] = combo(
         hwnd,
         p,
@@ -783,7 +752,6 @@ pub unsafe fn toggle(
         } else {
             "Adaptive"
         },
-        false,
     );
     p.controls[4] = combo(
         hwnd,
@@ -796,7 +764,6 @@ pub unsafe fn toggle(
         } else {
             "Default"
         },
-        false,
     );
     p.controls[5] = combo(
         hwnd,
@@ -810,7 +777,6 @@ pub unsafe fn toggle(
             3 => "Mouse",
             _ => "Disabled",
         },
-        false,
     );
     p.fullscreen = control(
         hwnd,
@@ -900,6 +866,17 @@ pub unsafe fn dialog(parent: HWND, msg: &MSG) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    unsafe fn select_text(panel: HWND, id: i32, value: &str) {
+        let combo = GetDlgItem(panel, id);
+        let index = SendMessageW(
+            combo,
+            CB_FINDSTRINGEXACT,
+            usize::MAX,
+            wide(value).as_ptr() as isize,
+        );
+        assert_ne!(index, CB_ERR as isize);
+        SendMessageW(combo, CB_SETCURSEL, index as usize, 0);
+    }
     use crate::native_core::profile::Resolution;
     #[test]
     fn typed_statuses_keep_the_existing_window_message_contract() {
@@ -978,6 +955,9 @@ mod tests {
         }
         let _remove = Remove(path.clone());
         let manager = crate::connection_settings::Manager::open(path.clone());
+        manager
+            .update_native(|profile| profile.video.fps = Some(90))
+            .unwrap();
         window.install_connection_settings(manager.clone());
         let button_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let button = loop {
@@ -1065,6 +1045,46 @@ mod tests {
             assert!(
                 resolution.top - card.bottom >= 12,
                 "Performance card needs space before the controls"
+            );
+            for (id, choices) in [
+                (20, RESOLUTION_CHOICES),
+                (21, BANDWIDTH_CHOICES),
+                (22, FPS_CHOICES),
+            ] {
+                let control = GetDlgItem(panel, id);
+                assert_eq!(
+                    GetWindowLongW(control, GWL_STYLE) as u32 & 3,
+                    CBS_DROPDOWNLIST as u32
+                );
+                assert_eq!(
+                    SendMessageW(control, CB_GETCOUNT, 0, 0),
+                    choices.len() as isize
+                );
+                for choice in choices {
+                    assert_ne!(
+                        SendMessageW(
+                            control,
+                            CB_FINDSTRINGEXACT,
+                            usize::MAX,
+                            wide(choice).as_ptr() as isize
+                        ),
+                        CB_ERR as isize
+                    );
+                }
+            }
+            // A legacy custom FPS is retained, but is not an additional preset.
+            assert_eq!(
+                SendMessageW(GetDlgItem(panel, 22), CB_GETCURSEL, 0, 0),
+                CB_ERR as isize
+            );
+            assert_eq!(
+                SendMessageW(
+                    GetDlgItem(panel, 22),
+                    CB_FINDSTRINGEXACT,
+                    usize::MAX,
+                    wide("90").as_ptr() as isize
+                ),
+                CB_ERR as isize
             );
             for id in [21, 22, 23, 24] {
                 assert_eq!(
@@ -1178,13 +1198,8 @@ mod tests {
             prior.clear();
             window.events.take_batch(&mut prior);
             assert!(prior.iter().any(|e| matches!(e,crate::window::Event::NativeSession(Command::SelectDisplay(id)) if id == "virtual-fixture")));
-            SendMessageW(GetDlgItem(panel, 20), CB_SETCURSEL, 2, 0);
-            SendMessageW(
-                GetDlgItem(panel, 21),
-                WM_SETTEXT,
-                0,
-                wide("35").as_ptr() as isize,
-            );
+            select_text(panel, 20, "1280 x 720");
+            select_text(panel, 21, "35");
             SendMessageW(panel, DISPLAYS, 1, 0);
             assert_eq!(text(GetDlgItem(panel, 20)), "Keep host");
             assert_eq!(text(GetDlgItem(panel, 21)), "35");
@@ -1193,10 +1208,13 @@ mod tests {
         let mut events = std::collections::VecDeque::new();
         events.clear();
         window.events.take_batch(&mut events);
-        assert!(events.iter().any(|e|matches!(e,crate::window::Event::NativeSession(Command::Apply(v)) if v.resolution==Resolution::Host && v.immersive==0)));
+        assert!(events.iter().any(|e|matches!(e,crate::window::Event::NativeSession(Command::Apply(v)) if v.resolution==Resolution::Host && v.immersive==0 && v.fps==Some(90) && v.bandwidth_mbps==Some(35))));
         for (selected, mode) in [(0, 0), (1, 3), (2, 2), (3, 1)] {
             unsafe {
-                for (id, index) in [(20, 2), (21, 2), (22, 1), (23, 1), (24, 1), (25, selected)] {
+                select_text(panel, 20, "1280 x 720");
+                select_text(panel, 21, "15");
+                select_text(panel, 22, "60");
+                for (id, index) in [(23, 1), (24, 1), (25, selected)] {
                     SendMessageW(GetDlgItem(panel, id), CB_SETCURSEL, index, 0);
                 }
                 SendMessageW(GetDlgItem(panel, 30), BM_SETCHECK, BST_CHECKED as usize, 0);
