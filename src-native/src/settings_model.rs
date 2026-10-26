@@ -29,10 +29,112 @@ impl Tab {
     }
 }
 
+/// Compound choices retain the existing settings schema and transport rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VideoFormat {
+    H264,
+    Hevc8,
+    Hevc10,
+}
+impl VideoFormat {
+    pub const ALL: [Self; 3] = [Self::H264, Self::Hevc8, Self::Hevc10];
+    pub const LABELS: [&'static str; 3] = [
+        "H.264",
+        "H.265 / HEVC (8-bit)",
+        "H.265 / HEVC (10-bit, experimental)",
+    ];
+    pub fn current(s: &Settings) -> Self {
+        if !s.prefer_hevc {
+            Self::H264
+        } else if s.experimental_ten_bit {
+            Self::Hevc10
+        } else {
+            Self::Hevc8
+        }
+    }
+    pub fn apply(self, s: &mut Settings) {
+        s.prefer_hevc = self != Self::H264;
+        // Keep a dormant preference when HEVC is disabled, as older settings do.
+        if self != Self::H264 {
+            s.experimental_ten_bit = self == Self::Hevc10;
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputMode {
+    Standard,
+    HidMouse,
+    HidKeyboard,
+    HidBoth,
+}
+impl InputMode {
+    pub const ALL: [Self; 4] = [
+        Self::Standard,
+        Self::HidMouse,
+        Self::HidKeyboard,
+        Self::HidBoth,
+    ];
+    pub const LABELS: [&'static str; 4] = [
+        "Standard input",
+        "USB HID mouse (experimental)",
+        "USB HID keyboard (experimental)",
+        "USB HID mouse + keyboard (experimental)",
+    ];
+    pub fn current(s: &Settings) -> Self {
+        #[cfg(feature = "bud")]
+        {
+            match (s.experimental_hid_mouse, s.experimental_hid_keyboard) {
+                (false, false) => Self::Standard,
+                (true, false) => Self::HidMouse,
+                (false, true) => Self::HidKeyboard,
+                (true, true) => Self::HidBoth,
+            }
+        }
+        #[cfg(not(feature = "bud"))]
+        {
+            let _ = s;
+            Self::Standard
+        }
+    }
+    pub fn apply(self, s: &mut Settings) {
+        #[cfg(feature = "bud")]
+        {
+            s.experimental_hid_mouse = matches!(self, Self::HidMouse | Self::HidBoth);
+            s.experimental_hid_keyboard = matches!(self, Self::HidKeyboard | Self::HidBoth);
+        }
+        #[cfg(not(feature = "bud"))]
+        {
+            let _ = (self, s);
+        }
+    }
+}
+pub enum BinaryChoice {
+    Chroma,
+    Rendering,
+    AmfMain10,
+    AudioBuffer,
+    AudioCodec,
+    Speakers,
+}
+impl BinaryChoice {
+    pub fn labels(self) -> [&'static str; 2] {
+        match self {
+            Self::Chroma => ["4:2:0", "Prefer 4:4:4 (experimental)"],
+            Self::Rendering => ["Normal GPU rendering", "Zero copy (experimental, HEVC)"],
+            Self::AmfMain10 => [
+                "Media Foundation (default)",
+                "AMD AMF Main10 (experimental)",
+            ],
+            Self::AudioBuffer => ["Default (core limits)", "Custom limits"],
+            Self::AudioCodec => ["Opus", "Allow raw PCM (BUD)"],
+            Self::Speakers => ["Stereo", "Match output layout (experimental, BUD)"],
+        }
+    }
+}
+
 pub struct Availability {
     pub bud: bool,
     pub audio_limits: bool,
-    pub ten_bit: bool,
     pub amf_main10: bool,
     pub chroma_444: bool,
     pub zero_copy: bool,
@@ -114,7 +216,6 @@ impl Form {
                 }
             },
             audio_limits: self.values.custom_audio_buffer,
-            ten_bit: self.values.prefer_hevc,
             amf_main10: cfg!(feature = "vendor-video")
                 && vendor == Some(0x1002)
                 && self.values.prefer_hevc
@@ -241,7 +342,6 @@ mod tests {
                 let eligible = matches!(vendor, Some(0x10de | 0x8086));
                 let enabled = form.availability();
                 assert_eq!(enabled.chroma_444, hevc && eligible);
-                assert_eq!(enabled.ten_bit, hevc);
                 assert_eq!(enabled.zero_copy, hevc && !eligible);
                 assert_eq!(form.values.experimental_chroma_444, eligible);
                 assert!(form.values.experimental_ten_bit);
@@ -442,5 +542,34 @@ mod tests {
         let saved = serde_json::to_vec(&form.values).unwrap();
         let restored: Settings = serde_json::from_slice(&saved).unwrap();
         assert!(restored.experimental_amf_main10);
+    }
+    #[test]
+    fn compound_choices_round_trip_legacy_flags_without_changing_effective_behavior() {
+        for hevc in [false, true] {
+            for depth in [false, true] {
+                let mut s = Settings {
+                    prefer_hevc: hevc,
+                    experimental_ten_bit: depth,
+                    ..Settings::default()
+                };
+                let mode = VideoFormat::current(&s);
+                mode.apply(&mut s);
+                assert_eq!((s.prefer_hevc, s.experimental_ten_bit), (hevc, depth));
+            }
+        }
+        for mode in VideoFormat::ALL {
+            let mut s = Settings::default();
+            mode.apply(&mut s);
+            assert_eq!(VideoFormat::current(&s), mode);
+        }
+        #[cfg(feature = "bud")]
+        for mode in InputMode::ALL {
+            let mut s = Settings::default();
+            mode.apply(&mut s);
+            assert_eq!(InputMode::current(&s), mode);
+            let restored: Settings =
+                serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
+            assert_eq!(InputMode::current(&restored), mode);
+        }
     }
 }

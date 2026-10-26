@@ -3,7 +3,7 @@
 #[path = "settings_controls.rs"]
 pub(crate) mod controls;
 use crate::connection_settings::Manager;
-use crate::settings_model::{Form, Tab};
+use crate::settings_model::{BinaryChoice, Form, InputMode, Tab, VideoFormat};
 use std::{
     ptr::{null, null_mut},
     sync::Arc,
@@ -43,7 +43,7 @@ const FORGET_PASSWORD: usize = 4113;
 const FORGET_TOKEN: usize = 4114;
 const STATUS: usize = 4115;
 const GPU: usize = 4116;
-const HEVC: usize = 4117;
+const VIDEO_FORMAT: usize = 4117;
 const FORCE_RELAY: usize = 4118;
 #[cfg(feature = "bud")]
 const BUD: usize = 4119;
@@ -60,7 +60,6 @@ const CLOUDFLARE: u8 = 2;
 const HELP: usize = 4200;
 const NETWORK_TAB: usize = 4201;
 const VIDEO_TAB: usize = 4121;
-const TEN_BIT: usize = 4122;
 #[cfg(feature = "vendor-video")]
 const AMF_MAIN10: usize = 4137;
 
@@ -68,8 +67,7 @@ const CHROMA_444: usize = 4136;
 const EVENT_LOG: usize = 4123;
 const AUDIO_TAB: usize = 4124;
 const INPUT_TAB: usize = 4129;
-const HID_MOUSE: usize = 4130;
-const HID_KEYBOARD: usize = 4131;
+const INPUT_MODE: usize = 4130;
 const AUDIO_CUSTOM: usize = 4125;
 const AUDIO_MIN: usize = 4126;
 const AUDIO_MAX: usize = 4127;
@@ -513,40 +511,15 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         })
         .unwrap_or(0);
     SendMessageW(gpu, CB_SETCURSEL, selected, 0);
-    row_label(
+    row_label(hwnd, page, "Video format", "HEVC and 10-bit require compatible host encoding.\nThe host may select H.264; reconnect after changing.", 344, 0, 48);
+    choice(
         hwnd,
         page,
-        "Video codec",
-        "Use HEVC when supported by this GPU and driver.\nReconnect after changing.",
+        VIDEO_FORMAT,
         344,
-        0,
-        40,
+        &VideoFormat::LABELS,
+        VideoFormat::current(s) as usize,
     );
-    add(
-        hwnd,
-        page,
-        "BUTTON",
-        "Prefer H.265 / HEVC",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 344, 400, 36],
-        HEVC,
-        0,
-        page.font,
-    );
-    check(hwnd, HEVC, s.prefer_hevc);
-    row_label(hwnd, page, "Color depth", "Verified with NVIDIA host encoding only.\n10-bit RGB SDR output when supported. Reconnect to apply.", 438, 0, 40);
-    add(
-        hwnd,
-        page,
-        "BUTTON",
-        "10-bit HEVC (experimental)",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 438, 400, 36],
-        TEN_BIT,
-        0,
-        page.font,
-    );
-    check(hwnd, TEN_BIT, s.experimental_ten_bit);
     row_label(hwnd, page, "Display timing", "Experimental: applies to normal GPU rendering.\nZero copy keeps Windows-managed timing. Reconnect to apply.", 626, 0, 48);
     let timing = add(
         hwnd,
@@ -574,18 +547,8 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     SendMessageW(timing, CB_SETCURSEL, selection, 0);
 
     {
-        row_label(hwnd, page, "Chroma", "NVIDIA tested; Intel not live-validated. AMD unavailable.\nHEVC 8/10-bit; requires compatible host and GPU.\nNormal GPU rendering; host may send 4:2:0 instead.", 720, 0, 64);
-        add(
-            hwnd,
-            page,
-            "BUTTON",
-            "Prefer 4:4:4 (experimental)",
-            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-            [420, 720, 400, 36],
-            CHROMA_444,
-            0,
-            page.font,
-        );
+        row_label(hwnd, page, "Chroma", "NVIDIA tested; Intel not live-validated. AMD unavailable.\nHEVC 8/10-bit; requires compatible host and GPU.\nNormal GPU rendering; host may send 4:2:0 instead.", 438, 0, 64);
+        binary_choice(hwnd, page, CHROMA_444, 438);
         check(hwnd, CHROMA_444, s.experimental_chroma_444);
         row_label(
             hwnd,
@@ -657,30 +620,10 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         let y = 532;
         let hint = "Present original HEVC decoder surfaces on supported GPUs.\nWindows 11 / compatible driver. Reconnect after changing.";
         row_label(hwnd, page, "Video presentation", hint, y, 0, 40);
-        add(
-            hwnd,
-            page,
-            "BUTTON",
-            "Zero copy (experimental, HEVC)",
-            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-            [420, y, 400, 36],
-            ZERO_COPY,
-            0,
-            page.font,
-        );
+        binary_choice(hwnd, page, ZERO_COPY, 532);
         check(hwnd, ZERO_COPY, s.experimental_zero_copy);
-        row_label(hwnd, page, "AMD 10-bit decoder", "Compare AMF Main10 with the default Media Foundation path.\nNormal GPU rendering; performance needs live validation.\nReconnect after changing.", 928, 0, 64);
-        add(
-            hwnd,
-            page,
-            "BUTTON",
-            "Use AMF Main10 (experimental)",
-            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-            [420, 928, 400, 36],
-            AMF_MAIN10,
-            0,
-            page.font,
-        );
+        row_label(hwnd, page, "AMD 10-bit decoder", "Compare AMF Main10 with the default Media Foundation path.\nNormal GPU rendering; verified on AMD Radeon 780M.\nReconnect after changing.", 720, 0, 64);
+        binary_choice(hwnd, page, AMF_MAIN10, 720);
         check(hwnd, AMF_MAIN10, s.experimental_amf_main10);
     }
     page.building_tab = Some(Tab::Network);
@@ -699,77 +642,29 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     check(hwnd, EVENT_LOG, s.event_logging);
     page.building_tab = Some(Tab::Audio);
     row_label(hwnd, page, "Playback buffer", "Custom limits apply only when enabled.\nOff uses the core's limits (normally 75 / 150 ms).", 242, 0, 48);
-    add(
-        hwnd,
-        page,
-        "BUTTON",
-        "Custom audio buffer",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 242, 400, 36],
-        AUDIO_CUSTOM,
-        0,
-        page.font,
-    );
+    binary_choice(hwnd, page, AUDIO_CUSTOM, 242);
     check(hwnd, AUDIO_CUSTOM, s.custom_audio_buffer);
     row(hwnd, page, "Minimum buffer (ms)", "PCM reserve before starting or refilling playback.\nSmaller values can increase audible gaps.", AUDIO_MIN,
         &s.audio_min_buffer_ms.to_string(), 344, 36, 0, ES_NUMBER as u32);
     row(hwnd, page, "Maximum buffer (ms)", "Local PCM plus audio queued on the Windows device.\n0 <= minimum <= maximum <= 500; maximum above zero.", AUDIO_MAX,
         &s.audio_max_buffer_ms.to_string(), 438, 36, 0, ES_NUMBER as u32);
     row_label(hwnd, page, "Audio format", "RAW: BUD only; host must also enable RAW.\n48 kHz stereo PCM uses about 1.54 Mbps before overhead.\nThe actual codec is shown in Connection stats.", 532, 0, 60);
-    add(
-        hwnd,
-        page,
-        "BUTTON",
-        "Allow raw PCM audio (BUD)",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 532, 400, 36],
-        AUDIO_RAW,
-        0,
-        page.font,
-    );
+    binary_choice(hwnd, page, AUDIO_RAW, 532);
     check(hwnd, AUDIO_RAW, s.allow_raw_audio);
     row_label(hwnd, page, "Speaker layout", "Experimental: match the Windows output's 5.1 or 7.1 layout.\nSynthetic tests only; no live host/client validation.\nBUD only; stereo fallback. Reconnect to apply.", 630, 0, 68);
-    add(
-        hwnd,
-        page,
-        "BUTTON",
-        "Multichannel audio (experimental, BUD)",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 630, 400, 36],
-        AUDIO_SURROUND,
-        0,
-        page.font,
-    );
+    binary_choice(hwnd, page, AUDIO_SURROUND, 630);
     check(hwnd, AUDIO_SURROUND, s.experimental_surround_audio);
     page.building_tab = Some(Tab::Input);
-    row_label(hwnd,page,"Mouse","Experimental USB HID mouse over BUD.\nEnable USB/Yubikey passthrough on the host.\nSupports a single physical or virtual display.",242,0,64);
-    add(
+    row_label(hwnd, page, "Input mode", "Standard input or experimental USB HID over BUD.\nMouse and keyboard can be selected independently.", 242, 0, 48);
+    choice(
         hwnd,
         page,
-        "BUTTON",
-        "USB HID mouse (experimental, BUD)",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 242, 400, 36],
-        HID_MOUSE,
-        0,
-        page.font,
+        INPUT_MODE,
+        242,
+        &InputMode::LABELS,
+        InputMode::current(s) as usize,
     );
-    #[cfg(feature = "bud")]
-    check(hwnd, HID_MOUSE, s.experimental_hid_mouse);
-    row_label(hwnd,page,"Keyboard","Experimental physical keyboard over BUD.\nUse the same keyboard layout on host and client.\nFor example: Hungarian on both computers.",354,0,64);
-    add(
-        hwnd,
-        page,
-        "BUTTON",
-        "USB HID keyboard (experimental, BUD)",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 354, 400, 36],
-        HID_KEYBOARD,
-        0,
-        page.font,
-    );
-    #[cfg(feature = "bud")]
-    check(hwnd, HID_KEYBOARD, s.experimental_hid_keyboard);
+    row_label(hwnd, page, "HID requirements", "Enable USB/Yubikey passthrough on the host.\nHID mouse uses the primary display only.\nUse the same keyboard layout on host and client.", 354, 0, 64);
     row_label(hwnd,page,"Compatibility","Absolute desktop and relative camera movement.\nCamera mode follows the host cursor state.\nKeyboard layout is not switched automatically.",466,0,64);
 
     page.building_tab = None;
@@ -908,13 +803,7 @@ unsafe fn layout(hwnd: HWND) {
         Tab::Network => 1056 + BUD_EXTRA,
         Tab::Audio => 750,
         Tab::Input => 570,
-        Tab::Video => {
-            if cfg!(feature = "vendor-video") {
-                1030
-            } else {
-                936
-            }
-        }
+        Tab::Video => 936,
     };
     let height = footer + 122 + HEADER_EXTRA;
     page.scroll = page.scroll.clamp(0, (height - client.bottom).max(0));
@@ -1059,9 +948,82 @@ unsafe fn text(hwnd: HWND, id: usize) -> String {
     let length = GetWindowTextW(field, buffer.as_mut_ptr(), buffer.len() as i32);
     String::from_utf16_lossy(&buffer[..length as usize])
 }
-unsafe fn check(hwnd: HWND, id: usize, value: bool) {
+fn binary_choice_kind(id: usize) -> Option<BinaryChoice> {
+    match id {
+        CHROMA_444 => Some(BinaryChoice::Chroma),
+        AUDIO_CUSTOM => Some(BinaryChoice::AudioBuffer),
+        AUDIO_RAW => Some(BinaryChoice::AudioCodec),
+        AUDIO_SURROUND => Some(BinaryChoice::Speakers),
+        #[cfg(feature = "vendor-video")]
+        ZERO_COPY => Some(BinaryChoice::Rendering),
+        #[cfg(feature = "vendor-video")]
+        AMF_MAIN10 => Some(BinaryChoice::AmfMain10),
+        _ => None,
+    }
+}
+unsafe fn choice(hwnd: HWND, page: &mut Page, id: usize, y: i32, labels: &[&str], selected: usize) {
+    let control = add(
+        hwnd,
+        page,
+        "COMBOBOX",
+        "",
+        CBS_DROPDOWNLIST as u32
+            | CBS_OWNERDRAWFIXED as u32
+            | CBS_HASSTRINGS as u32
+            | WS_VSCROLL
+            | WS_TABSTOP,
+        [420, y, 400, 200],
+        id,
+        0,
+        page.font,
+    );
+    for label in labels {
+        SendMessageW(control, CB_ADDSTRING, 0, wide(label).as_ptr() as isize);
+    }
+    controls::combo(control);
+    select(hwnd, id, selected);
+}
+unsafe fn binary_choice(hwnd: HWND, page: &mut Page, id: usize, y: i32) {
+    let labels = binary_choice_kind(id)
+        .expect("binary mode binding")
+        .labels();
+    choice(hwnd, page, id, y, &labels, 0);
+}
+fn mode_combo(id: usize) -> bool {
+    matches!(id, VIDEO_FORMAT | INPUT_MODE) || binary_choice_kind(id).is_some()
+}
+unsafe fn combo_item_text(control: HWND, index: u32) -> String {
+    let length = SendMessageW(control, CB_GETLBTEXTLEN, index as usize, 0);
+    if !(0..=1024).contains(&length) {
+        return String::new();
+    }
+    let mut text = vec![0u16; length as usize + 1];
+    let read = SendMessageW(
+        control,
+        CB_GETLBTEXT,
+        index as usize,
+        text.as_mut_ptr() as isize,
+    );
+    if read < 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&text[..read as usize])
+}
+fn binary_combo(id: usize) -> bool {
     #[cfg(feature = "bud")]
     if id == BUD {
+        return true;
+    }
+    binary_choice_kind(id).is_some()
+}
+unsafe fn selection(hwnd: HWND, id: usize) -> usize {
+    SendMessageW(GetDlgItem(hwnd, id as i32), CB_GETCURSEL, 0, 0) as usize
+}
+unsafe fn select(hwnd: HWND, id: usize, index: usize) {
+    SendMessageW(GetDlgItem(hwnd, id as i32), CB_SETCURSEL, index, 0);
+}
+unsafe fn check(hwnd: HWND, id: usize, value: bool) {
+    if binary_combo(id) {
         SendMessageW(
             GetDlgItem(hwnd, id as i32),
             CB_SETCURSEL,
@@ -1078,8 +1040,7 @@ unsafe fn check(hwnd: HWND, id: usize, value: bool) {
     );
 }
 unsafe fn checked(hwnd: HWND, id: usize) -> bool {
-    #[cfg(feature = "bud")]
-    if id == BUD {
+    if binary_combo(id) {
         return SendMessageW(GetDlgItem(hwnd, id as i32), CB_GETCURSEL, 0, 0) == 1;
     }
     SendMessageW(GetDlgItem(hwnd, id as i32), BM_GETCHECK, 0, 0) == 1
@@ -1095,9 +1056,10 @@ unsafe fn read_options(hwnd: HWND, model: &mut Form) {
     ))
     .ok();
     let s = &mut model.values;
-    s.prefer_hevc = checked(hwnd, HEVC);
+    if let Some(mode) = VideoFormat::ALL.get(selection(hwnd, VIDEO_FORMAT)) {
+        mode.apply(s);
+    }
     s.experimental_chroma_444 = checked(hwnd, CHROMA_444);
-    s.experimental_ten_bit = checked(hwnd, TEN_BIT);
     s.custom_audio_buffer = checked(hwnd, AUDIO_CUSTOM);
     s.stun_only = checked(hwnd, STUN_ONLY);
     s.force_relay = checked(hwnd, FORCE_RELAY);
@@ -1118,14 +1080,12 @@ unsafe fn update_enabled(hwnd: HWND) {
     let enabled = page.model.availability();
     check(hwnd, CHROMA_444, page.model.values.experimental_chroma_444);
     for (id, on) in [
-        (HID_KEYBOARD, enabled.bud),
-        (HID_MOUSE, enabled.bud),
+        (INPUT_MODE, enabled.bud),
         (AUDIO_MIN, enabled.audio_limits),
         (AUDIO_MAX, enabled.audio_limits),
         (AUDIO_RAW, enabled.bud),
         (AUDIO_SURROUND, enabled.bud),
         (CHROMA_444, enabled.chroma_444),
-        (TEN_BIT, enabled.ten_bit),
         (PROVIDER, enabled.relay),
         (FORCE_RELAY, enabled.relay),
         (TURN, enabled.custom_turn),
@@ -1174,8 +1134,9 @@ unsafe fn save(hwnd: HWND, page: &mut Page) {
     }
     #[cfg(feature = "bud")]
     {
-        s.experimental_hid_mouse = checked(hwnd, HID_MOUSE);
-        s.experimental_hid_keyboard = checked(hwnd, HID_KEYBOARD);
+        if let Some(mode) = InputMode::ALL.get(selection(hwnd, INPUT_MODE)) {
+            mode.apply(s);
+        }
     }
     s.custom_username = text(hwnd, USERNAME);
     s.turn_key_id = text(hwnd, KEY);
@@ -1245,7 +1206,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                 scroll_to(hwnd, requested);
                 return 0;
             }
-            WM_MEASUREITEM if wp == PROVIDER || wp == GPU => {
+            WM_MEASUREITEM if wp == PROVIDER || wp == GPU || mode_combo(wp) => {
                 (*(lp as *mut MEASUREITEMSTRUCT)).itemHeight = 30;
                 return 1;
             }
@@ -1262,6 +1223,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     GPU as u32,
                 ]
                 .contains(&draw.CtlID)
+                    || mode_combo(draw.CtlID as usize)
                 {
                     let dc = draw.hDC;
                     let state = SaveDC(dc);
@@ -1293,7 +1255,9 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                             FG
                         },
                     );
-                    let combo = draw.CtlID == PROVIDER as u32 || draw.CtlID == GPU as u32;
+                    let combo = draw.CtlID == PROVIDER as u32
+                        || draw.CtlID == GPU as u32
+                        || mode_combo(draw.CtlID as usize);
                     let label = if draw.CtlID == PROVIDER as u32 {
                         match draw.itemID {
                             0 => "Custom servers".into(),
@@ -1305,6 +1269,8 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                             .get(draw.itemID as usize)
                             .cloned()
                             .unwrap_or_default()
+                    } else if mode_combo(draw.CtlID as usize) {
+                        combo_item_text(draw.hwndItem, draw.itemID)
                     } else if draw.CtlID == NETWORK_TAB as u32 {
                         "Network".into()
                     } else if draw.CtlID == VIDEO_TAB as u32 {
@@ -1392,16 +1358,16 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     update_enabled(hwnd);
                     return 0;
                 }
-                HEVC | TEN_BIT if (wp >> 16) as u32 == BN_CLICKED => {
+                VIDEO_FORMAT if (wp >> 16) as u32 == CBN_SELCHANGE => {
                     update_enabled(hwnd);
                     return 0;
                 }
 
-                CHROMA_444 if (wp >> 16) as u32 == BN_CLICKED => {
+                CHROMA_444 if (wp >> 16) as u32 == CBN_SELCHANGE => {
                     update_enabled(hwnd);
                     return 0;
                 }
-                AUDIO_CUSTOM if (wp >> 16) as u32 == BN_CLICKED => {
+                AUDIO_CUSTOM if (wp >> 16) as u32 == CBN_SELCHANGE => {
                     update_enabled(hwnd);
                     return 0;
                 }
@@ -1557,7 +1523,18 @@ mod tests {
             SendMessageW(page, WM_COMMAND, VIDEO_TAB, 0);
             assert_eq!(IsWindowVisible(GetDlgItem(page, PROVIDER as i32)), 0);
             assert_ne!(IsWindowVisible(GetDlgItem(page, GPU as i32)), 0);
-            check(page, HEVC, true);
+            select(page, VIDEO_FORMAT, VideoFormat::Hevc8 as usize);
+            SendMessageW(
+                page,
+                WM_COMMAND,
+                VIDEO_FORMAT | ((CBN_SELCHANGE as usize) << 16),
+                0,
+            );
+            assert_eq!(
+                GetWindowLongW(GetDlgItem(page, VIDEO_FORMAT as i32), GWL_STYLE) as u32 & 3,
+                CBS_DROPDOWNLIST as u32
+            );
+            assert_combo_label_visible(page, VIDEO_FORMAT);
             assert_no_overlaps(page);
             capture(page, "video");
             assert_combo_label_visible(page, GPU);
@@ -1576,7 +1553,7 @@ mod tests {
                         matches!(vendor, 0x10de | 0x8086)
                     );
                     assert_eq!(checked(page, CHROMA_444), matches!(vendor, 0x10de | 0x8086));
-                    assert_ne!(IsWindowEnabled(GetDlgItem(page, TEN_BIT as i32)), 0);
+                    assert_ne!(IsWindowEnabled(GetDlgItem(page, VIDEO_FORMAT as i32)), 0);
                     #[cfg(feature = "vendor-video")]
                     assert_eq!(
                         IsWindowEnabled(GetDlgItem(page, ZERO_COPY as i32)) != 0,
@@ -1601,26 +1578,27 @@ mod tests {
             assert_no_overlaps(page);
             capture(page, "audio");
             SendMessageW(page, WM_COMMAND, INPUT_TAB, 0);
-            assert_ne!(IsWindowVisible(GetDlgItem(page, HID_MOUSE as i32)), 0);
+            assert_ne!(IsWindowVisible(GetDlgItem(page, INPUT_MODE as i32)), 0);
             assert_eq!(IsWindowVisible(GetDlgItem(page, GPU as i32)), 0);
             #[cfg(feature = "bud")]
             {
                 update_enabled(page);
-                assert_ne!(IsWindowEnabled(GetDlgItem(page, HID_MOUSE as i32)), 0);
-                check(page, HID_MOUSE, true);
+                assert_ne!(IsWindowEnabled(GetDlgItem(page, INPUT_MODE as i32)), 0);
+                select(page, INPUT_MODE, InputMode::HidMouse as usize);
                 check(page, BUD, false);
                 update_enabled(page);
-                assert_eq!(IsWindowEnabled(GetDlgItem(page, HID_MOUSE as i32)), 0);
-                assert!(checked(page, HID_MOUSE));
+                assert_eq!(IsWindowEnabled(GetDlgItem(page, INPUT_MODE as i32)), 0);
+                assert_eq!(selection(page, INPUT_MODE), InputMode::HidMouse as usize);
                 check(page, BUD, true);
                 update_enabled(page);
             }
+            assert_combo_label_visible(page, INPUT_MODE);
             assert_no_overlaps(page);
             capture(page, "input");
 
             SendMessageW(page, WM_COMMAND, NETWORK_TAB, 0);
             assert_eq!(IsWindowVisible(GetDlgItem(page, GPU as i32)), 0);
-            assert!(checked(page, HEVC));
+            assert_ne!(selection(page, VIDEO_FORMAT), VideoFormat::H264 as usize);
             assert_eq!(text(page, TOKEN), "fixture-token");
             assert_eq!(text(page, USERNAME), "unsaved-user");
             SendMessageW(GetDlgItem(page, PROVIDER as i32), CB_SETCURSEL, 0, 0);
@@ -1643,7 +1621,7 @@ mod tests {
                 wide("fixture-password").as_ptr(),
             );
             check(page, FORCE_RELAY, true);
-            check(page, TEN_BIT, true);
+            select(page, VIDEO_FORMAT, VideoFormat::Hevc10 as usize);
             SendMessageW(GetDlgItem(page, PRESENTATION as i32), CB_SETCURSEL, 2, 0);
             check(page, EVENT_LOG, true);
             SetWindowTextW(GetDlgItem(page, AUDIO_MIN as i32), wide("invalid").as_ptr());
@@ -1679,7 +1657,7 @@ mod tests {
                 0,
             );
             assert!(!checked(page, FORCE_RELAY));
-            check(page, HEVC, true);
+            select(page, VIDEO_FORMAT, VideoFormat::Hevc8 as usize);
             update_enabled(page);
             assert_eq!(IsWindowEnabled(GetDlgItem(page, TURN as i32)), 0);
             let state = &*(GetWindowLongPtrW(page, GWLP_USERDATA) as *const Page);
@@ -1707,9 +1685,9 @@ mod tests {
             assert!(checked(page, STUN_ONLY));
             #[cfg(feature = "vendor-video")]
             assert!(checked(page, ZERO_COPY));
-            assert!(checked(page, HEVC));
+            assert_ne!(selection(page, VIDEO_FORMAT), VideoFormat::H264 as usize);
             #[cfg(feature = "bud")]
-            assert!(checked(page, HID_MOUSE));
+            assert_eq!(selection(page, INPUT_MODE), InputMode::HidMouse as usize);
             assert_eq!(
                 SendMessageW(GetDlgItem(page, GPU as i32), CB_GETCURSEL, 0, 0),
                 selected as isize

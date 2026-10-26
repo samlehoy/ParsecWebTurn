@@ -324,3 +324,18 @@ No extra decoded-frame copy, CPU readback, decoder submission, thread or buffer
 is added. GPU/decoder load versus MF still requires live AMD A/B measurement;
 MF remains the default. The setting is available only with AMD, HEVC and 10-bit.
 NVIDIA/Intel routes, H.264 and original NV12 presentation are unchanged.
+
+### Settings mode selectors and AMF validation
+
+The native Settings page groups H.264 / HEVC 8-bit / HEVC 10-bit into one video
+format selector, and standard / HID mouse / HID keyboard / HID both into one
+input selector. Presentation, chroma and audio modes use non-editable choices.
+Shared Rust models map these to the existing JSON flags, including dormant
+HEVC/HID preferences; the native controls retain their keyboard/focus behavior.
+No decoder/presentation/transport/input data path changes accompany this UI work.
+
+The user live-confirmed AMF Main10 on Radeon 780M: HEVC Main10, 10-bit 4:2:0
+D3D11 output, RGB10 SDR and zero local dropped frames in the supplied snapshot.
+AMF-versus-MF performance remains unmeasured and AMF Main10 remains opt-in.
+For the separate TCP QoS feasibility result and measurement limits, see
+[Windows TCP/TLS QoS](windows-tcp-qos.md).

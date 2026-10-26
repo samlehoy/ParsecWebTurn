@@ -87,7 +87,7 @@ experimental options disabled for the most conservative configuration.
   and direct scanout are not independently verified.
 - **10-bit HEVC:** the Media Foundation path can produce 10-bit RGB SDR.
   An optional experimental AMD AMF Main10 path reuses P010 GPU output;
-  it is off by default and needs live AMD validation. Live
+  it is off by default and live-validated on Radeon 780M (performance A/B pending). Live
   Main 10 host encoding has been confirmed with NVIDIA; AMD configurations have
   not consistently worked in testing. This is not HDR. An initial host encoder
   error asks you to disable 10-bit and reconnect; no automatic 8-bit retry occurs.
