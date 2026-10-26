@@ -791,10 +791,10 @@ pub fn choose(
                     assert_ne!(IsWindowVisible(control), 0);
                 }
                 for &control in &f.login_controls {
-                    assert_eq!(IsWindowVisible(control) != 0, !picker);
+                    assert_eq!(IsWindowVisible(control) != 0, !show_picker);
                 }
                 for &control in &f.picker_controls {
-                    assert_eq!(IsWindowVisible(control) != 0, picker);
+                    assert_eq!(IsWindowVisible(control) != 0, show_picker);
                 }
                 assert_eq!(text(f.peer), selected);
                 if let Some(path) = std::env::var_os("EVOPARSEQ_UI_CAPTURE") {
