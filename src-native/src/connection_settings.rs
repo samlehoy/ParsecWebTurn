@@ -73,6 +73,7 @@ pub struct Settings {
     pub prefer_hevc: bool,
     pub presentation_mode: PresentationMode,
     pub experimental_ten_bit: bool,
+    pub experimental_amf_main10: bool,
     pub experimental_chroma_444: bool,
     pub event_logging: bool,
     #[serde(alias = "experimentalAudioBuffer")]
@@ -117,6 +118,7 @@ impl Default for Settings {
             prefer_hevc: false,
             presentation_mode: PresentationMode::Automatic,
             experimental_ten_bit: false,
+            experimental_amf_main10: false,
             experimental_chroma_444: false,
             event_logging: false,
             custom_audio_buffer: false,

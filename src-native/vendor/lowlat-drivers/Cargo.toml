@@ -1,0 +1,29 @@
+[package]
+name = "lowlat-drivers"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/nomi-san/lowlat"
+authors = ["Nguyen Duy <wuuyi123@gmail.com>"]
+
+[features]
+default = []
+gpl-libavcodec = []
+
+[dependencies]
+lowlat-common = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
+libc = "0.2"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[lints.clippy]
+mem_forget = "deny"
+float_cmp = "warn"
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"

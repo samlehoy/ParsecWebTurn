@@ -2,6 +2,11 @@
 
 ## Unreleased — native client development
 
+- Add an opt-in AMD AMF Main10 decoder using the separate HEVC Main10
+  component and original P010 GPU textures. Default remains Media Foundation;
+  existing conversion/output and MF recovery are reused. Live AMD performance
+  comparison is pending; no decoded-frame copy/readback or extra conversion pass.
+
 - Initialize the existing AMD AMF decoder with SPS visible dimensions for
   cropped HEVC, retaining coded-size checks and the existing GPU rendering path.
 

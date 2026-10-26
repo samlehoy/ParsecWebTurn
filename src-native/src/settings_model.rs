@@ -33,6 +33,7 @@ pub struct Availability {
     pub bud: bool,
     pub audio_limits: bool,
     pub ten_bit: bool,
+    pub amf_main10: bool,
     pub chroma_444: bool,
     pub zero_copy: bool,
     pub relay: bool,
@@ -114,6 +115,11 @@ impl Form {
             },
             audio_limits: self.values.custom_audio_buffer,
             ten_bit: self.values.prefer_hevc,
+            amf_main10: cfg!(feature = "vendor-video")
+                && vendor == Some(0x1002)
+                && self.values.prefer_hevc
+                && self.values.experimental_ten_bit
+                && !self.values.experimental_chroma_444,
             chroma_444: self.values.prefer_hevc && chroma_allowed,
             zero_copy: self.values.prefer_hevc && !self.values.experimental_chroma_444,
             relay,
@@ -413,5 +419,28 @@ mod tests {
         assert!(form.values.prefer_hevc && form.forget_token);
         assert_eq!(form.password.as_str(), "fixture-unsaved-sentinel");
         assert_eq!(std::fs::read(&fixture.0).unwrap(), b"offline-blocker");
+    }
+    #[test]
+    fn amf_main10_is_opt_in_and_available_only_for_amd_hevc_ten_bit() {
+        let mut form = form();
+        assert!(!form.values.experimental_amf_main10);
+        form.values.experimental_amf_main10 = true;
+        for vendor in [Some(0x1002), Some(0x10de), Some(0x8086), None] {
+            form.default_gpu_vendor = vendor;
+            for hevc in [false, true] {
+                form.values.prefer_hevc = hevc;
+                for ten_bit in [false, true] {
+                    form.values.experimental_ten_bit = ten_bit;
+                    assert_eq!(
+                        form.availability().amf_main10,
+                        cfg!(feature = "vendor-video") && vendor == Some(0x1002) && hevc && ten_bit
+                    );
+                    assert!(form.values.experimental_amf_main10); // dormant preference
+                }
+            }
+        }
+        let saved = serde_json::to_vec(&form.values).unwrap();
+        let restored: Settings = serde_json::from_slice(&saved).unwrap();
+        assert!(restored.experimental_amf_main10);
     }
 }

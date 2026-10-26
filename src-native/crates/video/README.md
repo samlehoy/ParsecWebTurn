@@ -37,3 +37,18 @@ checks remain in place. Existing low-latency settings, surface ownership,
 rendering crop coordinates and recovery are retained; Intel/D3D11 decoder
 initialization still uses its original coded-size contract. No dependency pin,
 SDK implementation, decoded-frame copy or CPU readback is changed.
+
+## Optional AMD AMF Main10
+
+The default HEVC 4:2:0 Main10 path remains Media Foundation. The Video tab's
+experimental AMF Main10 checkbox allows an explicit comparison on AMD, using
+`AMFVideoDecoderHW_H265_MAIN10` initialized as P010. Selection follows actual
+SPS depth, not the requested host flags. Eight-bit AMF retains NV12 and its
+original component. Low-latency, no-SurfaceCopy and same-device ownership rules
+are unchanged; format/order/runtime errors use the existing MF recovery.
+
+P010 flows directly to the existing D3D11 processor/RGB10 output path, with no
+additional decoded-frame copy, readback, conversion pass, or parallel decoder.
+Original-surface presentation remains NV12-only. Hardware load and performance
+versus MF are unmeasured; the preference defaults off. The pinned driver binding
+has a local, layout-selecting factory patch; see `../../vendor/lowlat-drivers/EVOPARSEQ.md`.

@@ -309,3 +309,18 @@ Synthetic metadata and initialization-choice tests cover cropped/uncropped
 streams and unchanged Intel/D3D11 size selection. Live older-AMF validation is
 still required; the implementation is our existing adapter, not an imported
 upstream decoder or dependency upgrade.
+
+### Optional AMF Main10
+
+Video settings offer an experimental, default-off AMD AMF Main10 decoder for
+HEVC 4:2:0 10-bit. It uses the separate documented Main10 component required by
+older runtimes, initialized with P010 and the SPS visible size. The actual SPS
+and output texture depth are checked; incompatible runtime/output falls back
+through existing Media Foundation recovery. No host-side change is needed.
+
+Only initialization/component selection changes. Live P010 textures remain on
+the decoder's D3D11 device and feed the existing single RGB output conversion.
+No extra decoded-frame copy, CPU readback, decoder submission, thread or buffer
+is added. GPU/decoder load versus MF still requires live AMD A/B measurement;
+MF remains the default. The setting is available only with AMD, HEVC and 10-bit.
+NVIDIA/Intel routes, H.264 and original NV12 presentation are unchanged.

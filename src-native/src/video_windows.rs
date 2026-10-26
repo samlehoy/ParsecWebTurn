@@ -582,6 +582,7 @@ fn run(
     let mut zero_fallback = None;
     #[cfg(feature = "vendor-video")]
     let zero_requested = window.experimental_zero_copy();
+    let amf_main10_requested = window.experimental_amf_main10();
     #[cfg(not(feature = "vendor-video"))]
     let zero_requested = false;
     loop {
@@ -798,6 +799,7 @@ fn run(
                         !vendor_failed && !verify_synthetic_pixels,
                         zero_requested && !zero_failed && frame.rotation == 0,
                         presentation_mode,
+                        amf_main10_requested,
                     ),
                 )?
             };
@@ -1180,9 +1182,9 @@ impl Session {
         codec: crate::video_stream::Codec,
         hevc: Option<crate::video_stream::HevcConfiguration>,
         surface_generation: u64,
-        policy: (bool, bool, PresentationMode),
+        policy: (bool, bool, PresentationMode, bool),
     ) -> Result<Self> {
-        let (_allow_vendor, _zero_copy, presentation_mode) = policy;
+        let (_allow_vendor, _zero_copy, presentation_mode, _amf_main10) = policy;
         let mut fallback = None;
         let zero_copy_status =
             _zero_copy.then(|| "Unavailable: select a supported GPU and enable HEVC".into());
@@ -1191,14 +1193,16 @@ impl Session {
         #[cfg(feature = "vendor-video")]
         if _allow_vendor
             && codec == crate::video_stream::Codec::Hevc
-            && hevc.is_some_and(|h| h.bit_depth == 8 || (h.bit_depth == 10 && h.chroma == 3))
+            && hevc.is_some_and(|h| {
+                h.bit_depth == 8 || (h.bit_depth == 10 && (h.chroma == 3 || _amf_main10))
+            })
         {
             let candidate = (|| -> anyhow::Result<Option<Self>> {
                 let config = hevc.ok_or_else(|| anyhow::anyhow!("missing HEVC parameters"))?;
                 anyhow::ensure!(
                     matches!(
                         (config.profile, config.chroma, config.bit_depth),
-                        (1, 1, 8) | (4, 3, 8 | 10)
+                        (1, 1, 8) | (2, 1, 10) | (4, 3, 8 | 10)
                     ),
                     "unsupported vendor color format"
                 );
@@ -1206,6 +1210,15 @@ impl Session {
                     create_device(preferred_gpu).map_err(|e| anyhow::anyhow!("{}", e.stage))?;
                 let dxgi: IDXGIDevice = probe.cast()?;
                 let adapter = dxgi.GetAdapter()?.GetDesc()?;
+                // 4:2:0 Main10 is opt-in on AMD only. Other vendors retain MF.
+                if config.chroma == 1 && config.bit_depth == 10 {
+                    if !_amf_main10 || adapter.VendorId != 0x1002 {
+                        return Ok(None);
+                    }
+                    if _zero_copy {
+                        zero_copy_status = Some("10-bit uses normal GPU rendering".into());
+                    }
+                }
                 let mode = if config.chroma == 3 {
                     if _zero_copy {
                         zero_copy_status = Some("4:4:4 uses normal GPU rendering".into());
@@ -1222,6 +1235,7 @@ impl Session {
                 drop((probe_context, probe));
                 if _zero_copy
                     && config.chroma == 1
+                    && config.bit_depth == 8
                     && evoparseq_video::original_surface_vendor_allowed(adapter.VendorId)
                 {
                     match evoparseq_video::display::Session::open(luid, hwnd) {
@@ -1254,6 +1268,7 @@ impl Session {
                     luid,
                     (config.width, config.height),
                     (config.visible_width, config.visible_height),
+                    u8::try_from(config.bit_depth)?,
                 )?;
                 let device = vendor.native_device()?;
                 let context = device.GetImmediateContext()?;
@@ -1601,9 +1616,16 @@ impl Session {
                     anyhow::ensure!(
                         matches!(
                             desc.Format,
-                            DXGI_FORMAT_NV12 | DXGI_FORMAT_AYUV | DXGI_FORMAT_Y410
+                            DXGI_FORMAT_NV12
+                                | DXGI_FORMAT_P010
+                                | DXGI_FORMAT_AYUV
+                                | DXGI_FORMAT_Y410
                         ) && desc.CPUAccessFlags == 0,
                         "vendor returned an unsupported GPU texture"
+                    );
+                    anyhow::ensure!(
+                        matches!(desc.Format, DXGI_FORMAT_P010 | DXGI_FORMAT_Y410) == self.ten_bit,
+                        "vendor output depth differs from stream"
                     );
                     let owner = picture.texture.GetDevice()?;
                     anyhow::ensure!(
@@ -1630,11 +1652,13 @@ impl Session {
                         s.width = Some(w);
                         s.height = Some(h);
                         s.nominal_range = Some(if layout.full_range { 1 } else { 2 });
-                        s.decoded_bit_depth = Some(if desc.Format == DXGI_FORMAT_Y410 {
-                            10
-                        } else {
-                            8
-                        });
+                        s.decoded_bit_depth = Some(
+                            if matches!(desc.Format, DXGI_FORMAT_P010 | DXGI_FORMAT_Y410) {
+                                10
+                            } else {
+                                8
+                            },
+                        );
                         s.decoded_chroma = Some(
                             if matches!(desc.Format, DXGI_FORMAT_AYUV | DXGI_FORMAT_Y410) {
                                 "4:4:4"

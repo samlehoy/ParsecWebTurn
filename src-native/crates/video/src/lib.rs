@@ -53,6 +53,18 @@ impl Layout {
         );
         Self::hevc_direct(s)
     }
+    pub fn hevc_amf(s: &hevc::sps::Sps, bit_depth: u8) -> Result<Self> {
+        ensure!(
+            s.chroma_format_idc == 1
+                && !s.separate_colour_plane
+                && !s.is_range_extended()
+                && matches!(bit_depth, 8 | 10)
+                && s.bit_depth_luma_minus8 == bit_depth - 8
+                && s.bit_depth_chroma_minus8 == s.bit_depth_luma_minus8,
+            "unsupported or changed AMF color format"
+        );
+        Self::geometry(s)
+    }
     pub fn hevc_direct(s: &hevc::sps::Sps) -> Result<Self> {
         ensure!(
             matches!(s.chroma_format_idc, 1 | 3)
@@ -62,6 +74,9 @@ impl Layout {
                 && s.bit_depth_chroma_minus8 == s.bit_depth_luma_minus8,
             "unsupported HEVC color format"
         );
+        Self::geometry(s)
+    }
+    fn geometry(s: &hevc::sps::Sps) -> Result<Self> {
         let (width, height) = s.visible();
         let crop = s.conformance_window.unwrap_or([0; 4]);
         ensure!(
@@ -129,6 +144,7 @@ struct AmfState<'a> {
     layout: Option<Layout>,
     coded_size: (u32, u32),
     visible_size: (u32, u32),
+    bit_depth: u8,
     sequence: i64,
 }
 self_cell!(
@@ -165,7 +181,13 @@ fn decoder_init_size(mode: Mode, coded: (u32, u32), visible: (u32, u32)) -> Resu
     }
 }
 impl Decoder {
-    pub fn open(mode: Mode, luid: u64, size: (u32, u32), visible_size: (u32, u32)) -> Result<Self> {
+    pub fn open(
+        mode: Mode,
+        luid: u64,
+        size: (u32, u32),
+        visible_size: (u32, u32),
+        bit_depth: u8,
+    ) -> Result<Self> {
         let init_size = decoder_init_size(mode, size, visible_size)?;
         let device = DeviceOwner::open(luid)?;
         let inner = match mode {
@@ -174,16 +196,22 @@ impl Decoder {
                 direct::Backend::new(&owner.device)
             })),
             Mode::AmdAmf => {
+                let format = match bit_depth {
+                    8 => amf::Layout::Nv12,
+                    10 => amf::Layout::P010,
+                    _ => anyhow::bail!("unsupported AMF depth"),
+                };
                 let owner = AmfOwner {
                     device,
                     runtime: amf::Amf::load()?,
                 };
                 let context = ContextCell::try_new(owner, |o| o.runtime.context(&o.device.device))?;
                 let state = AmfCell::try_new(context, |c| -> Result<AmfState<'_>> {
-                    let decoder = c
-                        .borrow_owner()
-                        .runtime
-                        .decoder(c.borrow_dependent(), amf::Codec::Hevc)?;
+                    let decoder = c.borrow_owner().runtime.decoder_with_layout(
+                        c.borrow_dependent(),
+                        amf::Codec::Hevc,
+                        format,
+                    )?;
                     decoder.set_int(amf::REORDER_MODE, amf::REORDER_LOW_LATENCY)?;
                     ensure!(
                         decoder.has(amf::LOW_LATENCY_DECODE),
@@ -192,7 +220,7 @@ impl Decoder {
                     decoder.set_bool(amf::LOW_LATENCY_DECODE, true)?;
                     decoder.set_bool("SurfaceCopy", false)?;
                     decoder.set_bool("EnableDecoderSmartAccessVideo", false)?;
-                    decoder.init(amf::Layout::Nv12, init_size.0, init_size.1)?;
+                    decoder.init(format, init_size.0, init_size.1)?;
                     let buffer = c.borrow_dependent().buffer(8 * 1024 * 1024)?;
                     Ok(AmfState {
                         decoder,
@@ -200,6 +228,7 @@ impl Decoder {
                         layout: None,
                         coded_size: size,
                         visible_size: init_size,
+                        bit_depth,
                         sequence: 0,
                     })
                 })?;
@@ -267,7 +296,7 @@ impl Decoder {
                     if kind==33 {
                         let sps=hevc::sps::parse(unit.bytes.get(2..).context("truncated HEVC SPS")?).map_err(|error|anyhow::anyhow!("HEVC SPS: {error:?}"))?;
                         ensure!(sps.max_num_reorder_pics==0,"AMF low latency requires a non-reordered stream");
-                        let layout=Layout::hevc(&sps)?;
+                        let layout=Layout::hevc_amf(&sps,state.bit_depth)?;
                         ensure!((sps.width,sps.height)==state.coded_size && (layout.width,layout.height)==state.visible_size,"AMF geometry changed");
                         state.layout=Some(layout);
                     }
@@ -343,5 +372,24 @@ mod tests {
         assert!(original_surface_vendor_allowed(0x1002));
         assert!(original_surface_vendor_allowed(0x8086));
         assert!(!original_surface_vendor_allowed(0));
+    }
+    #[test]
+    fn amf_main10_keeps_geometry_and_rejects_depth_or_chroma_changes() {
+        let bytes = include_bytes!("../fixtures/hevc-crop.sps");
+        let mut sps = hevc::sps::parse(&bytes[5..]).unwrap();
+        assert!(Layout::hevc_amf(&sps, 8).is_ok());
+        assert!(Layout::hevc_amf(&sps, 10).is_err());
+        sps.bit_depth_luma_minus8 = 2;
+        sps.bit_depth_chroma_minus8 = 2;
+        let layout = Layout::hevc_amf(&sps, 10).unwrap();
+        assert_eq!((layout.width, layout.height), (150, 146));
+        assert!(Layout::hevc(&sps).is_err()); // Intel's existing 8-bit contract.
+        assert!(Layout::hevc_amf(&sps, 8).is_err());
+        assert!(Layout::hevc_amf(&sps, 12).is_err());
+        sps.bit_depth_chroma_minus8 = 0;
+        assert!(Layout::hevc_amf(&sps, 10).is_err());
+        sps.bit_depth_chroma_minus8 = 2;
+        sps.chroma_format_idc = 3;
+        assert!(Layout::hevc_amf(&sps, 10).is_err());
     }
 }

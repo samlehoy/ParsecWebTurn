@@ -61,6 +61,8 @@ const HELP: usize = 4200;
 const NETWORK_TAB: usize = 4201;
 const VIDEO_TAB: usize = 4121;
 const TEN_BIT: usize = 4122;
+#[cfg(feature = "vendor-video")]
+const AMF_MAIN10: usize = 4137;
 
 const CHROMA_444: usize = 4136;
 const EVENT_LOG: usize = 4123;
@@ -667,6 +669,19 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
             page.font,
         );
         check(hwnd, ZERO_COPY, s.experimental_zero_copy);
+        row_label(hwnd, page, "AMD 10-bit decoder", "Compare AMF Main10 with the default Media Foundation path.\nNormal GPU rendering; performance needs live validation.\nReconnect after changing.", 928, 0, 64);
+        add(
+            hwnd,
+            page,
+            "BUTTON",
+            "Use AMF Main10 (experimental)",
+            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+            [420, 928, 400, 36],
+            AMF_MAIN10,
+            0,
+            page.font,
+        );
+        check(hwnd, AMF_MAIN10, s.experimental_amf_main10);
     }
     page.building_tab = Some(Tab::Network);
     row_label(hwnd, page, "Event log", "Log connection changes and decoder errors.\nSaved beside settings.json; no credentials or media payloads.\nApplies immediately after saving.", 938 + BUD_EXTRA, 0, 60);
@@ -893,7 +908,13 @@ unsafe fn layout(hwnd: HWND) {
         Tab::Network => 1056 + BUD_EXTRA,
         Tab::Audio => 750,
         Tab::Input => 570,
-        Tab::Video => 936,
+        Tab::Video => {
+            if cfg!(feature = "vendor-video") {
+                1030
+            } else {
+                936
+            }
+        }
     };
     let height = footer + 122 + HEADER_EXTRA;
     page.scroll = page.scroll.clamp(0, (height - client.bottom).max(0));
@@ -1120,10 +1141,16 @@ unsafe fn update_enabled(hwnd: HWND) {
         EnableWindow(GetDlgItem(hwnd, id as i32), i32::from(on));
     }
     #[cfg(feature = "vendor-video")]
-    EnableWindow(
-        GetDlgItem(hwnd, ZERO_COPY as i32),
-        i32::from(enabled.zero_copy),
-    );
+    {
+        EnableWindow(
+            GetDlgItem(hwnd, ZERO_COPY as i32),
+            i32::from(enabled.zero_copy),
+        );
+        EnableWindow(
+            GetDlgItem(hwnd, AMF_MAIN10 as i32),
+            i32::from(enabled.amf_main10),
+        );
+    }
     layout(hwnd);
 }
 unsafe fn save(hwnd: HWND, page: &mut Page) {
@@ -1143,6 +1170,7 @@ unsafe fn save(hwnd: HWND, page: &mut Page) {
     #[cfg(feature = "vendor-video")]
     {
         s.experimental_zero_copy = checked(hwnd, ZERO_COPY);
+        s.experimental_amf_main10 = checked(hwnd, AMF_MAIN10);
     }
     #[cfg(feature = "bud")]
     {
@@ -1364,7 +1392,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     update_enabled(hwnd);
                     return 0;
                 }
-                HEVC if (wp >> 16) as u32 == BN_CLICKED => {
+                HEVC | TEN_BIT if (wp >> 16) as u32 == BN_CLICKED => {
                     update_enabled(hwnd);
                     return 0;
                 }
