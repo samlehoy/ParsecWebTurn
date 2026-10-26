@@ -17,6 +17,10 @@ pub(crate) struct Tcp {
 }
 
 impl Tcp {
+    pub(crate) fn qos(&self, requested: bool) -> evoparseq_socket_qos::Flow {
+        evoparseq_socket_qos::Flow::new(&self.socket, requested, "BUD")
+    }
+
     pub(crate) fn start(server: SocketAddr) -> io::Result<Self> {
         // SAFETY: constant stream type/flags; successful ownership is immediately
         // transferred to TcpStream, including every subsequent error path.

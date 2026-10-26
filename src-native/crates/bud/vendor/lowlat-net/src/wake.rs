@@ -64,6 +64,20 @@ impl Wake {
         })
     }
 
+    /// Optional platform marking; refusal never changes stream setup.
+    #[cfg(feature = "turn-stream")]
+    pub fn stream_with_qos(
+        server: std::net::SocketAddr,
+        security: crate::stream_io::Security,
+        qos: bool,
+    ) -> io::Result<Self> {
+        Ok(Self {
+            kind: Kind::Stream(Box::new(crate::stream_io::StreamIo::start_with_qos(
+                server, security, qos,
+            )?)),
+        })
+    }
+
     pub fn handle(&self) -> io::Result<WakeHandle> {
         match &self.kind {
             Kind::Datagram(wake) => Ok(WakeHandle::datagram(wake.handle()?)),

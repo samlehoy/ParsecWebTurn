@@ -622,7 +622,7 @@ fn run(
     session.wake_consumer(std::thread::current());
     *stage = "initial_native_offer";
     log_route_attempt(&route);
-    let creds = session.offer(id, route)?;
+    let creds = session.offer(id, route.with_tcp_qos(settings.experimental_tcp_qos))?;
     let mut source = session.take_media()?;
     let mut signaling = Signaling::new("host", id)?;
     *audio.lock().unwrap_or_else(|e| e.into_inner()) = Some(media.audio_pipeline());
@@ -968,7 +968,7 @@ fn run(
             next.wake_consumer(std::thread::current());
             *stage = "relay_native_offer";
             log_route_attempt(&relay);
-            let creds = next.offer(&wire_id, relay)?;
+            let creds = next.offer(&wire_id, relay.with_tcp_qos(settings.experimental_tcp_qos))?;
             source = next.take_media()?;
             signaling = Signaling::new("host", &wire_id)?;
             *shared_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(next);

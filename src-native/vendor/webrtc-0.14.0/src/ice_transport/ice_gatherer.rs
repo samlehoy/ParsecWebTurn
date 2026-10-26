@@ -108,6 +108,7 @@ impl RTCIceGatherer {
 
         let mut config = ice::agent::agent_config::AgentConfig {
             prefer_turn_udp: self.setting_engine.prefer_turn_udp,
+            turn_tcp_qos: self.setting_engine.turn_tcp_qos,
             relay_only_connectivity: self.setting_engine.relay_only_connectivity,
             udp_network: self.setting_engine.udp_network.clone(),
             lite: self.setting_engine.candidates.ice_lite,

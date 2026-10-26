@@ -836,10 +836,11 @@ impl Agent {
                         (loc_conn, rel_addr, rel_port)
                     } else if url.proto == ProtoType::Tcp {
                         // RFC 8656: stream to TURN, UDP allocation toward peer.
-                        let conn = match crate::turn_stream::TurnStream::dial(
+                        let conn = match crate::turn_stream::TurnStream::dial_with_qos(
                             &url.host,
                             url.port,
                             url.scheme == SchemeType::Turns,
+                            agent_internal2.turn_tcp_qos,
                         )
                         .await
                         {

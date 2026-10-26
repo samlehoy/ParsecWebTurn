@@ -3,6 +3,9 @@ use crate::connection_settings::{full_chroma_vendor_allowed, GpuPreference, Mana
 use anyhow::{Context, Result};
 use zeroize::Zeroizing;
 
+pub const TCP_QOS_LABEL: &str = "TCP/TLS QoS";
+pub const TCP_QOS_HINT: &str = "Windows outgoing TURN traffic only; network support varies.\nUnsupported or refused: continue unmarked.\nReconnect after changing.";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Network,
@@ -136,6 +139,7 @@ impl InputMode {
     }
 }
 pub enum BinaryChoice {
+    TcpQos,
     Chroma,
     Rendering,
     AmfMain10,
@@ -146,6 +150,7 @@ pub enum BinaryChoice {
 impl BinaryChoice {
     pub fn labels(self) -> [&'static str; 2] {
         match self {
+            Self::TcpQos => ["Off (default)", "Audio/video QoS (experimental)"],
             Self::Chroma => ["4:2:0", "Prefer 4:4:4 (experimental)"],
             Self::Rendering => ["Normal GPU rendering", "Zero copy (experimental, HEVC)"],
             Self::AmfMain10 => [

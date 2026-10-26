@@ -805,6 +805,7 @@ fn worker(
     // thread. Snapshot settings once; a save affects only the next attempt.
     let mut ice = ice_configuration(stun_provider);
     if let Some(manager) = connection_settings {
+        settings.set_turn_tcp_qos(manager.view().0.experimental_tcp_qos);
         ice = runtime.block_on(async {
             tokio::select! {
                 result = manager.resolve_configuration() => result,

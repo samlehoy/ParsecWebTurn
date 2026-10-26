@@ -64,6 +64,7 @@ const AMF_MAIN10: usize = 4137;
 
 const CHROMA_444: usize = 4136;
 const EVENT_LOG: usize = 4123;
+const TCP_QOS: usize = 4138;
 const AUDIO_TAB: usize = 4124;
 const INPUT_TAB: usize = 4129;
 const INPUT_MODE: usize = 4130;
@@ -593,14 +594,25 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         check(hwnd, AMF_MAIN10, s.experimental_amf_main10);
     }
     page.building_tab = Some(Tab::Network);
-    row_label(hwnd, page, "Event log", "Log connection changes and decoder errors.\nSaved beside settings.json; no credentials or media payloads.\nApplies immediately after saving.", 844 + BUD_EXTRA, 0, 60);
+    row_label(
+        hwnd,
+        page,
+        crate::settings_model::TCP_QOS_LABEL,
+        crate::settings_model::TCP_QOS_HINT,
+        844 + BUD_EXTRA,
+        0,
+        60,
+    );
+    binary_choice(hwnd, page, TCP_QOS, 844 + BUD_EXTRA);
+    check(hwnd, TCP_QOS, s.experimental_tcp_qos);
+    row_label(hwnd, page, "Event log", "Log connection changes and decoder errors.\nSaved beside settings.json; no credentials or media payloads.\nApplies immediately after saving.", 938 + BUD_EXTRA, 0, 60);
     add(
         hwnd,
         page,
         "BUTTON",
         "Enable event logging",
         BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 844 + BUD_EXTRA, 400, 36],
+        [420, 938 + BUD_EXTRA, 400, 36],
         EVENT_LOG,
         0,
         page.font,
@@ -636,7 +648,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     page.building_tab = None;
     add(hwnd, page, "STATIC",
         "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection.",
-        0, [0, 962 + BUD_EXTRA, 820, 48], NOTICE, 0, page.small);
+        0, [0, 1056 + BUD_EXTRA, 820, 48], NOTICE, 0, page.small);
     page.model.feedback = error.unwrap_or_else(|| {
         "Saved in settings.json. Secrets are protected for your Windows user.".into()
     });
@@ -647,7 +659,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         "STATIC",
         &status,
         0,
-        [0, 1024 + BUD_EXTRA, 820, 40],
+        [0, 1118 + BUD_EXTRA, 820, 40],
         STATUS,
         0,
         page.small,
@@ -766,7 +778,7 @@ unsafe fn layout(hwnd: HWND) {
     GetClientRect(hwnd, &mut client);
     let cloudflare = SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1;
     let footer = match page.model.active_tab {
-        Tab::Network => 962 + BUD_EXTRA,
+        Tab::Network => 1056 + BUD_EXTRA,
         Tab::Audio => 750,
         Tab::Input => 570,
         Tab::Video => 936,
@@ -916,6 +928,7 @@ unsafe fn text(hwnd: HWND, id: usize) -> String {
 }
 fn binary_choice_kind(id: usize) -> Option<BinaryChoice> {
     match id {
+        TCP_QOS => Some(BinaryChoice::TcpQos),
         CHROMA_444 => Some(BinaryChoice::Chroma),
         AUDIO_CUSTOM => Some(BinaryChoice::AudioBuffer),
         AUDIO_RAW => Some(BinaryChoice::AudioCodec),
@@ -1049,6 +1062,7 @@ unsafe fn update_enabled(hwnd: HWND) {
         (AUDIO_RAW, enabled.bud),
         (AUDIO_SURROUND, enabled.bud),
         (CHROMA_444, enabled.chroma_444),
+        (TCP_QOS, enabled.relay),
         (PROVIDER, enabled.relay),
         (TURN, enabled.custom_turn),
         (USERNAME, enabled.custom_turn),
@@ -1089,6 +1103,7 @@ unsafe fn save(hwnd: HWND, page: &mut Page) {
     s.allow_raw_audio = checked(hwnd, AUDIO_RAW);
     s.experimental_surround_audio = checked(hwnd, AUDIO_SURROUND);
     s.event_logging = checked(hwnd, EVENT_LOG);
+    s.experimental_tcp_qos = checked(hwnd, TCP_QOS);
     #[cfg(feature = "vendor-video")]
     {
         s.experimental_zero_copy = checked(hwnd, ZERO_COPY);
@@ -1583,6 +1598,7 @@ mod tests {
             select(page, VIDEO_FORMAT, VideoFormat::Hevc10 as usize);
             SendMessageW(GetDlgItem(page, PRESENTATION as i32), CB_SETCURSEL, 2, 0);
             check(page, EVENT_LOG, true);
+            check(page, TCP_QOS, true);
             SetWindowTextW(GetDlgItem(page, AUDIO_MIN as i32), wide("invalid").as_ptr());
             SendMessageW(page, WM_COMMAND, SAVE, 0);
             assert_eq!(text(page, STATUS), "Enter an audio minimum in milliseconds");
@@ -1597,6 +1613,7 @@ mod tests {
                 crate::connection_settings::PresentationMode::Vsync
             );
             assert!(manager.view().0.event_logging);
+            assert!(manager.view().0.experimental_tcp_qos);
             assert!(manager.view().0.custom_audio_buffer);
             assert_eq!(manager.view().0.audio_min_buffer_ms, 20);
             assert_eq!(manager.view().0.audio_max_buffer_ms, 60);
@@ -1636,6 +1653,7 @@ mod tests {
             assert!(manager.view().0.prefer_hevc);
             DestroyWindow(page);
             let page = open(parent, manager.clone());
+            assert!(checked(page, TCP_QOS));
             assert_eq!(
                 text(page, STUN),
                 "stun:stun.example.org:3478\r\nstun:second.example.invalid:3478"

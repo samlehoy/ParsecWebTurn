@@ -15,16 +15,36 @@ still arrived. Loopback therefore cannot establish scheduling benefit. An
 initial Microsoft HTTPS target timed out in both control and marked trials;
 the successful example.com control/marked pair above is the usable result.
 
-No congestion, input-latency or stream A/B comparison has established a benefit.
-The exploratory script/results are outside the application source and are not
-compiled into or shipped with EvoParseq. No production QoS option is added yet.
+A subsequent two-machine ABBA test (32 trials, 12,923 RTT samples) accepted all
+16 requested marks. Average trial p95 under bidirectional load changed from
+61.70 to 39.22 ms for TCP and 57.03 to 37.91 ms for TLS. TLS upload p95 changed
+48.11 to 33.64 ms; TCP download showed no benefit. Large outliers remained.
+These are preliminary observations on one direct network path, not proof of
+an improvement over a real TURN connection. Load direction/bandwidth varied.
+
+## Optional integration
+
+Settings > Network > TCP/TLS QoS offers **Off (default)** and experimental
+Audio/video QoS. It applies to outgoing Windows TURN TCP/TLS sockets in both
+BUD and WebRTC, once after connect and before TLS setup. A tiny shared Rust
+crate owns the flow; platform-specific FFI is isolated behind the same API.
+Other targets are no-ops, preserving their existing socket policies.
+No extra runtime dependency, thread, queue, timer or per-packet/frame work is
+added. Existing rustls verification, IOCP/Tokio I/O, video decoding and
+presentation stay unchanged. UDP, auth HTTPS and signaling WSS are unaffected.
+
+Unsupported/refused marking leaves the stream usable and unmarked. With event
+logging enabled, `turn_tcp_qos` records one requested/applied/error result per
+connected socket, plus configured DSCP/L2 when available. Configured priority
+is not a packet-capture proof or a router guarantee. Test with real TURN under
+congestion before interpreting the synthetic results as a streaming benefit.
 
 ## Fit with the current client
 
 - BUD already has a dynamically loaded qWAVE helper for its UDP paths. Its UDP
   connect/mark/disconnect sequence must **not** be reused on established TCP.
-- BUD TCP/TLS shares one overlapped TCP socket. A future implementation can
-  reuse the API loader/lifetime at successful ConnectEx completion, without
+- BUD TCP/TLS shares one overlapped TCP socket. The stream adapter marks once after
+  successful connect, without
   modifying the read/write buffers, completion port, TLS records, or media path.
 - WebRTC TURN TCP/TLS has separate Tokio/socket ownership. The BUD helper cannot
   automatically cover it; its socket lifetime needs its own explicit adapter.
@@ -41,7 +61,7 @@ compiled into or shipped with EvoParseq. No production QoS option is added yet.
 - Configured priority is not an end-to-end guarantee. Network policy/routers
   may ignore or rewrite it; L2 marking was zero in this trial.
 
-## Before enabling it in production
+## Measurement tool
 
 A separate portable Rust receiver/client is now provided in
 [tools/qos-latency](../tools/qos-latency/README.md). It runs alternating
@@ -49,7 +69,8 @@ off/on/on/off trials over direct IPv4 TCP and certificate-pinned TLS, with idle,
 upload, download and bidirectional load. It records raw RTT samples, percentiles,
 errors and qWAVE configuration. Failed/unverified-mark or failed-load trials are
 inconclusive. Its dependencies and executable are isolated from the application;
-the production client remains unchanged. Two-machine measurements are pending.
+the measurement protocol/load generator is not shipped in the client. The first
+two-machine results are summarized above; real TURN A/B validation remains.
 
 Compare disabled/enabled trials on the same real TURN TCP/TLS route, alternating
 order, both idle and with controlled local upload contention. Measure input RTT,

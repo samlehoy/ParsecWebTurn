@@ -51,6 +51,12 @@ jobs:
       - name: Check isolated adapters
         shell: pwsh
         run: |
+          cargo fmt --manifest-path src-native/crates/socket-qos/Cargo.toml -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'QoS adapter formatting failed' }
+          cargo clippy --locked --manifest-path src-native/crates/bud/Cargo.toml --target ${{ matrix.target }} -p evoparseq-socket-qos --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'QoS adapter Clippy failed' }
+          cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml --target ${{ matrix.target }} -p evoparseq-socket-qos
+          if ($LASTEXITCODE -ne 0) { throw 'QoS adapter I/O lifecycle test failed' }
           cargo fmt --manifest-path src-native/crates/video/Cargo.toml -- --check
           if ($LASTEXITCODE -ne 0) { throw 'GPU decoder formatting failed' }
           cargo fmt --manifest-path src-native/crates/bud/Cargo.toml -- --check

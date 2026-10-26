@@ -68,6 +68,10 @@ impl std::fmt::Debug for Tcp {
 unsafe impl Send for Tcp {}
 
 impl Tcp {
+    pub(crate) fn qos(&self, requested: bool) -> evoparseq_socket_qos::Flow {
+        evoparseq_socket_qos::Flow::new(&self.socket, requested, "BUD")
+    }
+
     pub(crate) fn start(server: SocketAddr) -> io::Result<Self> {
         Self::start_inner(server, true)
     }

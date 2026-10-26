@@ -68,6 +68,12 @@ impl Route {
         relay.transport = transport;
         Self::Turn(relay)
     }
+    pub fn with_tcp_qos(mut self, enabled: bool) -> Self {
+        if let Self::Turn(relay) = &mut self {
+            relay.tcp_qos = enabled;
+        }
+        self
+    }
     fn configure(self) -> Config {
         match self {
             Self::Direct { stun } => Config {

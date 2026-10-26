@@ -10,7 +10,7 @@ authors = ["Nguyen Duy"]
 
 [features]
 default = []
-turn-stream = ["dep:rustls", "dep:webpki-roots", "dep:rustls-native-certs"]
+turn-stream = ["dep:evoparseq-socket-qos", "dep:rustls", "dep:webpki-roots", "dep:rustls-native-certs"]
 
 [dependencies]
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"], optional = true }
@@ -53,3 +53,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 
+
+[dependencies.evoparseq-socket-qos]
+path = "../../../socket-qos"
+optional = true

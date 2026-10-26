@@ -74,6 +74,9 @@ impl Notify {
 
 #[derive(Debug)]
 pub(crate) struct StreamIo {
+    // Dropped before the socket; one guard for the whole TCP/TLS lifetime.
+    _qos: Option<evoparseq_socket_qos::Flow>,
+    qos_requested: bool,
     socket: crate::sys::Tcp,
     server: SocketAddr,
     local: Option<std::net::IpAddr>,
@@ -98,6 +101,14 @@ pub(crate) struct StreamIo {
 
 impl StreamIo {
     pub(crate) fn start(server: SocketAddr, security: Security) -> io::Result<Self> {
+        Self::start_with_qos(server, security, false)
+    }
+
+    pub(crate) fn start_with_qos(
+        server: SocketAddr,
+        security: Security,
+        qos_requested: bool,
+    ) -> io::Result<Self> {
         let socket = crate::sys::Tcp::start(server)?;
         let notify = Arc::new(Notify {
             armed: AtomicBool::new(false),
@@ -113,6 +124,8 @@ impl StreamIo {
             }
         };
         Ok(Self {
+            _qos: None,
+            qos_requested,
             socket,
             server,
             local: None,
@@ -193,6 +206,7 @@ impl StreamIo {
             match self.socket.peer_addr() {
                 Ok(_) => {
                     self.socket.set_nodelay(true)?;
+                    self._qos = Some(self.socket.qos(self.qos_requested));
                     self.local = Some(self.socket.local_addr()?.ip());
                     self.connecting = false;
                 }
@@ -701,7 +715,7 @@ mod tests {
             } else {
                 Security::Tcp
             };
-            let mut io = StreamIo::start(address, security).unwrap();
+            let mut io = StreamIo::start_with_qos(address, security, true).unwrap();
             io.prepare(|| false).unwrap();
             let deadline = Instant::now() + Duration::from_secs(3);
             let mut sent = 0;
@@ -958,7 +972,7 @@ mod tests {
         } else {
             Security::Tcp
         };
-        let mut io = StreamIo::start(address, security).unwrap();
+        let mut io = StreamIo::start_with_qos(address, security, true).unwrap();
         io.prepare(|| false).unwrap();
         assert!(
             io.socket.nodelay().unwrap(),

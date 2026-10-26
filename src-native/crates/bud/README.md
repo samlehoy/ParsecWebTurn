@@ -15,3 +15,9 @@ The transport-only lowlat-client and lowlat-net subsets are pinned and documente
 in vendor/*/EVOPARSEQ.md. Their MIT licenses are retained. Regression tests
 exercise encrypted direct and UDP TURN paths using synthetic local credentials.
 One-off GPU investigations and their optional dependencies have been removed.
+
+
+TCP/TLS QoS: optional default-off connected-socket marking through the shared
+`evoparseq-socket-qos` platform adapter. Windows uses non-adaptive qWAVE
+AudioVideo; other targets are no-ops. BUD IOCP and WebRTC Tokio/TLS framing,
+verification and media processing are preserved. Failure never rejects a stream.

@@ -23,7 +23,8 @@ The repository's `main` and `dev` branches and their releases are separate.
   encrypted remembered sessions, manual host peer ID, and background list refresh.
 - **WebRTC and BUD:** direct connections or custom TURN relays over UDP, TLS or
   TCP; Force TURN, STUN-only and Cloudflare TURN credentials. Transport selection
-  is explicit, with no silent switch between WebRTC and BUD.
+  is explicit, with no silent switch between WebRTC and BUD. Optional experimental
+  Windows TCP/TLS QoS marks outgoing TURN traffic; off by default.
 - **GPU video:** H.264 and preferred H.265/HEVC, selectable GPU, D3D11 rendering
   and Media Foundation decoding, plus experimental NVIDIA/AMD/Intel HEVC paths.
 - **Session controls:** draggable overlay icon, resolution requests including

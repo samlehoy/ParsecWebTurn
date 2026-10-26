@@ -53,7 +53,7 @@ async fn tcp_receive_burst_preserves_tails_and_maximum_frame_lengths() {
                 tokio::task::yield_now().await;
             }
         });
-        let stream = TurnStream::dial("127.0.0.1", address.port(), false)
+        let stream = TurnStream::dial_with_qos("127.0.0.1", address.port(), false, true)
             .await
             .unwrap();
         let mut output = vec![0; 65556];

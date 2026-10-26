@@ -71,6 +71,7 @@ pub struct AgentInternal {
     pub(crate) prflx_acceptance_min_wait: Duration,
     pub(crate) relay_acceptance_min_wait: Duration,
     pub(crate) prefer_turn_udp: bool,
+    pub(crate) turn_tcp_qos: bool,
     pub(crate) relay_only_connectivity: bool,
     // How long connectivity checks can fail before the ICE Agent
     // goes to disconnected
@@ -138,6 +139,7 @@ impl AgentInternal {
             prflx_acceptance_min_wait: Duration::from_secs(0),
             relay_acceptance_min_wait: Duration::from_secs(0),
             prefer_turn_udp: false,
+            turn_tcp_qos: false,
             relay_only_connectivity: false,
 
             // How long connectivity checks can fail before the ICE Agent

@@ -2,6 +2,12 @@
 
 ## Unreleased — native client development
 
+- Add opt-in experimental Windows AudioVideo QoS for BUD and WebRTC TURN
+  TCP/TLS, using one shared portable adapter with a no-op fallback elsewhere.
+  Mark once per connected socket; refusal is nonfatal and optionally logged.
+  Preserve existing TLS verification, transport I/O, UDP and GPU media paths.
+  Synthetic congestion results are promising; real TURN benefit remains to test.
+
 - Size native remote cursor images to the client's Windows arrow cursor canvas,
   preserving shape aspect ratio and scaling/clamping the hotspot together.
   Reuse the cursor until its shape or Windows size changes; retain hidden-camera

@@ -57,6 +57,14 @@ fn run() -> Result<()> {
         settings.view().0.event_logging,
     )?;
     let _log = crate::event_log::Guard;
+    evoparseq_socket_qos::observe(|transport, status| {
+        crate::event_log::record(
+            if status.applied { "INFO" } else { "WARN" },
+            "turn_tcp_qos",
+            serde_json::json!({"transport":transport,"requested":status.requested,"applied":status.applied,
+                "configured_dscp":status.configured_dscp,"configured_l2":status.configured_l2,"os_error":status.error}),
+        );
+    });
     crate::event_log::record(
         "INFO",
         "native_core_started",

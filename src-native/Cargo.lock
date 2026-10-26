@@ -639,6 +639,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "evoparseq-bud",
+ "evoparseq-socket-qos",
  "evoparseq-video",
  "futures-util",
  "getrandom 0.3.4",
@@ -670,6 +671,13 @@ dependencies = [
  "lowlat-crypto",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "evoparseq-socket-qos"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1341,6 +1349,7 @@ dependencies = [
 name = "lowlat-net"
 version = "0.0.0"
 dependencies = [
+ "evoparseq-socket-qos",
  "libc",
  "lowlat-common",
  "lowlat-core",
@@ -3025,6 +3034,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "crc",
+ "evoparseq-socket-qos",
  "log",
  "portable-atomic",
  "rand 0.9.5",

@@ -13,6 +13,7 @@ bud = ["dep:evoparseq-bud"]
 native-core = ["windows-sys/Win32_System_SystemServices", "bud", "evoparseq-bud/native-core", "dep:zeroize"]
 
 [dependencies]
+evoparseq-socket-qos = { path = "crates/socket-qos" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

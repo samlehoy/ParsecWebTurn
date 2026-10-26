@@ -76,6 +76,7 @@ pub struct Settings {
     pub experimental_amf_main10: bool,
     pub experimental_chroma_444: bool,
     pub event_logging: bool,
+    pub experimental_tcp_qos: bool,
     #[serde(alias = "experimentalAudioBuffer")]
     pub custom_audio_buffer: bool,
     pub audio_min_buffer_ms: u32,
@@ -121,6 +122,7 @@ impl Default for Settings {
             experimental_amf_main10: false,
             experimental_chroma_444: false,
             event_logging: false,
+            experimental_tcp_qos: false,
             custom_audio_buffer: false,
             audio_min_buffer_ms: 75,
             audio_max_buffer_ms: 150,

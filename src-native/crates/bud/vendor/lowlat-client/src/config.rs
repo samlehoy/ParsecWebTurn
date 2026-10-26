@@ -115,6 +115,7 @@ impl Video {
 pub struct Relay {
     pub server: SocketAddr,
     pub transport: RelayTransport,
+    pub tcp_qos: bool,
     pub username: Zeroizing<String>,
     pub password: Zeroizing<String>,
 }
@@ -135,6 +136,7 @@ impl Relay {
         Self {
             server,
             transport: RelayTransport::Udp,
+            tcp_qos: false,
             username: Zeroizing::new(username.to_owned()),
             password: Zeroizing::new(password.to_owned()),
         }
@@ -144,15 +146,18 @@ impl Relay {
         match &self.transport {
             RelayTransport::Udp => lowlat_net::Wake::new(),
             #[cfg(feature = "turn-stream")]
-            RelayTransport::Tcp => {
-                lowlat_net::Wake::stream(self.server, lowlat_net::stream_io::Security::Tcp)
-            }
+            RelayTransport::Tcp => lowlat_net::Wake::stream_with_qos(
+                self.server,
+                lowlat_net::stream_io::Security::Tcp,
+                self.tcp_qos,
+            ),
             #[cfg(feature = "turn-stream")]
-            RelayTransport::Tls { server_name } => lowlat_net::Wake::stream(
+            RelayTransport::Tls { server_name } => lowlat_net::Wake::stream_with_qos(
                 self.server,
                 lowlat_net::stream_io::Security::Tls(lowlat_net::stream_io::Tls::system(
                     server_name,
                 )?),
+                self.tcp_qos,
             ),
             #[cfg(not(feature = "turn-stream"))]
             _ => Err(std::io::ErrorKind::Unsupported.into()),

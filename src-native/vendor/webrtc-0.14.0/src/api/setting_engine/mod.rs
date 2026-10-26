@@ -101,6 +101,7 @@ pub struct SettingEngine {
     pub(crate) disable_media_engine_copy: bool,
     pub(crate) data_channel_only: bool,
     pub(crate) prefer_turn_udp: bool,
+    pub(crate) turn_tcp_qos: bool,
     pub(crate) relay_only_connectivity: bool,
     pub(crate) srtp_protection_profiles: Vec<SrtpProtectionProfile>,
     pub(crate) receive_mtu: usize,
@@ -108,6 +109,11 @@ pub struct SettingEngine {
     pub(crate) enable_sender_rtx: bool,
     /// Determines the max size of any message that may be sent through an SCTP transport.
     pub(crate) sctp_max_message_size_can_send: SctpMaxMessageSize,
+}
+
+/// Optional connected TURN TCP/TLS socket marking. Unsupported platforms send unmarked.
+pub fn set_turn_tcp_qos(&mut self, enabled: bool) {
+    self.turn_tcp_qos = enabled;
 }
 
 impl SettingEngine {
