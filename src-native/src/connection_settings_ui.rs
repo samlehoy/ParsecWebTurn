@@ -3,7 +3,7 @@
 #[path = "settings_controls.rs"]
 pub(crate) mod controls;
 use crate::connection_settings::Manager;
-use crate::settings_model::{BinaryChoice, Form, InputMode, Tab, VideoFormat};
+use crate::settings_model::{BinaryChoice, Form, InputMode, RouteMode, Tab, VideoFormat};
 use std::{
     ptr::{null, null_mut},
     sync::Arc,
@@ -30,7 +30,7 @@ const BACK: usize = 4102;
 
 const HIDE_SESSION_BUTTON: usize = 4135;
 const PROVIDER: usize = 4103;
-const STUN_ONLY: usize = 4104;
+const ROUTE_MODE: usize = 4104;
 const STUN: usize = 4105;
 const TURN: usize = 4106;
 const USERNAME: usize = 4107;
@@ -44,7 +44,6 @@ const FORGET_TOKEN: usize = 4114;
 const STATUS: usize = 4115;
 const GPU: usize = 4116;
 const VIDEO_FORMAT: usize = 4117;
-const FORCE_RELAY: usize = 4118;
 #[cfg(feature = "bud")]
 const BUD: usize = 4119;
 const BUD_EXTRA: i32 = if cfg!(feature = "bud") { 94 } else { 0 };
@@ -269,27 +268,15 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     row(hwnd, page, "STUN servers",
         "Discover a direct route. One stun: URL per line.\nLeave blank to use the default discovery server.",
         STUN, &s.stun_urls.join("\r\n"), 242, 76, 0, ES_MULTILINE as u32 | ES_WANTRETURN as u32 | ES_AUTOVSCROLL as u32 | WS_CLIPCHILDREN);
-    row_label(
+    row_label(hwnd, page, "Connection route", "Choose automatic routing, direct-only or TURN relay.\nDirect-only is intended for LAN or VPN connections.", 344, 0, 40);
+    choice(
         hwnd,
         page,
-        "STUN only",
-        "For LAN or VPN connections that do not need a relay.",
+        ROUTE_MODE,
         344,
-        0,
-        40,
+        &RouteMode::LABELS,
+        RouteMode::current(&s) as usize,
     );
-    add(
-        hwnd,
-        page,
-        "BUTTON",
-        "Use STUN only (no TURN relay)",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 344, 400, 36],
-        STUN_ONLY,
-        0,
-        page.font,
-    );
-    check(hwnd, STUN_ONLY, s.stun_only);
     row_label(
         hwnd,
         page,
@@ -573,37 +560,16 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         check(hwnd, HIDE_SESSION_BUTTON, s.native_core.hide_session_button);
     }
     page.building_tab = Some(Tab::Network);
-    row_label(
-        hwnd,
-        page,
-        "Connection route",
-        "Use a TURN relay even when a direct route is available.",
-        844,
-        0,
-        40,
-    );
-    add(
-        hwnd,
-        page,
-        "BUTTON",
-        "Force TURN relay",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 844, 400, 36],
-        FORCE_RELAY,
-        0,
-        page.font,
-    );
-    check(hwnd, FORCE_RELAY, s.force_relay);
     #[cfg(feature = "bud")]
     {
-        row_label(hwnd, page, "Transport", "WebRTC or BUD: direct UDP or TURN over UDP/TLS/TCP.\nUses the TURN URLs above. Reconnect after changing.", 938, 0, 40);
+        row_label(hwnd, page, "Transport", "WebRTC or BUD: direct UDP or TURN over UDP/TLS/TCP.\nUses the TURN URLs above. Reconnect after changing.", 844, 0, 40);
         let transport = add(
             hwnd,
             page,
             "COMBOBOX",
             "",
             CBS_DROPDOWNLIST as u32 | WS_VSCROLL | WS_TABSTOP,
-            [420, 938, 400, 160],
+            [420, 844, 400, 160],
             BUD,
             0,
             page.font,
@@ -627,14 +593,14 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         check(hwnd, AMF_MAIN10, s.experimental_amf_main10);
     }
     page.building_tab = Some(Tab::Network);
-    row_label(hwnd, page, "Event log", "Log connection changes and decoder errors.\nSaved beside settings.json; no credentials or media payloads.\nApplies immediately after saving.", 938 + BUD_EXTRA, 0, 60);
+    row_label(hwnd, page, "Event log", "Log connection changes and decoder errors.\nSaved beside settings.json; no credentials or media payloads.\nApplies immediately after saving.", 844 + BUD_EXTRA, 0, 60);
     add(
         hwnd,
         page,
         "BUTTON",
         "Enable event logging",
         BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 938 + BUD_EXTRA, 400, 36],
+        [420, 844 + BUD_EXTRA, 400, 36],
         EVENT_LOG,
         0,
         page.font,
@@ -670,7 +636,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     page.building_tab = None;
     add(hwnd, page, "STATIC",
         "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection.",
-        0, [0, 1056 + BUD_EXTRA, 820, 48], NOTICE, 0, page.small);
+        0, [0, 962 + BUD_EXTRA, 820, 48], NOTICE, 0, page.small);
     page.model.feedback = error.unwrap_or_else(|| {
         "Saved in settings.json. Secrets are protected for your Windows user.".into()
     });
@@ -681,7 +647,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         "STATIC",
         &status,
         0,
-        [0, 1118 + BUD_EXTRA, 820, 40],
+        [0, 1024 + BUD_EXTRA, 820, 40],
         STATUS,
         0,
         page.small,
@@ -800,7 +766,7 @@ unsafe fn layout(hwnd: HWND) {
     GetClientRect(hwnd, &mut client);
     let cloudflare = SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1;
     let footer = match page.model.active_tab {
-        Tab::Network => 1056 + BUD_EXTRA,
+        Tab::Network => 962 + BUD_EXTRA,
         Tab::Audio => 750,
         Tab::Input => 570,
         Tab::Video => 936,
@@ -990,7 +956,7 @@ unsafe fn binary_choice(hwnd: HWND, page: &mut Page, id: usize, y: i32) {
     choice(hwnd, page, id, y, &labels, 0);
 }
 fn mode_combo(id: usize) -> bool {
-    matches!(id, VIDEO_FORMAT | INPUT_MODE) || binary_choice_kind(id).is_some()
+    matches!(id, VIDEO_FORMAT | INPUT_MODE | ROUTE_MODE) || binary_choice_kind(id).is_some()
 }
 fn mode_label(id: usize, index: u32) -> &'static str {
     let index = index as usize;
@@ -998,6 +964,8 @@ fn mode_label(id: usize, index: u32) -> &'static str {
         VideoFormat::LABELS.get(index).copied()
     } else if id == INPUT_MODE {
         InputMode::LABELS.get(index).copied()
+    } else if id == ROUTE_MODE {
+        RouteMode::LABELS.get(index).copied()
     } else {
         binary_choice_kind(id).and_then(|kind| kind.labels().get(index).copied())
     }
@@ -1055,8 +1023,9 @@ unsafe fn read_options(hwnd: HWND, model: &mut Form) {
     }
     s.experimental_chroma_444 = checked(hwnd, CHROMA_444);
     s.custom_audio_buffer = checked(hwnd, AUDIO_CUSTOM);
-    s.stun_only = checked(hwnd, STUN_ONLY);
-    s.force_relay = checked(hwnd, FORCE_RELAY);
+    if let Some(mode) = RouteMode::ALL.get(selection(hwnd, ROUTE_MODE)) {
+        mode.apply(s);
+    }
     s.provider = if SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1 {
         "cloudflare"
     } else {
@@ -1081,7 +1050,6 @@ unsafe fn update_enabled(hwnd: HWND) {
         (AUDIO_SURROUND, enabled.bud),
         (CHROMA_444, enabled.chroma_444),
         (PROVIDER, enabled.relay),
-        (FORCE_RELAY, enabled.relay),
         (TURN, enabled.custom_turn),
         (USERNAME, enabled.custom_turn),
         (PASSWORD, enabled.custom_turn),
@@ -1370,10 +1338,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     update_enabled(hwnd);
                     return 0;
                 }
-                STUN_ONLY if (wp >> 16) as u32 == BN_CLICKED => {
-                    read_options(hwnd, &mut page.model);
-                    page.model.stun_only_changed(checked(hwnd, STUN_ONLY));
-                    check(hwnd, FORCE_RELAY, page.model.values.force_relay);
+                ROUTE_MODE if (wp >> 16) as u32 == CBN_SELCHANGE => {
                     update_enabled(hwnd);
                     return 0;
                 }
@@ -1614,7 +1579,7 @@ mod tests {
                 GetDlgItem(page, PASSWORD as i32),
                 wide("fixture-password").as_ptr(),
             );
-            check(page, FORCE_RELAY, true);
+            select(page, ROUTE_MODE, RouteMode::ForceRelay as usize);
             select(page, VIDEO_FORMAT, VideoFormat::Hevc10 as usize);
             SendMessageW(GetDlgItem(page, PRESENTATION as i32), CB_SETCURSEL, 2, 0);
             check(page, EVENT_LOG, true);
@@ -1643,14 +1608,14 @@ mod tests {
             assert!(manager.view().0.hid_mouse_enabled());
             assert_eq!(manager.view().0.stun_urls.len(), 2);
             assert_eq!(manager.view().0.turn_urls.len(), 2);
-            check(page, STUN_ONLY, true);
+            select(page, ROUTE_MODE, RouteMode::DirectOnly as usize);
             SendMessageW(
                 page,
                 WM_COMMAND,
-                STUN_ONLY | ((BN_CLICKED as usize) << 16),
+                ROUTE_MODE | ((CBN_SELCHANGE as usize) << 16),
                 0,
             );
-            assert!(!checked(page, FORCE_RELAY));
+            assert_eq!(selection(page, ROUTE_MODE), RouteMode::DirectOnly as usize);
             select(page, VIDEO_FORMAT, VideoFormat::Hevc8 as usize);
             update_enabled(page);
             assert_eq!(IsWindowEnabled(GetDlgItem(page, TURN as i32)), 0);
@@ -1676,7 +1641,7 @@ mod tests {
                 "stun:stun.example.org:3478\r\nstun:second.example.invalid:3478"
             );
             assert_eq!(text(page, TURN), "turn:relay.example.invalid:3478?transport=udp\r\nturns:relay.example.invalid:443?transport=tcp");
-            assert!(checked(page, STUN_ONLY));
+            assert_eq!(selection(page, ROUTE_MODE), RouteMode::DirectOnly as usize);
             #[cfg(feature = "vendor-video")]
             assert!(checked(page, ZERO_COPY));
             assert_ne!(selection(page, VIDEO_FORMAT), VideoFormat::H264 as usize);

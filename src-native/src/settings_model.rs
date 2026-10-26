@@ -61,6 +61,33 @@ impl VideoFormat {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RouteMode {
+    Automatic,
+    DirectOnly,
+    ForceRelay,
+}
+impl RouteMode {
+    pub const ALL: [Self; 3] = [Self::Automatic, Self::DirectOnly, Self::ForceRelay];
+    pub const LABELS: [&'static str; 3] = [
+        "Automatic (direct or TURN)",
+        "Direct only (STUN / LAN / VPN)",
+        "Force TURN relay",
+    ];
+    pub fn current(s: &Settings) -> Self {
+        if s.stun_only {
+            Self::DirectOnly
+        } else if s.force_relay {
+            Self::ForceRelay
+        } else {
+            Self::Automatic
+        }
+    }
+    pub fn apply(self, s: &mut Settings) {
+        s.stun_only = self == Self::DirectOnly;
+        s.force_relay = self == Self::ForceRelay;
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputMode {
     Standard,
     HidMouse,
@@ -183,12 +210,6 @@ impl Form {
     }
     pub fn cloudflare(&self) -> bool {
         self.values.provider == "cloudflare"
-    }
-    pub fn stun_only_changed(&mut self, value: bool) {
-        self.values.stun_only = value;
-        if value {
-            self.values.force_relay = false;
-        }
     }
     pub fn availability(&mut self) -> Availability {
         let vendor = self
@@ -379,7 +400,12 @@ mod tests {
         for cloudflare in [false, true] {
             form.values.provider = if cloudflare { "cloudflare" } else { "custom" }.into();
             for stun_only in [false, true] {
-                form.stun_only_changed(stun_only);
+                (if stun_only {
+                    RouteMode::DirectOnly
+                } else {
+                    RouteMode::Automatic
+                })
+                .apply(&mut form.values);
                 let enabled = form.availability();
                 assert_eq!(enabled.relay, !stun_only);
                 assert_eq!(enabled.custom_turn, !stun_only && !cloudflare);
@@ -391,9 +417,9 @@ mod tests {
         form.values.custom_audio_buffer = true;
         assert!(form.availability().audio_limits);
         form.values.force_relay = true;
-        form.stun_only_changed(true);
+        RouteMode::DirectOnly.apply(&mut form.values);
         assert!(!form.values.force_relay);
-        form.stun_only_changed(false);
+        RouteMode::Automatic.apply(&mut form.values);
         assert!(!form.values.force_relay); // No implicit re-enable.
         #[cfg(feature = "bud")]
         {
@@ -494,7 +520,7 @@ mod tests {
             manager.view().0.encrypted_api_token,
             saved.encrypted_api_token
         );
-        form.stun_only_changed(true);
+        RouteMode::DirectOnly.apply(&mut form.values);
         form.forget_password = true;
         form.forget_token = true;
         assert!(form.save(&manager));
@@ -556,6 +582,12 @@ mod tests {
                 mode.apply(&mut s);
                 assert_eq!((s.prefer_hevc, s.experimental_ten_bit), (hevc, depth));
             }
+        }
+        for mode in RouteMode::ALL {
+            let mut s = Settings::default();
+            mode.apply(&mut s);
+            assert_eq!(RouteMode::current(&s), mode);
+            assert!(!(s.stun_only && s.force_relay));
         }
         for mode in VideoFormat::ALL {
             let mut s = Settings::default();

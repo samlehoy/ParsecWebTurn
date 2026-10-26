@@ -2,7 +2,7 @@
 
 ## Unreleased — native client development
 
-- Group Settings into video-format and HID input choices; use dropdowns for
+- Group Settings into routing, video-format and HID input choices; use dropdowns for
   presentation/chroma/AMF Main10 and audio buffer/codec/speaker modes. Preserve
   existing settings.json flags, defaults and media/input behavior.
 - Record live AMD Radeon 780M AMF Main10 4:2:0 / RGB10 SDR validation.

@@ -327,7 +327,8 @@ NVIDIA/Intel routes, H.264 and original NV12 presentation are unchanged.
 
 ### Settings mode selectors and AMF validation
 
-The native Settings page groups H.264 / HEVC 8-bit / HEVC 10-bit into one video
+The native Settings page groups automatic / direct-only / forced-TURN routing,
+H.264 / HEVC 8-bit / HEVC 10-bit into one video
 format selector, and standard / HID mouse / HID keyboard / HID both into one
 input selector. Presentation, chroma and audio modes use non-editable choices.
 Shared Rust models map these to the existing JSON flags, including dormant
