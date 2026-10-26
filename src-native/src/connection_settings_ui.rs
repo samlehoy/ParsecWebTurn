@@ -518,7 +518,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         VIDEO_FORMAT,
         344,
         &VideoFormat::LABELS,
-        VideoFormat::current(s) as usize,
+        VideoFormat::current(&s) as usize,
     );
     row_label(hwnd, page, "Display timing", "Experimental: applies to normal GPU rendering.\nZero copy keeps Windows-managed timing. Reconnect to apply.", 626, 0, 48);
     let timing = add(
@@ -662,7 +662,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         INPUT_MODE,
         242,
         &InputMode::LABELS,
-        InputMode::current(s) as usize,
+        InputMode::current(&s) as usize,
     );
     row_label(hwnd, page, "HID requirements", "Enable USB/Yubikey passthrough on the host.\nHID mouse uses the primary display only.\nUse the same keyboard layout on host and client.", 354, 0, 64);
     row_label(hwnd,page,"Compatibility","Absolute desktop and relative camera movement.\nCamera mode follows the host cursor state.\nKeyboard layout is not switched automatically.",466,0,64);
