@@ -296,3 +296,16 @@ opening Updates starts one metadata worker, polled only while that page exists.
 No media path, core check, new dependency or installation worker is involved.
 Downloads open validated project URLs in the browser; EXE replacement is manual.
 See [migration](../MIGRATION.md) for the legacy-compatible transition package.
+
+### AMF conformance-window sizing
+
+The existing HEVC metadata reader retains both coded dimensions and dimensions
+after the SPS conformance window. Only the AMF initialization uses visible
+width/height, preventing the reported older-runtime failure for e.g. 1088 coded
+rows with 1080 displayed rows. Coded limits and SPS checks remain; a changed
+visible size also uses the existing format-rebuild/recovery mechanism. Renderer
+crop coordinates, GPU surfaces, conversion and low-latency settings are unchanged.
+Synthetic metadata and initialization-choice tests cover cropped/uncropped
+streams and unchanged Intel/D3D11 size selection. Live older-AMF validation is
+still required; the implementation is our existing adapter, not an imported
+upstream decoder or dependency upgrade.

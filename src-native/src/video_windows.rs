@@ -1249,8 +1249,12 @@ impl Session {
                         Err(error) => zero_copy_status = Some(format!("Fallback: {error}")),
                     }
                 }
-                let vendor =
-                    evoparseq_video::Decoder::open(mode, luid, (config.width, config.height))?;
+                let vendor = evoparseq_video::Decoder::open(
+                    mode,
+                    luid,
+                    (config.width, config.height),
+                    (config.visible_width, config.visible_height),
+                )?;
                 let device = vendor.native_device()?;
                 let context = device.GetImmediateContext()?;
                 let renderer = Renderer::create_on_device(hwnd, device, context, presentation_mode)

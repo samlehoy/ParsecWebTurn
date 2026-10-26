@@ -334,6 +334,10 @@ fn hevc_annex_b(bytes: &[u8], read_configuration: bool) -> Option<NalSummary> {
 pub struct HevcConfiguration {
     pub width: u32,
     pub height: u32,
+    // Display dimensions after the SPS conformance window. Keep coded
+    // dimensions separate for decoder limits and format-change detection.
+    pub visible_width: u32,
+    pub visible_height: u32,
     pub profile: u32,
     pub chroma: u32,
     pub bit_depth: u32,
@@ -451,6 +455,7 @@ fn hevc_sps_with_id(nal: &[u8]) -> Option<(u32, HevcConfiguration)> {
     if width == 0 || height == 0 || width > 16384 || height > 16384 {
         return None;
     }
+    let (mut visible_width, mut visible_height) = (width, height);
     if bits.read(1)? != 0 {
         let horizontal = bits.ue()?.checked_add(bits.ue()?)?;
         let vertical = bits.ue()?.checked_add(bits.ue()?)?;
@@ -460,9 +465,9 @@ fn hevc_sps_with_id(nal: &[u8]) -> Option<(u32, HevcConfiguration)> {
             1
         };
         let sub_height = if !separate && chroma == 1 { 2 } else { 1 };
-        if horizontal.checked_mul(sub_width)? >= width
-            || vertical.checked_mul(sub_height)? >= height
-        {
+        visible_width = width.checked_sub(horizontal.checked_mul(sub_width)?)?;
+        visible_height = height.checked_sub(vertical.checked_mul(sub_height)?)?;
+        if visible_width == 0 || visible_height == 0 {
             return None;
         }
     }
@@ -476,6 +481,8 @@ fn hevc_sps_with_id(nal: &[u8]) -> Option<(u32, HevcConfiguration)> {
         HevcConfiguration {
             width,
             height,
+            visible_width,
+            visible_height,
             profile,
             chroma,
             bit_depth,
@@ -612,6 +619,16 @@ mod tests {
         sps_fixture_with_id(width, height, layers, depth, 0)
     }
     fn sps_fixture_with_id(width: u32, height: u32, layers: u32, depth: u32, id: u32) -> Vec<u8> {
+        sps_fixture_with_crop(width, height, layers, depth, id, None)
+    }
+    fn sps_fixture_with_crop(
+        width: u32,
+        height: u32,
+        layers: u32,
+        depth: u32,
+        id: u32,
+        crop: Option<[u32; 4]>,
+    ) -> Vec<u8> {
         fn put(bits: &mut Vec<u8>, value: u32, count: u32) {
             for shift in (0..count).rev() {
                 bits.push(((value >> shift) & 1) as u8);
@@ -643,7 +660,12 @@ mod tests {
         ue(&mut bits, 1); // SPS id, 4:2:0
         ue(&mut bits, width);
         ue(&mut bits, height);
-        put(&mut bits, 0, 1); // no conformance window
+        put(&mut bits, u32::from(crop.is_some()), 1);
+        if let Some(crop) = crop {
+            for offset in crop {
+                ue(&mut bits, offset);
+            }
+        }
         ue(&mut bits, depth - 8);
         ue(&mut bits, depth - 8);
         put(&mut bits, 1, 1);
@@ -697,6 +719,8 @@ mod tests {
                 Some(HevcConfiguration {
                     width: 1920,
                     height: 1080,
+                    visible_width: 1920,
+                    visible_height: 1080,
                     profile: 1,
                     chroma: 1,
                     bit_depth: 8,
@@ -710,6 +734,45 @@ mod tests {
             assert!(hevc_configuration(&sps_fixture(w, h, 0, 8)).is_none());
         }
         assert!(hevc_configuration(HEVC_KEY).is_none());
+    }
+    #[test]
+    fn hevc_crop_preserves_coded_size_and_changes_visible_configuration() {
+        let make =
+            |crop| hevc_configuration(&sps_fixture_with_crop(1920, 1088, 0, 8, 0, Some(crop)));
+        let cropped = make([0, 0, 0, 4]).unwrap();
+        assert_eq!((cropped.width, cropped.height), (1920, 1088));
+        assert_eq!(
+            (cropped.visible_width, cropped.visible_height),
+            (1920, 1080)
+        );
+        assert_eq!(Some(cropped), make([0, 0, 0, 4]));
+        let changed = make([0, 0, 0, 8]).unwrap();
+        assert_eq!((changed.width, changed.height), (1920, 1088));
+        assert_ne!(changed, cropped);
+        let offset = make([2, 2, 3, 1]).unwrap();
+        assert_eq!((offset.visible_width, offset.visible_height), (1912, 1080));
+        for bad in [
+            [960, 0, 0, 0],
+            [961, 0, 0, 0],
+            [0, 0, 544, 0],
+            [1 << 30, 1 << 30, 0, 0],
+        ] {
+            assert!(make(bad).is_none());
+        }
+        let old = sps_fixture_with_crop(1920, 1088, 0, 8, 1, Some([0, 0, 0, 4]));
+        let next = sps_fixture_with_crop(1920, 1088, 0, 8, 0, Some([0, 0, 0, 8]));
+        let mut cache = ParameterCache::default();
+        cache.observe(&old, Codec::Hevc);
+        cache.observe(&next, Codec::Hevc);
+        cache.retain_hevc_configuration(changed);
+        assert_eq!(cache.bytes().unwrap(), next);
+    }
+    #[test]
+    fn cropped_fixture_reports_visible_and_coded_dimensions_separately() {
+        let config =
+            hevc_configuration(include_bytes!("../crates/video/fixtures/hevc-crop.sps")).unwrap();
+        assert_eq!((config.width, config.height), (152, 152));
+        assert_eq!((config.visible_width, config.visible_height), (150, 146));
     }
     #[test]
     fn full_chroma_main10_is_identified_from_actual_sps() {

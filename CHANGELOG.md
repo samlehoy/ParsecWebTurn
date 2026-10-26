@@ -2,6 +2,9 @@
 
 ## Unreleased — native client development
 
+- Initialize the existing AMD AMF decoder with SPS visible dimensions for
+  cropped HEVC, retaining coded-size checks and the existing GPU rendering path.
+
 - Refresh Tokio to 1.53.3, rustls-webpki to 0.103.16 and webpki-roots to
   1.0.10 in application/BUD lockfiles for published dependency fixes.
 - Keep BUD video encode timing separate from audio timing reports, preserving

@@ -127,7 +127,8 @@ struct AmfState<'a> {
     decoder: amf::Component<'a>,
     buffer: amf::Buffer<'a>,
     layout: Option<Layout>,
-    size: (u32, u32),
+    coded_size: (u32, u32),
+    visible_size: (u32, u32),
     sequence: i64,
 }
 self_cell!(
@@ -146,12 +147,26 @@ pub struct Decoder {
     inner: Inner,
     sequence: usize,
 }
-impl Decoder {
-    pub fn open(mode: Mode, luid: u64, size: (u32, u32)) -> Result<Self> {
+// AMF 1.4.31 needs the displayed size at Init for cropped streams. Other
+// backends retain their coded-size contract. Validate coded limits either way.
+fn decoder_init_size(mode: Mode, coded: (u32, u32), visible: (u32, u32)) -> Result<(u32, u32)> {
+    ensure!(
+        coded.0 > 0 && coded.1 > 0 && coded.0 <= 4096 && coded.1 <= 4096,
+        "unsupported decoder size"
+    );
+    if mode == Mode::AmdAmf {
         ensure!(
-            size.0 > 0 && size.1 > 0 && size.0 <= 4096 && size.1 <= 4096,
-            "unsupported decoder size"
+            visible.0 > 0 && visible.1 > 0 && visible.0 <= coded.0 && visible.1 <= coded.1,
+            "unsupported AMF visible size"
         );
+        Ok(visible)
+    } else {
+        Ok(coded)
+    }
+}
+impl Decoder {
+    pub fn open(mode: Mode, luid: u64, size: (u32, u32), visible_size: (u32, u32)) -> Result<Self> {
+        let init_size = decoder_init_size(mode, size, visible_size)?;
         let device = DeviceOwner::open(luid)?;
         let inner = match mode {
             Mode::IntelVpl => Inner::Intel(intel::Backend::open(device, size)?),
@@ -177,13 +192,14 @@ impl Decoder {
                     decoder.set_bool(amf::LOW_LATENCY_DECODE, true)?;
                     decoder.set_bool("SurfaceCopy", false)?;
                     decoder.set_bool("EnableDecoderSmartAccessVideo", false)?;
-                    decoder.init(amf::Layout::Nv12, size.0, size.1)?;
+                    decoder.init(amf::Layout::Nv12, init_size.0, init_size.1)?;
                     let buffer = c.borrow_dependent().buffer(8 * 1024 * 1024)?;
                     Ok(AmfState {
                         decoder,
                         buffer,
                         layout: None,
-                        size,
+                        coded_size: size,
+                        visible_size: init_size,
                         sequence: 0,
                     })
                 })?;
@@ -252,7 +268,7 @@ impl Decoder {
                         let sps=hevc::sps::parse(unit.bytes.get(2..).context("truncated HEVC SPS")?).map_err(|error|anyhow::anyhow!("HEVC SPS: {error:?}"))?;
                         ensure!(sps.max_num_reorder_pics==0,"AMF low latency requires a non-reordered stream");
                         let layout=Layout::hevc(&sps)?;
-                        ensure!((sps.width,sps.height)==state.size,"AMF geometry changed");
+                        ensure!((sps.width,sps.height)==state.coded_size && (layout.width,layout.height)==state.visible_size,"AMF geometry changed");
                         state.layout=Some(layout);
                     }
                 }
@@ -281,6 +297,40 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cropped_amf_init_uses_visible_size_but_other_backends_keep_coded_size() {
+        assert_eq!(
+            decoder_init_size(Mode::AmdAmf, (1920, 1088), (1920, 1080)).unwrap(),
+            (1920, 1080)
+        );
+        assert_eq!(
+            decoder_init_size(Mode::AmdAmf, (1920, 1080), (1920, 1080)).unwrap(),
+            (1920, 1080)
+        );
+        for mode in [Mode::IntelVpl, Mode::DirectD3d11] {
+            assert_eq!(
+                decoder_init_size(mode, (1920, 1088), (1920, 1080)).unwrap(),
+                (1920, 1088)
+            );
+        }
+        for (coded, visible) in [
+            ((4097, 1088), (1920, 1080)),
+            ((1920, 1088), (0, 1080)),
+            ((1920, 1088), (1922, 1080)),
+            ((1920, 1088), (1920, 1090)),
+        ] {
+            assert!(decoder_init_size(Mode::AmdAmf, coded, visible).is_err());
+        }
+        let bytes = include_bytes!("../fixtures/hevc-crop.sps");
+        let sps = hevc::sps::parse(&bytes[5..]).unwrap();
+        let layout = Layout::hevc(&sps).unwrap();
+        assert_eq!((sps.width, sps.height), (152, 152));
+        assert_eq!((layout.width, layout.height), (150, 146));
+        assert_eq!(
+            decoder_init_size(Mode::AmdAmf, (sps.width, sps.height), sps.visible()).unwrap(),
+            (150, 146)
+        );
+    }
     #[test]
     fn only_measured_hevc_gpu_routes_are_selected() {
         assert_eq!(preferred(0x1002, true), Some(Mode::AmdAmf));

@@ -26,3 +26,14 @@ at most two renderer reads until a GPU fence completes; original presentation
 retains at most two display leases. Busy display updates can be skipped without
 dropping encoded reference pictures or adding GPU waits/copies. AMF's existing
 low-latency and no-SurfaceCopy settings remain unchanged.
+
+## Cropped AMF initialization
+
+The application supplies coded and visible SPS dimensions separately. Our AMF
+adapter initializes the existing NV12 component at the visible size, following
+the older-runtime issue documented by lowlat commit
+`2529df60b4b9f28c1e9a22a00db8abc15ed72589`. Coded-size limits and both size
+checks remain in place. Existing low-latency settings, surface ownership,
+rendering crop coordinates and recovery are retained; Intel/D3D11 decoder
+initialization still uses its original coded-size contract. No dependency pin,
+SDK implementation, decoded-frame copy or CPU readback is changed.
