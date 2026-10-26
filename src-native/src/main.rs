@@ -64,6 +64,9 @@ mod stats_ui;
 #[cfg(windows)]
 mod stats_view;
 mod transport;
+mod updater;
+#[cfg(windows)]
+mod updater_ui;
 mod video_color;
 mod video_output;
 mod video_stream;

@@ -55,6 +55,10 @@ requests can be fulfilled. A preference is not proof of the received stream;
    changing transport or connection capabilities; use the session menu for live
    host video requests.
 
+Use **Help > About EvoParseq / Check for updates** for application information
+and stable updates. See [migration from ParsecWebTurn](MIGRATION.md) for existing
+settings, sign-in and transition-package details.
+
 Requires Windows x64, a D3D11-capable GPU and suitable graphics drivers.
 Original-surface zero-copy also requires Windows 11 and driver support.
 Ordinary client use does not require administrator rights or helper programs.

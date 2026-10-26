@@ -40,6 +40,7 @@ pub struct Selection {
 }
 struct Form {
     settings_page: HWND,
+    info_pages: Arc<crate::updater_ui::Pages>,
     manager: Arc<crate::connection_settings::Manager>,
     fields: [HWND; 3],
     remember: HWND,
@@ -322,6 +323,17 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         SetWindowTextW(f.peer, wide(peer).as_ptr());
                     }
                 }
+                if id == crate::updater_ui::ABOUT || id == crate::updater_ui::OPEN {
+                    f.info_pages.open(
+                        hwnd,
+                        if id == crate::updater_ui::ABOUT {
+                            crate::updater::Mode::About
+                        } else {
+                            crate::updater::Mode::Updates
+                        },
+                    );
+                    return 0;
+                }
                 if f.sign_in.busy() || f.picker.blocks_controls() {
                     return 0;
                 }
@@ -414,6 +426,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             }
             WM_DESTROY => {
                 f.done = true;
+                f.info_pages.close();
                 f.picker.cancel();
                 f.sign_in.cancel();
                 KillTimer(hwnd, DONE);
@@ -453,6 +466,7 @@ pub fn choose(
         };
         let mut f = Box::new(Form {
             settings_page: null_mut(),
+            info_pages: Default::default(),
             manager,
             fields: [null_mut(); 3],
             remember: null_mut(),
@@ -500,6 +514,9 @@ pub fn choose(
             (&mut *f as *mut Form).cast(),
         );
         ensure!(!hwnd.is_null(), "Native account window unavailable");
+        let menu = CreateMenu();
+        crate::updater_ui::append_help(menu);
+        SetMenu(hwnd, menu);
         let mark = add(
             hwnd,
             &f,
@@ -793,6 +810,9 @@ pub fn choose(
         }
         let mut msg: MSG = std::mem::zeroed();
         while !f.done && GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+            if f.info_pages.dialog(&msg) {
+                continue;
+            }
             if !f.settings_page.is_null() && IsDialogMessageW(f.settings_page, &msg) != 0 {
                 continue;
             }
@@ -899,7 +919,7 @@ pub(crate) unsafe fn draw_button(lp: LPARAM) -> bool {
 
 /// Offline GDI fixture capture only. Never called by a live video path.
 #[cfg(test)]
-pub(super) unsafe fn capture_fixture(hwnd: HWND, path: &std::path::Path) -> Result<()> {
+pub(crate) unsafe fn capture_fixture(hwnd: HWND, path: &std::path::Path) -> Result<()> {
     let mut r = std::mem::zeroed();
     GetClientRect(hwnd, &mut r);
     let (w, h) = (r.right as u32, r.bottom as u32);

@@ -22,6 +22,7 @@ pub struct Window {
     pub(crate) session: crate::native_core::session_model::State,
     pub stats: Arc<crate::stats::Shared>,
     stats_page: AtomicUsize,
+    info_pages: Arc<crate::updater_ui::Pages>,
 
     connection_settings: Mutex<Option<Arc<crate::connection_settings::Manager>>>,
     settings_page: AtomicUsize,
@@ -79,7 +80,8 @@ pub struct Window {
 
 impl Window {
     unsafe fn open_about(&self) {
-        crate::branding::about(self.handle());
+        self.info_pages
+            .open(self.handle(), crate::updater::Mode::About);
     }
 
     unsafe fn open_stats(&self) {
@@ -109,6 +111,7 @@ impl Window {
 
             session: Default::default(),
             stats_page: AtomicUsize::new(0),
+            info_pages: Default::default(),
 
             connection_settings: Default::default(),
             settings_page: AtomicUsize::new(0),
@@ -176,6 +179,9 @@ impl Window {
 
                         let mut native_shortcuts = std::collections::HashSet::new();
                         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                            if ui.info_pages.dialog(&msg) {
+                                continue;
+                            }
                             {
                                 if msg.message == WM_ACTIVATEAPP && msg.wParam == 0 {
                                     native_shortcuts.clear();
@@ -1086,8 +1092,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 }
                 return 0;
             }
-            WM_COMMAND if wp & 0xffff == crate::branding::ABOUT => {
-                s.open_about();
+            WM_COMMAND if wp & 0xffff == crate::updater_ui::OPEN => {
+                s.info_pages.open(hwnd, crate::updater::Mode::Updates);
                 return 0;
             }
             m if m == WM_APP + 10 => {
@@ -1155,6 +1161,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
             WM_DESTROY => {
+                s.info_pages.close();
                 // Each stream window owns this thread's message loop. Destroying
                 // its HWND must also let GetMessage finish and release the Arc.
                 PostQuitMessage(0);

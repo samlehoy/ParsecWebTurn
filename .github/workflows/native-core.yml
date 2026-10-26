@@ -70,3 +70,31 @@ jobs:
           name: EvoParseq-win64
           path: dist/native-core/*
           if-no-files-found: error
+      - name: Verify migration ZIP contents
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packageVersion = (Get-Content VERSION -Raw).Trim()
+          $expectedHash = (Get-FileHash dist/native-core/EvoParseq.exe).Hash
+          foreach ($product in @('EvoParseq', 'ParsecWebTurn')) {
+            $archive = [IO.Compression.ZipFile]::OpenRead((Join-Path (Get-Location) "dist/$product-v$packageVersion-win64.zip"))
+            try {
+              $executables = @($archive.Entries | Where-Object FullName -like '*.exe')
+              if ($executables.Count -ne 1 -or $executables[0].Name -ne "$product.exe") { throw 'Unexpected ZIP executable layout' }
+              if ($archive.Entries | Where-Object Name -eq 'settings.json') { throw 'User settings must not be packaged' }
+              if (!($archive.Entries | Where-Object Name -eq 'MIGRATION.md')) { throw 'Migration guide missing' }
+              $stream = $executables[0].Open()
+              try {
+                $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream))
+                if ($hash -ne $expectedHash) { throw 'ZIP executable hash mismatch' }
+              } finally { $stream.Dispose() }
+            } finally { $archive.Dispose() }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EvoParseq-update-packages
+          path: |
+            dist/EvoParseq-v*-win64.zip
+            dist/ParsecWebTurn-v*-win64.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error

@@ -286,3 +286,13 @@ The client configuration reply confirms a requested output, not successful
 capture from it. This VM result is not a general limitation of virtual displays;
 switching between outputs backed by a compatible GPU still needs separate live
 validation.
+
+### About and updates
+
+`updater.rs` owns information text, stable-version comparison and bounded public
+GitHub metadata checks. `updater_ui.rs` provides dark, modeless Win32 pages,
+owned by the launcher or session window. Opening About performs no network work;
+opening Updates starts one metadata worker, polled only while that page exists.
+No media path, core check, new dependency or installation worker is involved.
+Downloads open validated project URLs in the browser; EXE replacement is manual.
+See [migration](../MIGRATION.md) for the legacy-compatible transition package.

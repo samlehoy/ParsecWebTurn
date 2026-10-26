@@ -43,7 +43,7 @@ try {
     $taskPackageName = "EvoParseq-v$taskVersion-win64"
     $taskPackage = Join-Path $taskStaging $taskPackageName
     New-Item -ItemType Directory -Path $taskPackage -Force | Out-Null
-    foreach ($taskFile in @('EvoParseq.exe','README.md','LICENSE','CHANGELOG.md')) { Copy-Item -LiteralPath $taskFile -Destination $taskPackage }
+    foreach ($taskFile in @('EvoParseq.exe','README.md','LICENSE','CHANGELOG.md','MIGRATION.md')) { Copy-Item -LiteralPath $taskFile -Destination $taskPackage }
     Copy-Item src-native/vendor/webrtc-0.14.0/LICENSE-MIT (Join-Path $taskPackage 'WEBRTC-LICENSE-MIT.txt')
     Copy-Item src-native/vendor/webrtc-0.14.0/LICENSE-APACHE (Join-Path $taskPackage 'WEBRTC-LICENSE-APACHE.txt')
     Copy-Item src-native/vendor/webrtc-0.14.0/LOCAL-CHANGES.md (Join-Path $taskPackage 'WEBRTC-LOCAL-CHANGES.md')
@@ -64,8 +64,20 @@ try {
     if ((Get-ChildItem -LiteralPath $taskPackage -Filter '*.exe').Count -ne 1) { throw 'Single executable package violated' }
     $taskZip = "dist/$taskPackageName.zip"
     Compress-Archive -LiteralPath $taskPackage -DestinationPath $taskZip -Force
+    # Legacy ParsecWebTurn updaters recognize this exact asset name. The ZIP
+    # carries the identical native executable under the existing shortcut name.
+    $taskTransitionName = "ParsecWebTurn-v$taskVersion-win64"
+    $taskTransition = Join-Path $taskStaging $taskTransitionName
+    New-Item -ItemType Directory -Path $taskTransition | Out-Null
+    Get-ChildItem -LiteralPath $taskPackage -File | Where-Object Extension -ne '.exe' | Copy-Item -Destination $taskTransition
+    Copy-Item -LiteralPath (Join-Path $taskPackage 'EvoParseq.exe') -Destination (Join-Path $taskTransition 'ParsecWebTurn.exe')
+    if ((Get-ChildItem -LiteralPath $taskTransition -Filter '*.exe').Count -ne 1) { throw 'Single executable transition package violated' }
+    if ((Get-FileHash (Join-Path $taskTransition 'ParsecWebTurn.exe')).Hash -ne (Get-FileHash EvoParseq.exe).Hash) { throw 'Transition executable differs from native build' }
+    $taskTransitionZip = "dist/$taskTransitionName.zip"
+    Compress-Archive -LiteralPath $taskTransition -DestinationPath $taskTransitionZip -Force
     @(
         "$((Get-FileHash EvoParseq.exe -Algorithm SHA256).Hash.ToLowerInvariant())  EvoParseq.exe"
         "$((Get-FileHash $taskZip -Algorithm SHA256).Hash.ToLowerInvariant())  $taskPackageName.zip"
+        "$((Get-FileHash $taskTransitionZip -Algorithm SHA256).Hash.ToLowerInvariant())  $taskTransitionName.zip"
     ) | Set-Content dist/SHA256SUMS.txt -Encoding ascii
 } finally { Pop-Location }

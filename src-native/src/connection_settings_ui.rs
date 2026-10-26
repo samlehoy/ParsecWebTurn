@@ -22,7 +22,7 @@ use windows_sys::Win32::{
     },
 };
 pub const OPEN: usize = 4100;
-pub const ABOUT: usize = 4300;
+pub const ABOUT: usize = crate::updater_ui::ABOUT;
 // Give the large heading and subtitle enough space, including font overhang.
 const HEADER_EXTRA: i32 = 20;
 const SAVE: usize = 4101;
@@ -142,15 +142,7 @@ pub unsafe fn install_menu(parent: HWND) {
         crate::stats_ui::OPEN,
         wide("Connection stats").as_ptr(),
     );
-    let help = CreatePopupMenu();
-    AppendMenuW(help, MF_STRING, ABOUT, wide("About EvoParseq").as_ptr());
-    AppendMenuW(
-        help,
-        MF_STRING,
-        crate::branding::ABOUT,
-        wide("Check for updates").as_ptr(),
-    );
-    AppendMenuW(menu, MF_POPUP, help as usize, wide("Help").as_ptr());
+    crate::updater_ui::append_help(menu);
     SetMenu(parent, menu);
     DrawMenuBar(parent);
 }
@@ -1479,7 +1471,7 @@ mod tests {
             let help = GetSubMenu(GetMenu(parent), 2);
             assert!(!help.is_null());
             assert_eq!(GetMenuItemID(help, 0), ABOUT as u32);
-            assert_eq!(GetMenuItemID(help, 1), crate::branding::ABOUT as u32);
+            assert_eq!(GetMenuItemID(help, 1), crate::updater_ui::OPEN as u32);
             let page = open(parent, manager.clone());
             assert!(!page.is_null());
             assert_ne!(
