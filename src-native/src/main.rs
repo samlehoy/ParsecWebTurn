@@ -52,6 +52,8 @@ mod platform;
 #[cfg(windows)]
 mod platform_windows;
 mod secure_storage;
+#[cfg(windows)]
+mod settings_model;
 mod signaling;
 #[cfg(windows)]
 mod stats;

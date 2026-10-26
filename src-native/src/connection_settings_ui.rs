@@ -2,7 +2,8 @@
 //! All HWND/GDI ownership and control access stay on the window's UI thread.
 #[path = "settings_controls.rs"]
 pub(crate) mod controls;
-use crate::connection_settings::{Manager, Settings};
+use crate::connection_settings::Manager;
+use crate::settings_model::{Form, Tab};
 use std::{
     ptr::{null, null_mut},
     sync::Arc,
@@ -73,13 +74,6 @@ const AUDIO_MAX: usize = 4127;
 const AUDIO_RAW: usize = 4128;
 const AUDIO_SURROUND: usize = 4132;
 const PRESENTATION: usize = 4133;
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Tab {
-    Network,
-    Video,
-    Audio,
-    Input,
-}
 const SECTION: usize = 4202;
 const NOTICE: usize = 4203;
 fn wide(s: &str) -> Vec<u16> {
@@ -94,17 +88,14 @@ struct Item {
 struct Page {
     window_owned: bool,
     manager: Arc<Manager>,
-    saved: Settings,
-    gpu_choices: Vec<Option<crate::connection_settings::GpuPreference>>,
+    model: Form,
     gpu_labels: Vec<String>,
-    default_gpu_vendor: Option<u32>,
     background: HBRUSH,
     field: HBRUSH,
     font: HFONT,
     heading: HFONT,
     small: HFONT,
     items: Vec<Item>,
-    active_tab: Tab,
     building_tab: Option<Tab>,
     scroll: i32,
     reflowing: bool,
@@ -178,17 +169,14 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     let mut page = Box::new(Page {
         window_owned: false,
         manager,
-        saved,
-        gpu_choices: vec![None],
+        model: Form::new(saved, crate::video_windows::video_gpu_vendor(None)),
         gpu_labels: vec!["Automatic (Windows default)".into()],
-        default_gpu_vendor: crate::video_windows::video_gpu_vendor(None),
         background: CreateSolidBrush(BG),
         field: CreateSolidBrush(FIELD),
         font: font(16, 400),
         heading: font(46, 300),
         small: font(13, 400),
         items: Vec::new(),
-        active_tab: Tab::Network,
         building_tab: None,
         scroll: 0,
         reflowing: false,
@@ -231,7 +219,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     }
     page.window_owned = true;
     let page = &mut *Box::into_raw(page);
-    let s = page.saved.clone();
+    let s = page.model.values.clone();
     add(
         hwnd,
         page,
@@ -497,7 +485,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
                 p.name.clone()
             };
             SendMessageW(gpu, CB_ADDSTRING, 0, wide(&label).as_ptr() as isize);
-            page.gpu_choices.push(Some(p));
+            page.model.gpu_choices.push(Some(p));
             page.gpu_labels.push(label);
         }
     }
@@ -505,7 +493,14 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         .video_gpu
         .as_ref()
         .map(|preferred| {
-            let available: Vec<_> = page.gpu_choices.iter().skip(1).flatten().cloned().collect();
+            let available: Vec<_> = page
+                .model
+                .gpu_choices
+                .iter()
+                .skip(1)
+                .flatten()
+                .cloned()
+                .collect();
             match crate::gpu_windows::match_index(preferred, &available) {
                 Some(index) => index + 1,
                 None => {
@@ -515,10 +510,10 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
                         0,
                         wide(&format!("Unavailable: {}", preferred.name)).as_ptr() as isize,
                     );
-                    page.gpu_choices.push(Some(preferred.clone()));
+                    page.model.gpu_choices.push(Some(preferred.clone()));
                     page.gpu_labels
                         .push(format!("Unavailable: {}", preferred.name));
-                    page.gpu_choices.len() - 1
+                    page.model.gpu_choices.len() - 1
                 }
             }
         })
@@ -774,9 +769,10 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     add(hwnd, page, "STATIC",
         "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection.",
         0, [0, 1056 + BUD_EXTRA, 820, 48], NOTICE, 0, page.small);
-    let status = error.unwrap_or_else(|| {
+    page.model.feedback = error.unwrap_or_else(|| {
         "Saved in settings.json. Secrets are protected for your Windows user.".into()
     });
+    let status = page.model.feedback.clone();
     add(
         hwnd,
         page,
@@ -901,7 +897,7 @@ unsafe fn layout(hwnd: HWND) {
     let mut client = std::mem::zeroed();
     GetClientRect(hwnd, &mut client);
     let cloudflare = SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1;
-    let footer = match page.active_tab {
+    let footer = match page.model.active_tab {
         Tab::Network => 1056 + BUD_EXTRA,
         Tab::Audio => 750,
         Tab::Input => 570,
@@ -924,7 +920,7 @@ unsafe fn layout(hwnd: HWND) {
     GetClientRect(hwnd, &mut client);
     let x = ((client.right - 820) / 2).max(24);
     for item in &page.items {
-        let visible = item.tab.is_none_or(|tab| tab == page.active_tab)
+        let visible = item.tab.is_none_or(|tab| tab == page.model.active_tab)
             && (item.group == 0 || item.group == if cloudflare { CLOUDFLARE } else { CUSTOM });
         let mut r = item.rect;
         let id = GetDlgCtrlID(item.hwnd) as usize;
@@ -1075,122 +1071,80 @@ unsafe fn checked(hwnd: HWND, id: usize) -> bool {
     }
     SendMessageW(GetDlgItem(hwnd, id as i32), BM_GETCHECK, 0, 0) == 1
 }
-unsafe fn update_enabled(hwnd: HWND) {
-    #[cfg(feature = "bud")]
-    EnableWindow(
-        GetDlgItem(hwnd, HID_KEYBOARD as i32),
-        checked(hwnd, BUD) as i32,
-    );
-    #[cfg(not(feature = "bud"))]
-    EnableWindow(GetDlgItem(hwnd, HID_KEYBOARD as i32), 0);
-
-    #[cfg(feature = "bud")]
-    EnableWindow(
-        GetDlgItem(hwnd, HID_MOUSE as i32),
-        checked(hwnd, BUD) as i32,
-    );
-    #[cfg(not(feature = "bud"))]
-    EnableWindow(GetDlgItem(hwnd, HID_MOUSE as i32), 0);
-
-    for id in [AUDIO_MIN, AUDIO_MAX] {
-        EnableWindow(
-            GetDlgItem(hwnd, id as i32),
-            checked(hwnd, AUDIO_CUSTOM) as i32,
-        );
+// Read native editor values; parsing, option rules and save feedback belong
+// to the shared model. This runs on user edits/saving, never on a media frame.
+unsafe fn read_options(hwnd: HWND, model: &mut Form) {
+    model.gpu_selection = usize::try_from(SendMessageW(
+        GetDlgItem(hwnd, GPU as i32),
+        CB_GETCURSEL,
+        0,
+        0,
+    ))
+    .ok();
+    let s = &mut model.values;
+    s.prefer_hevc = checked(hwnd, HEVC);
+    s.experimental_chroma_444 = checked(hwnd, CHROMA_444);
+    s.experimental_ten_bit = checked(hwnd, TEN_BIT);
+    s.custom_audio_buffer = checked(hwnd, AUDIO_CUSTOM);
+    s.stun_only = checked(hwnd, STUN_ONLY);
+    s.force_relay = checked(hwnd, FORCE_RELAY);
+    s.provider = if SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1 {
+        "cloudflare"
+    } else {
+        "custom"
     }
+    .into();
     #[cfg(feature = "bud")]
-    EnableWindow(
-        GetDlgItem(hwnd, AUDIO_RAW as i32),
-        checked(hwnd, BUD) as i32,
-    );
-    #[cfg(not(feature = "bud"))]
-    EnableWindow(GetDlgItem(hwnd, AUDIO_RAW as i32), 0);
-    #[cfg(feature = "bud")]
-    EnableWindow(
-        GetDlgItem(hwnd, AUDIO_SURROUND as i32),
-        checked(hwnd, BUD) as i32,
-    );
-    #[cfg(not(feature = "bud"))]
-    EnableWindow(GetDlgItem(hwnd, AUDIO_SURROUND as i32), 0);
-    let hevc = checked(hwnd, HEVC) as i32;
-
     {
-        let page = &*(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Page);
-        let selection = SendMessageW(GetDlgItem(hwnd, GPU as i32), CB_GETCURSEL, 0, 0);
-        let vendor = usize::try_from(selection)
-            .ok()
-            .and_then(|i| page.gpu_choices.get(i))
-            .and_then(|gpu| {
-                gpu.as_ref()
-                    .map(|g| g.vendor_id)
-                    .or(page.default_gpu_vendor)
-            });
-        let allowed = vendor.is_some_and(crate::gpu_windows::full_chroma_vendor_allowed);
-        if !allowed {
-            check(hwnd, CHROMA_444, false);
-        }
-        EnableWindow(
-            GetDlgItem(hwnd, CHROMA_444 as i32),
-            hevc * i32::from(allowed),
-        );
+        s.bud = checked(hwnd, BUD);
     }
-    let full_chroma = true && checked(hwnd, 4136);
-    EnableWindow(GetDlgItem(hwnd, TEN_BIT as i32), hevc);
+}
+unsafe fn update_enabled(hwnd: HWND) {
+    let page = &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Page);
+    read_options(hwnd, &mut page.model);
+    let enabled = page.model.availability();
+    check(hwnd, CHROMA_444, page.model.values.experimental_chroma_444);
+    for (id, on) in [
+        (HID_KEYBOARD, enabled.bud),
+        (HID_MOUSE, enabled.bud),
+        (AUDIO_MIN, enabled.audio_limits),
+        (AUDIO_MAX, enabled.audio_limits),
+        (AUDIO_RAW, enabled.bud),
+        (AUDIO_SURROUND, enabled.bud),
+        (CHROMA_444, enabled.chroma_444),
+        (TEN_BIT, enabled.ten_bit),
+        (PROVIDER, enabled.relay),
+        (FORCE_RELAY, enabled.relay),
+        (TURN, enabled.custom_turn),
+        (USERNAME, enabled.custom_turn),
+        (PASSWORD, enabled.custom_turn),
+        (FORGET_PASSWORD, enabled.custom_turn),
+        (KEY, enabled.cloudflare_turn),
+        (TOKEN, enabled.cloudflare_turn),
+        (FORGET_TOKEN, enabled.cloudflare_turn),
+        (TTL, enabled.cloudflare_turn),
+        (CACHE, enabled.cloudflare_turn),
+    ] {
+        EnableWindow(GetDlgItem(hwnd, id as i32), i32::from(on));
+    }
     #[cfg(feature = "vendor-video")]
     EnableWindow(
         GetDlgItem(hwnd, ZERO_COPY as i32),
-        hevc * i32::from(!full_chroma),
+        i32::from(enabled.zero_copy),
     );
-    let turn = !checked(hwnd, STUN_ONLY);
-    let cloudflare = SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1;
-    for id in [
-        PROVIDER,
-        TURN,
-        USERNAME,
-        PASSWORD,
-        FORGET_PASSWORD,
-        KEY,
-        TOKEN,
-        FORGET_TOKEN,
-        TTL,
-        CACHE,
-        FORCE_RELAY,
-    ] {
-        let enabled = turn
-            && match id {
-                TURN | USERNAME | PASSWORD | FORGET_PASSWORD => !cloudflare,
-                KEY | TOKEN | FORGET_TOKEN | TTL | CACHE => cloudflare,
-                _ => true,
-            };
-        EnableWindow(GetDlgItem(hwnd, id as i32), enabled as i32);
-    }
     layout(hwnd);
 }
-unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
-    let mut s = page.saved.clone();
-
-    {
-        s.native_core.hide_session_button = checked(hwnd, HIDE_SESSION_BUTTON);
-    }
-
-    {
-        s.experimental_chroma_444 = checked(hwnd, CHROMA_444);
-    }
-    s.prefer_hevc = checked(hwnd, HEVC);
+unsafe fn save(hwnd: HWND, page: &mut Page) {
+    let model = &mut page.model;
+    read_options(hwnd, model);
+    let s = &mut model.values;
+    s.native_core.hide_session_button = checked(hwnd, HIDE_SESSION_BUTTON);
     s.presentation_mode =
         match SendMessageW(GetDlgItem(hwnd, PRESENTATION as i32), CB_GETCURSEL, 0, 0) {
             1 => crate::connection_settings::PresentationMode::LowLatency,
             2 => crate::connection_settings::PresentationMode::Vsync,
             _ => crate::connection_settings::PresentationMode::Automatic,
         };
-    s.experimental_ten_bit = checked(hwnd, TEN_BIT);
-    s.custom_audio_buffer = checked(hwnd, AUDIO_CUSTOM);
-    s.audio_min_buffer_ms = text(hwnd, AUDIO_MIN)
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Enter an audio minimum in milliseconds"))?;
-    s.audio_max_buffer_ms = text(hwnd, AUDIO_MAX)
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Enter an audio maximum in milliseconds"))?;
     s.allow_raw_audio = checked(hwnd, AUDIO_RAW);
     s.experimental_surround_audio = checked(hwnd, AUDIO_SURROUND);
     s.event_logging = checked(hwnd, EVENT_LOG);
@@ -1200,67 +1154,34 @@ unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
     }
     #[cfg(feature = "bud")]
     {
-        s.bud = checked(hwnd, BUD);
         s.experimental_hid_mouse = checked(hwnd, HID_MOUSE);
         s.experimental_hid_keyboard = checked(hwnd, HID_KEYBOARD);
     }
-    let selected = SendMessageW(GetDlgItem(hwnd, GPU as i32), CB_GETCURSEL, 0, 0);
-    s.video_gpu = usize::try_from(selected)
-        .ok()
-        .and_then(|i| page.gpu_choices.get(i))
-        .ok_or_else(|| anyhow::anyhow!("Choose Automatic or an available video GPU"))?
-        .clone();
-    let urls = |id| {
-        text(hwnd, id)
-            .lines()
-            .map(str::trim)
-            .filter(|u| !u.is_empty())
-            .map(|u| {
-                if let Some((scheme, rest)) = u.split_once(':') {
-                    format!("{}:{rest}", scheme.to_ascii_lowercase())
-                } else {
-                    u.into()
-                }
-            })
-            .collect()
-    };
-    s.provider = if SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1 {
-        "cloudflare"
-    } else {
-        "custom"
-    }
-    .into();
-    s.stun_urls = urls(STUN);
-    s.turn_urls = urls(TURN);
-    s.stun_only = checked(hwnd, STUN_ONLY);
-    s.force_relay = checked(hwnd, FORCE_RELAY);
-    s.custom_username = text(hwnd, USERNAME).trim().into();
-    s.turn_key_id = text(hwnd, KEY).trim().into();
-    s.ttl = text(hwnd, TTL)
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Enter a valid credential lifetime"))?;
+    s.custom_username = text(hwnd, USERNAME);
+    s.turn_key_id = text(hwnd, KEY);
     s.cache_credentials = checked(hwnd, CACHE);
-    page.manager.save(
-        s,
-        &text(hwnd, PASSWORD),
-        &text(hwnd, TOKEN),
-        checked(hwnd, FORGET_PASSWORD),
-        checked(hwnd, FORGET_TOKEN),
-    )?;
-    page.saved = page.manager.view().0;
-
-    PostMessageW(
-        GetParent(hwnd),
-        crate::native_core::session_ui::VISIBILITY,
-        0,
-        0,
-    );
-    for id in [PASSWORD, TOKEN] {
-        SetWindowTextW(GetDlgItem(hwnd, id as i32), wide("").as_ptr());
+    model.audio_min = text(hwnd, AUDIO_MIN);
+    model.audio_max = text(hwnd, AUDIO_MAX);
+    model.ttl = text(hwnd, TTL);
+    model.stun_urls = text(hwnd, STUN);
+    model.turn_urls = text(hwnd, TURN);
+    model.password = zeroize::Zeroizing::new(text(hwnd, PASSWORD));
+    model.token = zeroize::Zeroizing::new(text(hwnd, TOKEN));
+    model.forget_password = checked(hwnd, FORGET_PASSWORD);
+    model.forget_token = checked(hwnd, FORGET_TOKEN);
+    if model.save(&page.manager) {
+        PostMessageW(
+            GetParent(hwnd),
+            crate::native_core::session_ui::VISIBILITY,
+            0,
+            0,
+        );
+        for id in [PASSWORD, TOKEN] {
+            SetWindowTextW(GetDlgItem(hwnd, id as i32), wide("").as_ptr());
+        }
+        check(hwnd, FORGET_PASSWORD, false);
+        check(hwnd, FORGET_TOKEN, false);
     }
-    check(hwnd, FORGET_PASSWORD, false);
-    check(hwnd, FORGET_TOKEN, false);
-    Ok(())
 }
 
 unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -1326,10 +1247,10 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     let state = SaveDC(dc);
                     let primary = draw.CtlID == SAVE as u32;
                     let selected_tab = (draw.CtlID == NETWORK_TAB as u32
-                        && page.active_tab == Tab::Network)
-                        || (draw.CtlID == VIDEO_TAB as u32 && page.active_tab == Tab::Video)
-                        || (draw.CtlID == AUDIO_TAB as u32 && page.active_tab == Tab::Audio)
-                        || (draw.CtlID == INPUT_TAB as u32 && page.active_tab == Tab::Input);
+                        && page.model.active_tab == Tab::Network)
+                        || (draw.CtlID == VIDEO_TAB as u32 && page.model.active_tab == Tab::Video)
+                        || (draw.CtlID == AUDIO_TAB as u32 && page.model.active_tab == Tab::Audio)
+                        || (draw.CtlID == INPUT_TAB as u32 && page.model.active_tab == Tab::Input);
                     let color = if draw.itemState & ODS_SELECTED != 0 {
                         0x00404040
                     } else if primary || selected_tab {
@@ -1414,7 +1335,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                 NETWORK_TAB | VIDEO_TAB | AUDIO_TAB | INPUT_TAB
                     if (wp >> 16) as u32 == BN_CLICKED =>
                 {
-                    page.active_tab = if wp & 0xffff == VIDEO_TAB {
+                    page.model.active_tab = if wp & 0xffff == VIDEO_TAB {
                         Tab::Video
                     } else if wp & 0xffff == INPUT_TAB {
                         Tab::Input
@@ -1426,35 +1347,21 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     page.scroll = 0;
                     SetWindowTextW(
                         GetDlgItem(hwnd, SECTION as i32),
-                        wide(if page.active_tab == Tab::Video {
-                            "VIDEO"
-                        } else if page.active_tab == Tab::Input {
-                            "INPUT"
-                        } else if page.active_tab == Tab::Audio {
-                            "AUDIO"
-                        } else {
-                            "NETWORK"
-                        })
-                        .as_ptr(),
+                        wide(page.model.active_tab.heading()).as_ptr(),
                     );
-                    SetWindowTextW(GetDlgItem(hwnd, NOTICE as i32), wide(if page.active_tab == Tab::Video {
-                        "Video changes apply to your next connection."
-                    } else if page.active_tab == Tab::Input {
-                        "Enable BUD on the Network tab to use HID input.\nInput changes apply to your next connection."
-                    } else if page.active_tab == Tab::Audio {
-                        "Audio changes apply on your next connection."
-                    } else {
-                        "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection."
-                    }).as_ptr());
+                    SetWindowTextW(
+                        GetDlgItem(hwnd, NOTICE as i32),
+                        wide(page.model.active_tab.notice()).as_ptr(),
+                    );
                     layout(hwnd);
                     return 0;
                 }
                 SAVE | 1 => {
-                    let status = match save(hwnd, page) {
-                        Ok(()) => "Settings saved. They apply on your next connection.".into(),
-                        Err(e) => e.to_string(),
-                    };
-                    SetWindowTextW(GetDlgItem(hwnd, STATUS as i32), wide(&status).as_ptr());
+                    save(hwnd, page);
+                    SetWindowTextW(
+                        GetDlgItem(hwnd, STATUS as i32),
+                        wide(&page.model.feedback).as_ptr(),
+                    );
                     return 0;
                 }
                 BACK => {
@@ -1484,9 +1391,9 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     return 0;
                 }
                 STUN_ONLY if (wp >> 16) as u32 == BN_CLICKED => {
-                    if checked(hwnd, STUN_ONLY) {
-                        check(hwnd, FORCE_RELAY, false);
-                    }
+                    read_options(hwnd, &mut page.model);
+                    page.model.stun_only_changed(checked(hwnd, STUN_ONLY));
+                    check(hwnd, FORCE_RELAY, page.model.values.force_relay);
                     update_enabled(hwnd);
                     return 0;
                 }
@@ -1638,10 +1545,10 @@ mod tests {
             {
                 // Synthetic adapter identities: no production GPU settings are changed.
                 let state = &mut *(GetWindowLongPtrW(page, GWLP_USERDATA) as *mut Page);
-                let default_vendor = state.default_gpu_vendor;
+                let default_vendor = state.model.default_gpu_vendor;
                 SendMessageW(GetDlgItem(page, GPU as i32), CB_SETCURSEL, 0, 0);
                 for vendor in [0x10de, 0x1002, 0x8086] {
-                    state.default_gpu_vendor = Some(vendor);
+                    state.model.default_gpu_vendor = Some(vendor);
                     check(page, CHROMA_444, true);
                     update_enabled(page);
                     assert_eq!(
@@ -1656,7 +1563,7 @@ mod tests {
                         !matches!(vendor, 0x10de | 0x8086)
                     );
                 }
-                state.default_gpu_vendor = default_vendor;
+                state.model.default_gpu_vendor = default_vendor;
                 check(page, CHROMA_444, false);
                 update_enabled(page);
             }
@@ -1719,6 +1626,12 @@ mod tests {
             check(page, TEN_BIT, true);
             SendMessageW(GetDlgItem(page, PRESENTATION as i32), CB_SETCURSEL, 2, 0);
             check(page, EVENT_LOG, true);
+            SetWindowTextW(GetDlgItem(page, AUDIO_MIN as i32), wide("invalid").as_ptr());
+            SendMessageW(page, WM_COMMAND, SAVE, 0);
+            assert_eq!(text(page, STATUS), "Enter an audio minimum in milliseconds");
+            assert_eq!(text(page, PASSWORD), "fixture-password");
+            assert_eq!(text(page, TOKEN), "fixture-token");
+            SetWindowTextW(GetDlgItem(page, AUDIO_MIN as i32), wide("20").as_ptr());
             SendMessageW(page, WM_COMMAND, SAVE, 0);
             assert!(manager.view().0.force_relay);
             assert!(manager.view().0.experimental_ten_bit);
@@ -1750,8 +1663,8 @@ mod tests {
             update_enabled(page);
             assert_eq!(IsWindowEnabled(GetDlgItem(page, TURN as i32)), 0);
             let state = &*(GetWindowLongPtrW(page, GWLP_USERDATA) as *const Page);
-            let selected = usize::from(state.gpu_choices.len() > 1);
-            let expected_gpu = state.gpu_choices[selected].clone();
+            let selected = usize::from(state.model.gpu_choices.len() > 1);
+            let expected_gpu = state.model.gpu_choices[selected].clone();
             SendMessageW(GetDlgItem(page, GPU as i32), CB_SETCURSEL, selected, 0);
             SendMessageW(page, WM_COMMAND, SAVE, 0);
             assert!(text(page, STATUS).starts_with("Settings saved"));

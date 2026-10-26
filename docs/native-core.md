@@ -27,6 +27,13 @@ administrator rights. The configured static CRT and bundled Opus remain in place
   optional 2FA code remain zeroizing request-owned values, without a retry cache.
   The Win32 adapter retains the existing DPAPI save policy; authentication APIs,
   session revocation, protected storage and polling cadence are unchanged.
+- `settings_model.rs`: shared editable Settings state, numeric/URL form parsing,
+  tab notices, option availability and save feedback. The native adapter reads
+  controls and applies the model's availability; no validation rules depend on
+  HWND or control IDs. `connection_settings::Manager` retains domain validation,
+  DPAPI, atomic persistence and merging of concurrent native-profile changes.
+  Disabled preferences and hidden provider fields remain available for later use;
+  an unsupported 4:4:4 vendor is still cleared by the existing eligibility policy.
 - `native_core/picker.rs`: window-API-independent computer list and discovery
   controller. It keeps one refresh in flight, distinguishes manual/background
   results, preserves selection by peer ID and avoids updates for identical lists.

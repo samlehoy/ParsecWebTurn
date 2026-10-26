@@ -17,6 +17,11 @@ use webrtc::{
 };
 
 pub const PARSEC_STUN: &str = "stun:stun.parsec.gg:3478";
+/// Eligibility policy only; actual profile/output support still requires
+/// the video worker's device capability checks.
+pub fn full_chroma_vendor_allowed(vendor: u32) -> bool {
+    matches!(vendor, 0x10de | 0x8086)
+}
 const MAX_FILE: usize = 65536;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

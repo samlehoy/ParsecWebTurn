@@ -8,11 +8,7 @@ pub struct Adapter {
     pub preference: GpuPreference,
     pub handle: IDXGIAdapter1,
 }
-/// Eligible for the experimental direct 4:4:4 path; actual profile/output
-/// support must still pass the video worker's capability checks.
-pub fn full_chroma_vendor_allowed(vendor: u32) -> bool {
-    matches!(vendor, 0x10de | 0x8086)
-}
+pub use crate::connection_settings::full_chroma_vendor_allowed;
 pub fn enumerate() -> windows::core::Result<Vec<Adapter>> {
     unsafe {
         let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
