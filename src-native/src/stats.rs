@@ -8,6 +8,13 @@ use std::{
     time::Instant,
 };
 use webrtc::{peer_connection::RTCPeerConnection, stats::StatsReportType};
+/// Existing resource sampler output, separate from platform query APIs.
+#[derive(Clone, Copy, Default, serde::Serialize)]
+pub struct MemoryUsage {
+    pub working_set_bytes: usize,
+    pub private_committed_bytes: usize,
+    pub private_working_set_bytes: Option<usize>,
+}
 #[derive(Clone)]
 pub struct Sample {
     #[cfg(feature = "bud")]

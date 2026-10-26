@@ -13,13 +13,8 @@ use windows::{
     },
 };
 
+pub use crate::stats::MemoryUsage;
 /// One documented, allocation-free query of this process. No working-set trim.
-#[derive(Clone, Copy, Default, serde::Serialize)]
-pub struct MemoryUsage {
-    pub working_set_bytes: usize,
-    pub private_committed_bytes: usize,
-    pub private_working_set_bytes: Option<usize>,
-}
 pub fn own_memory() -> Option<MemoryUsage> {
     use windows::Win32::System::{ProcessStatus::*, Threading::GetCurrentProcess};
     unsafe {

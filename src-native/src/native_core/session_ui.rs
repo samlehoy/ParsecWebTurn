@@ -6,6 +6,7 @@ use super::{
     session_model::{Command, Notification, State, Status, View},
     ui::{draw_button, wide},
 };
+use crate::stats_view::compact_metrics as metrics;
 use anyhow::{ensure, Result};
 use std::{
     ptr::{null, null_mut},
@@ -172,29 +173,6 @@ unsafe fn scroll(hwnd: HWND, p: &mut Panel, target: i32) {
         SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE,
     );
     SetScrollPos(hwnd, SB_VERT, target, 1);
-}
-fn metrics(sample: Option<&crate::stats::Sample>, rates: &crate::stats::Values) -> String {
-    let metric = |value: Option<f64>, unit: &str| {
-        value
-            .filter(|v| v.is_finite() && *v >= 0.0)
-            .map_or_else(|| "N/A".into(), |v| format!("{v:.1}{unit}"))
-    };
-    let decode = sample
-        .and_then(|s| s.video.as_ref())
-        .map(|v| &v.local_timing.decoder_service)
-        .filter(|v| v.count > 0)
-        .map(|v| v.latest_ms);
-    let encode = sample
-        .and_then(|s| s.bud.as_ref())
-        .and_then(|b| b.encode_ms);
-    format!(
-        "Decode CPU {} | Encode {}\nRTT {} | RX {} | FPS {}",
-        metric(decode, "ms"),
-        metric(encode, "ms"),
-        metric(sample.and_then(|s| s.rtt_ms), "ms"),
-        metric(rates.incoming, "Mbps"),
-        metric(rates.fps, "")
-    )
 }
 unsafe fn update_displays(hwnd: HWND, panel: &mut Panel) {
     let window = &*panel.window;
@@ -996,33 +974,6 @@ mod tests {
             stacking_target(owner, button, null_mut(), null_mut(), null_mut()),
             None
         );
-    }
-    #[test]
-    fn compact_metrics_use_existing_values_and_keep_unknowns_unknown() {
-        let mut sample = crate::stats::Sample {
-            rtt_ms: Some(2.5),
-            video: Some(Default::default()),
-            ..Default::default()
-        };
-        let rates = crate::stats::Values {
-            incoming: Some(10.0),
-            fps: Some(60.0),
-            ..Default::default()
-        };
-        let empty = metrics(None, &Default::default());
-        assert!(empty.contains("Decode CPU N/A"));
-        sample
-            .video
-            .as_mut()
-            .unwrap()
-            .local_timing
-            .decoder_service
-            .record(std::time::Duration::from_millis(1));
-        let text = metrics(Some(&sample), &rates);
-        assert!(text.contains("Decode CPU 1.0ms"));
-        assert!(text.contains("Encode N/A"));
-        assert!(text.contains("RTT 2.5ms"));
-        assert!(text.contains("RX 10.0Mbps"));
     }
     #[test]
     fn editable_values_are_bounded_before_sending() {

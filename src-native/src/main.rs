@@ -59,6 +59,8 @@ mod signaling;
 mod stats;
 #[cfg(windows)]
 mod stats_ui;
+#[cfg(windows)]
+mod stats_view;
 mod transport;
 mod video_color;
 mod video_output;

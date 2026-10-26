@@ -34,6 +34,12 @@ administrator rights. The configured static CRT and bundled Opus remain in place
   DPAPI, atomic persistence and merging of concurrent native-profile changes.
   Disabled preferences and hidden provider fields remain available for later use;
   an unsupported 4:4:4 vendor is still cleared by the existing eligibility policy.
+- `stats_view.rs`: presentation of the existing telemetry snapshots: cards,
+  diagnostic rows, units, stale/unknown values, scope notes and compact Session
+  metrics. Win32 retains text measurement, GDI drawing, scrolling and window
+  lifetime. The existing 1 Hz refresh, rate calculation, resource queries and
+  generation-scoped host-timing snapshots are unchanged; the presentation model
+  performs no sampling, transport requests or video-frame work.
 - `native_core/picker.rs`: window-API-independent computer list and discovery
   controller. It keeps one refresh in flight, distinguishes manual/background
   results, preserves selection by peer ID and avoids updates for identical lists.
