@@ -6,6 +6,9 @@ on:
     paths: ['tools/qos-latency/**', '.github/workflows/qos-measurement.yml']
 permissions:
   contents: read
+concurrency:
+  group: qos-tool-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   windows:
     runs-on: windows-latest
@@ -34,7 +37,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force dist/qos-tool | Out-Null
-          Copy-Item -LiteralPath tools/qos-latency/target/release/evoparseq-qos-test.exe -Destination dist/qos-tool/EvoParseq-QoS-Test.exe
+          Copy-Item -LiteralPath tools/qos-latency/target/x86_64-pc-windows-msvc/release/evoparseq-qos-test.exe -Destination dist/qos-tool/EvoParseq-QoS-Test.exe
           Copy-Item -LiteralPath tools/qos-latency/README.md -Destination dist/qos-tool/README-hu.md
           Copy-Item -LiteralPath LICENSE -Destination dist/qos-tool/LICENSE.txt
           '${{ github.sha }}' | Set-Content -Encoding utf8 dist/qos-tool/SOURCE.txt
