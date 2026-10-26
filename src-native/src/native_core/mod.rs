@@ -12,6 +12,7 @@ mod session_badge;
 pub(crate) mod session_model;
 pub(crate) mod session_ui;
 mod session_video;
+mod sign_in;
 mod signaling;
 mod transport;
 pub(crate) mod ui;

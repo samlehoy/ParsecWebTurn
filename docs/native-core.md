@@ -22,6 +22,11 @@ administrator rights. The configured static CRT and bundled Opus remain in place
 - `native_core/account.rs`: account sign-in, optional two-factor authentication,
   computer discovery and session management. Remembered sessions are protected
   using Windows CurrentUser DPAPI in settings.json.
+- `native_core/sign_in.rs`: window-API-independent sign-in/sign-out request
+  lifecycle, busy/error state and remembered-sign-in preference. Password and
+  optional 2FA code remain zeroizing request-owned values, without a retry cache.
+  The Win32 adapter retains the existing DPAPI save policy; authentication APIs,
+  session revocation, protected storage and polling cadence are unchanged.
 - `native_core/picker.rs`: window-API-independent computer list and discovery
   controller. It keeps one refresh in flight, distinguishes manual/background
   results, preserves selection by peer ID and avoids updates for identical lists.

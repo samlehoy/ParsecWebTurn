@@ -5,10 +5,11 @@ use super::account::{self, Login, Session};
 use super::controls::{self, BG, FG, FIELD};
 pub(super) use super::controls::{font, wide};
 use super::picker::{self, Picker, Refresh};
+use super::sign_in::{Completion, SignIn};
 use anyhow::{ensure, Result};
 use std::{
     ptr::{null, null_mut},
-    sync::{mpsc, Arc},
+    sync::Arc,
 };
 use windows_sys::Win32::{
     Foundation::*,
@@ -37,10 +38,6 @@ pub struct Selection {
     pub session: Arc<Session>,
     pub peer: String,
 }
-enum Completed {
-    Login(Result<Arc<Session>>),
-    Logout,
-}
 struct Form {
     settings_page: HWND,
     manager: Arc<crate::connection_settings::Manager>,
@@ -56,11 +53,8 @@ struct Form {
     heading: HFONT,
     brush: HBRUSH,
     field_brush: HBRUSH,
-    session: Option<Arc<Session>>,
+    sign_in: SignIn,
     picker: Picker,
-    incoming: Option<mpsc::Receiver<Completed>>,
-    remember_login: bool,
-    email: String,
     done: bool,
     result: Option<Selection>,
 }
@@ -95,7 +89,7 @@ unsafe fn status(f: &Form, s: &str) {
 }
 unsafe fn view(f: &Form) {
     let launcher = f.settings_page.is_null();
-    let login = f.session.is_none();
+    let login = f.sign_in.session.is_none();
     for &h in &f.common_controls {
         ShowWindow(h, if launcher { SW_SHOW } else { SW_HIDE });
     }
@@ -105,8 +99,8 @@ unsafe fn view(f: &Form) {
     for &h in &f.picker_controls {
         ShowWindow(h, if launcher && !login { SW_SHOW } else { SW_HIDE });
     }
-    let busy = f.incoming.is_some() || f.picker.blocks_controls();
-    if f.session.is_some() {
+    let busy = f.sign_in.busy() || f.picker.blocks_controls();
+    if f.sign_in.session.is_some() {
         SetTimer(
             GetParent(f.status),
             AUTO_REFRESH,
@@ -125,10 +119,10 @@ unsafe fn view(f: &Form) {
     }
 }
 unsafe fn start_hosts(hwnd: HWND, f: &mut Form, mode: Refresh) {
-    if f.incoming.is_some() || f.done {
+    if f.sign_in.busy() || f.done {
         return;
     }
-    let Some(session) = f.session.clone() else {
+    let Some(session) = f.sign_in.session.clone() else {
         return;
     };
     if !f.picker.start(session, mode) {
@@ -140,10 +134,10 @@ unsafe fn start_hosts(hwnd: HWND, f: &mut Form, mode: Refresh) {
     }
     SetTimer(hwnd, DONE, mode.poll_ms(), None);
 }
-unsafe fn completed(hwnd: HWND, f: &mut Form, job: Completed) {
+unsafe fn completed(hwnd: HWND, f: &mut Form, job: Completion) {
     match job {
-        Completed::Login(Ok(session)) => {
-            if !f.remember_login {
+        Completion::Login(Ok(session)) => {
+            if !f.sign_in.remember_login {
                 if f.manager
                     .update_native(|p| p.encrypted_session.clear())
                     .is_err()
@@ -151,10 +145,10 @@ unsafe fn completed(hwnd: HWND, f: &mut Form, job: Completed) {
                     message_box(hwnd,"The old saved sign-in could not be removed. Check write access to settings.json.");
                 }
             }
-            if f.remember_login {
+            if f.sign_in.remember_login {
                 let save = super::profile::Profile::encrypted(session.token()).and_then(|blob| {
                     f.manager.update_native(|p| {
-                        p.email = f.email.clone();
+                        p.email = f.sign_in.email.clone();
                         p.encrypted_session = blob;
                     })
                 });
@@ -163,26 +157,30 @@ unsafe fn completed(hwnd: HWND, f: &mut Form, job: Completed) {
                 }
                 if save.is_err() {
                     message_box(hwnd,"Signed in, but Windows could not save the protected session. This sign-in will stay in memory.");
-                    f.remember_login = false;
+                    f.sign_in.remember_login = false;
                 }
             }
-            f.session = Some(session);
+            f.sign_in.session = Some(session);
             start_hosts(hwnd, f, Refresh::Manual);
         }
-        Completed::Login(Err(e)) => {
+        Completion::Login(Err(_)) => {
             crate::event_log::record(
                 "ERROR",
                 "native_account_login_failed",
                 serde_json::json!({}),
             );
-            status(f, &e.to_string());
+            status(f, f.sign_in.message());
             view(f);
             SetFocus(f.fields[1]);
         }
-        Completed::Logout => {
-            status(f, "Signed out. Enter your account details to sign in.");
+        Completion::Logout => {
+            status(f, f.sign_in.message());
             view(f);
             SetFocus(f.fields[0]);
+        }
+        Completion::Disconnected => {
+            status(f, f.sign_in.message());
+            view(f);
         }
     }
 }
@@ -244,10 +242,9 @@ unsafe fn hosts_completed(f: &mut Form, job: picker::Completion) {
             );
             if e.downcast_ref::<account::ExpiredSession>().is_some() {
                 let _ = f.manager.update_native(|p| p.encrypted_session.clear());
-                f.session = None;
-                f.remember_login = false;
+                f.sign_in.expired();
             }
-            if !quiet || f.session.is_none() {
+            if !quiet || f.sign_in.session.is_none() {
                 status(f, &e.to_string());
                 view(f);
             }
@@ -286,7 +283,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 );
                 view(f);
                 InvalidateRect(hwnd, null(), 1);
-                SetFocus(if f.session.is_some() {
+                SetFocus(if f.sign_in.session.is_some() {
                     f.list
                 } else {
                     f.fields[0]
@@ -322,7 +319,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 return 1;
             }
             WM_TIMER if wp == AUTO_REFRESH => {
-                if f.session.is_some() && f.incoming.is_none() && !f.done {
+                if f.sign_in.session.is_some() && !f.sign_in.busy() && !f.done {
                     start_hosts(hwnd, f, Refresh::Background);
                 }
                 return 0;
@@ -333,20 +330,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     hosts_completed(f, job);
                     return 0;
                 }
-                let result = f.incoming.as_ref().map(|r| r.try_recv());
-                match result {
-                    Some(Ok(job)) => {
-                        f.incoming = None;
-                        KillTimer(hwnd, DONE);
-                        completed(hwnd, f, job);
-                    }
-                    Some(Err(mpsc::TryRecvError::Disconnected)) => {
-                        f.incoming = None;
-                        KillTimer(hwnd, DONE);
-                        status(f, "The account request ended unexpectedly. Please retry.");
-                        view(f);
-                    }
-                    _ => {}
+                if let Some(job) = f.sign_in.poll() {
+                    KillTimer(hwnd, DONE);
+                    completed(hwnd, f, job);
                 }
                 return 0;
             }
@@ -358,7 +344,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         SetWindowTextW(f.peer, wide(peer).as_ptr());
                     }
                 }
-                if f.incoming.is_some() || f.picker.blocks_controls() {
+                if f.sign_in.busy() || f.picker.blocks_controls() {
                     return 0;
                 }
                 match id {
@@ -386,33 +372,26 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         let email = text(f.fields[0]);
                         let password = zeroize::Zeroizing::new(text(f.fields[1]));
                         let tfa = zeroize::Zeroizing::new(text(f.fields[2]));
-                        if email.trim().is_empty() || password.is_empty() {
-                            status(f, "Email and password are required.");
-                            return 0;
-                        }
-                        f.email = email.trim().into();
-                        f.remember_login =
+                        let remember =
                             SendMessageW(f.remember, BM_GETCHECK, 0, 0) == BST_CHECKED as isize;
                         let login = Login {
                             email,
                             password,
                             tfa,
                         };
+                        match f.sign_in.login(login, remember) {
+                            Ok(true) => {}
+                            Ok(false) => return 0,
+                            Err(error) => {
+                                status(f, &error.to_string());
+                                return 0;
+                            }
+                        }
                         SetWindowTextW(f.fields[1], wide("").as_ptr());
                         SetWindowTextW(f.fields[2], wide("").as_ptr());
                         f.picker.cancel();
-                        let (tx, rx) = mpsc::channel();
-                        f.incoming = Some(rx);
-                        status(f, "Signing in securely...");
+                        status(f, f.sign_in.message());
                         view(f);
-                        std::thread::spawn(move || {
-                            let result = account::login(&login).map(Arc::new);
-                            if let Err(mpsc::SendError(Completed::Login(Ok(session)))) =
-                                tx.send(Completed::Login(result))
-                            {
-                                session.revoke();
-                            }
-                        });
                         SetTimer(hwnd, DONE, 80, None);
                     }
                     REFRESH => start_hosts(hwnd, f, Refresh::Manual),
@@ -424,7 +403,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                                 return 0;
                             }
                         };
-                        if let Some(session) = f.session.take() {
+                        if let Some(session) = f.sign_in.session.take() {
                             if f.manager
                                 .update_native(|p| p.last_peer = peer.clone())
                                 .is_err()
@@ -446,17 +425,11 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                             status(f,"Could not remove the saved sign-in. Check write access to settings.json.");
                             return 0;
                         }
-                        f.remember_login = false;
+                        f.sign_in.remember_login = false;
                         f.picker.cancel();
-                        if let Some(session) = f.session.take() {
-                            let (tx, rx) = mpsc::channel();
-                            f.incoming = Some(rx);
-                            status(f, "Signing out...");
+                        if f.sign_in.logout() {
+                            status(f, f.sign_in.message());
                             view(f);
-                            std::thread::spawn(move || {
-                                session.revoke();
-                                let _ = tx.send(Completed::Logout);
-                            });
                             SetTimer(hwnd, DONE, 80, None);
                         }
                     }
@@ -471,6 +444,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             WM_DESTROY => {
                 f.done = true;
                 f.picker.cancel();
+                f.sign_in.cancel();
                 KillTimer(hwnd, DONE);
                 KillTimer(hwnd, AUTO_REFRESH);
                 return 0;
@@ -521,11 +495,12 @@ pub fn choose(
             heading: font(32, 600),
             brush: CreateSolidBrush(BG),
             field_brush: CreateSolidBrush(FIELD),
-            session: current.or(saved),
+            sign_in: SignIn::new(
+                current.or(saved),
+                profile.email.clone(),
+                !profile.encrypted_session.is_empty(),
+            ),
             picker: Picker::default(),
-            incoming: None,
-            remember_login: !profile.encrypted_session.is_empty(),
-            email: profile.email.clone(),
             done: false,
             result: None,
         });
@@ -624,7 +599,12 @@ pub fn choose(
             BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
             [250, 322, 450, 30],
         );
-        SendMessageW(f.remember, BM_SETCHECK, usize::from(f.remember_login), 0);
+        SendMessageW(
+            f.remember,
+            BM_SETCHECK,
+            usize::from(f.sign_in.remember_login),
+            0,
+        );
         f.login_controls.push(f.remember);
         let b = add(
             hwnd,
@@ -682,7 +662,7 @@ pub fn choose(
         view(&f);
         ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
-        if f.session.is_some() {
+        if f.sign_in.session.is_some() {
             start_hosts(hwnd, &mut f, Refresh::Manual);
         } else {
             SetFocus(f.fields[0]);
@@ -700,7 +680,8 @@ pub fn choose(
                 if show_picker {
                     // A local fixture token never enters auth, host discovery,
                     // persistence or explicit logout requests.
-                    f.session = Some(Arc::new(Session::from_token("offline-ui-fixture").unwrap()));
+                    f.sign_in.session =
+                        Some(Arc::new(Session::from_token("offline-ui-fixture").unwrap()));
                     hosts_completed(
                         &mut f,
                         picker::Completion::Hosts(
@@ -836,7 +817,7 @@ pub fn choose(
                     }
                 }
             }
-            f.session = None; // Do not run explicit account logout for the fixture.
+            f.sign_in.session = None; // Do not run explicit account logout for the fixture.
             DestroyWindow(hwnd);
         }
         let mut msg: MSG = std::mem::zeroed();
@@ -852,7 +833,7 @@ pub fn choose(
         if IsWindow(hwnd) != 0 {
             DestroyWindow(hwnd);
         }
-        if let Some(session) = f.session.take() {
+        if let Some(session) = f.sign_in.session.take() {
             if f.manager.view().0.native_core.encrypted_session.is_empty() {
                 session.revoke();
             }
