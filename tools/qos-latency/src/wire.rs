@@ -272,7 +272,9 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let (peer, config) = receiver_config(addr.port().min(65534)).unwrap();
-        let (wrong, _) = receiver_config(peer.port).unwrap();
+        let (mut wrong, _) = receiver_config(peer.port).unwrap();
+        // Keep pairing valid: only certificate pinning may reject this client.
+        wrong.token = peer.token;
         let worker = std::thread::spawn(move || {
             let (socket, _) = listener.accept().unwrap();
             configure(&socket).unwrap();
