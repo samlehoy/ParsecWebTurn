@@ -922,7 +922,8 @@ impl Driver {
                 // names stream 0 and must not overwrite the video's figure.
                 // Zero carries no usable timing; retain this connection's
                 // last real video report instead of making it flicker.
-                if message.a0 == 1 && message.a1 != 0
+                if message.a0 == 1
+                    && message.a1 != 0
                     && let Some(slot) = self.encode_latency_us.get_mut(message.a2 as usize)
                 {
                     *slot = message.a1;
