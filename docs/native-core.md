@@ -22,6 +22,13 @@ administrator rights. The configured static CRT and bundled Opus remain in place
 - `native_core/account.rs`: account sign-in, optional two-factor authentication,
   computer discovery and session management. Remembered sessions are protected
   using Windows CurrentUser DPAPI in settings.json.
+- `native_core/picker.rs`: window-API-independent computer list and discovery
+  controller. It keeps one refresh in flight, distinguishes manual/background
+  results, preserves selection by peer ID and avoids updates for identical lists.
+  Cancelled replies cannot update a new account/view. The Win32 adapter retains
+  its existing 30-second timer and 80/500 ms completion polling; discovery uses
+  the same per-request HTTP worker, endpoint, validation and timeouts. Sign-in,
+  two-factor authentication and protected-session storage remain unchanged.
 - `native_core/signaling.rs` and `transport.rs`: authenticated session signaling
   and explicit BUD/WebRTC selection. Failure never silently changes transport.
 - `attempt.rs`: native ICE/DTLS/SCTP and data channels for WebRTC.

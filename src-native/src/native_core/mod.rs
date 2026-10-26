@@ -5,6 +5,7 @@ mod controls;
 pub(crate) mod host_displays;
 mod host_video;
 mod input;
+mod picker;
 mod pointer;
 pub(crate) mod profile;
 mod session_badge;
