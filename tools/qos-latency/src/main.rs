@@ -152,6 +152,16 @@ fn server(port: u16) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("TLS accept worker failed"))?;
     Ok(())
 }
+struct LoadGate {
+    ready: std::sync::mpsc::SyncSender<bool>,
+    start: std::sync::mpsc::Receiver<()>,
+}
+fn await_loads(receiver: &std::sync::mpsc::Receiver<bool>, count: usize) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(12);
+    (0..count).all(|_| {
+        receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) == Ok(true)
+    })
+}
 fn bulk(
     addr: SocketAddr,
     peer: Peer,
@@ -159,7 +169,7 @@ fn bulk(
     direction: u8,
     seconds: u32,
     stop: Arc<AtomicBool>,
-    ready: std::sync::mpsc::SyncSender<bool>,
+    gate: LoadGate,
 ) -> BulkResult {
     let mut result = BulkResult {
         direction: if direction == 1 {
@@ -172,29 +182,32 @@ fn bulk(
     };
     let work = (|| -> Result<()> {
         let connection = wire::connect(addr, &peer, tls, false, direction, seconds);
-        let _ = ready.send(connection.is_ok());
+        let _ = gate.ready.send(connection.is_ok());
         let (mut channel, _flow) = connection?;
+        gate.start
+            .recv_timeout(Duration::from_secs(15))
+            .context("load start deadline")?;
+        let started = wire::start(&mut channel);
+        let _ = gate.ready.send(started.is_ok());
+        started?;
         let mut bytes = [0u8; wire::BLOCK];
-        let until = Instant::now() + Duration::from_secs(u64::from(seconds) + 2);
-        while !stop.load(Ordering::Acquire) && Instant::now() < until {
+        while !stop.load(Ordering::Acquire) {
             if direction == 1 {
                 channel.write_all(&bytes)?;
                 channel.flush()?;
                 result.bytes += bytes.len() as u64;
             } else {
                 let count = channel.read(&mut bytes)?;
-                if count == 0 {
-                    break;
-                }
+                ensure!(count != 0, "load ended before sampling finished");
                 result.bytes += count as u64;
             }
         }
         Ok(())
     })();
-    if let Err(error) = work {
-        if !stop.load(Ordering::Acquire) {
-            result.error = Some(error.to_string());
-        }
+    if let Err(error) = work
+        && !stop.load(Ordering::Acquire)
+    {
+        result.error = Some(error.to_string());
     }
     result
 }
@@ -241,29 +254,37 @@ fn trial(
     }
     let stop = Arc::new(AtomicBool::new(false));
     let mut workers = vec![];
+    let mut starters = vec![];
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(4);
     for &direction in load.directions() {
         let peer = peer.clone();
         let stop = stop.clone();
-        let ready = ready_tx.clone();
+        let (start, receiver) = std::sync::mpsc::sync_channel(1);
+        starters.push(start);
+        let gate = LoadGate {
+            ready: ready_tx.clone(),
+            start: receiver,
+        };
         workers.push(thread::spawn(move || {
-            bulk(addr, peer, tls, direction, seconds, stop, ready)
+            bulk(addr, peer, tls, direction, seconds, stop, gate)
         }));
     }
     // All load connections must be established before warmup and sampling.
     drop(ready_tx);
-    let ready_deadline = Instant::now() + Duration::from_secs(12);
-    for _ in load.directions() {
-        if ready_rx.recv_timeout(ready_deadline.saturating_duration_since(Instant::now()))
-            != Ok(true)
-        {
-            result.error = Some("load connection setup failed; trial is inconclusive".into());
-            break;
-        }
+    if !await_loads(&ready_rx, load.directions().len()) {
+        result.error = Some("load connection setup failed; trial is inconclusive".into());
     }
-    // No TLS/setup times enter RTT samples.
+    for starter in starters {
+        let _ = starter.send(());
+    }
+    if result.error.is_none() && !await_loads(&ready_rx, load.directions().len()) {
+        result.error = Some("load did not start; trial is inconclusive".into());
+    }
     if result.error.is_none() {
         thread::sleep(Duration::from_secs(1));
+        if let Err(error) = wire::start(&mut channel) {
+            result.error = Some(error.to_string());
+        }
     }
     let start = Instant::now();
     let until = start + Duration::from_secs(u64::from(seconds));
@@ -299,6 +320,7 @@ fn trial(
     }
     result.measured_seconds = start.elapsed().as_secs_f64();
     stop.store(true, Ordering::Release);
+    drop(ready_rx); // Also release senders if a setup/start phase failed early.
     // Socket deadlines bound workers if congestion prevents an immediate write.
     for worker in workers {
         match worker.join() {
@@ -449,6 +471,57 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn coordinated_tls_load_stays_active_until_echo_sampling_finishes() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (peer, config) = wire::receiver_config(addr.port().min(65534)).unwrap();
+        let server_peer = peer.clone();
+        let done = Arc::new(AtomicBool::new(false));
+        let server_done = done.clone();
+        let worker = thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(15);
+            let mut clients = vec![];
+            while !server_done.load(Ordering::Acquire) && Instant::now() < until {
+                match listener.accept() {
+                    Ok((socket, _)) => {
+                        let peer = server_peer.clone();
+                        let config = config.clone();
+                        clients.push(thread::spawn(move || {
+                            wire::configure(&socket).unwrap();
+                            let connection = rustls::ServerConnection::new(config).unwrap();
+                            let _ = wire::serve(
+                                Channel::Server(Box::new(rustls::StreamOwned::new(
+                                    connection, socket,
+                                ))),
+                                &peer,
+                            );
+                        }));
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("listener failed: {error}"),
+                }
+            }
+            for client in clients {
+                client.join().unwrap();
+            }
+        });
+        let result = trial(addr, &peer, true, Load::Both, false, 1, 0);
+        done.store(true, Ordering::Release);
+        worker.join().unwrap();
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert!(result.metrics.samples > 0);
+        assert_eq!(result.load_results.len(), 4);
+        assert!(
+            result
+                .load_results
+                .iter()
+                .all(|load| load.bytes > 0 && load.error.is_none())
+        );
+    }
     #[cfg(windows)]
     #[test]
     fn an_unverified_windows_flow_is_not_reported_as_a_marked_latency_sample() {

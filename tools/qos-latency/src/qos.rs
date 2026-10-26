@@ -162,12 +162,12 @@ mod windows {
     }
     impl Drop for Flow {
         fn drop(&mut self) {
-            if self.handle != 0 {
-                if let Some(api) = api() {
-                    // Closing the handle removes its flow; the socket stays owned by its stream.
-                    unsafe {
-                        (api.close)(self.handle as Handle);
-                    }
+            if self.handle != 0
+                && let Some(api) = api()
+            {
+                // Closing the handle removes its flow; the socket stays owned by its stream.
+                unsafe {
+                    (api.close)(self.handle as Handle);
                 }
             }
         }

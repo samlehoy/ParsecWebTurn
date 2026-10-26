@@ -49,6 +49,28 @@ pub enum Channel {
     Client(Box<StreamOwned<ClientConnection, TcpStream>>),
     Server(Box<StreamOwned<ServerConnection, TcpStream>>),
 }
+impl Channel {
+    fn socket(&self) -> &TcpStream {
+        match self {
+            Self::Plain(c) => c,
+            Self::Client(c) => &c.sock,
+            Self::Server(c) => &c.sock,
+        }
+    }
+}
+pub fn start(channel: &mut Channel) -> std::io::Result<()> {
+    channel.write_all(&[1])?;
+    channel.flush()?;
+    let mut ready = [0];
+    channel.read_exact(&mut ready)?;
+    if ready[0] != 1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "receiver start refused",
+        ));
+    }
+    Ok(())
+}
 impl Read for Channel {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
         match self {
@@ -156,7 +178,20 @@ pub fn serve(mut channel: Channel, peer: &Peer) -> Result<()> {
     );
     channel.write_all(&[1])?;
     channel.flush()?;
-    let until = Instant::now() + Duration::from_secs(u64::from(seconds) + 5);
+    // A paired connection waits for the coordinated client start. Auth/TLS
+    // setup has already completed and does not enter the sampling window.
+    channel
+        .socket()
+        .set_read_timeout(Some(Duration::from_secs(30)))?;
+    let mut go = [0];
+    channel.read_exact(&mut go)?;
+    ensure!(go[0] == 1, "invalid start request");
+    channel
+        .socket()
+        .set_read_timeout(Some(Duration::from_secs(5)))?;
+    channel.write_all(&[1])?;
+    channel.flush()?;
+    let until = Instant::now() + Duration::from_secs(u64::from(seconds) + 20);
     let mut buffer = [0u8; BLOCK];
     while Instant::now() < until {
         match mode {
@@ -208,6 +243,7 @@ mod tests {
                 });
                 let (mut channel, flow) = connect(addr, &peer, tls, false, mode, 1).unwrap();
                 assert!(!flow.status.requested && !flow.status.applied);
+                start(&mut channel).unwrap();
                 if mode == 0 {
                     channel.write_all(&123u64.to_be_bytes()).unwrap();
                     channel.flush().unwrap();
