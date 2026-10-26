@@ -1172,6 +1172,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 s.request_stop();
                 return 0;
             }
+            WM_DESTROY => {
+                // Each stream window owns this thread's message loop. Destroying
+                // its HWND must also let GetMessage finish and release the Arc.
+                PostQuitMessage(0);
+                return 0;
+            }
             m if m == WM_APP + 1 => {
                 DestroyWindow(hwnd);
                 return 0;

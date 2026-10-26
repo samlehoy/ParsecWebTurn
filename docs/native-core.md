@@ -75,6 +75,8 @@ position); the cursor image can extend beyond the right/bottom edge. No cursor-
 size inset is applied, so remote edge pixels remain reachable. Relative camera
 input retains its existing Raw Input and one-pixel-anchor behavior. CI runs the
 native capture lifecycle separately to prevent other UI tests stealing focus.
+Destroying a stream window also terminates its own message loop, releasing the
+UI thread's window reference instead of leaving it blocked in GetMessage.
 
 ## Validation scope
 
