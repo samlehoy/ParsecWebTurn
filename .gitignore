@@ -1,6 +1,8 @@
 # Sensitive local configuration
 settings.json
 ice.json
+qos-peer.json
+qos-results-*.json
 
 # Build output
 EvoParseq.exe

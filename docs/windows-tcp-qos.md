@@ -43,6 +43,14 @@ compiled into or shipped with EvoParseq. No production QoS option is added yet.
 
 ## Before enabling it in production
 
+A separate portable Rust receiver/client is now provided in
+[tools/qos-latency](../tools/qos-latency/README.md). It runs alternating
+off/on/on/off trials over direct IPv4 TCP and certificate-pinned TLS, with idle,
+upload, download and bidirectional load. It records raw RTT samples, percentiles,
+errors and qWAVE configuration. Failed/unverified-mark or failed-load trials are
+inconclusive. Its dependencies and executable are isolated from the application;
+the production client remains unchanged. Two-machine measurements are pending.
+
 Compare disabled/enabled trials on the same real TURN TCP/TLS route, alternating
 order, both idle and with controlled local upload contention. Measure input RTT,
 p50/p95/p99 stalls and existing stream timing/drop counters. Capture only the
