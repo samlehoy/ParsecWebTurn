@@ -73,8 +73,8 @@ six numeric choices, 30, 60, 100, 120, 144, 240, around RVA `0x15d2d..0x15fac`.
 Only these option values were recorded; no binary bytes or implementation were
 copied. The shared session model owns these presets; the Win32 view uses native
 selection-only combo boxes. A previously saved non-preset value is shown as a
-current-value cue and retained until the user explicitly selects a replacement;
-it is not inserted into the preset list.
+keep-current action and retained until the user explicitly selects a replacement;
+this preserves an existing value without allowing entry of a new custom preset.
 
 Parsec's [Windows documentation](https://support.parsec.app/hc/en-us/articles/32381199341716-Parsec-App-for-Windows)
 also explains that resolution requests depend on Windows display support, and

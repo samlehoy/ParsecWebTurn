@@ -92,6 +92,9 @@ pub const BANDWIDTH_CHOICES: &[&str] = &[
     "3", "5", "7", "10", "15", "20", "25", "30", "35", "40", "45", "50",
 ];
 pub const FPS_CHOICES: &[&str] = &["30", "60", "100", "120", "144", "240"];
+pub fn current_choice(value: &str) -> String {
+    format!("Keep current: {value}")
+}
 pub fn resolution_text(resolution: Resolution) -> String {
     match resolution {
         Resolution::Host => HOST_RESOLUTION.into(),

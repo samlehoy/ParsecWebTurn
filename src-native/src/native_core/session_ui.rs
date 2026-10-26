@@ -4,7 +4,7 @@ use super::{
     controls::{self, BG, FG, FIELD},
     profile::Video,
     session_model::{
-        resolution_text, Command, Notification, PanelFields, State, Status, View,
+        current_choice, resolution_text, Command, Notification, PanelFields, State, Status, View,
         BANDWIDTH_CHOICES, FPS_CHOICES, HOST_RESOLUTION, RESOLUTION_CHOICES,
     },
     ui::{draw_button, wide},
@@ -109,7 +109,10 @@ unsafe fn text(hwnd: HWND) -> String {
 unsafe fn collect(p: &Panel) -> Result<Video> {
     let select = |i: usize| SendMessageW(p.controls[i], CB_GETCURSEL, 0, 0);
     let field = |i: usize| {
-        if select(i) == CB_ERR as isize {
+        let index = select(i);
+        if index == CB_ERR as isize
+            || SendMessageW(p.controls[i], CB_GETITEMDATA, index as usize, 0) == 1
+        {
             p.initial_fields[i].clone()
         } else {
             text(p.controls[i])
@@ -509,14 +512,16 @@ unsafe fn combo(hwnd: HWND, p: &Panel, id: usize, y: i32, items: &[&str], value:
     if let Some(index) = items.iter().position(|s| *s == value) {
         SendMessageW(h, CB_SETCURSEL, index, 0);
     } else {
-        // An older saved custom value remains unchanged until explicitly chosen.
-        // It is shown as a cue, never added to the available preset options.
-        SendMessageW(
+        // Preserve an existing custom value as an explicit keep-current action;
+        // the user cannot type a new value or create a new custom preset.
+        let index = SendMessageW(
             h,
-            CB_SETCUEBANNER,
+            CB_ADDSTRING,
             0,
-            wide(&format!("Current: {value}")).as_ptr() as isize,
+            wide(&current_choice(value)).as_ptr() as isize,
         );
+        SendMessageW(h, CB_SETITEMDATA, index as usize, 1);
+        SendMessageW(h, CB_SETCURSEL, index as usize, 0);
     }
     h
 }
@@ -1058,7 +1063,7 @@ mod tests {
                 );
                 assert_eq!(
                     SendMessageW(control, CB_GETCOUNT, 0, 0),
-                    choices.len() as isize
+                    (choices.len() + usize::from(id == 22)) as isize
                 );
                 for choice in choices {
                     assert_ne!(
@@ -1072,11 +1077,8 @@ mod tests {
                     );
                 }
             }
-            // A legacy custom FPS is retained, but is not an additional preset.
-            assert_eq!(
-                SendMessageW(GetDlgItem(panel, 22), CB_GETCURSEL, 0, 0),
-                CB_ERR as isize
-            );
+            // A legacy custom FPS is an explicit preservation action, not a new preset.
+            assert_eq!(text(GetDlgItem(panel, 22)), current_choice("90"));
             assert_eq!(
                 SendMessageW(
                     GetDlgItem(panel, 22),
