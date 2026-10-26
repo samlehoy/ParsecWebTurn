@@ -97,6 +97,9 @@ impl Write for Channel {
     }
 }
 pub fn configure(socket: &TcpStream) -> Result<()> {
+    // Windows accepted sockets can inherit the listener's nonblocking mode.
+    // This isolated tool deliberately uses synchronous, deadline-bounded IO.
+    socket.set_nonblocking(false)?;
     socket.set_nodelay(true)?;
     socket.set_read_timeout(Some(Duration::from_secs(5)))?;
     socket.set_write_timeout(Some(Duration::from_secs(5)))?;
