@@ -1,6 +1,6 @@
 //! Host settings transactions only; decoding/presentation stay on their workers.
 use super::transport::Attempt;
-use super::{host_displays, host_video, profile::Video, session_ui};
+use super::{host_displays, host_video, profile::Video, session_model::HostVideo, session_ui};
 use crate::window::Window;
 use anyhow::{ensure, Result};
 use std::{
@@ -71,7 +71,8 @@ impl HostSettings {
         }
 
         window
-            .native_displays
+            .session
+            .displays
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .current = self.config.output_id().map(str::to_owned);
@@ -80,11 +81,13 @@ impl HostSettings {
             return;
         }
         let observed = self.observed(window);
-        crate::event_log::record("INFO", "native_host_video_configuration", observed.clone());
+        let host_video = HostVideo::from_report(&observed);
+        crate::event_log::record("INFO", "native_host_video_configuration", observed);
         *window
-            .native_host_video
+            .session
+            .host_video
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = observed;
+            .unwrap_or_else(|e| e.into_inner()) = host_video;
         if !self.ensure_hid_primary(attempt, window) {
             return;
         }
@@ -109,7 +112,8 @@ impl HostSettings {
         if let Some(id) = self.take_output() {
             let result = (|| -> Result<()> {
                 window
-                    .native_displays
+                    .session
+                    .displays
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .validate_selection(&id, attempt.hid_mouse_enabled())?;
@@ -161,7 +165,8 @@ impl HostSettings {
     fn observed(&self, window: &Window) -> serde_json::Value {
         let mut report = self.config.observed();
         let displays = window
-            .native_displays
+            .session
+            .displays
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         report["display_index"] = serde_json::json!(displays
@@ -180,7 +185,8 @@ impl HostSettings {
         {
             self.outputs_deadline = None;
             let mut displays = window
-                .native_displays
+                .session
+                .displays
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             displays.loading = false;
@@ -273,7 +279,8 @@ impl HostSettings {
         }
         let primary = {
             let displays = window
-                .native_displays
+                .session
+                .displays
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             // Verified stock Windows host preserves EnumAdapters1/EnumOutputs
@@ -291,7 +298,8 @@ impl HostSettings {
         self.hid_primary_ready(attempt, window, false);
         let Some(id) = primary else {
             let displays = window
-                .native_displays
+                .session
+                .displays
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let unavailable = self.config.ready() && !displays.loading;
@@ -331,7 +339,8 @@ impl HostSettings {
             .is_ok();
         self.outputs_deadline = sent.then(|| Instant::now() + QUERY_TIMEOUT);
         let mut displays = window
-            .native_displays
+            .session
+            .displays
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         displays.loading = sent;
@@ -355,7 +364,8 @@ impl HostSettings {
         let result = host_displays::parse(bytes);
         let valid = result.is_ok();
         let mut displays = window
-            .native_displays
+            .session
+            .displays
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         displays.outputs = result.unwrap_or_default();
@@ -389,7 +399,8 @@ impl HostSettings {
         );
         ensure!(!self.busy(), "Waiting for the previous host request");
         let displays = window
-            .native_displays
+            .session
+            .displays
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         displays.validate_selection(id, attempt.hid_mouse_enabled())?;
@@ -455,9 +466,7 @@ impl HostSettings {
     }
 
     fn failed(&self, window: &Window) {
-        window
-            .native_host_video_pending
-            .store(false, Ordering::Release);
+        window.session.video_pending.store(false, Ordering::Release);
         session_ui::result(window, false);
     }
 

@@ -42,6 +42,12 @@ administrator rights. The configured static CRT and bundled Opus remain in place
   immersive capture, relative camera input and local controls. GPU video remains
   separate from UI painting. HID mouse/keyboard share one bounded BUD device
   lifecycle; ordinary Parsec input for a selected HID device is suppressed.
+- `native_core/session_model.rs`: window-API-independent Session commands and
+  shared host-video/display/pending state. The Win32 panel reads typed host
+  preferences and uses the common saved/host/default selection rules. Existing
+  window events and notifications still deliver commands and view updates;
+  there is no additional queue, thread, frame processing or dependency. This
+  is an initial UI separation, not a complete cross-platform application port.
 - Settings, cursor, clipboard, diagnostics and optional event logging are native.
   Logging excludes continuous mouse/key activity and authentication secrets.
 

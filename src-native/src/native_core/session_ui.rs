@@ -3,6 +3,7 @@
 use super::{
     controls::{self, BG, FG, FIELD},
     profile::{Resolution, Video},
+    session_model::Command,
     ui::{draw_button, wide},
 };
 use anyhow::{ensure, Result};
@@ -33,15 +34,6 @@ const DISPLAYS: u32 = WM_APP + 28;
 const PANEL_HEIGHT: i32 = 764;
 pub const RESULT: u32 = WM_APP + 26;
 pub const VISIBILITY: u32 = WM_APP + 27;
-#[derive(Clone, Debug)]
-pub enum Action {
-    Apply(Video),
-    SelectDisplay(String),
-    RefreshDisplays,
-    Disconnect,
-    HideButton,
-    SecureAttention,
-}
 #[derive(Debug, PartialEq, Eq)]
 pub enum Shortcut {
     Menu,
@@ -207,7 +199,8 @@ fn metrics(sample: Option<&crate::stats::Sample>, rates: &crate::stats::Values) 
 unsafe fn update_displays(hwnd: HWND, panel: &mut Panel) {
     let window = &*panel.window;
     let displays = window
-        .native_displays
+        .session
+        .displays
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let combo = GetDlgItem(hwnd, DISPLAY as i32);
@@ -244,7 +237,7 @@ unsafe fn update_displays(hwnd: HWND, panel: &mut Panel) {
         let index = SendMessageW(combo, CB_ADDSTRING, 0, wide(label).as_ptr() as isize);
         SendMessageW(combo, CB_SETCURSEL, index as usize, 0);
     }
-    let busy = window.native_host_video_pending.load(Ordering::Acquire);
+    let busy = window.session.video_pending.load(Ordering::Acquire);
     EnableWindow(
         combo,
         i32::from(
@@ -435,9 +428,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     GetDlgItem(hwnd, APPLY as i32),
                     i32::from(
                         status != Status::Waiting
-                            && !(&*p.window)
-                                .native_host_video_pending
-                                .load(Ordering::Acquire),
+                            && !(&*p.window).session.video_pending.load(Ordering::Acquire),
                     ),
                 );
                 update_displays(hwnd, p);
@@ -449,12 +440,13 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     DISPLAY if (wp >> 16) == CBN_SELCHANGE as usize => {
                         let window = &*p.window;
                         let displays = window
-                            .native_displays
+                            .session
+                            .displays
                             .lock()
                             .unwrap_or_else(|e| e.into_inner());
                         if displays.hid_mouse
                             || displays.loading
-                            || window.native_host_video_pending.load(Ordering::Acquire)
+                            || window.session.video_pending.load(Ordering::Acquire)
                         {
                             return 0;
                         }
@@ -468,21 +460,23 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                             EnableWindow(GetDlgItem(hwnd, DISPLAY as i32), 0);
                             EnableWindow(GetDlgItem(hwnd, REFRESH_DISPLAYS as i32), 0);
                             window.events.push(crate::window::Event::NativeSession(
-                                Action::SelectDisplay(id),
+                                Command::SelectDisplay(id),
                             ));
                         }
                     }
                     REFRESH_DISPLAYS => {
                         (&*p.window)
                             .events
-                            .push(crate::window::Event::NativeSession(Action::RefreshDisplays));
+                            .push(crate::window::Event::NativeSession(
+                                Command::RefreshDisplays,
+                            ));
                     }
                     APPLY => match collect(p) {
                         Ok(video) => {
                             EnableWindow(GetDlgItem(hwnd, APPLY as i32), 0);
                             (&*p.window)
                                 .events
-                                .push(crate::window::Event::NativeSession(Action::Apply(video)));
+                                .push(crate::window::Event::NativeSession(Command::Apply(video)));
                             SetWindowTextW(GetDlgItem(hwnd, STATUS), wide("Applying...").as_ptr());
                         }
                         Err(e) => super::ui::message_box(hwnd, &e.to_string()),
@@ -490,13 +484,15 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     HIDE_BUTTON => {
                         (&*p.window)
                             .events
-                            .push(crate::window::Event::NativeSession(Action::HideButton));
+                            .push(crate::window::Event::NativeSession(Command::HideButton));
                         close(hwnd);
                     }
                     SECURE_ATTENTION => {
                         (&*p.window)
                             .events
-                            .push(crate::window::Event::NativeSession(Action::SecureAttention));
+                            .push(crate::window::Event::NativeSession(
+                                Command::SecureAttention,
+                            ));
                     }
                     CLOSE | 2 => {
                         close(hwnd);
@@ -504,7 +500,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     DISCONNECT => {
                         (&*p.window)
                             .events
-                            .push(crate::window::Event::NativeSession(Action::Disconnect));
+                            .push(crate::window::Event::NativeSession(Command::Disconnect));
                     }
                     SETTINGS => {
                         let parent = GetParent(hwnd);
@@ -686,48 +682,9 @@ pub unsafe fn toggle(
         SetFocus(parent);
         return;
     }
-    let mut video = manager.view().0.native_core.video;
-    // Old profiles may omit these requests. Show concrete current values,
-    // falling back only where the host has no usable numeric preference.
-    let observed = window
-        .native_host_video
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    video.bandwidth_mbps = Some(
-        video
-            .bandwidth_mbps
-            .or_else(|| {
-                observed["bandwidth_mbps"]
-                    .as_u64()
-                    .and_then(|n| u32::try_from(n).ok())
-                    .filter(|n| (1..=100).contains(n))
-            })
-            .unwrap_or(10),
-    );
-    video.fps = Some(
-        video
-            .fps
-            .or_else(|| {
-                observed["fps"]
-                    .as_u64()
-                    .and_then(|n| u32::try_from(n).ok())
-                    .filter(|n| (1..=240).contains(n))
-            })
-            .unwrap_or(60),
-    );
-    video.constant_fps = Some(
-        video
-            .constant_fps
-            .or_else(|| observed["constant_fps"].as_bool())
-            .unwrap_or(false),
-    );
-    video.rotated = Some(
-        video
-            .rotated
-            .or_else(|| observed["rotated"].as_bool())
-            .unwrap_or(false),
-    );
-    drop(observed);
+    let video = window
+        .session
+        .panel_video(manager.view().0.native_core.video);
     let mut panel = Box::new(Panel {
         window,
         window_owned: false,
@@ -964,7 +921,7 @@ pub unsafe fn toggle(
     update_metrics(hwnd, p);
     raise(window);
     SetFocus(p.controls[0]);
-    if window.native_host_video_pending.load(Ordering::Acquire) {
+    if window.session.video_pending.load(Ordering::Acquire) {
         SendMessageW(hwnd, RESULT, Status::Waiting as usize, 0);
     }
     #[cfg(test)]
@@ -986,15 +943,11 @@ pub fn result(window: &crate::window::Window, ok: bool) {
     post_status(window, if ok { Status::Applied } else { Status::Failed });
 }
 pub fn waiting(window: &crate::window::Window) {
-    window
-        .native_host_video_pending
-        .store(true, Ordering::Release);
+    window.session.video_pending.store(true, Ordering::Release);
     post_status(window, Status::Waiting);
 }
 pub fn finished(window: &crate::window::Window, confirmed: bool) {
-    window
-        .native_host_video_pending
-        .store(false, Ordering::Release);
+    window.session.video_pending.store(false, Ordering::Release);
     post_status(
         window,
         if confirmed {
@@ -1276,7 +1229,8 @@ mod tests {
             }
             {
                 let mut displays = window
-                    .native_displays
+                    .session
+                    .displays
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
                 displays.outputs = super::super::host_displays::parse(br#"[{"id":"primary-fixture","name":"Display 1"},{"id":"virtual-fixture","name":"Virtual display"}]"#).unwrap();
@@ -1298,10 +1252,11 @@ mod tests {
             window.events.take_batch(&mut prior);
             assert!(!prior.iter().any(|e| matches!(
                 e,
-                crate::window::Event::NativeSession(Action::SelectDisplay(_))
+                crate::window::Event::NativeSession(Command::SelectDisplay(_))
             )));
             window
-                .native_displays
+                .session
+                .displays
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .hid_mouse = false;
@@ -1316,7 +1271,7 @@ mod tests {
             );
             prior.clear();
             window.events.take_batch(&mut prior);
-            assert!(prior.iter().any(|e| matches!(e,crate::window::Event::NativeSession(Action::SelectDisplay(id)) if id == "virtual-fixture")));
+            assert!(prior.iter().any(|e| matches!(e,crate::window::Event::NativeSession(Command::SelectDisplay(id)) if id == "virtual-fixture")));
             SendMessageW(GetDlgItem(panel, 20), CB_SETCURSEL, 2, 0);
             SendMessageW(
                 GetDlgItem(panel, 21),
@@ -1332,7 +1287,7 @@ mod tests {
         let mut events = std::collections::VecDeque::new();
         events.clear();
         window.events.take_batch(&mut events);
-        assert!(events.iter().any(|e|matches!(e,crate::window::Event::NativeSession(Action::Apply(v)) if v.resolution==Resolution::Host && v.immersive==0)));
+        assert!(events.iter().any(|e|matches!(e,crate::window::Event::NativeSession(Command::Apply(v)) if v.resolution==Resolution::Host && v.immersive==0)));
         for (selected, mode) in [(0, 0), (1, 3), (2, 2), (3, 1)] {
             unsafe {
                 for (id, index) in [(20, 2), (21, 2), (22, 1), (23, 1), (24, 1), (25, selected)] {
@@ -1344,7 +1299,7 @@ mod tests {
             }
             events.clear();
             window.events.take_batch(&mut events);
-            assert!(events.iter().any(|event|matches!(event,crate::window::Event::NativeSession(Action::Apply(v)) if v.resolution==Resolution::Fixed(1280,720) && v.bandwidth_mbps==Some(15) && v.fps==Some(60) && v.constant_fps==Some(true) && v.rotated==Some(true) && v.immersive==mode && v.fullscreen)));
+            assert!(events.iter().any(|event|matches!(event,crate::window::Event::NativeSession(Command::Apply(v)) if v.resolution==Resolution::Fixed(1280,720) && v.bandwidth_mbps==Some(15) && v.fps==Some(60) && v.constant_fps==Some(true) && v.rotated==Some(true) && v.immersive==mode && v.fullscreen)));
         }
         unsafe {
             SendMessageW(panel, WM_COMMAND, SECURE_ATTENTION, 0);
@@ -1353,7 +1308,7 @@ mod tests {
         window.events.take_batch(&mut events);
         assert!(events.iter().any(|e| matches!(
             e,
-            crate::window::Event::NativeSession(Action::SecureAttention)
+            crate::window::Event::NativeSession(Command::SecureAttention)
         )));
         unsafe {
             SendMessageW(panel, WM_COMMAND, DISCONNECT, 0);
@@ -1362,7 +1317,7 @@ mod tests {
         window.events.take_batch(&mut events);
         assert!(events.iter().any(|event| matches!(
             event,
-            crate::window::Event::NativeSession(Action::Disconnect)
+            crate::window::Event::NativeSession(Command::Disconnect)
         )));
         unsafe {
             SendMessageW(panel, WM_COMMAND, HIDE_BUTTON, 0);
@@ -1373,7 +1328,7 @@ mod tests {
         window.events.take_batch(&mut events);
         assert!(events
             .iter()
-            .any(|e| matches!(e, crate::window::Event::NativeSession(Action::HideButton))));
+            .any(|e| matches!(e, crate::window::Event::NativeSession(Command::HideButton))));
         manager
             .update_native(|p| p.hide_session_button = true)
             .unwrap();

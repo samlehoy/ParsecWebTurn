@@ -8,6 +8,7 @@ mod input;
 mod pointer;
 pub(crate) mod profile;
 mod session_badge;
+pub(crate) mod session_model;
 pub(crate) mod session_ui;
 mod session_video;
 mod signaling;
@@ -315,8 +316,8 @@ fn stream(
             }
             if let Event::NativeSession(action) = &event {
                 match action {
-                    session_ui::Action::Disconnect => window.request_stop(),
-                    session_ui::Action::HideButton => {
+                    session_model::Command::Disconnect => window.request_stop(),
+                    session_model::Command::HideButton => {
                         if manager
                             .update_native(|p| p.hide_session_button = true)
                             .is_err()
@@ -329,7 +330,7 @@ fn stream(
                         }
                         window.native_refresh_overlay();
                     }
-                    session_ui::Action::SecureAttention => {
+                    session_model::Command::SecureAttention => {
                         // Same application request as the stock menu. The host
                         // authorizes it and needs its installed service for SAS.
                         let result = (|| -> Result<()> {
@@ -344,7 +345,7 @@ fn stream(
                         );
                         session_ui::attention_result(window, result.is_ok());
                     }
-                    session_ui::Action::SelectDisplay(id) => {
+                    session_model::Command::SelectDisplay(id) => {
                         let result = if established {
                             host_settings.select_output(&attempt, window, id)
                         } else {
@@ -377,12 +378,12 @@ fn stream(
                         host_settings.result(window, result.is_ok());
                         session_ui::displays_changed(window);
                     }
-                    session_ui::Action::RefreshDisplays => {
+                    session_model::Command::RefreshDisplays => {
                         if established && host_settings.refresh_outputs(&attempt, window).is_err() {
                             session_ui::result(window, false);
                         }
                     }
-                    session_ui::Action::Apply(next) => {
+                    session_model::Command::Apply(next) => {
                         let result = (|| -> Result<()> {
                             ensure!(established, "Transport is not connected yet");
                             let size = host_settings.apply(&attempt, window, next)?;

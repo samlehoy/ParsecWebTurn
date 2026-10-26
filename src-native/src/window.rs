@@ -14,7 +14,7 @@ use windows_sys::Win32::{
 
 #[derive(Clone, Debug)]
 pub enum Event {
-    NativeSession(crate::native_core::session_ui::Action),
+    NativeSession(crate::native_core::session_model::Command),
     Size(i32, i32),
     Focus(bool),
     Clipboard,
@@ -37,10 +37,7 @@ pub struct Window {
 
     pub(crate) native_session_button: AtomicUsize,
 
-    pub(crate) native_host_video: Mutex<serde_json::Value>,
-    pub(crate) native_displays: Mutex<crate::native_core::host_displays::Displays>,
-
-    pub(crate) native_host_video_pending: AtomicBool,
+    pub(crate) session: crate::native_core::session_model::State,
     pub(crate) native_hid_primary_ready: AtomicBool,
     pub stats: Arc<crate::stats::Shared>,
     stats_page: AtomicUsize,
@@ -129,10 +126,7 @@ impl Window {
 
             native_session_button: AtomicUsize::new(0),
 
-            native_host_video: Mutex::new(serde_json::Value::Null),
-            native_displays: Mutex::new(Default::default()),
-
-            native_host_video_pending: AtomicBool::new(false),
+            session: Default::default(),
             native_hid_primary_ready: AtomicBool::new(false),
             stats_page: AtomicUsize::new(0),
 
@@ -221,7 +215,7 @@ impl Window {
                                         if native_shortcuts.insert(msg.wParam) {
                                             match action {
                                                 crate::native_core::session_ui::Shortcut::Menu => ui.native_toggle_overlay(),
-                                                crate::native_core::session_ui::Shortcut::SecureAttention => ui.events.push(Event::NativeSession(crate::native_core::session_ui::Action::SecureAttention)),
+                                                crate::native_core::session_ui::Shortcut::SecureAttention => ui.events.push(Event::NativeSession(crate::native_core::session_model::Command::SecureAttention)),
                                             }
                                         }
                                         continue;
