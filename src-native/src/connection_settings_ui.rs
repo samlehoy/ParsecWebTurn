@@ -992,22 +992,16 @@ unsafe fn binary_choice(hwnd: HWND, page: &mut Page, id: usize, y: i32) {
 fn mode_combo(id: usize) -> bool {
     matches!(id, VIDEO_FORMAT | INPUT_MODE) || binary_choice_kind(id).is_some()
 }
-unsafe fn combo_item_text(control: HWND, index: u32) -> String {
-    let length = SendMessageW(control, CB_GETLBTEXTLEN, index as usize, 0);
-    if !(0..=1024).contains(&length) {
-        return String::new();
+fn mode_label(id: usize, index: u32) -> &'static str {
+    let index = index as usize;
+    if id == VIDEO_FORMAT {
+        VideoFormat::LABELS.get(index).copied()
+    } else if id == INPUT_MODE {
+        InputMode::LABELS.get(index).copied()
+    } else {
+        binary_choice_kind(id).and_then(|kind| kind.labels().get(index).copied())
     }
-    let mut text = vec![0u16; length as usize + 1];
-    let read = SendMessageW(
-        control,
-        CB_GETLBTEXT,
-        index as usize,
-        text.as_mut_ptr() as isize,
-    );
-    if read < 0 {
-        return String::new();
-    }
-    String::from_utf16_lossy(&text[..read as usize])
+    .unwrap_or_default()
 }
 fn binary_combo(id: usize) -> bool {
     #[cfg(feature = "bud")]
@@ -1270,7 +1264,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                             .cloned()
                             .unwrap_or_default()
                     } else if mode_combo(draw.CtlID as usize) {
-                        combo_item_text(draw.hwndItem, draw.itemID)
+                        mode_label(draw.CtlID as usize, draw.itemID).into()
                     } else if draw.CtlID == NETWORK_TAB as u32 {
                         "Network".into()
                     } else if draw.CtlID == VIDEO_TAB as u32 {
