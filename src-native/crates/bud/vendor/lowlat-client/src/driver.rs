@@ -918,9 +918,11 @@ impl Driver {
                 }
             }
             op::ENCODE_LATENCY => {
-                // Zero carries no usable timing. Keep this connection's last
-                // real report instead of making the statistics flicker.
-                if message.a1 != 0
+                // Only kind 1 reports video encode time. Audio (kind 2) also
+                // names stream 0 and must not overwrite the video's figure.
+                // Zero carries no usable timing; retain this connection's
+                // last real video report instead of making it flicker.
+                if message.a0 == 1 && message.a1 != 0
                     && let Some(slot) = self.encode_latency_us.get_mut(message.a2 as usize)
                 {
                     *slot = message.a1;
@@ -1321,7 +1323,7 @@ mod tests {
         }
     }
     #[test]
-    fn missing_encode_report_retains_last_value_only_for_current_connection() {
+    fn only_video_encode_reports_update_the_current_connections_timing() {
         let make = || {
             let (emit, _) = events::queue();
             Driver::new(
@@ -1334,11 +1336,22 @@ mod tests {
         };
         let mut driver = make();
         assert_eq!(driver.encode_latency_us(0), 0);
-        for (reported, expected) in [(3400, 3400), (0, 3400), (4200, 4200), (0, 4200)] {
+        for (kind, reported, stream, expected) in [
+            (2, 9000, 0, 0),
+            (0, 8000, 0, 0),
+            (1, 3400, 0, 3400),
+            (2, 19000, 0, 3400),
+            (1, 0, 0, 3400),
+            (1, 4200, 0, 4200),
+            (99, 7000, 0, 4200),
+            (1, 9000, u32::MAX, 4200),
+            (2, 0, 0, 4200),
+            (1, 0, 0, 4200),
+        ] {
             let _ = driver.on_control(&Control {
-                a0: 1,
+                a0: kind,
                 a1: reported,
-                a2: 0,
+                a2: stream,
                 opcode: op::ENCODE_LATENCY,
                 body: &[],
             });

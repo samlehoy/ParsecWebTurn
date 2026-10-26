@@ -2,6 +2,11 @@
 
 ## Unreleased — native client development
 
+- Refresh Tokio to 1.53.3, rustls-webpki to 0.103.16 and webpki-roots to
+  1.0.10 in application/BUD lockfiles for published dependency fixes.
+- Keep BUD video encode timing separate from audio timing reports, preserving
+  the last valid nonzero video value within each connection.
+
 - Independent native Rust account sign-in, optional two-factor authentication,
   DPAPI-protected remembered sessions and a background-refreshing computer picker.
 - Explicit WebRTC/BUD transport selection; direct and custom TURN UDP/TLS/TCP

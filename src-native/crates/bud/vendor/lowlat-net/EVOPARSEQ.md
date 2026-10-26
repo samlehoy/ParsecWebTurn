@@ -56,3 +56,8 @@ ordered delivery and byte/datagram accounting without an added sender wake.
 Carrier acceptance is not proof of peer receipt. No new dependency is added.
 
 This notice documents the application-owned changes used by EvoParseq.
+
+The 2026-10-26 dependency refresh raises the webpki-roots minimum to 1.0.10
+(RUSTSEC-2026-0381). Application and BUD lockfiles also select rustls-webpki
+0.103.16 (RUSTSEC-2026-0382) and Tokio 1.53.3 (RUSTSEC-2026-0386).
+Rustls remains 0.23.46 with the same providers and certificate policy.

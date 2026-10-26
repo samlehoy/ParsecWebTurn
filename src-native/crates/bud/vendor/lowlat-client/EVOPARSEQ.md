@@ -96,3 +96,9 @@ The 2026-10-25 native-core integration adds an explicit combined HEVC 4:4:4
 10-bit capability. Initialization and later encoder requests retain both flags
 only when the application verifies the combined GPU path and its fallback
 rows. No decoder, exporter or vendor SDK is added to this transport subset.
+
+On 2026-10-26, video encode telemetry adopts the kind filter from upstream
+`0512edbc662fb75d1f816b0b9799eb2f1df88424`: opcode 21 kind 1 updates video timing; audio kind 2 and unknown
+kinds do not. The existing last-nonzero-video value and per-session reset
+behavior are retained. This is telemetry-only; no packet timing, decoding,
+frame copies or GPU work changes.
