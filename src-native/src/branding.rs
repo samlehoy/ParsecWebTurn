@@ -1,5 +1,5 @@
 //! One embedded application icon; no runtime assets or per-frame icon decoding.
-use windows_sys::Win32::{Foundation::*, System::LibraryLoader::*, UI::WindowsAndMessaging::*};
+use windows_sys::Win32::{System::LibraryLoader::*, UI::WindowsAndMessaging::*};
 
 pub const BLUE: u32 = 0x00ed802f; // #2f80ed as Win32 COLORREF
 

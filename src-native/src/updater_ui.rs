@@ -10,7 +10,7 @@ use std::{
 use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
-    System::LibraryLoader::*,
+    System::{LibraryLoader::*, SystemServices::SS_ICON},
     UI::{
         Controls::{DRAWITEMSTRUCT, ODS_DISABLED, ODS_FOCUS},
         Input::KeyboardAndMouse::*,
