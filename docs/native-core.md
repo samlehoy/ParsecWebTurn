@@ -340,3 +340,31 @@ D3D11 output, RGB10 SDR and zero local dropped frames in the supplied snapshot.
 AMF-versus-MF performance remains unmeasured and AMF Main10 remains opt-in.
 For the separate TCP QoS feasibility result and measurement limits, see
 [Windows TCP/TLS QoS](windows-tcp-qos.md).
+
+### Client-sized remote cursors
+
+Remote cursor PNGs retain their host shape, but their canvas fits the client's
+current Windows arrow cursor bitmap size, preserving aspect ratio and scaling
+and clamping the hotspot with it. `GetIconInfo`/`GetObjectW` query the actual
+system cursor bitmap rather than assuming 32 pixels or changing process DPI
+awareness. The existing bounded cursor image path performs resizing only when
+a new shape arrives or Windows cursor/display/DPI settings change. The current
+source cursor is retained for those notifications; unchanged target geometry
+reuses its HCURSOR. No video-frame, decoder, GPU, timer, input coordinates,
+relative-mode or HID-control changes are involved.
+
+An unsuccessful native cursor creation keeps the last usable cursor. Explicit
+image resets still restore the normal system arrow. Relative/camera capture
+remains authoritative for hiding the local cursor; a resize never reveals a
+cursor hidden by that mode. Existing native cursor-retirement ownership remains.
+
+With event logging enabled, `cursor_image_applied` contains source, client
+reference, output dimensions and hotspot; `cursor_mode_changed` records only
+relative/hidden/suppressed transitions. No continuous positions, PNG pixels,
+keys or video are recorded. These distinguish a local image size issue from a
+host mode transition. A cursor already composited into host video cannot be
+resized independently by this client-side cursor path; that case still needs
+live confirmation and must not be hidden with an invented camera-mode rule.
+
+Documented APIs: [GetIconInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-geticoninfo),
+[CreateIconIndirect](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-createiconindirect).

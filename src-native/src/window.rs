@@ -1209,6 +1209,13 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 }
                 return 0;
             }
+            WM_SETTINGCHANGE | WM_DISPLAYCHANGE | WM_DPICHANGED => {
+                // Reuse the existing UI thread; no process DPI-awareness change.
+                s.cursor
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .refresh_size();
+            }
             WM_SETCURSOR if lp as u16 as u32 == HTCLIENT => {
                 s.select_client_cursor();
                 return 1;

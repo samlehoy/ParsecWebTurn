@@ -5,6 +5,7 @@ use evoparseq_bud::bud::{cursor_message, CursorCache, CursorFlags, CursorShape};
 pub struct Pointer {
     cache: CursorCache,
     delivered: Option<u32>,
+    logged_mode: Option<(bool, bool, bool)>,
 }
 impl Pointer {
     pub fn receive(&mut self, bytes: &[u8], window: &crate::window::Window) -> Result<()> {
@@ -15,6 +16,23 @@ impl Pointer {
         if pointer.flags.contains(CursorFlags::FORGET) {
             self.cache.clear();
             self.delivered = None;
+        }
+        if crate::event_log::enabled() {
+            let mode = (
+                pointer.update.relative,
+                pointer.update.hidden,
+                pointer.update.suppressed,
+            );
+            if self.logged_mode != Some(mode) {
+                self.logged_mode = Some(mode);
+                crate::event_log::record(
+                    "INFO",
+                    "cursor_mode_changed",
+                    serde_json::json!({
+                        "relative":mode.0,"hidden":mode.1,"suppressed":mode.2
+                    }),
+                );
+            }
         }
         window.set_host_cursor(
             i32::from(pointer.update.x),
@@ -53,7 +71,14 @@ impl Pointer {
                         window.set_cursor(crate::cursor::Request::Image(Some(image)));
                         self.delivered = Some(checksum);
                     }
-                    Err(_) => window.set_cursor(crate::cursor::Request::Image(None)),
+                    Err(_) => {
+                        crate::event_log::record(
+                            "WARN",
+                            "cursor_image_decode_failed",
+                            serde_json::json!({}),
+                        );
+                        window.set_cursor(crate::cursor::Request::Image(None));
+                    }
                 }
             }
         }

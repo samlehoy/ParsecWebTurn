@@ -2,6 +2,11 @@
 
 ## Unreleased — native client development
 
+- Size native remote cursor images to the client's Windows arrow cursor canvas,
+  preserving shape aspect ratio and scaling/clamping the hotspot together.
+  Reuse the cursor until its shape or Windows size changes; retain hidden-camera
+  behavior and add opt-in shape/mode metadata without movement/pixel logging.
+
 - Group Settings into routing, video-format and HID input choices; use dropdowns for
   presentation/chroma/AMF Main10 and audio buffer/codec/speaker modes. Preserve
   existing settings.json flags, defaults and media/input behavior.
