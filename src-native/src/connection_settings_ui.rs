@@ -50,7 +50,7 @@ const BUD: usize = 4119;
 const BUD_EXTRA: i32 = if cfg!(feature = "bud") { 94 } else { 0 };
 #[cfg(feature = "vendor-video")]
 const ZERO_COPY: usize = 4120;
-const BG: u32 = 0x00282828;
+const BG: u32 = crate::branding::BACKGROUND;
 const FIELD: u32 = 0x00212121;
 const FG: u32 = 0x00eeeeee;
 const MUTED: u32 = 0x00bcbcbc;

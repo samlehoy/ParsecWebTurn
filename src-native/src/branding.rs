@@ -1,6 +1,7 @@
-//! One embedded application icon; no runtime assets or per-frame icon decoding.
+//! Shared application colors and embedded icons; no runtime assets or per-frame decoding.
 use windows_sys::Win32::{System::LibraryLoader::*, UI::WindowsAndMessaging::*};
 
+pub const BACKGROUND: u32 = 0x00231d19; // #191d23 as Win32 COLORREF
 pub const BLUE: u32 = 0x00ed802f; // #2f80ed as Win32 COLORREF
 
 pub unsafe fn icon() -> HICON {

@@ -11,7 +11,7 @@ use windows_sys::Win32::{
     UI::{Controls::SetScrollInfo, WindowsAndMessaging::*},
 };
 pub const OPEN: usize = 4301;
-const BG: u32 = 0x282828;
+const BG: u32 = crate::branding::BACKGROUND;
 const FG: u32 = 0xeeeeee;
 const MUTED: u32 = 0xbcbcbc;
 const CYAN: u32 = 0xffbb00;

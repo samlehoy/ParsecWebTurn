@@ -4,7 +4,7 @@ use windows_sys::Win32::{
     Foundation::*, Graphics::Gdi::*, System::LibraryLoader::*, UI::WindowsAndMessaging::*,
 };
 
-pub(super) const BG: u32 = 0x00231d19;
+pub(super) const BG: u32 = crate::branding::BACKGROUND;
 pub(super) const FIELD: u32 = 0x003a322c;
 pub(super) const FG: u32 = 0x00f5f3f0;
 
