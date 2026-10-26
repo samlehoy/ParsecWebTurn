@@ -317,7 +317,6 @@ impl Completion {
 // fixed 65,535-byte callback buffer. All three channels use the same API.
 async fn read_channel(
     shared: Arc<Mutex<Completion>>,
-    wake: Arc<Condvar>,
     id: u16,
     channel: Arc<webrtc::data::data_channel::DataChannel>,
 ) {
@@ -373,7 +372,6 @@ async fn read_channel(
                 }
             }
         }
-        wake.notify_all();
         if !keep_reading {
             break;
         }
@@ -416,7 +414,6 @@ pub struct Attempt {
     id: String,
     completion: Arc<Mutex<Completion>>,
     finished: Arc<(Mutex<bool>, Condvar)>,
-    wake: Arc<Condvar>,
 }
 
 impl Attempt {
@@ -479,8 +476,6 @@ impl Attempt {
         let finished = Arc::new((Mutex::new(false), Condvar::new()));
         let shared = completion.clone();
         let done = finished.clone();
-        let wake = Arc::new(Condvar::new());
-        let notify = wake.clone();
         let attempt_id = id.to_owned();
         std::thread::Builder::new()
             .name("evoparseq-offer".into())
@@ -488,7 +483,6 @@ impl Attempt {
                 let _permit = permit;
                 let result = worker(
                     &shared,
-                    &notify,
                     &attempt_id,
                     rx,
                     config,
@@ -521,7 +515,6 @@ impl Attempt {
                 }
                 *done.0.lock().unwrap_or_else(|e| e.into_inner()) = true;
                 done.1.notify_all();
-                notify.notify_all();
             })
             .context("starting native offer worker")?;
         Ok(Self {
@@ -529,7 +522,6 @@ impl Attempt {
             id: id.into(),
             completion,
             finished,
-            wake,
         })
     }
 
@@ -567,7 +559,6 @@ impl Attempt {
             audio.stop();
         }
         self.commands.take();
-        self.wake.notify_all();
     }
 
     pub fn failure_stage(&self) -> Option<FailureStage> {
@@ -749,7 +740,6 @@ struct NetworkOptions {
 
 fn worker(
     shared: &Arc<Mutex<Completion>>,
-    wake: &Arc<Condvar>,
     id: &str,
     commands: mpsc::Receiver<Command>,
     mut config: Option<crate::control::Config>,
@@ -913,16 +903,14 @@ fn worker(
             }
         });
     }
-    let callback_wake = wake.clone();
     let attempt_id = id.to_owned();
     peer.on_ice_candidate(Box::new(move |candidate| {
-        let shared=callback_state.clone(); let wake=callback_wake.clone(); let id=attempt_id.clone();
+        let shared=callback_state.clone(); let id=attempt_id.clone();
         Box::pin(async move {
             let Some(candidate)=candidate else {
                 let mut state=shared.lock().unwrap_or_else(|e|e.into_inner());
                 state.progress.local_gathering_complete=true;
                 if relay_only { state.relay_readiness_sync(&id); }
-                wake.notify_all();
                 return;
             };
             if candidate.protocol != RTCIceProtocol::Udp || candidate.component != 1 { return; }
@@ -935,16 +923,13 @@ fn worker(
                 state.events.push_back(serde_json::json!({"type":8,"attemptID":id,"ip":candidate.address,"port":candidate.port,"lan":candidate.typ==RTCIceCandidateType::Host,"fromStun":candidate.typ==RTCIceCandidateType::Srflx,"sync":false}));
                 if relay_only && candidate.typ==RTCIceCandidateType::Relay { state.relay_readiness_sync(&id); }
             }
-            wake.notify_all();
         })
     }));
     let callback_state = shared.clone();
-    let callback_wake = wake.clone();
     // A weak reference avoids a peer -> callback -> peer ownership cycle.
     let callback_peer = Arc::downgrade(&peer);
     peer.on_peer_connection_state_change(Box::new(move |connection_state| {
         let shared = callback_state.clone();
-        let wake = callback_wake.clone();
         let peer = callback_peer.upgrade();
         Box::pin(async move {
             let failure = if connection_state == RTCPeerConnectionState::Failed {
@@ -973,7 +958,6 @@ fn worker(
                     state.progress.failed = true;
                 }
             }
-            wake.notify_all();
         })
     }));
     let prepared = runtime.block_on(async {
@@ -992,13 +976,11 @@ fn worker(
                     )
                     .await?;
                 let callback_state = shared.clone();
-                let callback_wake = wake.clone();
                 let startup_config = if id == 0 { config.clone() } else { None };
                 let weak_channel = Arc::downgrade(&channel);
                 let attempt_id = control_attempt_id.clone();
                 channel.on_open(Box::new(move || {
                     let shared = callback_state.clone();
-                    let wake = callback_wake.clone();
                     Box::pin(async move {
                         if shared.lock().unwrap_or_else(|e| e.into_inner()).cancelled { return; }
                         let Some(channel) = weak_channel.upgrade() else { return; };
@@ -1006,11 +988,10 @@ fn worker(
                             Ok(detached) => detached,
                             Err(_) => {
                                 shared.lock().unwrap_or_else(|e| e.into_inner()).fail_channel(FailureStage::DataChannelDetach, id);
-                                wake.notify_all();
                                 return;
                             }
                         };
-                        tokio::spawn(read_channel(shared.clone(), wake.clone(), id, detached));
+                        tokio::spawn(read_channel(shared.clone(), id, detached));
                         if let Some(config) = startup_config {
                             let sent = async {
                                 tokio::time::timeout(Duration::from_secs(5), channel.send(&config.startup()?)).await??;
@@ -1031,7 +1012,6 @@ fn worker(
                         if !state.cancelled && !state.closing && !state.progress.failed {
                             state.progress.open_mask |= 1 << id;
                         }
-                        wake.notify_all();
                     })
                 }));
                 channels.push(channel);
@@ -1160,7 +1140,6 @@ fn worker(
                                     .lock()
                                     .unwrap_or_else(|e| e.into_inner())
                                     .relay_readiness_sync(id);
-                                wake.notify_all();
                             }
                         }
                         Command::Candidate(candidate) => gate
@@ -1184,7 +1163,6 @@ fn worker(
                             {
                                 sync_ack_scheduled = true;
                                 let shared = shared.clone();
-                                let wake = wake.clone();
                                 let id = id.to_owned();
                                 tokio::spawn(async move {
                                     // ka() in the pinned JS returns this marker after 500 ms.
@@ -1194,7 +1172,6 @@ fn worker(
                                     if !state.cancelled && !state.closing {
                                         let marker = state.progress.local_sync.acknowledge(&id);
                                         state.queue_local_sync(marker);
-                                        wake.notify_all();
                                     }
                                 });
                             }

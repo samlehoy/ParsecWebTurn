@@ -76,6 +76,8 @@ administrator rights. The configured static CRT and bundled Opus remain in place
   remain in the existing Window backend. The isolated immersive test covers
   immediate relative-motion reversal on both axes and ignores absolute reports.
 - `attempt.rs`: native ICE/DTLS/SCTP and data channels for WebRTC.
+  The worker-completion condition variable is retained; obsolete test receive
+  wrappers and their unobserved receipt notifications have been removed.
 - `crates/bud`: isolated BUD carrier, protocol and compressed-media handoff.
   Both transports use the same native video/audio workers and input handling.
 - `crates/video`: GPU decoder backends and original-surface presentation.
