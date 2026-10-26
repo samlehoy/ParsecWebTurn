@@ -49,6 +49,20 @@ administrator rights. The configured static CRT and bundled Opus remain in place
   two-factor authentication and protected-session storage remain unchanged.
 - `native_core/signaling.rs` and `transport.rs`: authenticated session signaling
   and explicit BUD/WebRTC selection. Failure never silently changes transport.
+- `native_core/session.rs`: session coordination uses desktop/runtime interfaces
+  for fullscreen, input capture requests, cancellation, wake locks, clipboard,
+  events and existing backend operations. Common event payloads live in
+  `session_model.rs`; `window::Event` re-exports the same type, without conversion
+  or a second queue. Local shortcut releases, clipboard deduplication and
+  permission gating share controller tests without requiring a window.
+- `native_core/session_platform.rs`: Windows adapter delegates to the existing
+  Window, input/cursor handling, clipboard service, transport and WASAPI output.
+  Its lifetime preserves end-session / stop / close teardown on success and
+  error. The coordinator uses static dispatch; the existing event FIFO, worker
+  wakeups, control/audio batch limits and 100 ms control-loop wait are unchanged.
+  This separates desktop effects, not the Windows media backends themselves;
+  decoding, GPU presentation, focus-release and relative-camera handling retain
+  their existing implementation and no additional frame copy or worker is added.
 - `attempt.rs`: native ICE/DTLS/SCTP and data channels for WebRTC.
 - `crates/bud`: isolated BUD carrier, protocol and compressed-media handoff.
   Both transports use the same native video/audio workers and input handling.
