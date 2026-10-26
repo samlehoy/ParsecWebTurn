@@ -164,7 +164,8 @@ impl Input {
             && !primary_allows(
                 event,
                 window
-                    .native_hid_primary_ready
+                    .session
+                    .hid_primary_ready
                     .load(std::sync::atomic::Ordering::Acquire),
             )
         {

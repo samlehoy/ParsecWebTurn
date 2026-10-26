@@ -38,7 +38,6 @@ pub struct Window {
     pub(crate) native_session_button: AtomicUsize,
 
     pub(crate) session: crate::native_core::session_model::State,
-    pub(crate) native_hid_primary_ready: AtomicBool,
     pub stats: Arc<crate::stats::Shared>,
     stats_page: AtomicUsize,
 
@@ -127,7 +126,6 @@ impl Window {
             native_session_button: AtomicUsize::new(0),
 
             session: Default::default(),
-            native_hid_primary_ready: AtomicBool::new(false),
             stats_page: AtomicUsize::new(0),
 
             connection_settings: Default::default(),
@@ -1775,6 +1773,24 @@ mod tests {
                         (origin.y + client.bottom).min(sy + GetSystemMetrics(SM_CYVIRTUALSCREEN))
                     )
                 );
+                // Windows confines the hotspot, not the cursor's bitmap. Keep
+                // edge pixels reachable and verify actual positions cannot escape.
+                for (x, y) in [
+                    (
+                        actual.right.saturating_add(32),
+                        actual.bottom.saturating_add(32),
+                    ),
+                    (
+                        actual.left.saturating_sub(32),
+                        actual.top.saturating_sub(32),
+                    ),
+                ] {
+                    assert_ne!(SetCursorPos(x, y), 0);
+                    let mut position = POINT::default();
+                    assert_ne!(GetCursorPos(&mut position), 0);
+                    assert!((actual.left..actual.right).contains(&position.x));
+                    assert!((actual.top..actual.bottom).contains(&position.y));
+                }
             }
             window.set_input_state(mode(false, true));
             wait(|| !clipped() && keyboard());

@@ -48,6 +48,11 @@ administrator rights. The configured static CRT and bundled Opus remain in place
   window events and notifications still deliver commands and view updates;
   there is no additional queue, thread, frame processing or dependency. This
   is an initial UI separation, not a complete cross-platform application port.
+- `native_core/session_video.rs`: host-settings control depends on the small
+  `session_model::View` interface (state, client display size and typed status/
+  display notifications), rather than the Win32 Window or Session panel. The
+  Win32 adapter alone translates these notifications to its existing messages.
+  Transport and input/media services retain their existing platform adapters.
 - Settings, cursor, clipboard, diagnostics and optional event logging are native.
   Logging excludes continuous mouse/key activity and authentication secrets.
 
@@ -64,6 +69,12 @@ UI, decoder, route and audio state are generation-scoped. Reconnect/cancellation
 retires the previous attempt; original-surface presentation retains decoder
 allocations until Windows releases them. Queue pressure may skip display updates
 but must not discard reference dependencies or create unbounded latency.
+
+Immersive mouse confinement follows the Windows cursor hotspot (the click
+position); the cursor image can extend beyond the right/bottom edge. No cursor-
+size inset is applied, so remote edge pixels remain reachable. Relative camera
+input retains its existing Raw Input and one-pixel-anchor behavior. CI runs the
+native capture lifecycle separately to prevent other UI tests stealing focus.
 
 ## Validation scope
 

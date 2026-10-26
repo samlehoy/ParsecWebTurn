@@ -2,7 +2,10 @@
 //! Native views own their controls and notifications; media workers stay separate.
 use super::{host_displays::Displays, profile::Video};
 use serde_json::Value;
-use std::sync::{atomic::AtomicBool, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
 
 #[derive(Clone, Debug)]
 pub enum Command {
@@ -12,6 +15,52 @@ pub enum Command {
     Disconnect,
     HideButton,
     SecureAttention,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    Applied,
+    Failed,
+    Confirmed,
+    Waiting,
+    Unconfirmed,
+    AttentionSent,
+    AttentionFailed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Notification {
+    Status(Status),
+    DisplaysChanged,
+    DisplaySelected,
+}
+
+/// Only the services needed by the host-settings controller. A view translates
+/// notifications to its own event mechanism; it never drives the video worker.
+pub trait View {
+    fn session(&self) -> &State;
+    fn display_size(&self) -> (u32, u32);
+    fn notify(&self, notification: Notification);
+
+    fn waiting(&self) {
+        self.session().video_pending.store(true, Ordering::Release);
+        self.notify(Notification::Status(Status::Waiting));
+    }
+    fn finished(&self, confirmed: bool) {
+        self.session().video_pending.store(false, Ordering::Release);
+        self.notify(Notification::Status(if confirmed {
+            Status::Confirmed
+        } else {
+            Status::Unconfirmed
+        }));
+    }
+    fn result(&self, ok: bool) {
+        self.notify(Notification::Status(if ok {
+            Status::Applied
+        } else {
+            Status::Failed
+        }));
+    }
 }
 
 /// Host preferences, not the actual decoded stream or capture confirmation.
@@ -53,6 +102,7 @@ pub struct State {
     pub host_video: Mutex<HostVideo>,
     pub displays: Mutex<Displays>,
     pub video_pending: AtomicBool,
+    pub hid_primary_ready: AtomicBool,
 }
 impl State {
     pub fn panel_video(&self, saved: Video) -> Video {

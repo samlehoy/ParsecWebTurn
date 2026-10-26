@@ -16,6 +16,7 @@ mod transport;
 pub(crate) mod ui;
 
 use anyhow::{ensure, Context, Result};
+use session_model::{Notification, Status, View};
 use std::{
     collections::VecDeque,
     sync::{atomic::Ordering, Arc},
@@ -136,7 +137,8 @@ fn stream(
         mode: video.mode(),
         ..Default::default()
     });
-    let mut host_settings = session_video::HostSettings::new(&video, window);
+    let view = window.as_ref();
+    let mut host_settings = session_video::HostSettings::new(&video, view);
     let mut detached = false;
     let mut last_clipboard = String::new();
     while !window.closing.load(Ordering::Acquire) && !window.stop.stopped() {
@@ -167,7 +169,7 @@ fn stream(
                     attempt.name()
                 );
                 if !established {
-                    host_settings.connected(&attempt, window)?;
+                    host_settings.connected(&attempt, view)?;
                 }
                 established = true;
                 window.set_wake_lock(true);
@@ -197,7 +199,7 @@ fn stream(
                 } if event["type"] == 3 && event["id"] == 11 => {
                     let bytes = &frame[range];
                     let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
-                    host_settings.receive(bytes, &attempt, window);
+                    host_settings.receive(bytes, &attempt, view);
                 }
                 crate::control::Message::Buffer {
                     event,
@@ -207,7 +209,7 @@ fn stream(
                     host_settings.receive_outputs(
                         bytes.strip_suffix(&[0]).unwrap_or(bytes),
                         &attempt,
-                        window,
+                        view,
                     );
                 }
                 crate::control::Message::Buffer {
@@ -234,7 +236,7 @@ fn stream(
                 _ => {}
             }
         }
-        host_settings.poll(&attempt, window)?;
+        host_settings.poll(&attempt, view)?;
         if audio_source.is_none() {
             audio_source = attempt.audio_pipeline();
             if let Some(audio) = &audio_source {
@@ -343,11 +345,15 @@ fn stream(
                             "native_secure_attention_requested",
                             serde_json::json!({"sent":result.is_ok()}),
                         );
-                        session_ui::attention_result(window, result.is_ok());
+                        view.notify(Notification::Status(if result.is_ok() {
+                            Status::AttentionSent
+                        } else {
+                            Status::AttentionFailed
+                        }));
                     }
                     session_model::Command::SelectDisplay(id) => {
                         let result = if established {
-                            host_settings.select_output(&attempt, window, id)
+                            host_settings.select_output(&attempt, view, id)
                         } else {
                             Err(anyhow::anyhow!("Transport is not connected"))
                         };
@@ -366,7 +372,7 @@ fn stream(
                                     serde_json::json!({}),
                                 );
                             }
-                            session_ui::display_selected(window);
+                            view.notify(Notification::DisplaySelected);
                         }
                         if result.is_err() {
                             crate::event_log::record(
@@ -375,18 +381,18 @@ fn stream(
                                 serde_json::json!({"hid":attempt.hid_mouse_enabled()}),
                             );
                         }
-                        host_settings.result(window, result.is_ok());
-                        session_ui::displays_changed(window);
+                        host_settings.result(view, result.is_ok());
+                        view.notify(Notification::DisplaysChanged);
                     }
                     session_model::Command::RefreshDisplays => {
-                        if established && host_settings.refresh_outputs(&attempt, window).is_err() {
-                            session_ui::result(window, false);
+                        if established && host_settings.refresh_outputs(&attempt, view).is_err() {
+                            view.result(false);
                         }
                     }
                     session_model::Command::Apply(next) => {
                         let result = (|| -> Result<()> {
                             ensure!(established, "Transport is not connected yet");
-                            let size = host_settings.apply(&attempt, window, next)?;
+                            let size = host_settings.apply(&attempt, view, next)?;
                             manager.update_native(|p| p.video = next.clone())?;
                             video = next.clone();
                             fullscreen = video.fullscreen;
@@ -407,7 +413,7 @@ fn stream(
                                 serde_json::json!({}),
                             );
                         }
-                        host_settings.result(window, result.is_ok());
+                        host_settings.result(view, result.is_ok());
                     }
                 }
                 continue;
@@ -421,7 +427,7 @@ fn stream(
                 && established
                 && video.resolution == profile::Resolution::Client
             {
-                host_settings.resized(&attempt, window, &video)?;
+                host_settings.resized(&attempt, view, &video)?;
             }
             if established {
                 input.send(&attempt, window, &event)?;

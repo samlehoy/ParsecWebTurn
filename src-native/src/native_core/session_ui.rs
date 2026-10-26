@@ -3,7 +3,7 @@
 use super::{
     controls::{self, BG, FG, FIELD},
     profile::{Resolution, Video},
-    session_model::Command,
+    session_model::{Command, Notification, State, Status, View},
     ui::{draw_button, wide},
 };
 use anyhow::{ensure, Result};
@@ -46,19 +46,19 @@ pub fn shortcut(key: usize, modifiers: i32) -> Option<Shortcut> {
         _ => None,
     }
 }
-// Values stay stable across the existing window-message boundary.
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(usize)]
-enum Status {
-    Applied = 0,
-    Failed = 1,
-    Confirmed = 2,
-    Waiting = 3,
-    Unconfirmed = 4,
-    AttentionSent = 5,
-    AttentionFailed = 6,
-}
 impl Status {
+    // Preserve the existing Win32 message values in the platform adapter.
+    fn message(self) -> usize {
+        match self {
+            Self::Applied => 0,
+            Self::Failed => 1,
+            Self::Confirmed => 2,
+            Self::Waiting => 3,
+            Self::Unconfirmed => 4,
+            Self::AttentionSent => 5,
+            Self::AttentionFailed => 6,
+        }
+    }
     fn from_message(value: usize) -> Self {
         match value {
             0 => Self::Applied,
@@ -249,7 +249,7 @@ unsafe fn update_displays(hwnd: HWND, panel: &mut Panel) {
         i32::from(!displays.loading && !busy),
     );
     let hint = if displays.hid_mouse {
-        if window.native_hid_primary_ready.load(Ordering::Acquire) {
+        if window.session.hid_primary_ready.load(Ordering::Acquire) {
             "HID mouse: primary host display only. Switching disabled."
         } else {
             "HID mouse paused until the primary host display is verified."
@@ -261,19 +261,11 @@ unsafe fn update_displays(hwnd: HWND, panel: &mut Panel) {
     SendMessageW(combo, WM_SETREDRAW, 1, 0);
     InvalidateRect(combo, null(), 0);
 }
-pub fn display_selected(window: &crate::window::Window) {
+fn post_displays(window: &crate::window::Window, selected: bool) {
     unsafe {
         let hwnd = panel(window);
         if !hwnd.is_null() {
-            PostMessageW(hwnd, DISPLAYS, 1, 0);
-        }
-    }
-}
-pub fn displays_changed(window: &crate::window::Window) {
-    unsafe {
-        let hwnd = panel(window);
-        if !hwnd.is_null() {
-            PostMessageW(hwnd, DISPLAYS, 0, 0);
+            PostMessageW(hwnd, DISPLAYS, usize::from(selected), 0);
         }
     }
 }
@@ -922,7 +914,7 @@ pub unsafe fn toggle(
     raise(window);
     SetFocus(p.controls[0]);
     if window.session.video_pending.load(Ordering::Acquire) {
-        SendMessageW(hwnd, RESULT, Status::Waiting as usize, 0);
+        SendMessageW(hwnd, RESULT, Status::Waiting.message(), 0);
     }
     #[cfg(test)]
     SetPropW(
@@ -935,40 +927,24 @@ fn post_status(window: &crate::window::Window, status: Status) {
     unsafe {
         let hwnd = panel(window);
         if !hwnd.is_null() {
-            PostMessageW(hwnd, RESULT, status as usize, 0);
+            PostMessageW(hwnd, RESULT, status.message(), 0);
         }
     }
 }
-pub fn result(window: &crate::window::Window, ok: bool) {
-    post_status(window, if ok { Status::Applied } else { Status::Failed });
-}
-pub fn waiting(window: &crate::window::Window) {
-    window.session.video_pending.store(true, Ordering::Release);
-    post_status(window, Status::Waiting);
-}
-pub fn finished(window: &crate::window::Window, confirmed: bool) {
-    window.session.video_pending.store(false, Ordering::Release);
-    post_status(
-        window,
-        if confirmed {
-            Status::Confirmed
-        } else {
-            Status::Unconfirmed
-        },
-    );
-}
-pub fn attention_result(window: &crate::window::Window, ok: bool) {
-    post_status(
-        window,
-        if ok {
-            Status::AttentionSent
-        } else {
-            Status::AttentionFailed
-        },
-    );
-}
-pub fn reported(window: &crate::window::Window) {
-    post_status(window, Status::Confirmed);
+impl View for crate::window::Window {
+    fn session(&self) -> &State {
+        &self.session
+    }
+    fn display_size(&self) -> (u32, u32) {
+        self.native_display_size()
+    }
+    fn notify(&self, notification: Notification) {
+        match notification {
+            Notification::Status(status) => post_status(self, status),
+            Notification::DisplaysChanged => post_displays(self, false),
+            Notification::DisplaySelected => post_displays(self, true),
+        }
+    }
 }
 pub unsafe fn dialog(parent: HWND, msg: &MSG) -> bool {
     let h = panel_for_parent(parent);
@@ -978,6 +954,23 @@ pub unsafe fn dialog(parent: HWND, msg: &MSG) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn typed_statuses_keep_the_existing_window_message_contract() {
+        for (code, status) in [
+            (0, Status::Applied),
+            (1, Status::Failed),
+            (2, Status::Confirmed),
+            (3, Status::Waiting),
+            (4, Status::Unconfirmed),
+            (5, Status::AttentionSent),
+            (6, Status::AttentionFailed),
+        ] {
+            assert_eq!(status.message(), code);
+            assert_eq!(Status::from_message(code), status);
+        }
+        assert_eq!(Status::from_message(usize::MAX), Status::Failed);
+    }
+
     #[test]
     fn overlay_stacking_respects_active_stats_and_other_apps() {
         let owner = 1usize as HWND;
