@@ -144,8 +144,9 @@ live confirmation. Failures record the vendor fallback reason for diagnosis.
 The Session menu queries the stock host's output list (application sub-ID 10,
 reply 12) and current owner configuration (9, reply 11). Selecting a listed
 physical or virtual output fetches both the current output list and fresh settings,
-waits for both replies, revalidates the selected ID, changes `video[0].output`, and releases the previous output's forced size
-(`resolutionX/Y: 0`), and sends the complete preserved configuration (11). The write is sent once;
+waits for both replies, revalidates the selected ID, changes `video[0].output`,
+releases the previous output's forced size (`resolutionX/Y: 0`), and sends the
+complete preserved configuration (11). The write is sent once;
 read-only queries confirm the selected identity for up to five seconds. Other
 video slots and unknown host settings are preserved. Refresh handles output
 hotplug; a missing/invalid list leaves the stream running. Output IDs are neither
@@ -191,16 +192,6 @@ than private output identities to distinguish configuration confirmation from
 successful media decoding.
 
 
-With event logging enabled, BUD encoder rebuilds also produce at most two
-`video_transition_sample` events, approximately one and five seconds after the
-boundary. They sample existing input/decode/Present counters and window readiness
-through the existing telemetry poll; there is no frame readback, rendering call,
-new timer/thread or continuous frame logging. Counter deltas are diagnostic
-progress, not proof of the selected monitor's pixel content, GPU completion or
-scanout; an old in-flight frame can finish at a boundary. No visibility, pacing,
-codec preference or recovery behavior is changed by this probe.
-
-
 Display selection returns the session's resolution preference to **Keep host**,
 so an old fixed/client size is not automatically forced onto a different output.
 The preference is updated in the session menu and saved profile; bandwidth, FPS,
@@ -211,3 +202,12 @@ instead of silently retaining the last fixed request. This releases a client
 constraint; live host behavior determines the resulting Windows display mode.
 The client does not invent a display's original/maximum size from its name or
 restore modes through a new host helper.
+
+Live AirGPU testing identified a host-side limitation on its default 800x600
+virtual output: NVENC rejected the capture device, the host returned to the
+1920x1080 NVIDIA output on early attempts, and later selected H264 Encoder MFT
+for the 800x600 output. A HEVC request could also fall back to H.264 on the host.
+The client configuration reply confirms a requested output, not successful
+capture from it. This VM result is not a general limitation of virtual displays;
+switching between outputs backed by a compatible GPU still needs separate live
+validation.

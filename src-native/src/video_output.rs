@@ -178,14 +178,6 @@ pub struct Frame {
     pub timestamp_100ns: i64,
 }
 
-/// Two optional counter samples per explicit encoder rebuild. Never reads
-/// pixels or drives rendering; inactive outside the bounded transition window.
-struct TransitionProbe {
-    started: Instant,
-    counters: [u64; 6],
-    second_sample: bool,
-}
-
 pub struct Queue {
     pub bud_catch_up: bool,
     pub report: Snapshot,
@@ -199,7 +191,6 @@ pub struct Queue {
     recovery_attempts: u8,
     request_pending: bool,
     last_request: Option<Instant>,
-    transition_probe: Option<TransitionProbe>,
 }
 
 impl Default for Queue {
@@ -220,7 +211,6 @@ impl Default for Queue {
             recovery_attempts: 0,
             request_pending: false,
             last_request: None,
-            transition_probe: None,
         }
     }
 }
@@ -334,48 +324,6 @@ impl Queue {
             self.free_bytes += buffer.capacity();
             self.free_buffers.push(buffer);
         }
-    }
-
-    fn transition_counters(&self) -> [u64; 6] {
-        let s = &self.report;
-        [
-            s.frames_queued,
-            s.frames_submitted,
-            s.frames_decoded,
-            s.frames_presented,
-            s.presentations_busy,
-            s.presentations_not_visible,
-        ]
-    }
-    pub fn watch_transition(&mut self, now: Instant) {
-        self.transition_probe = Some(TransitionProbe {
-            started: now,
-            counters: self.transition_counters(),
-            second_sample: false,
-        });
-    }
-    pub fn transition_sample(
-        &mut self,
-        now: impl FnOnce() -> Instant,
-    ) -> Option<(u64, u64, [u64; 6])> {
-        let probe = self.transition_probe.as_ref()?;
-        let elapsed = now().saturating_duration_since(probe.started);
-        let due = if probe.second_sample { 5 } else { 1 };
-        if elapsed < Duration::from_secs(due) {
-            return None;
-        }
-        let counters = self.transition_counters();
-        let delta = std::array::from_fn(|i| counters[i].saturating_sub(probe.counters[i]));
-        if probe.second_sample {
-            self.transition_probe = None;
-        } else {
-            self.transition_probe.as_mut().unwrap().second_sample = true;
-        }
-        Some((
-            self.stream_generation,
-            elapsed.as_millis().min(u64::MAX as u128) as u64,
-            delta,
-        ))
     }
 
     /// An explicit encoder rebuild starts a new reference chain and may use a
@@ -501,41 +449,6 @@ impl Queue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn transition_diagnostics_are_two_bounded_counter_samples_without_rendering() {
-        let mut q = Queue::default();
-        let now = Instant::now();
-        assert!(q
-            .transition_sample(|| panic!("inactive probe must not read the clock"))
-            .is_none());
-        q.report.frames_decoded = 100;
-        q.watch_transition(now);
-        q.report.frames_decoded = 103;
-        q.report.presentations_busy = 2;
-        assert!(q
-            .transition_sample(|| now + Duration::from_millis(999))
-            .is_none());
-        let (_, age, counts) = q
-            .transition_sample(|| now + Duration::from_secs(1))
-            .unwrap();
-        assert_eq!(age, 1000);
-        assert_eq!(counts, [0, 0, 3, 0, 2, 0]);
-        assert!(q
-            .transition_sample(|| now + Duration::from_secs(2))
-            .is_none());
-        q.report.frames_presented = 4;
-        assert_eq!(
-            q.transition_sample(|| now + Duration::from_secs(5))
-                .unwrap()
-                .2,
-            [0, 0, 3, 4, 2, 0]
-        );
-        assert!(q
-            .transition_sample(|| now + Duration::from_secs(6))
-            .is_none());
-        assert_eq!(q.reset_generation, 0);
-        assert!(q.frames.is_empty());
-    }
     #[test]
     fn announced_encoder_rebuild_retires_old_codec_without_spending_error_budget() {
         use crate::video_stream::Codec;
