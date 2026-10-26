@@ -137,30 +137,9 @@ unsafe fn start_hosts(hwnd: HWND, f: &mut Form, mode: Refresh) {
 unsafe fn completed(hwnd: HWND, f: &mut Form, job: Completion) {
     match job {
         Completion::Login(Ok(session)) => {
-            if !f.sign_in.remember_login {
-                if f.manager
-                    .update_native(|p| p.encrypted_session.clear())
-                    .is_err()
-                {
-                    message_box(hwnd,"The old saved sign-in could not be removed. Check write access to settings.json.");
-                }
-            }
-            if f.sign_in.remember_login {
-                let save = super::profile::Profile::encrypted(session.token()).and_then(|blob| {
-                    f.manager.update_native(|p| {
-                        p.email = f.sign_in.email.clone();
-                        p.encrypted_session = blob;
-                    })
-                });
-                if save.is_ok() {
-                    session.remembered();
-                }
-                if save.is_err() {
-                    message_box(hwnd,"Signed in, but Windows could not save the protected session. This sign-in will stay in memory.");
-                    f.sign_in.remember_login = false;
-                }
-            }
-            f.sign_in.session = Some(session);
+            f.sign_in.accept(session, f.manager.as_ref(), |notice| {
+                message_box(hwnd, notice.text());
+            });
             start_hosts(hwnd, f, Refresh::Manual);
         }
         Completion::Login(Err(_)) => {
@@ -241,8 +220,7 @@ unsafe fn hosts_completed(f: &mut Form, job: picker::Completion) {
                 serde_json::json!({"session_rejected":e.downcast_ref::<account::ExpiredSession>().is_some()}),
             );
             if e.downcast_ref::<account::ExpiredSession>().is_some() {
-                let _ = f.manager.update_native(|p| p.encrypted_session.clear());
-                f.sign_in.expired();
+                f.sign_in.expire_saved(f.manager.as_ref());
             }
             if !quiet || f.sign_in.session.is_none() {
                 status(f, &e.to_string());
@@ -415,17 +393,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         }
                     }
                     LOGOUT => {
-                        if f.manager
-                            .update_native(|p| {
-                                p.encrypted_session.clear();
-                                p.email.clear();
-                            })
-                            .is_err()
-                        {
-                            status(f,"Could not remove the saved sign-in. Check write access to settings.json.");
+                        if f.sign_in.prepare_logout(f.manager.as_ref()).is_err() {
+                            status(f, f.sign_in.message());
                             return 0;
                         }
-                        f.sign_in.remember_login = false;
                         f.picker.cancel();
                         if f.sign_in.logout() {
                             status(f, f.sign_in.message());
@@ -833,11 +804,8 @@ pub fn choose(
         if IsWindow(hwnd) != 0 {
             DestroyWindow(hwnd);
         }
-        if let Some(session) = f.sign_in.session.take() {
-            if f.manager.view().0.native_core.encrypted_session.is_empty() {
-                session.revoke();
-            }
-        }
+        f.sign_in
+            .close(|| !f.manager.view().0.native_core.encrypted_session.is_empty());
         Ok(f.result.take())
     }
 }

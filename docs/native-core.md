@@ -25,8 +25,11 @@ administrator rights. The configured static CRT and bundled Opus remain in place
 - `native_core/sign_in.rs`: window-API-independent sign-in/sign-out request
   lifecycle, busy/error state and remembered-sign-in preference. Password and
   optional 2FA code remain zeroizing request-owned values, without a retry cache.
-  The Win32 adapter retains the existing DPAPI save policy; authentication APIs,
-  session revocation, protected storage and polling cadence are unchanged.
+  The common controller owns acceptance/persistence decisions, logout/expiration
+  cleanup and close-time revocation policy. Its SessionStore implementation in
+  `profile.rs` reuses CurrentUser DPAPI and the existing settings transaction;
+  the native view only displays typed notices. Authentication APIs, revocation,
+  storage format, notice ordering and polling cadence are unchanged.
 - `settings_model.rs`: shared editable Settings state, numeric/URL form parsing,
   tab notices, option availability and save feedback. The native adapter reads
   controls and applies the model's availability; no validation rules depend on
@@ -92,7 +95,10 @@ administrator rights. The configured static CRT and bundled Opus remain in place
   lifecycle; ordinary Parsec input for a selected HID device is suppressed.
 - `native_core/session_model.rs`: window-API-independent Session commands and
   shared host-video/display/pending state. The Win32 panel reads typed host
-  preferences and uses the common saved/host/default selection rules. Existing
+  preferences and uses the common saved/host/default selection rules. Panel field
+  parsing, resolution labels and status text also live here; numeric limits reuse
+  the Video profile's shared bounds. Only widget-index/native-message translation
+  remains in the Win32 view. Existing
   window events and notifications still deliver commands and view updates;
   there is no additional queue, thread, frame processing or dependency. This
   is an initial UI separation, not a complete cross-platform application port.

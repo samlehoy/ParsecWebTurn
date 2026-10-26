@@ -9,6 +9,25 @@ pub enum Completion {
     Disconnected,
 }
 
+/// Persistence policy is common; protection and file IO belong to the store.
+pub trait SessionStore {
+    fn save(&self, email: &str, token: &str) -> Result<()>;
+    fn clear(&self, forget_email: bool) -> Result<()>;
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PersistenceNotice {
+    PreviousSignInNotRemoved,
+    ProtectedSessionNotSaved,
+}
+impl PersistenceNotice {
+    pub fn text(self) -> &'static str {
+        match self {
+            Self::PreviousSignInNotRemoved => "The old saved sign-in could not be removed. Check write access to settings.json.",
+            Self::ProtectedSessionNotSaved => "Signed in, but Windows could not save the protected session. This sign-in will stay in memory.",
+        }
+    }
+}
+
 // No Debug/Serialize: account details and session tokens must not enter logs.
 pub struct SignIn {
     pub session: Option<Arc<Session>>,
@@ -65,6 +84,36 @@ impl SignIn {
         });
         Ok(true)
     }
+    pub fn accept(
+        &mut self,
+        session: Arc<Session>,
+        store: &impl SessionStore,
+        notice: impl FnOnce(PersistenceNotice),
+    ) {
+        if self.remember_login {
+            match store.save(&self.email, session.token()) {
+                Ok(()) => session.remembered(),
+                Err(_) => {
+                    notice(PersistenceNotice::ProtectedSessionNotSaved);
+                    self.remember_login = false;
+                }
+            }
+        } else if store.clear(false).is_err() {
+            notice(PersistenceNotice::PreviousSignInNotRemoved);
+        }
+        // Keep notice delivery before committing the session to the view:
+        // native modal feedback previously ran at this exact point.
+        self.session = Some(session);
+    }
+    pub fn prepare_logout(&mut self, store: &impl SessionStore) -> Result<()> {
+        if store.clear(true).is_err() {
+            self.message =
+                "Could not remove the saved sign-in. Check write access to settings.json.".into();
+            anyhow::bail!(self.message.clone());
+        }
+        self.remember_login = false;
+        Ok(())
+    }
     pub fn logout(&mut self) -> bool {
         if self.busy() || self.session.is_none() {
             return false;
@@ -99,6 +148,19 @@ impl SignIn {
         self.session = None;
         self.remember_login = false;
     }
+    pub fn expire_saved(&mut self, store: &impl SessionStore) {
+        // Preserve the existing expiration policy: rejection always clears the
+        // live session, even if the old protected file cannot be updated.
+        let _ = store.clear(false);
+        self.expired();
+    }
+    pub fn close(&mut self, has_saved_session: impl FnOnce() -> bool) {
+        if let Some(session) = self.session.take() {
+            if !has_saved_session() {
+                session.revoke();
+            }
+        }
+    }
     pub fn cancel(&mut self) {
         // Closing the view drops the receiver. A late successful sign-in is
         // revoked by its worker instead of silently saving an unwanted token.
@@ -109,6 +171,29 @@ impl SignIn {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    #[derive(Default)]
+    struct Store {
+        fail: bool,
+        saved: RefCell<Option<(String, String)>>,
+        cleared: RefCell<Vec<bool>>,
+    }
+    impl SessionStore for Store {
+        fn save(&self, email: &str, token: &str) -> Result<()> {
+            if self.fail {
+                anyhow::bail!("offline-storage-failure");
+            }
+            *self.saved.borrow_mut() = Some((email.into(), token.into()));
+            Ok(())
+        }
+        fn clear(&self, forget_email: bool) -> Result<()> {
+            self.cleared.borrow_mut().push(forget_email);
+            if self.fail {
+                anyhow::bail!("offline-storage-failure");
+            }
+            Ok(())
+        }
+    }
     fn form() -> SignIn {
         SignIn::new(None, "saved@example.invalid".into(), true)
     }
@@ -166,12 +251,99 @@ mod tests {
         assert!(!form.busy());
         assert!(form.message().is_empty());
         assert!(Arc::ptr_eq(&reply, &session));
-        // The existing DPAPI save policy in the adapter decides whether to
-        // mark the session remembered; polling must never do that implicitly.
+        // Only explicit acceptance applies persistence policy; polling alone
+        // must not save or mark a session remembered.
         assert!(!form.remember_login);
         assert!(form.session.is_none());
-        form.session = Some(reply);
+        let store = Store::default();
+        form.accept(reply, &store, |_| panic!("No notice expected"));
+        assert_eq!(&*store.cleared.borrow(), &[false]);
         assert!(Arc::ptr_eq(&form.session.take().unwrap(), &session));
+    }
+    #[test]
+    fn accepted_sessions_keep_the_previous_remember_and_failure_policy() {
+        for remember in [false, true] {
+            for fail in [false, true] {
+                let store = Store {
+                    fail,
+                    ..Default::default()
+                };
+                let session = Arc::new(Session::from_token("offline-session-fixture").unwrap());
+                let mut form = SignIn::new(None, "user@example.invalid".into(), remember);
+                let mut notices = Vec::new();
+                form.accept(session.clone(), &store, |notice| notices.push(notice));
+                assert!(Arc::ptr_eq(form.session.as_ref().unwrap(), &session));
+                assert_eq!(form.remember_login, remember && !fail);
+                assert_eq!(
+                    &*store.cleared.borrow(),
+                    if remember { &[][..] } else { &[false][..] }
+                );
+                assert_eq!(store.saved.borrow().is_some(), remember && !fail);
+                if remember && !fail {
+                    assert_eq!(
+                        store.saved.borrow().as_ref().unwrap(),
+                        &(
+                            "user@example.invalid".to_owned(),
+                            "offline-session-fixture".to_owned()
+                        )
+                    );
+                }
+                if fail {
+                    assert_eq!(
+                        notices,
+                        [if remember {
+                            PersistenceNotice::ProtectedSessionNotSaved
+                        } else {
+                            PersistenceNotice::PreviousSignInNotRemoved
+                        }]
+                    );
+                    assert!(!notices[0].text().contains("offline-session-fixture"));
+                    assert!(!notices[0].text().contains("offline-storage-failure"));
+                } else {
+                    assert!(notices.is_empty());
+                }
+            }
+        }
+    }
+    #[test]
+    fn logout_and_expiration_have_shared_storage_failure_rules() {
+        let session = Arc::new(Session::from_token("offline-session-fixture").unwrap());
+        for fail in [false, true] {
+            let store = Store {
+                fail,
+                ..Default::default()
+            };
+            let mut form = SignIn::new(Some(session.clone()), "user@example.invalid".into(), true);
+            assert_eq!(form.prepare_logout(&store).is_err(), fail);
+            assert!(form.session.is_some()); // Explicit revocation still starts only in logout().
+            assert_eq!(form.remember_login, fail);
+            assert_eq!(&*store.cleared.borrow(), &[true]);
+            if fail {
+                assert_eq!(
+                    form.message(),
+                    "Could not remove the saved sign-in. Check write access to settings.json."
+                );
+            }
+            form.expire_saved(&store);
+            assert!(form.session.is_none());
+            assert!(!form.remember_login);
+            assert_eq!(&*store.cleared.borrow(), &[true, false]);
+        }
+    }
+    #[test]
+    fn close_reads_storage_only_when_the_form_still_owns_a_session() {
+        let mut form = form();
+        form.close(|| panic!("An empty form must not query storage"));
+        let session = Arc::new(Session::from_token("offline-fixture").unwrap());
+        form.session = Some(session.clone());
+        let mut queried = false;
+        form.close(|| {
+            queried = true;
+            true
+        });
+        assert!(queried);
+        assert!(form.session.is_none());
+        assert_eq!(Arc::strong_count(&session), 1);
     }
     #[test]
     fn missing_credentials_leave_no_pending_request_or_saved_secrets() {

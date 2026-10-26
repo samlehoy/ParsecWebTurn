@@ -411,10 +411,6 @@ impl Pipeline {
             allowed,
         }
     }
-    #[cfg(test)]
-    pub fn submit(&self, bytes: &[u8]) -> bool {
-        self.sender().is_some_and(|sender| sender.submit(bytes))
-    }
     pub(crate) fn sender(&self) -> Option<Sender> {
         self.tx.as_ref().map(|tx| Sender {
             tx: tx.clone(),

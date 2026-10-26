@@ -1,6 +1,10 @@
 //! Shared session commands and presentation state, independent of window APIs.
 //! Native views own their controls and notifications; media workers stay separate.
-use super::{host_displays::Displays, profile::Video};
+use super::{
+    host_displays::Displays,
+    profile::{Resolution, Video, MAX_BANDWIDTH_MBPS, MAX_FPS},
+};
+use anyhow::{ensure, Result};
 use serde_json::Value;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -48,6 +52,74 @@ pub enum Status {
     AttentionFailed,
 }
 
+impl Status {
+    pub fn text(self) -> &'static str {
+        match self {
+            Self::Applied | Self::Confirmed => "",
+            Self::Failed => "Could not apply or save settings. See the event log.",
+            Self::Waiting => "Applying settings...",
+            Self::Unconfirmed => "Host did not confirm the requested settings. See the event log.",
+            Self::AttentionSent => "Ctrl+Alt+Del requested from the host.",
+            Self::AttentionFailed => "Could not send Ctrl+Alt+Del. See the event log.",
+        }
+    }
+}
+
+pub const HOST_RESOLUTION: &str = "Keep host";
+pub const CLIENT_RESOLUTION: &str = "Match client display";
+pub fn resolution_text(resolution: Resolution) -> String {
+    match resolution {
+        Resolution::Host => HOST_RESOLUTION.into(),
+        Resolution::Client => CLIENT_RESOLUTION.into(),
+        Resolution::Fixed(w, h) => format!("{w} x {h}"),
+    }
+}
+/// Native views read their widgets; every view uses the same parsing and
+/// validation before producing an owned video-settings command.
+pub struct PanelFields<'a> {
+    pub resolution: &'a str,
+    pub bandwidth: &'a str,
+    pub fps: &'a str,
+    pub constant_fps: bool,
+    pub rotated: bool,
+    pub immersive: u8,
+    pub fullscreen: bool,
+}
+impl PanelFields<'_> {
+    pub fn parse(&self) -> Result<Video> {
+        let video = Video {
+            resolution: resolution(self.resolution)?,
+            bandwidth_mbps: number(self.bandwidth, MAX_BANDWIDTH_MBPS)?,
+            fps: number(self.fps, MAX_FPS)?,
+            constant_fps: Some(self.constant_fps),
+            rotated: Some(self.rotated),
+            immersive: self.immersive,
+            fullscreen: self.fullscreen,
+        };
+        video.validate()?;
+        Ok(video)
+    }
+}
+fn number(text: &str, max: u32) -> Result<Option<u32>> {
+    let n: u32 = text
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Enter a number."))?;
+    ensure!((1..=max).contains(&n), "Value must be 1–{max}.");
+    Ok(Some(n))
+}
+fn resolution(text: &str) -> Result<Resolution> {
+    match text.trim() {
+        HOST_RESOLUTION => Ok(Resolution::Host),
+        CLIENT_RESOLUTION => Ok(Resolution::Client),
+        s => {
+            let (w, h) = s
+                .split_once(['x', '×'])
+                .ok_or_else(|| anyhow::anyhow!("Enter resolution as width x height."))?;
+            Ok(Resolution::Fixed(w.trim().parse()?, h.trim().parse()?))
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Notification {
     Status(Status),
@@ -100,8 +172,8 @@ impl HostVideo {
                 .filter(|n| (1..=max).contains(n))
         };
         Self {
-            bandwidth_mbps: number("bandwidth_mbps", 100),
-            fps: number("fps", 240),
+            bandwidth_mbps: number("bandwidth_mbps", MAX_BANDWIDTH_MBPS),
+            fps: number("fps", MAX_FPS),
             constant_fps: report["constant_fps"].as_bool(),
             rotated: report["rotated"].as_bool(),
         }
@@ -137,6 +209,89 @@ impl State {
 mod tests {
     use super::*;
     use crate::native_core::profile::Resolution;
+
+    #[test]
+    fn session_fields_keep_resolution_aliases_boundaries_and_local_preferences() {
+        for resolution_value in [
+            Resolution::Host,
+            Resolution::Client,
+            Resolution::Fixed(3440, 1440),
+        ] {
+            let rendered = resolution_text(resolution_value);
+            let fields = PanelFields {
+                resolution: &rendered,
+                bandwidth: " 100 ",
+                fps: "240",
+                constant_fps: true,
+                rotated: false,
+                immersive: 3,
+                fullscreen: true,
+            };
+            let video = fields.parse().unwrap();
+            assert_eq!(video.resolution, resolution_value);
+            assert_eq!(video.bandwidth_mbps, Some(MAX_BANDWIDTH_MBPS));
+            assert_eq!(video.fps, Some(MAX_FPS));
+            assert_eq!(video.constant_fps, Some(true));
+            assert_eq!(video.rotated, Some(false));
+            assert_eq!(video.immersive, 3);
+            assert!(video.fullscreen);
+        }
+        assert_eq!(
+            resolution(" 3440 × 1440 ").unwrap(),
+            Resolution::Fixed(3440, 1440)
+        );
+        let mut fields = PanelFields {
+            resolution: "1920 x 1080",
+            bandwidth: "10",
+            fps: "60",
+            constant_fps: false,
+            rotated: true,
+            immersive: 0,
+            fullscreen: false,
+        };
+        for bad in ["Keep host", "", "-1", "101", "4294967296"] {
+            fields.bandwidth = bad;
+            assert!(fields.parse().is_err());
+        }
+        fields.bandwidth = "10";
+        for bad in ["Keep host", "", "0", "241"] {
+            fields.fps = bad;
+            assert!(fields.parse().is_err());
+        }
+        fields.fps = "60";
+        for bad in ["wrong", "0 x 1080", "8193 x 1080", "1920 x 199"] {
+            fields.resolution = bad;
+            assert!(fields.parse().is_err());
+        }
+        fields.resolution = HOST_RESOLUTION;
+        fields.immersive = 4;
+        assert!(fields.parse().is_err());
+    }
+    #[test]
+    fn session_feedback_and_parse_errors_do_not_depend_on_native_message_ids() {
+        assert_eq!(
+            number("Keep host", 100).unwrap_err().to_string(),
+            "Enter a number."
+        );
+        assert_eq!(
+            number("101", 100).unwrap_err().to_string(),
+            "Value must be 1–100."
+        );
+        assert_eq!(
+            resolution("wrong").unwrap_err().to_string(),
+            "Enter resolution as width x height."
+        );
+        assert!(Status::Applied.text().is_empty());
+        assert!(Status::Confirmed.text().is_empty());
+        assert_eq!(Status::Waiting.text(), "Applying settings...");
+        assert!(Status::Unconfirmed.text().contains("Host did not confirm"));
+        assert_eq!(
+            Status::AttentionSent.text(),
+            "Ctrl+Alt+Del requested from the host."
+        );
+        assert!(Status::AttentionFailed.text().contains("Could not send"));
+        assert!(Status::Failed.text().contains("Could not apply or save"));
+    }
 
     #[test]
     fn reopening_panel_preserves_saved_requests_and_local_controls() {

@@ -2,12 +2,15 @@
 //! no video pixels or additional decoded-frame copy. Visible metrics refresh at 1 Hz.
 use super::{
     controls::{self, BG, FG, FIELD},
-    profile::{Resolution, Video},
-    session_model::{Command, Notification, State, Status, View},
+    profile::Video,
+    session_model::{
+        resolution_text, Command, Notification, PanelFields, State, Status, View,
+        CLIENT_RESOLUTION, HOST_RESOLUTION,
+    },
     ui::{draw_button, wide},
 };
 use crate::stats_view::compact_metrics as metrics;
-use anyhow::{ensure, Result};
+use anyhow::Result;
 use std::{
     ptr::{null, null_mut},
     sync::{atomic::Ordering, Arc},
@@ -71,16 +74,6 @@ impl Status {
             _ => Self::Failed,
         }
     }
-    fn text(self) -> &'static str {
-        match self {
-            Self::Applied | Self::Confirmed => "",
-            Self::Failed => "Could not apply or save settings. See the event log.",
-            Self::Waiting => "Applying settings...",
-            Self::Unconfirmed => "Host did not confirm the requested settings. See the event log.",
-            Self::AttentionSent => "Ctrl+Alt+Del requested from the host.",
-            Self::AttentionFailed => "Could not send Ctrl+Alt+Del. See the event log.",
-        }
-    }
 }
 struct Panel {
     window: *const crate::window::Window,
@@ -112,34 +105,14 @@ impl Drop for Panel {
 unsafe fn text(hwnd: HWND) -> String {
     controls::text(hwnd, 256)
 }
-fn number(text: &str, max: u32) -> Result<Option<u32>> {
-    let n: u32 = text
-        .trim()
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Enter a number."))?;
-    ensure!((1..=max).contains(&n), "Value must be 1–{max}.");
-    Ok(Some(n))
-}
-fn resolution(text: &str) -> Result<Resolution> {
-    match text.trim() {
-        "Keep host" => Ok(Resolution::Host),
-        "Match client display" => Ok(Resolution::Client),
-        s => {
-            let (w, h) = s
-                .split_once(['x', '×'])
-                .ok_or_else(|| anyhow::anyhow!("Enter resolution as width x height."))?;
-            Ok(Resolution::Fixed(w.trim().parse()?, h.trim().parse()?))
-        }
-    }
-}
 unsafe fn collect(p: &Panel) -> Result<Video> {
     let select = |i: usize| SendMessageW(p.controls[i], CB_GETCURSEL, 0, 0);
-    let v = Video {
-        resolution: resolution(&text(p.controls[0]))?,
-        bandwidth_mbps: number(&text(p.controls[1]), 100)?,
-        fps: number(&text(p.controls[2]), 240)?,
-        constant_fps: Some(select(3) == 1),
-        rotated: Some(select(4) == 1),
+    PanelFields {
+        resolution: &text(p.controls[0]),
+        bandwidth: &text(p.controls[1]),
+        fps: &text(p.controls[2]),
+        constant_fps: select(3) == 1,
+        rotated: select(4) == 1,
         immersive: match select(5) {
             1 => 3,
             2 => 2,
@@ -147,9 +120,8 @@ unsafe fn collect(p: &Panel) -> Result<Video> {
             _ => 0,
         },
         fullscreen: SendMessageW(p.fullscreen, BM_GETCHECK, 0, 0) == BST_CHECKED as isize,
-    };
-    v.validate()?;
-    Ok(v)
+    }
+    .parse()
 }
 unsafe fn close(hwnd: HWND) {
     let parent = GetParent(hwnd);
@@ -387,7 +359,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             DISPLAYS => {
                 if wp == 1 {
                     SendMessageW(p.controls[0], CB_SETCURSEL, 0, 0);
-                    SetWindowTextW(p.controls[0], wide("Keep host").as_ptr());
+                    SetWindowTextW(p.controls[0], wide(HOST_RESOLUTION).as_ptr());
                 }
                 update_displays(hwnd, p);
                 return 0;
@@ -762,19 +734,15 @@ pub unsafe fn toggle(
             [24, 254 + i as i32 * 44, 150, 24],
         );
     }
-    let res = match video.resolution {
-        Resolution::Host => "Keep host".into(),
-        Resolution::Client => "Match client display".into(),
-        Resolution::Fixed(w, h) => format!("{w} x {h}"),
-    };
+    let res = resolution_text(video.resolution);
     p.controls[0] = combo(
         hwnd,
         p,
         20,
         250,
         &[
-            "Keep host",
-            "Match client display",
+            HOST_RESOLUTION,
+            CLIENT_RESOLUTION,
             "1280 x 720",
             "1600 x 900",
             "1920 x 1080",
@@ -932,6 +900,7 @@ pub unsafe fn dialog(parent: HWND, msg: &MSG) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_core::profile::Resolution;
     #[test]
     fn typed_statuses_keep_the_existing_window_message_contract() {
         for (code, status) in [
@@ -976,7 +945,7 @@ mod tests {
         );
     }
     #[test]
-    fn editable_values_are_bounded_before_sending() {
+    fn native_shortcuts_keep_the_existing_mapping() {
         assert_eq!(shortcut(b'M' as usize, 3), Some(Shortcut::Menu));
         assert_eq!(shortcut(b'O' as usize, 3), Some(Shortcut::Menu));
         assert_eq!(
@@ -985,13 +954,6 @@ mod tests {
         );
         assert_eq!(shortcut(VK_DELETE as usize, 6), None);
         assert_eq!(shortcut(b'M' as usize, 7), None);
-        assert_eq!(
-            resolution("3440 x 1440").unwrap(),
-            Resolution::Fixed(3440, 1440)
-        );
-        assert!(number("Keep host", 100).is_err());
-        assert!(number("101", 100).is_err());
-        assert!(resolution("wrong").is_err());
     }
     #[test]
     fn panel_controls_emit_native_actions_without_network() {

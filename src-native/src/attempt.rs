@@ -420,16 +420,6 @@ pub struct Attempt {
 }
 
 impl Attempt {
-    #[cfg(test)]
-    pub fn spawn(output: Output) -> Result<Self> {
-        Self::spawn_named("local-offer-test", output)
-    }
-
-    #[cfg(test)]
-    pub fn spawn_named(id: &str, output: Output) -> Result<Self> {
-        Self::spawn_configured(id, output, None, StunProvider::None, false, None)
-    }
-
     pub fn spawn_configured(
         id: &str,
         output: Output,
@@ -727,49 +717,6 @@ impl Attempt {
             .events
             .pop_front()
     }
-    #[cfg(test)]
-    pub fn receive_binary(&self, duration: Duration) -> Result<(u16, bool, Bytes)> {
-        let state = self
-            .completion
-            .lock()
-            .map_err(|_| anyhow::anyhow!("native receipt lock poisoned"))?;
-        let (mut state, _) = self
-            .wake
-            .wait_timeout_while(state, duration, |s| {
-                s.messages.is_empty() && !s.progress.failed && !s.cancelled
-            })
-            .map_err(|_| anyhow::anyhow!("native receipt wait failed"))?;
-        let message = state
-            .messages
-            .pop_front()
-            .context("no native receipt before deadline")?;
-        state.message_bytes -= message.2.len();
-        Ok(message)
-    }
-    #[cfg(test)]
-    pub fn wait_transport(&self, duration: Duration) -> Result<()> {
-        let state = self
-            .completion
-            .lock()
-            .map_err(|_| anyhow::anyhow!("native connection lock poisoned"))?;
-        let (state, _) = self
-            .wake
-            .wait_timeout_while(state, duration, |s| {
-                (s.progress.open_mask != 7 || !s.progress.transport_connected)
-                    && !s.progress.failed
-                    && !s.cancelled
-            })
-            .map_err(|_| anyhow::anyhow!("native connection wait failed"))?;
-        if state.progress.failed
-            || state.cancelled
-            || state.progress.open_mask != 7
-            || !state.progress.transport_connected
-        {
-            bail!("native channels did not connect before deadline");
-        }
-        Ok(())
-    }
-
     pub fn wait_finished(&self, duration: Duration) -> Result<()> {
         let done = self
             .finished

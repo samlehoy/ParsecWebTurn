@@ -3,6 +3,9 @@ use anyhow::{ensure, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 
+pub const MAX_BANDWIDTH_MBPS: u32 = 100;
+pub const MAX_FPS: u32 = 240;
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Profile {
@@ -63,12 +66,13 @@ impl Video {
             );
         }
         ensure!(
-            self.bandwidth_mbps.is_none_or(|n| (1..=100).contains(&n)),
-            "Bandwidth must be 1–100 Mbps"
+            self.bandwidth_mbps
+                .is_none_or(|n| (1..=MAX_BANDWIDTH_MBPS).contains(&n)),
+            "Bandwidth must be 1–{MAX_BANDWIDTH_MBPS} Mbps"
         );
         ensure!(
-            self.fps.is_none_or(|n| (1..=240).contains(&n)),
-            "FPS must be 1–240"
+            self.fps.is_none_or(|n| (1..=MAX_FPS).contains(&n)),
+            "FPS must be 1–{MAX_FPS}"
         );
         ensure!(self.immersive <= 3, "Invalid immersive mode");
         Ok(())
@@ -126,6 +130,24 @@ impl Profile {
     }
     pub fn encrypted(token: &str) -> Result<String> {
         Ok(STANDARD.encode(crate::secure_storage::protect(token.as_bytes(), true)?))
+    }
+}
+
+impl super::sign_in::SessionStore for crate::connection_settings::Manager {
+    fn save(&self, email: &str, token: &str) -> Result<()> {
+        let blob = Profile::encrypted(token)?;
+        self.update_native(|profile| {
+            profile.email = email.into();
+            profile.encrypted_session = blob;
+        })
+    }
+    fn clear(&self, forget_email: bool) -> Result<()> {
+        self.update_native(|profile| {
+            profile.encrypted_session.clear();
+            if forget_email {
+                profile.email.clear();
+            }
+        })
     }
 }
 
@@ -222,23 +244,41 @@ mod tests {
         }
         let _cleanup = Cleanup(path.clone());
         let manager = crate::connection_settings::Manager::open(path.clone());
-        let protected = Profile::encrypted("fixture-session").unwrap();
-        manager
-            .update_native(|p| p.encrypted_session = protected)
-            .unwrap();
+        use crate::native_core::sign_in::SessionStore;
+        SessionStore::save(
+            manager.as_ref(),
+            "fixture@example.invalid",
+            "fixture-session",
+        )
+        .unwrap();
+        assert_eq!(
+            manager
+                .view()
+                .0
+                .native_core
+                .session()
+                .unwrap()
+                .unwrap()
+                .token(),
+            "fixture-session"
+        );
         let mut stale = manager.view().0;
         stale.native_core.hide_session_button = true;
-        manager
-            .update_native(|p| p.encrypted_session.clear())
-            .unwrap();
+        SessionStore::clear(manager.as_ref(), false).unwrap();
         manager.save(stale, "", "", false, false).unwrap();
         assert!(manager.view().0.native_core.encrypted_session.is_empty());
+        assert_eq!(
+            manager.view().0.native_core.email,
+            "fixture@example.invalid"
+        );
         assert!(manager.native_session_button_hidden());
         assert!(
             crate::connection_settings::Manager::open(path.clone()).native_session_button_hidden()
         );
-        assert!(!std::fs::read_to_string(path)
+        assert!(!std::fs::read_to_string(&path)
             .unwrap()
             .contains("fixture-session"));
+        SessionStore::clear(manager.as_ref(), true).unwrap();
+        assert!(manager.view().0.native_core.email.is_empty());
     }
 }
