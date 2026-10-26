@@ -105,16 +105,15 @@ unsafe extern "system" fn callback(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
         }
         let captured = CAPTURED.get(vk as usize);
         if reserved(vk, mods) || captured.is_some_and(|key| key.load(Ordering::Relaxed)) {
-            let packed = ((key.scanCode & 255) << 16)
-                | mods as u32
-                | if key.flags & LLKHF_EXTENDED != 0 {
-                    1 << 24
-                } else {
-                    0
-                }
-                | if down { 0 } else { 1 << 31 };
+            let packed = crate::input_windows::captured_key_data(key, down, mods);
             // The hook never waits or takes application locks.
-            if PostMessageW(hwnd, WM_APP + 13, vk as usize, packed as isize) != 0 {
+            if PostMessageW(
+                hwnd,
+                crate::input_windows::CAPTURED_KEY,
+                vk as usize,
+                packed,
+            ) != 0
+            {
                 if let Some(key) = captured {
                     key.store(down, Ordering::Relaxed);
                 }

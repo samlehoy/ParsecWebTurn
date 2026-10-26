@@ -190,7 +190,7 @@ impl Window {
                                 {
                                     if let Some(action) = crate::native_core::session_ui::shortcut(
                                         msg.wParam,
-                                        modifiers(),
+                                        crate::input_windows::modifiers(),
                                     ) {
                                         if native_shortcuts.insert(msg.wParam) {
                                             match action {
@@ -961,8 +961,10 @@ impl Window {
         self.events.push(event);
     }
     fn raw_mouse_motion(&self, mouse: &RAWMOUSE) {
-        if self.relative_mouse.load(Ordering::Acquire) && mouse.usFlags & MOUSE_MOVE_ABSOLUTE == 0 {
-            self.push(Event::RelativeMotion(mouse.lLastX, mouse.lLastY));
+        if let Some(event) =
+            crate::input_windows::raw_motion(mouse, self.relative_mouse.load(Ordering::Acquire))
+        {
+            self.push(event);
         }
     }
 }
@@ -1025,8 +1027,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
     let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Window;
     if !ptr.is_null() {
         let s = &*ptr;
-        let x = lp as i16 as i32;
-        let y = (lp >> 16) as i16 as i32;
         match message {
             WM_ERASEBKGND => {
                 let mut rect = std::mem::zeroed();
@@ -1289,40 +1289,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
 
-            m if m == WM_APP + 13 => {
-                if let Some(code) =
-                    crate::input::code(wp as u32, ((lp >> 16) & 255) as u8, lp & (1 << 24) != 0)
-                {
-                    let down = lp & (1 << 31) == 0;
-                    let mut pressed = s.pressed_keys.lock().unwrap_or_else(|e| e.into_inner());
-                    if down {
-                        pressed.insert(code);
-                    } else {
-                        pressed.remove(code);
-                    }
-                    let mods = (lp & 15) as i32;
-                    s.push(Event::Key(down, code, mods));
-                }
+            m if m == crate::input_windows::CAPTURED_KEY => {
+                crate::input_windows::captured_key(wp, lp, &s.pressed_keys, |event| s.push(event));
                 return 0;
             }
             WM_INPUT if s.relative_mouse.load(Ordering::Acquire) => {
-                let mut raw: RAWINPUT = std::mem::zeroed();
-                let mut size = std::mem::size_of::<RAWINPUT>() as u32;
-                let read = GetRawInputData(
-                    lp as HRAWINPUT,
-                    RID_INPUT,
-                    (&mut raw as *mut RAWINPUT).cast(),
-                    &mut size,
-                    std::mem::size_of::<RAWINPUTHEADER>() as u32,
-                );
-                if read != u32::MAX
-                    && raw.header.dwType == RIM_TYPEMOUSE
-                    && read
-                        >= std::mem::size_of::<RAWINPUTHEADER>() as u32
-                            + std::mem::size_of::<RAWMOUSE>() as u32
-                {
-                    s.raw_mouse_motion(&raw.data.mouse);
-                }
+                crate::input_windows::raw_input(lp, |mouse| s.raw_mouse_motion(mouse));
                 // DefWindowProc releases the foreground WM_INPUT bookkeeping.
             }
             WM_KEYDOWN
@@ -1436,43 +1408,23 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             WM_CAPTURECHANGED => s.release_buttons(),
             WM_MOUSEMOVE if !s.relative_mouse.load(Ordering::Acquire) => {
                 let echo = s.warp_echo.swap(0, Ordering::AcqRel);
-                if echo == 0 || echo - 1 != (u64::from(x as u32) << 32 | u64::from(y as u32)) {
-                    s.push(Event::Motion(x, y));
+                if let Some(event) = crate::input_windows::motion(lp, echo) {
+                    s.push(event);
                 }
             }
-            WM_LBUTTONDOWN | WM_LBUTTONUP => s.mouse_button(message == WM_LBUTTONDOWN, 0, x, y),
-            WM_MBUTTONDOWN | WM_MBUTTONUP => {
-                s.mouse_button(message == WM_MBUTTONDOWN, 1, x, y);
-            }
-            WM_XBUTTONDOWN | WM_XBUTTONUP => {
-                s.mouse_button(
-                    message == WM_XBUTTONDOWN,
-                    if ((wp >> 16) & 0xffff) == 1 { 3 } else { 4 },
-                    x,
-                    y,
-                );
-                return 1;
-            }
-            WM_RBUTTONDOWN | WM_RBUTTONUP => s.mouse_button(message == WM_RBUTTONDOWN, 2, x, y),
-            WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP => {
-                if let Some(code) =
-                    crate::input::code(wp as u32, ((lp >> 16) & 0xFF) as u8, lp & (1 << 24) != 0)
+            WM_LBUTTONDOWN | WM_LBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP | WM_RBUTTONDOWN
+            | WM_RBUTTONUP | WM_XBUTTONDOWN | WM_XBUTTONUP => {
+                if let Some(Event::Button(down, button, x, y)) =
+                    crate::input_windows::button(message, wp, lp)
                 {
-                    let down = matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN);
-                    let mut pressed = s.pressed_keys.lock().unwrap_or_else(|e| e.into_inner());
-                    if down {
-                        pressed.insert(code);
-                    } else {
-                        pressed.remove(code);
-                    }
-                    let mods = modifiers()
-                        | if pressed.contains("MetaLeft") || pressed.contains("MetaRight") {
-                            8
-                        } else {
-                            0
-                        };
-                    s.push(Event::Key(down, code, mods));
+                    s.mouse_button(down, button, x, y);
                 }
+                if matches!(message, WM_XBUTTONDOWN | WM_XBUTTONUP) {
+                    return 1;
+                }
+            }
+            WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP => {
+                crate::input_windows::key(message, wp, lp, &s.pressed_keys, |event| s.push(event));
                 // Keep system handling (notably Alt+F4) in DefWindowProc.
                 if matches!(message, WM_KEYDOWN | WM_KEYUP)
                     || s.keyboard_grab
@@ -1484,26 +1436,23 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 }
             }
             WM_CHAR => {
-                if let Some(ch) = s
-                    .text_decoder
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(wp as u16)
-                {
-                    s.push(Event::Text(ch as u32));
+                if let Some(event) = crate::input_windows::text(
+                    wp,
+                    &mut s.text_decoder.lock().unwrap_or_else(|e| e.into_inner()),
+                ) {
+                    s.push(event);
                 }
                 return 0;
             }
-            WM_MOUSEWHEEL => {
+            WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
                 #[cfg(feature = "bud")]
-                s.sync_absolute_pointer(lp as i16 as i32, (lp >> 16) as i16 as i32, true);
-                s.push(Event::Scroll(0, -((wp >> 16) as i16 as i32)));
-                return 0;
-            }
-            WM_MOUSEHWHEEL => {
-                #[cfg(feature = "bud")]
-                s.sync_absolute_pointer(lp as i16 as i32, (lp >> 16) as i16 as i32, true);
-                s.push(Event::Scroll((wp >> 16) as i16 as i32, 0));
+                {
+                    let (x, y) = crate::input_windows::position(lp);
+                    s.sync_absolute_pointer(x, y, true);
+                }
+                if let Some(event) = crate::input_windows::scroll(message, wp) {
+                    s.push(event);
+                }
                 return 0;
             }
 
@@ -1511,25 +1460,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
         }
     }
     DefWindowProcW(hwnd, message, wp, lp)
-}
-
-unsafe fn modifiers() -> i32 {
-    let mut mods = 0;
-    for (vk, bit) in [(VK_SHIFT, 1), (VK_CONTROL, 2), (VK_MENU, 4)] {
-        if GetKeyState(vk as i32) < 0 {
-            mods |= bit;
-        }
-    }
-    if GetKeyState(VK_LWIN as i32) < 0 || GetKeyState(VK_RWIN as i32) < 0 {
-        mods |= 8;
-    }
-    if GetKeyState(VK_CAPITAL as i32) & 1 != 0 {
-        mods |= 16;
-    }
-    if GetKeyState(VK_NUMLOCK as i32) & 1 != 0 {
-        mods |= 32;
-    }
-    mods
 }
 
 // DXGI owns video pixels; do not repaint the child with GDI/static-control text.
@@ -1554,6 +1484,66 @@ unsafe extern "system" fn video_surface_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_input_boundary_keeps_signed_axes_text_and_focus_release_order() {
+        struct Close(Arc<Window>);
+        impl Drop for Close {
+            fn drop(&mut self) {
+                self.0.end_session();
+                self.0.close();
+            }
+        }
+        let window = Window::create_native().unwrap();
+        let _close = Close(window.clone());
+        fn point(x: i16, y: i16) -> LPARAM {
+            (u32::from(x as u16) | (u32::from(y as u16) << 16)) as isize
+        }
+        window.events.drain();
+        unsafe {
+            let hwnd = window.handle();
+            // Target this fixture window only; do not inject system input or
+            // forward anything to a host/account.
+            SendMessageW(hwnd, WM_MOUSEMOVE, 0, point(-12, 34));
+            SendMessageW(hwnd, WM_MOUSEWHEEL, 120 << 16, point(-20, 30));
+            SendMessageW(
+                hwnd,
+                WM_MOUSEHWHEEL,
+                usize::from(-120i16 as u16) << 16,
+                point(-20, 30),
+            );
+            SendMessageW(hwnd, WM_CHAR, 0xd83e, 0);
+            SendMessageW(hwnd, WM_KEYDOWN, VK_LWIN as usize, 0x5b << 16);
+            SendMessageW(hwnd, WM_KEYDOWN, b'A' as usize, 0x1e << 16);
+            SendMessageW(hwnd, WM_KEYUP, VK_LWIN as usize, (0x5b << 16) | (1 << 31));
+            SendMessageW(hwnd, WM_LBUTTONDOWN, 1, point(120, 120));
+            SendMessageW(hwnd, WM_KILLFOCUS, 0, 0);
+            SendMessageW(hwnd, WM_CHAR, 0xdd80, 0); // Pending high surrogate was reset.
+            SendMessageW(hwnd, WM_CHAR, 'ő' as usize, 0);
+        }
+        let events = window.events.drain();
+        assert!(events.iter().any(|e| matches!(e, Event::Motion(-12, 34))));
+        assert!(events.iter().any(|e| matches!(e, Event::Scroll(0, -120))));
+        assert!(events.iter().any(|e| matches!(e, Event::Scroll(-120, 0))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::Key(true, "KeyA", mods) if mods & 8 != 0)));
+        let button_release = events
+            .iter()
+            .position(|e| matches!(e, Event::Button(false, 0, ..)))
+            .unwrap();
+        let key_release = events
+            .iter()
+            .position(|e| matches!(e, Event::Key(false, "KeyA", 0)))
+            .unwrap();
+        let focus_loss = events
+            .iter()
+            .position(|e| matches!(e, Event::Focus(false)))
+            .unwrap();
+        assert!(button_release < key_release && key_release < focus_loss);
+        assert!(events.iter().any(|e| matches!(e, Event::Text(0x151))));
+        assert!(!events.iter().any(|e| matches!(e, Event::Text(0x1f980))));
+        assert!(window.pressed_keys.lock().unwrap().is_empty());
+    }
     #[cfg(feature = "bud")]
     #[test]
     fn hid_input_desktop_edges_and_local_menu_release() {
@@ -1852,12 +1842,19 @@ mod tests {
                 window.set_relative_mouse(false);
                 assert!(window.relative_requested.load(Ordering::Acquire));
                 window.events.drain();
-                for dx in [-400, 1] {
+                for (dx, dy) in [(-400, 0), (1, 0), (0, -300), (0, 1)] {
                     window.raw_mouse_motion(&RAWMOUSE {
                         lLastX: dx,
+                        lLastY: dy,
                         ..Default::default()
                     });
                 }
+                window.raw_mouse_motion(&RAWMOUSE {
+                    usFlags: MOUSE_MOVE_ABSOLUTE,
+                    lLastX: 65535,
+                    lLastY: 65535,
+                    ..Default::default()
+                });
                 let motion: Vec<_> = window
                     .events
                     .drain()
@@ -1870,7 +1867,7 @@ mod tests {
                         }
                     })
                     .collect();
-                assert_eq!(motion, [(-400, 0), (1, 0)]); // Immediate reversal, no absolute dead zone.
+                assert_eq!(motion, [(-400, 0), (1, 0), (0, -300), (0, 1)]); // Immediate reversal on both axes; absolute reports excluded.
                 let mut held = POINT::default();
                 unsafe {
                     GetCursorPos(&mut held);

@@ -63,6 +63,15 @@ administrator rights. The configured static CRT and bundled Opus remain in place
   This separates desktop effects, not the Windows media backends themselves;
   decoding, GPU presentation, focus-release and relative-camera handling retain
   their existing implementation and no additional frame copy or worker is added.
+- `input_windows.rs`: Win32 scan codes, hook messages, signed mouse coordinates,
+  wheels, UTF-16 characters and Raw Input are translated into the existing
+  common events. Keyboard publication retains its pressed-key lock/order and
+  hook-time modifiers; callbacks write synchronously into the same bounded FIFO,
+  with no intermediate event representation, queue or worker. `input.rs` retains
+  platform-independent text decoding. Capture, focus/release order, cursor warp
+  suppression, HID absolute synchronization and system-key default handling
+  remain in the existing Window backend. The isolated immersive test covers
+  immediate relative-motion reversal on both axes and ignores absolute reports.
 - `attempt.rs`: native ICE/DTLS/SCTP and data channels for WebRTC.
 - `crates/bud`: isolated BUD carrier, protocol and compressed-media handoff.
   Both transports use the same native video/audio workers and input handling.

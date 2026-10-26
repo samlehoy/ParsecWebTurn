@@ -39,6 +39,8 @@ mod hid_input;
 mod input;
 mod input_state;
 #[cfg(windows)]
+mod input_windows;
+#[cfg(windows)]
 mod keyboard_grab;
 mod lifecycle;
 mod media_ingress;
