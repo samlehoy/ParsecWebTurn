@@ -659,7 +659,11 @@ mod tests {
             }
             let mut decoded = Vec::new();
             let mut displayed = Vec::new();
-            while let Some(frame) = queue.pop() {
+            // This fixture represents an instantaneous burst drain, regardless
+            // of descheduling on the test runner. Persistent-time cases below
+            // advance an injected monotonic clock explicitly.
+            let sample = Instant::now();
+            while let Some(frame) = queue.pop_at(sample) {
                 decoded.push((frame.timestamp_100ns, frame.idr, frame.parameters));
                 if !queue.should_skip_display() {
                     displayed.push(frame.timestamp_100ns);
