@@ -6,6 +6,10 @@
   references in order while omitting obsolete display updates during a burst;
   retain the same BUD behavior and the existing bounded GPU/video worker path.
   No new frame copies, pacing queue, thread, timer or transport changes.
+  WebRTC also uses a small bounded history of sustained late input to tighten
+  catch-up, resets on fresh/drained input or recovery, and reports adaptive
+  activations separately. Thresholds require live validation; no measured
+  end-to-end speedup is claimed.
 
 - Add opt-in experimental Windows AudioVideo QoS for BUD and WebRTC TURN
   TCP/TLS, using one shared portable adapter with a no-op fallback elsewhere.

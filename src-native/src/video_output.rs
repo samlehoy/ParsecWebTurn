@@ -98,12 +98,66 @@ impl InFlight {
     }
 }
 
-/// Do not discard compressed references. Only omit obsolete display updates
-/// when at least two later compressed messages already await decoding.
-/// Both transports use the same existing worker and bounded queue; this rule
-/// never waits for more input and leaves the final two updates eligible.
+/// Baseline fixed policy: only omit obsolete display updates when at least
+/// two later compressed messages already await decoding. Never wait for input
+/// or discard references. The adaptive policy can tighten this after a late
+/// backlog episode; both policies use the existing bounded queue and worker.
 pub fn skip_display_for_backlog(queued: usize) -> bool {
     queued >= 2
+}
+
+/// Shared display policy; selecting it never changes transport or decoder input.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DisplayCatchUpPolicy {
+    #[default]
+    Fixed,
+    Adaptive,
+}
+
+// A bounded history of one continuous late-backlog episode, not a frame queue.
+// A short burst uses the existing two-update tail. Only persistent, already-late
+// input may reduce that tail to one; nothing is held waiting for this interval.
+const CATCH_UP_HISTORY: Duration = Duration::from_millis(100);
+const CATCH_UP_LATE_WAIT: Duration = Duration::from_millis(8);
+#[derive(Default)]
+struct DisplayCatchUp {
+    policy: DisplayCatchUpPolicy,
+    late_since: Option<Instant>,
+    last_late: Option<Instant>,
+    observations: u8,
+    aggressive: bool,
+}
+impl DisplayCatchUp {
+    fn reset(&mut self) {
+        self.late_since = None;
+        self.last_late = None;
+        self.observations = 0;
+        self.aggressive = false;
+    }
+    /// One observation per dequeued input, sharing its existing timing sample.
+    /// Return true only when a late episode first enters stricter catch-up.
+    fn observe(&mut self, queued: usize, waited: Duration, now: Instant) -> bool {
+        if self.policy == DisplayCatchUpPolicy::Fixed {
+            return false;
+        }
+        if queued == 0 || waited < CATCH_UP_LATE_WAIT {
+            self.reset();
+            return false;
+        }
+        if self
+            .last_late
+            .is_some_and(|last| now.saturating_duration_since(last) > CATCH_UP_HISTORY)
+        {
+            self.reset();
+        }
+        self.last_late = Some(now);
+        let since = *self.late_since.get_or_insert(now);
+        self.observations = self.observations.saturating_add(1);
+        let previous = self.aggressive;
+        self.aggressive =
+            self.observations >= 3 && now.saturating_duration_since(since) >= CATCH_UP_HISTORY;
+        self.aggressive && !previous
+    }
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -111,6 +165,8 @@ pub struct Snapshot {
     pub local_timing: LocalTiming,
     pub presentation_mode: Option<&'static str>,
     pub display_updates_skipped: u64,
+    pub adaptive_display_catch_up: bool,
+    pub adaptive_display_catch_up_activations: u64,
     pub decoded_bit_depth: Option<u8>,
     pub decoded_chroma: Option<&'static str>,
     /// RGB swap-chain precision, not the monitor/link's physical bit depth.
@@ -181,6 +237,7 @@ pub struct Frame {
 }
 
 pub struct Queue {
+    display_catch_up: DisplayCatchUp,
     pub report: Snapshot,
     pub stopped: bool,
     frames: VecDeque<Frame>,
@@ -197,6 +254,7 @@ pub struct Queue {
 impl Default for Queue {
     fn default() -> Self {
         Self {
+            display_catch_up: Default::default(),
             report: Snapshot {
                 waiting_for_idr: true,
                 ..Default::default()
@@ -216,6 +274,20 @@ impl Default for Queue {
 }
 
 impl Queue {
+    pub fn with_display_policy(policy: DisplayCatchUpPolicy) -> Self {
+        let mut queue = Self::default();
+        queue.display_catch_up.policy = policy;
+        queue.report.adaptive_display_catch_up = policy == DisplayCatchUpPolicy::Adaptive;
+        queue
+    }
+
+    /// Read-only at every output/retry point. History advances only in pop().
+    pub fn should_skip_display(&self) -> bool {
+        skip_display_for_backlog(self.frames.len())
+            || (self.display_catch_up.aggressive
+                && self.frames.front().is_some_and(|next| !next.parameters))
+    }
+
     #[cfg(test)]
     pub fn submit(
         &mut self,
@@ -298,13 +370,27 @@ impl Queue {
     }
 
     pub fn pop(&mut self) -> Option<Frame> {
+        if self.frames.is_empty() {
+            return None;
+        }
+        self.pop_at(Instant::now())
+    }
+
+    fn pop_at(&mut self, now: Instant) -> Option<Frame> {
         let frame = self.frames.pop_front()?;
         self.report.queue_bytes -= frame.bytes.len();
         self.report.queue_depth = self.frames.len();
-        self.report
-            .local_timing
-            .compressed_wait
-            .record(frame.queued_at.elapsed());
+        let waited = now.saturating_duration_since(frame.queued_at);
+        self.report.local_timing.compressed_wait.record(waited);
+        if self
+            .display_catch_up
+            .observe(self.frames.len(), waited, now)
+        {
+            self.report.adaptive_display_catch_up_activations = self
+                .report
+                .adaptive_display_catch_up_activations
+                .saturating_add(1);
+        }
         Some(frame)
     }
 
@@ -430,6 +516,7 @@ impl Queue {
     }
 
     pub fn clear(&mut self) {
+        self.display_catch_up.reset();
         self.report.frames_dropped = self
             .report
             .frames_dropped
@@ -558,7 +645,7 @@ mod tests {
 
     #[test]
     fn display_catch_up_drains_bursts_without_losing_the_tail_or_references() {
-        let mut queue = Queue::default();
+        let mut queue = Queue::with_display_policy(DisplayCatchUpPolicy::Adaptive);
         let mut identity = 0i64;
         for burst in [1, 2, 3, 12, 1, 24, 1] {
             let first = identity;
@@ -574,7 +661,7 @@ mod tests {
             let mut displayed = Vec::new();
             while let Some(frame) = queue.pop() {
                 decoded.push((frame.timestamp_100ns, frame.idr, frame.parameters));
-                if !skip_display_for_backlog(queue.report.queue_depth) {
+                if !queue.should_skip_display() {
                     displayed.push(frame.timestamp_100ns);
                 }
                 queue.recycle(frame.bytes);
@@ -591,6 +678,127 @@ mod tests {
             assert_eq!(queue.report.frames_dropped, 0);
             assert_eq!(queue.reset_generation, 0);
             assert!(!queue.report.waiting_for_idr);
+        }
+    }
+
+    #[test]
+    fn adaptive_catch_up_distinguishes_short_and_persistent_late_bursts() {
+        fn drain(
+            policy: DisplayCatchUpPolicy,
+            arrivals: &[u64],
+            parameter_tail: bool,
+        ) -> (Vec<i64>, Vec<i64>, u64) {
+            let now = Instant::now();
+            let mut queue = Queue::with_display_policy(policy);
+            for index in 0..arrivals.len() {
+                assert!(queue.submit(
+                    &[index as u8],
+                    index == 0,
+                    parameter_tail && index == arrivals.len() - 1,
+                    index as i64
+                ));
+            }
+            for frame in &mut queue.frames {
+                frame.queued_at = now - CATCH_UP_LATE_WAIT;
+            }
+            let mut decoded = Vec::new();
+            let mut displayed = Vec::new();
+            for elapsed in arrivals {
+                let frame = queue.pop_at(now + Duration::from_millis(*elapsed)).unwrap();
+                decoded.push(frame.timestamp_100ns);
+                if !queue.should_skip_display() {
+                    displayed.push(frame.timestamp_100ns);
+                }
+                // Output, retry and original-surface checks must not each add
+                // a history observation or count an activation again.
+                let activations = queue.report.adaptive_display_catch_up_activations;
+                let decision = queue.should_skip_display();
+                assert_eq!(queue.should_skip_display(), decision);
+                assert_eq!(
+                    queue.report.adaptive_display_catch_up_activations,
+                    activations
+                );
+                queue.recycle(frame.bytes);
+            }
+            assert_eq!(queue.report.frames_dropped, 0);
+            assert_eq!(queue.report.queue_bytes, 0);
+            assert_eq!(queue.reset_generation, 0);
+            assert!(!queue.display_catch_up.aggressive);
+            (
+                decoded,
+                displayed,
+                queue.report.adaptive_display_catch_up_activations,
+            )
+        }
+        use DisplayCatchUpPolicy::{Adaptive, Fixed};
+        assert_eq!(
+            drain(Adaptive, &[0, 2, 4, 6], false),
+            drain(Fixed, &[0, 2, 4, 6], false)
+        );
+        let fixed = drain(Fixed, &[0, 50, 100, 150], false);
+        let adaptive = drain(Adaptive, &[0, 50, 100, 150], false);
+        assert_eq!(fixed.0, adaptive.0);
+        assert_eq!(fixed.1, [2, 3]);
+        assert_eq!(adaptive.1, [3]);
+        assert_eq!((fixed.2, adaptive.2), (0, 1));
+        // A parameter-bearing tail must not justify skipping the preceding
+        // decoded picture: it may not produce a replacement output at all.
+        let headers = drain(Adaptive, &[0, 50, 100, 150], true);
+        assert_eq!(headers.1, fixed.1);
+        assert_eq!(headers.2, 1);
+        assert_eq!(drain(Adaptive, &[0, 20, 200, 220], false).2, 0);
+        assert_eq!(drain(Adaptive, &[4000], false).1, [0]);
+        assert!(std::mem::size_of::<DisplayCatchUp>() <= 64);
+    }
+
+    #[test]
+    fn adaptive_catch_up_does_not_escalate_fresh_input_at_varied_frame_rates() {
+        let now = Instant::now();
+        for period_ns in [4_166_667, 6_944_444, 16_666_667, 16_680_567, 33_333_333] {
+            let mut queue = Queue::with_display_policy(DisplayCatchUpPolicy::Adaptive);
+            assert!(queue.submit(&[0], true, false, 0));
+            for index in 1..=120 {
+                assert!(queue.submit(&[1], false, false, index));
+                let sample = now + Duration::from_nanos(period_ns * index as u64);
+                queue.frames.front_mut().unwrap().queued_at = sample - Duration::from_millis(4);
+                let frame = queue.pop_at(sample).unwrap();
+                assert!(!queue.should_skip_display());
+                queue.recycle(frame.bytes);
+            }
+            assert_eq!(queue.report.adaptive_display_catch_up_activations, 0);
+        }
+    }
+
+    #[test]
+    fn adaptive_catch_up_resets_history_at_recovery_and_encoder_boundaries() {
+        let now = Instant::now();
+        for rebuild in [false, true] {
+            let mut queue = Queue::with_display_policy(DisplayCatchUpPolicy::Adaptive);
+            for index in 0..4 {
+                assert!(queue.submit(&[1], index == 0, false, index));
+            }
+            for frame in &mut queue.frames {
+                frame.queued_at = now - CATCH_UP_LATE_WAIT;
+            }
+            for elapsed in [0, 50, 100] {
+                let frame = queue.pop_at(now + Duration::from_millis(elapsed)).unwrap();
+                queue.recycle(frame.bytes);
+            }
+            assert!(queue.should_skip_display());
+            assert_eq!(queue.report.adaptive_display_catch_up_activations, 1);
+            if rebuild {
+                assert!(queue.encoder_rebuilt(now));
+            } else {
+                assert!(queue.recover(now));
+            }
+            assert!(!queue.display_catch_up.aggressive);
+            assert!(queue.display_catch_up.late_since.is_none());
+            assert!(queue.submit(&[2], true, false, 4));
+            assert!(queue.submit(&[3], false, false, 5));
+            queue.frames.front_mut().unwrap().queued_at = now - Duration::from_secs(1);
+            queue.pop_at(now + Duration::from_secs(1)).unwrap();
+            assert!(!queue.should_skip_display());
+            assert_eq!(queue.report.adaptive_display_catch_up_activations, 1);
         }
     }
     #[test]

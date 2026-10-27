@@ -368,14 +368,21 @@ pub struct Pipeline {
     surface_generation: u64,
 }
 impl Pipeline {
-    pub fn start(window: Arc<crate::window::Window>) -> Self {
+    pub fn start(
+        window: Arc<crate::window::Window>,
+        policy: crate::video_output::DisplayCatchUpPolicy,
+    ) -> Self {
         let surface_generation = window.begin_video();
         let surface_window = window.clone();
         let presentation_mode = window.presentation_mode();
         let wake = (presentation_mode == PresentationMode::LowLatency)
             .then(WorkerWake::create)
             .flatten();
-        let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new(), wake));
+        let shared = Arc::new((
+            Mutex::new(Queue::with_display_policy(policy)),
+            Condvar::new(),
+            wake,
+        ));
         shared
             .0
             .lock()
@@ -869,7 +876,7 @@ fn run(
             retry_pending = q.reset_generation == generation
                 && !q.stopped
                 && q.report.failure_stage.is_none()
-                && !crate::video_output::skip_display_for_backlog(q.report.queue_depth);
+                && !q.should_skip_display();
         }
         header_bytes = 0;
         if let Some(error) = failure {
@@ -1492,7 +1499,7 @@ impl Session {
         if let Some(display) = &mut self.display {
             let catching_up = {
                 let q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
-                crate::video_output::skip_display_for_backlog(q.report.queue_depth)
+                q.should_skip_display()
             };
             let hwnd = window
                 .ensure_video_surface()
@@ -2199,7 +2206,7 @@ impl Renderer {
                 .local_timing
                 .surface_dispatch
                 .record(dispatched.duration_since(ready));
-            let skip = crate::video_output::skip_display_for_backlog(q.report.queue_depth);
+            let skip = q.should_skip_display();
             if skip {
                 q.report.display_updates_skipped += 1;
             }

@@ -606,7 +606,10 @@ impl Attempt {
         let audio = crate::audio_stream::Pipeline::start_with_budget(
             window.audio_buffer().map(|(_, max)| max),
         );
-        let video = Arc::new(crate::video_windows::Pipeline::start(window.clone()));
+        let video = Arc::new(crate::video_windows::Pipeline::start(
+            window.clone(),
+            crate::video_output::DisplayCatchUpPolicy::Adaptive,
+        ));
         let mut state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
         if state.cancelled || state.closing || state.video_output.is_some() {
             drop(state);

@@ -479,6 +479,12 @@ fn rows(
                 "Display catch-up skips",
                 v.display_updates_skipped.to_string(),
             );
+            if v.adaptive_display_catch_up {
+                row(
+                    "Adaptive catch-up activations",
+                    v.adaptive_display_catch_up_activations.to_string(),
+                );
+            }
             row(
                 "Timing scope",
                 "CPU wall time; excludes GPU completion and scanout".into(),
