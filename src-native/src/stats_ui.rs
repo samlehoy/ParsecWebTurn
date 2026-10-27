@@ -428,6 +428,7 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
                 layout_tabs(hwnd, page);
                 let mut rect: RECT = std::mem::zeroed();
                 GetClientRect(hwnd, &mut rect);
+                let viewport = (rect.bottom - CONTENT_TOP).max(0);
                 page.scroll = page.scroll.min((page.height - viewport).max(0));
                 if wp == SIZE_MINIMIZED as usize {
                     page.resources = Default::default();
@@ -471,7 +472,7 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
                         _ => page.scroll,
                     }
                 };
-                page.scroll = target.clamp(0, (page.height - rect.bottom).max(0));
+                page.scroll = target.clamp(0, (page.height - viewport).max(0));
                 InvalidateRect(hwnd, null(), 0);
                 return 0;
             }

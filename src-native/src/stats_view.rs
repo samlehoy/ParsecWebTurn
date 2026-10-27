@@ -73,7 +73,7 @@ impl<'a> Presentation<'a> {
             Tab::Network => self.footer,
             Tab::Video => "Presentation submissions are accepted by the renderer, not confirmed monitor scanout. Reported color depth and chroma describe the received stream and application output.".into(),
             Tab::Audio => "Audio queues and drop counters describe audio frames, not video frames. Recovery counters track local audio-output reopening.".into(),
-            Tab::Timing => "Local timings are CPU wall time, excluding GPU completion and monitor scanout. Recent averages cover up to two seconds; an em dash means no fresh samples. Session means/peaks are retained. Host reports are host durations, not capture-to-display latency.".into(),
+            Tab::Timing => "Local timings are CPU wall time, excluding GPU completion and monitor scanout. Recent averages cover up to two seconds; an em dash means no fresh samples. Local session means/peaks are retained. Host averages/peaks cover the current diagnostic collection; host reports are not capture-to-display latency.".into(),
         };
         if self.rows.is_empty() {
             self.rows
