@@ -150,9 +150,17 @@ fn prepare_vsr_runtime(settings: &crate::connection_settings::Manager) {
             VsrRuntimeConsent::Declined
         };
         if settings
-            .save(preferences.clone(), "", "", false, false)
+            .update_vsr_consent(preferences.vsr_runtime_consent)
             .is_err()
         {
+            crate::event_log::record(
+                "WARN",
+                "vsr_runtime_consent_save_failed",
+                serde_json::json!({}),
+            );
+            unsafe {
+                ui::message_box(std::ptr::null_mut(), "The VSR download permission could not be saved beside settings.json. No download was started; normal GPU video remains available.");
+            }
             return;
         }
     }

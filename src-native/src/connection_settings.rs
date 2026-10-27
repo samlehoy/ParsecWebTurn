@@ -488,14 +488,26 @@ impl Manager {
         &self,
         update: impl FnOnce(&mut crate::native_core::profile::Profile),
     ) -> Result<()> {
+        self.update_local(|settings| {
+            update(&mut settings.native_core);
+            settings.native_core.video.validate()
+        })
+    }
+    /// Local setup consent must be saveable before TURN credentials exist.
+    pub fn update_vsr_consent(&self, consent: VsrRuntimeConsent) -> Result<()> {
+        self.update_local(|settings| {
+            settings.vsr_runtime_consent = consent;
+            Ok(())
+        })
+    }
+    fn update_local(&self, update: impl FnOnce(&mut Settings) -> Result<()>) -> Result<()> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         anyhow::ensure!(
             state.1.is_none(),
-            "Fix settings.json before saving the native profile"
+            "Fix settings.json before saving local preferences"
         );
         let mut settings = state.0.clone();
-        update(&mut settings.native_core);
-        settings.native_core.video.validate()?;
+        update(&mut settings)?;
         let raw = serde_json::to_vec_pretty(&settings)?;
         anyhow::ensure!(raw.len() <= MAX_FILE, "Settings exceed 64 KiB");
         atomic_write(&self.path, &raw)?;
@@ -1064,5 +1076,33 @@ mod tests {
             br#"{"iceServers":[{"urls":"turns:example.org","username":"fixture"}]}"#
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod runtime_consent_tests {
+    use super::*;
+    #[test]
+    fn consent_can_be_saved_before_network_configuration_without_losing_profile() {
+        let dir =
+            std::env::temp_dir().join(format!("evoparseq-vsr-consent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let mut settings = Settings::default();
+        settings.native_core.encrypted_session = "opaque-existing-protected-session".into();
+        std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
+        let manager = Manager::open(path.clone());
+        assert!(manager.view().0.validate().is_err());
+        manager
+            .update_vsr_consent(VsrRuntimeConsent::Allowed)
+            .unwrap();
+        let restored = Manager::open(path).view().0;
+        assert_eq!(restored.vsr_runtime_consent, VsrRuntimeConsent::Allowed);
+        assert_eq!(
+            restored.native_core.encrypted_session,
+            settings.native_core.encrypted_session
+        );
+        std::fs::remove_file(dir.join("settings.json")).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 }

@@ -1174,6 +1174,12 @@ unsafe fn save(hwnd: HWND, page: &mut Page) {
             s.vsr_runtime_consent = crate::connection_settings::VsrRuntimeConsent::Allowed;
         } else {
             s.nvidia_vsr = 0;
+            PostMessageW(
+                hwnd,
+                WM_COMMAND,
+                NVIDIA_VSR | ((CBN_SELCHANGE as usize) << 16),
+                0,
+            );
             SendMessageW(GetDlgItem(hwnd, NVIDIA_VSR as i32), CB_SETCURSEL, 0, 0);
         }
     }

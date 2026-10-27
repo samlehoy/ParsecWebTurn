@@ -1,5 +1,5 @@
 # Optional build-time SDK. Nothing is installed and proprietary SDK files are
-# not committed. Runtime extraction happens only when the user enables VSR.
+# not committed. The app separately installs the runtime only with startup consent.
 param([Parameter(Mandatory=$true)][string]$Destination)
 $ErrorActionPreference = 'Stop'
 $archive = Join-Path $Destination 'RTX_Video_SDK_v1.1.0.zip'

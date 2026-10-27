@@ -706,6 +706,11 @@ fn run(
                     .recovery_reason
                     == Some("compressed_queue_full");
                 if overloaded {
+                    shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .begin_native_call(NativeOperation::Release, Instant::now());
                     session
                         .as_mut()
                         .unwrap()
@@ -715,6 +720,11 @@ fn run(
                         .disable_vsr(
                             "VSR could not keep up with incoming video; normal rendering retained",
                         );
+                    shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .finish_native_call(Instant::now());
                     vsr_disabled = true;
                 }
             } else {
