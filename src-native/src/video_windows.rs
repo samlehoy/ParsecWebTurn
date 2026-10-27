@@ -467,7 +467,7 @@ impl Pipeline {
                     q.submit_codec(buffer, info.idr, info.parameters, timestamp, info.codec);
 
                 if accepted {
-                    q.set_last_rotation(_rotation);
+                    q.set_last_packet(_rotation, info.picture);
                 }
                 accepted
             }
@@ -655,6 +655,7 @@ fn run(
                     bytes,
                     idr: false,
                     parameters: true,
+                    picture: false,
                     timestamp_100ns: 0,
                 });
             }
@@ -707,6 +708,7 @@ fn run(
                                 bytes,
                                 idr: false,
                                 parameters: true,
+                                picture: false,
                                 timestamp_100ns: 0,
                             });
                         }

@@ -151,6 +151,7 @@ impl Inspector {
         Some(PacketInfo {
             codec,
             idr: summary.idr,
+            picture: summary.picture,
             parameters: summary.vps || summary.sps.is_some() || summary.pps,
         })
     }
@@ -158,6 +159,8 @@ impl Inspector {
 
 #[derive(Clone, Copy)]
 pub struct PacketInfo {
+    /// A supported VCL NAL was observed, not merely SEI/parameter metadata.
+    pub picture: bool,
     pub codec: Codec,
     pub idr: bool,
     pub parameters: bool,
@@ -273,6 +276,7 @@ impl ParameterCache {
 
 #[derive(Default)]
 struct NalSummary {
+    picture: bool,
     vps: bool,
     sps: Option<[u8; 3]>,
     hevc_configuration: Option<HevcConfiguration>,
@@ -306,6 +310,9 @@ fn hevc_annex_b(bytes: &[u8], read_configuration: bool) -> Option<NalSummary> {
         if header & 0x81 != 0 || second & 0xf8 != 0 || second & 7 == 0 || nal.len() < 3 {
             return None;
         }
+        // Supported H.265 VCL types. Reserved types stay conservative. Reuse
+        // the existing scan; metadata cannot justify replacing a picture.
+        summary.picture |= matches!((header >> 1) & 63, 0..=9 | 16..=21);
         match (header >> 1) & 63 {
             32 => summary.vps = true,
             33 => {
@@ -521,6 +528,9 @@ fn annex_b(bytes: &[u8]) -> Option<NalSummary> {
         if header & 128 != 0 || !(1..=23).contains(&kind) {
             return None;
         }
+        // H.264 coded slice and data-partition NALs. The additional flag
+        // does not change validation, decoder input or stream acceptance.
+        summary.picture |= (1..=5).contains(&kind);
         match kind {
             7 => summary.sps = Some(nal.get(1..4)?.try_into().ok()?),
             8 => {
@@ -550,6 +560,39 @@ fn annex_b(bytes: &[u8]) -> Option<NalSummary> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn metadata_alone_never_announces_a_replacement_picture() {
+        let mut avc = super::Inspector::default();
+        for bytes in [
+            &[0, 0, 1, 0x06, 0x80][..],
+            &[0, 0, 1, 0x09, 0x80],
+            &[0, 0, 1, 0x68, 0x80],
+        ] {
+            assert!(!avc.receive(bytes).unwrap().picture);
+        }
+        assert!(avc.receive(&[0, 0, 1, 0x41, 0x80]).unwrap().picture);
+        assert!(avc.receive(&[0, 0, 1, 0x65, 0x80]).unwrap().picture);
+
+        let mut hevc = super::Inspector::default();
+        hevc.enable_hevc(true);
+        assert!(!hevc.receive(&[0, 0, 1, 0x40, 1, 0x80]).unwrap().picture);
+        for kind in [34, 35, 39, 40, 22] {
+            assert!(
+                !hevc
+                    .receive(&[0, 0, 1, kind << 1, 1, 0x80])
+                    .unwrap()
+                    .picture
+            );
+        }
+        for kind in [0, 1, 16, 19, 21] {
+            assert!(
+                hevc.receive(&[0, 0, 1, kind << 1, 1, 0x80])
+                    .unwrap()
+                    .picture
+            );
+        }
+    }
+
     use super::*;
     #[test]
     fn recovery_cache_keeps_parameters_but_never_picture_payloads() {

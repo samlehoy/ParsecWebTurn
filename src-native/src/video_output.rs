@@ -226,6 +226,7 @@ impl Snapshot {
 }
 
 pub struct Frame {
+    pub picture: bool,
     /// Clockwise display quarter-turns, carried with compressed-frame identity.
     pub rotation: u8,
     pub queued_at: Instant,
@@ -285,7 +286,7 @@ impl Queue {
     pub fn should_skip_display(&self) -> bool {
         skip_display_for_backlog(self.frames.len())
             || (self.display_catch_up.aggressive
-                && self.frames.front().is_some_and(|next| !next.parameters))
+                && self.frames.front().is_some_and(|next| next.picture))
     }
 
     #[cfg(test)]
@@ -296,13 +297,17 @@ impl Queue {
         parameters: bool,
         timestamp_100ns: i64,
     ) -> bool {
-        self.submit_codec(
+        let accepted = self.submit_codec(
             bytes.to_vec(),
             idr,
             parameters,
             timestamp_100ns,
             crate::video_stream::Codec::H264,
-        )
+        );
+        if accepted {
+            self.set_last_packet(0, idr || !parameters);
+        }
+        accepted
     }
 
     pub fn submit_codec(
@@ -350,6 +355,7 @@ impl Queue {
         self.report.codec = Some(codec);
         self.report.queue_bytes += bytes.len();
         self.frames.push_back(Frame {
+            picture: false,
             rotation: 0,
             queued_at: Instant::now(),
             codec,
@@ -363,9 +369,10 @@ impl Queue {
         true
     }
 
-    pub fn set_last_rotation(&mut self, rotation: u8) {
+    pub fn set_last_packet(&mut self, rotation: u8, picture: bool) {
         if let Some(frame) = self.frames.back_mut() {
             frame.rotation = rotation;
+            frame.picture = picture;
         }
     }
 
@@ -690,17 +697,20 @@ mod tests {
         fn drain(
             policy: DisplayCatchUpPolicy,
             arrivals: &[u64],
-            parameter_tail: bool,
+            tail: Option<&[u8]>,
         ) -> (Vec<i64>, Vec<i64>, u64) {
             let now = Instant::now();
             let mut queue = Queue::with_display_policy(policy);
             for index in 0..arrivals.len() {
-                assert!(queue.submit(
-                    &[index as u8],
-                    index == 0,
-                    parameter_tail && index == arrivals.len() - 1,
-                    index as i64
-                ));
+                if let Some(bytes) = tail.filter(|_| index == arrivals.len() - 1) {
+                    let info = crate::video_stream::Inspector::default()
+                        .receive(bytes)
+                        .unwrap();
+                    assert!(queue.submit(bytes, info.idr, info.parameters, index as i64));
+                    queue.set_last_packet(0, info.picture);
+                } else {
+                    assert!(queue.submit(&[index as u8], index == 0, false, index as i64));
+                }
             }
             for frame in &mut queue.frames {
                 frame.queued_at = now - CATCH_UP_LATE_WAIT;
@@ -736,22 +746,30 @@ mod tests {
         }
         use DisplayCatchUpPolicy::{Adaptive, Fixed};
         assert_eq!(
-            drain(Adaptive, &[0, 2, 4, 6], false),
-            drain(Fixed, &[0, 2, 4, 6], false)
+            drain(Adaptive, &[0, 2, 4, 6], None),
+            drain(Fixed, &[0, 2, 4, 6], None)
         );
-        let fixed = drain(Fixed, &[0, 50, 100, 150], false);
-        let adaptive = drain(Adaptive, &[0, 50, 100, 150], false);
+        let fixed = drain(Fixed, &[0, 50, 100, 150], None);
+        let adaptive = drain(Adaptive, &[0, 50, 100, 150], None);
         assert_eq!(fixed.0, adaptive.0);
         assert_eq!(fixed.1, [2, 3]);
         assert_eq!(adaptive.1, [3]);
         assert_eq!((fixed.2, adaptive.2), (0, 1));
-        // A parameter-bearing tail must not justify skipping the preceding
-        // decoded picture: it may not produce a replacement output at all.
-        let headers = drain(Adaptive, &[0, 50, 100, 150], true);
-        assert_eq!(headers.1, fixed.1);
-        assert_eq!(headers.2, 1);
-        assert_eq!(drain(Adaptive, &[0, 20, 200, 220], false).2, 0);
-        assert_eq!(drain(Adaptive, &[4000], false).1, [0]);
+        // Parameter, SEI and access-unit-delimiter tails are parsed through the
+        // real inspector; none may justify losing the preceding decoded image.
+        for metadata in [
+            &[0, 0, 1, 0x68, 0x80][..],
+            &[0, 0, 1, 0x06, 0x80],
+            &[0, 0, 1, 0x09, 0x80],
+        ] {
+            let headers = drain(Adaptive, &[0, 50, 100, 150], Some(metadata));
+            assert_eq!(headers.1, fixed.1);
+            assert_eq!(headers.2, 1);
+        }
+        let combined = [0, 0, 1, 0x67, 100, 0, 31, 0, 0, 1, 0x41, 0x80];
+        assert_eq!(drain(Adaptive, &[0, 50, 100, 150], Some(&combined)).1, [3]);
+        assert_eq!(drain(Adaptive, &[0, 20, 200, 220], None).2, 0);
+        assert_eq!(drain(Adaptive, &[4000], None).1, [0]);
         assert!(std::mem::size_of::<DisplayCatchUp>() <= 64);
     }
 
