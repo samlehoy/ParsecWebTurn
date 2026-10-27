@@ -42,6 +42,23 @@ pub struct LocalTiming {
     pub output_service_ns: u128,
 }
 
+impl LocalTiming {
+    /// Stable presentation order, shared by sampled diagnostics and its view.
+    /// Constructed only by telemetry consumers, never by the decoder callback.
+    pub fn stages(&self) -> [(&'static str, &Timing); 8] {
+        [
+            ("Decoder/device setup", &self.decoder_setup),
+            ("Compressed queue wait", &self.compressed_wait),
+            ("Decoder API service", &self.decoder_service),
+            ("Decoder input to output", &self.decoder_residence),
+            ("Decoded surface handoff", &self.surface_dispatch),
+            ("Presentation preparation", &self.presentation_prepare),
+            ("Present API call", &self.present_call),
+            ("Present submission interval", &self.present_interval),
+        ]
+    }
+}
+
 #[derive(Clone, Copy)]
 struct PendingInput {
     sequence: usize,

@@ -1,5 +1,14 @@
 # EvoParseq changelog
 
+## Unreleased
+
+- Preserve clipboard write failures and retry only the newest remote value,
+  at most five times within one second on the existing session loop. Cancel
+  pending writes on focus loss, permission changes or a new local copy.
+- Show recent video timing averages from a bounded two-second telemetry window,
+  alongside existing session statistics. Distinguish decoded FPS from accepted
+  presentation-submission FPS without new per-frame measurements or GPU work.
+
 ## v0.9.5-dev.1 — Native Rust core and session controls (2026-10-27)
 
 Implemented changes since stable ParsecWebTurn v0.9.4. This prerelease is the

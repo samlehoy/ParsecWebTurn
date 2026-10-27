@@ -236,6 +236,7 @@ fn rows(
     v: &Values,
     cpu: (Option<f64>, Option<f64>, Option<f64>),
 ) -> Vec<(String, String)> {
+    let values = v;
     let mut rows = Vec::new();
     let mut row = |a: &str, b: String| rows.push((a.into(), b));
     #[cfg(feature = "bud")]
@@ -444,33 +445,35 @@ fn rows(
         if let Some(mode) = v.presentation_mode {
             row("Display timing", mode.into());
         }
+        row("Decoded video rate", number(values.fps, "fps"));
+        row("Present submissions", number(values.present_fps, "fps"));
+        row(
+            "Presentation rate scope",
+            "Accepted submissions; not monitor scanout".into(),
+        );
         if v.local_timing.decoder_service.count > 0 {
             row("LOCAL VIDEO TIMING", String::new());
-            row("CPU timing values", "Latest / average / peak (ms)".into());
-            for (name, value) in [
-                ("Decoder/device setup", &v.local_timing.decoder_setup),
-                ("Compressed queue wait", &v.local_timing.compressed_wait),
-                ("Decoder API service", &v.local_timing.decoder_service),
-                ("Decoder input to output", &v.local_timing.decoder_residence),
-                ("Decoded surface handoff", &v.local_timing.surface_dispatch),
-                (
-                    "Presentation preparation",
-                    &v.local_timing.presentation_prepare,
-                ),
-                ("Present API call", &v.local_timing.present_call),
-                (
-                    "Present submission interval",
-                    &v.local_timing.present_interval,
-                ),
-            ] {
+            row(
+                "CPU timing values",
+                "Latest / recent avg / session avg / peak (ms)".into(),
+            );
+            row(
+                "Recent timing window",
+                "Up to 2 s; — means no new samples".into(),
+            );
+            for (i, (name, value)) in v.local_timing.stages().into_iter().enumerate() {
                 row(
                     name,
                     if value.count == 0 {
                         "Not reported".into()
                     } else {
                         format!(
-                            "{:.2} / {:.2} / {:.2}",
-                            value.latest_ms, value.average_ms, value.peak_ms
+                            "{:.2} / {} / {:.2} / {:.2}",
+                            value.latest_ms,
+                            values.recent_timing_ms[i]
+                                .map_or_else(|| "—".into(), |v| format!("{v:.2}")),
+                            value.average_ms,
+                            value.peak_ms
                         )
                     },
                 );
@@ -609,18 +612,60 @@ pub fn compact_metrics(
         .and_then(|s| s.bud.as_ref())
         .and_then(|b| b.encode_ms);
     format!(
-        "Decode CPU {} | Encode {}\nRTT {} | RX {} | FPS {}",
+        "Decode CPU {} | Encode {}\nRTT {} | RX {} | D/P {}/{} fps",
         metric(decode, "ms"),
         metric(encode, "ms"),
         metric(sample.and_then(|s| s.rtt_ms), "ms"),
         metric(rates.incoming, "Mbps"),
-        metric(rates.fps, "")
+        metric(rates.fps, ""),
+        metric(rates.present_fps, "")
     )
 }
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn recent_timing_and_submission_rates_keep_scope_and_lifetime_values() {
+        let mut sample = Sample {
+            video: Some(crate::video_output::Snapshot {
+                decoder_initialized: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        sample
+            .video
+            .as_mut()
+            .unwrap()
+            .local_timing
+            .decoder_service
+            .record(std::time::Duration::from_millis(9));
+        let mut values = Values {
+            fps: Some(60.0),
+            present_fps: Some(30.0),
+            ..Default::default()
+        };
+        values.recent_timing_ms[2] = Some(2.0);
+        let view = Presentation::new(
+            &sample,
+            &values,
+            (None, None, None),
+            None,
+            &Default::default(),
+        );
+        assert!(view
+            .rows
+            .contains(&("Present submissions".into(), "30.0 fps".into())));
+        assert!(view.rows.contains(&(
+            "Decoder API service".into(),
+            "9.00 / 2.00 / 9.00 / 9.00".into()
+        )));
+        assert!(view
+            .rows
+            .iter()
+            .any(|(k, v)| k == "Presentation rate scope" && v.contains("not monitor scanout")));
+    }
     #[test]
     fn cards_preserve_units_unknowns_and_stale_connection_policy() {
         let timing = crate::frame_timing::Shared::default().snapshot(0);

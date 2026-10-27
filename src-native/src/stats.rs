@@ -326,17 +326,26 @@ impl Sample {
 #[derive(Default)]
 pub struct Rates {
     previous: Option<Sample>,
+    recent: crate::stats_recent::Recent,
 }
 #[derive(Default)]
 pub struct Values {
     pub incoming: Option<f64>,
     pub outgoing: Option<f64>,
     pub fps: Option<f64>,
+    pub present_fps: Option<f64>,
+    pub recent_timing_ms: [Option<f64>; 8],
     pub audio: Option<f64>,
 }
 impl Rates {
     pub fn update(&mut self, sample: &Sample) -> Values {
-        let mut result = Values::default();
+        let mut result = Values {
+            recent_timing_ms: self.recent.update(
+                sample,
+                sample.connected() && sample.at.elapsed().as_secs() <= 4,
+            ),
+            ..Default::default()
+        };
         if let Some(old) = &self.previous {
             let seconds = sample.at.saturating_duration_since(old.at).as_secs_f64();
             if sample.generation == old.generation
@@ -368,10 +377,26 @@ impl Rates {
                         .map(|v| v.frames_decoded),
                     1.0,
                 );
+                result.present_fps = rate(
+                    sample
+                        .video
+                        .as_ref()
+                        .filter(|v| v.decoder_initialized)
+                        .map(|v| v.frames_presented),
+                    old.video
+                        .as_ref()
+                        .filter(|v| v.decoder_initialized)
+                        .map(|v| v.frames_presented),
+                    1.0,
+                );
             }
         }
         // Don't discard the baseline if the UI timer reads the same cached sample twice.
-        if self.previous.as_ref().is_none_or(|p| p.at != sample.at) {
+        if self
+            .previous
+            .as_ref()
+            .is_none_or(|p| p.at != sample.at || p.generation != sample.generation)
+        {
             self.previous = Some(sample.clone());
         }
         result
@@ -380,6 +405,41 @@ impl Rates {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn decode_and_submission_rates_are_distinct_and_reset_independently() {
+        let mut rates = Rates::default();
+        let mut sample = Sample {
+            generation: 1,
+            state: "connected".into(),
+            video: Some(crate::video_output::Snapshot {
+                decoder_initialized: true,
+                frames_decoded: 10,
+                frames_presented: 5,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(rates.update(&sample).present_fps.is_none());
+        sample.at += std::time::Duration::from_secs(1);
+        sample.video.as_mut().unwrap().frames_decoded += 60;
+        sample.video.as_mut().unwrap().frames_presented += 30;
+        let values = rates.update(&sample);
+        assert_eq!(values.fps, Some(60.0));
+        assert_eq!(values.present_fps, Some(30.0));
+        sample.at += std::time::Duration::from_secs(1);
+        sample.video.as_mut().unwrap().frames_presented = 0;
+        assert!(rates.update(&sample).present_fps.is_none());
+        sample.generation += 1;
+        assert!(rates.update(&sample).fps.is_none());
+        sample.at += std::time::Duration::from_secs(1);
+        sample.video.as_mut().unwrap().frames_decoded += 5;
+        assert_eq!(rates.update(&sample).fps, Some(5.0));
+        sample.state = "disconnected".into();
+        sample.at += std::time::Duration::from_secs(1);
+        let values = rates.update(&sample);
+        assert!(values.present_fps.is_none() && values.fps.is_none());
+        assert_eq!(values.recent_timing_ms, [None; 8]);
+    }
     #[test]
     fn routes_require_positive_evidence() {
         assert_eq!(route("relay", "prflx"), "Relay — TURN in use");

@@ -62,6 +62,7 @@ mod settings_model;
 mod signaling;
 #[cfg(windows)]
 mod stats;
+mod stats_recent;
 #[cfg(windows)]
 mod stats_ui;
 #[cfg(windows)]

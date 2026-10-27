@@ -5,7 +5,11 @@ use super::{
     session_video, signaling, transport,
 };
 use anyhow::{ensure, Result};
-use std::{collections::VecDeque, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 pub(super) trait Desktop: View {
     fn running(&self) -> bool;
@@ -46,12 +50,20 @@ pub(super) trait Runtime: Desktop {
     fn host_error(&self, code: i32) -> transport::HostStatus;
 }
 
+struct PendingClipboard {
+    text: String,
+    expires: Instant,
+    next_try: Instant,
+    attempts: u8,
+}
+
 struct Local {
     video: profile::Video,
     fullscreen: bool,
     detached: bool,
     local_keys: std::collections::BTreeSet<&'static str>,
     last_clipboard: String,
+    pending_clipboard: Option<PendingClipboard>,
 }
 impl Local {
     fn new(video: profile::Video, desktop: &impl Desktop) -> Result<Self> {
@@ -67,6 +79,7 @@ impl Local {
             detached: false,
             local_keys: Default::default(),
             last_clipboard: String::new(),
+            pending_clipboard: None,
         })
     }
     fn set_video(&mut self, video: profile::Video) {
@@ -125,9 +138,48 @@ impl Local {
         Ok(false)
     }
     fn receive_clipboard(&mut self, text: &str, desktop: &impl Desktop) {
-        if desktop.clipboard_allowed() && text != self.last_clipboard {
-            desktop.clipboard().write_text(text);
-            self.last_clipboard = text.into();
+        // A newer remote value supersedes pending text, even if it matches the
+        // last successful value. Never retain rejected payloads or permissions.
+        self.pending_clipboard = None;
+        if !desktop.clipboard_allowed()
+            || text == self.last_clipboard
+            || text.len() > crate::platform::MAX_TEXT
+            || text.contains('\0')
+        {
+            return;
+        }
+        let now = Instant::now();
+        self.pending_clipboard = Some(PendingClipboard {
+            text: text.into(),
+            expires: now + Duration::from_secs(1),
+            next_try: now,
+            attempts: 0,
+        });
+        self.retry_clipboard(desktop, now);
+    }
+    fn retry_clipboard(&mut self, desktop: &impl Desktop, now: Instant) {
+        let Some(pending) = self.pending_clipboard.as_mut() else {
+            return;
+        };
+        if !desktop.clipboard_allowed() || now >= pending.expires {
+            self.pending_clipboard = None;
+            return;
+        }
+        if now < pending.next_try {
+            return;
+        }
+        pending.attempts += 1;
+        if desktop.clipboard().write_text(&pending.text) {
+            self.last_clipboard = self.pending_clipboard.take().unwrap().text;
+        } else if pending.attempts >= 5 {
+            self.pending_clipboard = None;
+            crate::event_log::record(
+                "WARN",
+                "clipboard_write_unavailable",
+                serde_json::json!({"attempts":5}),
+            );
+        } else {
+            pending.next_try = now + Duration::from_millis(200);
         }
     }
     fn clipboard_event(
@@ -137,6 +189,20 @@ impl Local {
         desktop: &impl Desktop,
         mut send: impl FnMut(&[u8]) -> Result<()>,
     ) -> Result<()> {
+        if !established
+            || !desktop.clipboard_allowed()
+            || matches!(event, Event::Focus(false) | Event::Clipboard)
+        {
+            // Local clipboard changes win over a delayed remote write. Focus
+            // loss must not leave text that could overwrite a later local copy.
+            self.pending_clipboard = None;
+        }
+        if matches!(event, Event::Key(true, "KeyV", mods) if mods & 14 == 2) {
+            self.retry_clipboard(desktop, Instant::now());
+            if self.pending_clipboard.is_some() {
+                return Ok(());
+            }
+        }
         if matches!(event, Event::Clipboard)
             || matches!(event, Event::Key(true, "KeyV", mods) if mods & 14 == 2)
         {
@@ -416,6 +482,7 @@ pub(super) fn run(
                 platform.send_input(&mut input, &attempt, &event)?;
             }
         }
+        local.retry_clipboard(platform, Instant::now());
         // Existing FIFO wakes immediately for input; media decoding and presentation
         // stay on their original workers. This interval only services control/audio.
         std::thread::park_timeout(Duration::from_millis(100));
@@ -447,12 +514,15 @@ mod tests {
         Overlay,
         ClipboardAcknowledged,
     }
-    struct Clipboard(Arc<Mutex<String>>);
+    struct Clipboard(Arc<Mutex<String>>, Arc<std::sync::atomic::AtomicBool>);
     impl crate::platform::Desktop for Clipboard {
         fn read_text(&self) -> Option<String> {
             Some(self.0.lock().unwrap().clone())
         }
         fn write_text(&self, text: &str) -> bool {
+            if !self.1.load(std::sync::atomic::Ordering::Acquire) {
+                return false;
+            }
             *self.0.lock().unwrap() = text.into();
             true
         }
@@ -463,16 +533,22 @@ mod tests {
         allowed: Cell<bool>,
         clipboard: crate::platform::Services,
         text: Arc<Mutex<String>>,
+        writable: Arc<std::sync::atomic::AtomicBool>,
     }
     impl Default for TestDesktop {
         fn default() -> Self {
             let text = Arc::new(Mutex::new(String::new()));
+            let writable = Arc::new(std::sync::atomic::AtomicBool::new(true));
             Self {
                 state: Default::default(),
                 effects: Default::default(),
                 allowed: Cell::new(true),
-                clipboard: crate::platform::Services::new(Box::new(Clipboard(text.clone()))),
+                clipboard: crate::platform::Services::new(Box::new(Clipboard(
+                    text.clone(),
+                    writable.clone(),
+                ))),
                 text,
+                writable,
             }
         }
     }
@@ -654,6 +730,90 @@ mod tests {
             )
             .unwrap();
         assert!(local.detached);
+    }
+    #[test]
+    fn clipboard_retries_only_the_latest_value_and_commits_after_success() {
+        let desktop = TestDesktop::default();
+        let mut local = Local::new(Default::default(), &desktop).unwrap();
+        local.receive_clipboard("old", &desktop);
+        desktop
+            .writable
+            .store(false, std::sync::atomic::Ordering::Release);
+        local.receive_clipboard("first pending", &desktop);
+        assert_eq!(local.last_clipboard, "old");
+        assert_eq!(desktop.text.lock().unwrap().as_str(), "old");
+        local.receive_clipboard("latest pending", &desktop);
+        let due = local.pending_clipboard.as_ref().unwrap().next_try;
+        local.retry_clipboard(&desktop, due - Duration::from_millis(1));
+        assert_eq!(desktop.clipboard.snapshot().unavailable_or_rejected, 2);
+        desktop
+            .writable
+            .store(true, std::sync::atomic::Ordering::Release);
+        local.retry_clipboard(&desktop, due);
+        assert_eq!(local.last_clipboard, "latest pending");
+        assert_eq!(desktop.text.lock().unwrap().as_str(), "latest pending");
+        assert!(local.pending_clipboard.is_none());
+        local
+            .clipboard_event(&Event::Clipboard, true, &desktop, |_| unreachable!())
+            .unwrap();
+        assert_eq!(desktop.clipboard.snapshot().clipboard_writes, 2);
+    }
+    #[test]
+    fn clipboard_retry_is_bounded_and_focus_permission_and_local_copy_cancel_it() {
+        let desktop = TestDesktop::default();
+        let mut local = Local::new(Default::default(), &desktop).unwrap();
+        desktop
+            .writable
+            .store(false, std::sync::atomic::Ordering::Release);
+        local.receive_clipboard("bounded", &desktop);
+        for _ in 0..4 {
+            let due = local.pending_clipboard.as_ref().unwrap().next_try;
+            local.retry_clipboard(&desktop, due);
+        }
+        assert!(local.pending_clipboard.is_none());
+        assert_eq!(desktop.clipboard.snapshot().unavailable_or_rejected, 5);
+        assert_eq!(local.last_clipboard, "");
+        local.receive_clipboard("expires", &desktop);
+        let expires = local.pending_clipboard.as_ref().unwrap().expires;
+        local.retry_clipboard(&desktop, expires);
+        assert!(local.pending_clipboard.is_none());
+        for event in [Event::Focus(false), Event::Clipboard] {
+            local.receive_clipboard("cancelled", &desktop);
+            local
+                .clipboard_event(&event, true, &desktop, |_| unreachable!())
+                .unwrap();
+            assert!(local.pending_clipboard.is_none());
+        }
+        local.receive_clipboard("permission", &desktop);
+        desktop.allowed.set(false);
+        local.retry_clipboard(&desktop, Instant::now());
+        assert!(local.pending_clipboard.is_none());
+        desktop.allowed.set(true);
+        local.receive_clipboard("rejected\0text", &desktop);
+        assert!(local.pending_clipboard.is_none());
+    }
+    #[test]
+    fn pending_remote_clipboard_does_not_echo_old_local_text_on_paste() {
+        let desktop = TestDesktop::default();
+        let mut local = Local::new(Default::default(), &desktop).unwrap();
+        *desktop.text.lock().unwrap() = "local old text".into();
+        desktop
+            .writable
+            .store(false, std::sync::atomic::Ordering::Release);
+        local.receive_clipboard("remote pending", &desktop);
+        local
+            .clipboard_event(
+                &Event::Key(true, "KeyV", 2),
+                true,
+                &desktop,
+                |_| unreachable!(),
+            )
+            .unwrap();
+        assert!(local.pending_clipboard.is_some());
+        assert_eq!(desktop.clipboard.snapshot().clipboard_reads, 0);
+        // A duplicate of the successful value must still retire a newer pending value.
+        local.receive_clipboard("", &desktop);
+        assert!(local.pending_clipboard.is_none());
     }
     #[test]
     fn clipboard_preserves_focus_gating_deduplication_and_retry_after_send_failure() {

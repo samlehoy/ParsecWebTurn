@@ -79,13 +79,14 @@ impl Services {
         self.try_read_text().map(remote_text)
     }
 
-    pub fn write_text(&self, text: &str) {
+    pub fn write_text(&self, text: &str) -> bool {
         let ok = text.len() <= MAX_TEXT
             && !text.contains('\0')
             && self.desktop.as_ref().is_some_and(|d| d.write_text(text));
         self.outcome(ok, |s| {
             s.clipboard_writes = s.clipboard_writes.saturating_add(1)
         });
+        ok
     }
 }
 
