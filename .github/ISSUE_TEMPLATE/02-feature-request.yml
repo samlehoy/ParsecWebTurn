@@ -7,7 +7,7 @@ body:
     id: existing-features
     attributes:
       label: Before suggesting
-      description: Check [open and closed issues](https://github.com/vampywiz17/ParsecWebTurn/issues?q=is%3Aissue) and the [EvoParseq README](https://github.com/vampywiz17/ParsecWebTurn/blob/codex/native-core/README.md) for existing features and plans.
+      description: Check [open and closed issues](https://github.com/vampywiz17/ParsecWebTurn/issues?q=is%3Aissue) and the [EvoParseq README](https://github.com/vampywiz17/ParsecWebTurn/blob/dev/README.md) for existing features and plans.
       options:
         - label: I checked that this feature is not already available or requested.
           required: true

@@ -2,7 +2,7 @@ name: Standalone Windows QoS measurement tool
 on:
   workflow_dispatch:
   push:
-    branches: [codex/native-core]
+    branches: [dev]
     paths: ['tools/qos-latency/**', '.github/workflows/qos-measurement.yml']
 permissions:
   contents: read

@@ -2,168 +2,147 @@
   <img src="assets/evoparseq-wordmark.svg" width="360" alt="EvoParseq">
 </p>
 
-<p align="center"><strong>A Windows Parsec client built on a new, native Rust core.</strong></p>
+<p align="center"><strong>An independent Windows Parsec client with a native Rust core.</strong></p>
 
-EvoParseq connects to your existing, unmodified Parsec hosts. Its new native core
-handles sign-in, computer discovery, session signaling and connection control;
-the Rust client provides networking, GPU video, audio and input directly.
-**EvoParseq implements its client directly in native Rust and does not bundle
-proprietary Parsec client code.** No browser is required.
+EvoParseq connects to existing, **unmodified Parsec hosts**. Native Rust handles
+sign-in, computer discovery, signaling, transport, GPU video, audio and input.
+It does not bundle or run the proprietary Parsec WebAssembly client core and
+requires no browser, WebView or helper executable.
 
-**EvoParseq is an independent community project. It is not affiliated with,
-endorsed by, or developed by Parsec or Unity.** It is also independent of lowlat.
-An existing Parsec account and a compatible Parsec host are required.
+**This is an independent community project, not affiliated with or endorsed by
+Parsec, Unity or lowlat.** A Parsec account and a compatible host are required.
 
-This README describes the **`codex/native-core` EvoParseq development branch**.
-The repository's `main` and `dev` branches and their releases are separate.
+The **`dev` branch now contains EvoParseq**. The current preview is
+[**v0.9.5-dev.1**](https://github.com/vampywiz17/ParsecWebTurn/releases/tag/v0.9.5-dev.1).
+The `main` branch and stable **ParsecWebTurn v0.9.4** remain available separately.
+This prerelease does not replace the stable release in the updater.
 
-## What it can do
+## Features
 
-- **Native sign-in and computer picker:** optional two-factor authentication,
-  encrypted remembered sessions, manual host peer ID, and background list refresh.
-- **WebRTC and BUD:** direct connections or custom TURN relays over UDP, TLS or
-  TCP; Force TURN, STUN-only and Cloudflare TURN credentials. Transport selection
-  is explicit, with no silent switch between WebRTC and BUD. Optional experimental
-  Windows TCP/TLS QoS marks outgoing TURN traffic; off by default.
-- **GPU video:** H.264 and preferred H.265/HEVC, selectable GPU, D3D11 rendering
-  and Media Foundation decoding, plus experimental NVIDIA/AMD/Intel HEVC paths.
-- **Session controls:** draggable overlay icon, resolution requests including
-  Keep host / Match client, bandwidth limit, frame rate, constant FPS,
-  orientation, fullscreen and mouse/keyboard immersive mode. A host display
-  selector switches the current stream between listed physical/virtual outputs,
-  using Keep host resolution on the selected display.
-- **Audio:** stereo Opus, adjustable playback buffer and optional raw PCM over
-  BUD. Experimental multichannel audio can request a compatible 5.1/7.1 layout.
-- **Input and clipboard:** normal mouse/keyboard forwarding, two-way Unicode text
-  clipboard, and experimental USB HID mouse/keyboard over BUD.
-- **Diagnostics:** connection route, RTT, traffic, FPS, decoder/output format,
-  CPU/GPU/memory use, audio queues, host timing and local video timings.
-  Optional event logs record failures without continuous mouse/key logging.
+- **Native account and sessions:** optional 2FA, encrypted remembered sign-in,
+  background-refreshing computer picker and manual peer ID. Owner connections
+  are supported; friend/invitation authorization is not implemented.
+- **WebRTC or BUD:** direct or custom TURN connections over UDP/TLS/TCP,
+  Force TURN, STUN-only and Cloudflare TURN credentials. No silent transport
+  switch. Optional experimental Windows TCP/TLS QoS marks outgoing TURN traffic.
+- **GPU video:** H.264 and H.265/HEVC, GPU selection, Media Foundation and
+  experimental vendor HEVC decoders, 10-bit SDR output, original-surface
+  zero-copy, and compatible NVIDIA/Intel HEVC 4:4:4 at 8 or 10 bits.
+- **Session overlay:** draggable icon; resolution, bandwidth, FPS, constant FPS,
+  orientation, fullscreen and immersive input controls. Switch the current stream
+  between host-listed physical or virtual displays.
+- **Audio:** stereo Opus, configurable buffering, BUD raw PCM and experimental
+  multichannel output. Automatically reopen the Windows audio output after
+  transient device errors or default-device changes, retiring stale audio.
+- **Input:** two-way Unicode text clipboard; normal mouse/keyboard forwarding;
+  experimental BUD USB HID mouse and keyboard, including relative camera input.
+- **Diagnostics:** route, RTT, traffic, FPS, actual decoder/format, audio queues,
+  host/local timings and system resource use. Optional bounded event logs record
+  failures without continuous mouse/key activity.
+- **Presentation:** Automatic, Low latency and VSync modes, with reference-safe
+  catch-up after bursts; WebRTC additionally uses bounded recent queue history.
 
-Host permissions, encoder capabilities and driver support determine which
-requests can be fulfilled. A preference is not proof of the received stream;
-**Connection stats reports the actual decoder, bit depth and output**.
+Host permissions, encoders and graphics drivers determine the actual stream.
+**Connection stats shows the received depth/chroma and application RGB output**;
+a selected preference alone does not prove that the host accepted it.
 
-## Try it
+## Download and run
 
-1. Download the **EvoParseq-win64** artifact from a successful
-   [native client CI run](https://github.com/vampywiz17/ParsecWebTurn/actions/workflows/native-core.yml?query=branch%3Acodex%2Fnative-core).
-2. Extract it to a writable folder and run **EvoParseq.exe**. You can reuse your
-   existing `settings.json`; the name change does not change its data format.
-3. Sign in with the account that owns the host, select a computer and connect.
-   Owner connections are the currently supported authorization path.
-4. Use **Settings** for Network, Video, Audio and Input. Save and reconnect when
-   changing transport or connection capabilities; use the session menu for live
-   host video requests.
+1. Download `EvoParseq-v0.9.5-dev.1-win64.zip` from the
+   [preview release](https://github.com/vampywiz17/ParsecWebTurn/releases/tag/v0.9.5-dev.1).
+   Development artifacts are also available from successful
+   [dev CI runs](https://github.com/vampywiz17/ParsecWebTurn/actions/workflows/native-core.yml?query=branch%3Adev).
+2. Extract to a writable folder and run **EvoParseq.exe**. Settings and optional
+   encrypted sessions are stored beside it in `settings.json`.
+3. Sign in with the host owner's account, choose a computer and connect.
+   Configure Network, Video, Audio and Input in Settings. Save and reconnect
+   after changing transport or connection capabilities; session video requests
+   can be applied while connected.
 
-Use **Help > About EvoParseq / Check for updates** for application information
-and stable updates. See [migration from ParsecWebTurn](MIGRATION.md) for existing
-settings, sign-in and transition-package details.
+Windows x64 and compatible D3D11 graphics drivers are required. Zero-copy
+requires Windows 11 and suitable drivers. Ordinary client use needs no admin
+rights. The stock host must already be configured for hosting.
 
-Requires Windows x64, a D3D11-capable GPU and suitable graphics drivers.
-Original-surface zero-copy also requires Windows 11 and driver support.
-Ordinary client use does not require administrator rights or helper programs.
-The host must already be configured for Parsec hosting.
+**Upgrading from ParsecWebTurn:** keep `settings.json` under the same Windows
+account and sign in again. The old web-core login is not imported. A legacy-named
+transition ZIP supports existing executable shortcuts. See [migration](MIGRATION.md).
+Help > Check for updates offers newer **stable** EvoParseq packages; prerelease
+installation is manual.
 
 | Shortcut | Action |
 | --- | --- |
-| Ctrl+Shift+M / Ctrl+Shift+O | Open the session menu and restore a hidden icon |
+| Ctrl+Shift+M / Ctrl+Shift+O | Open session menu and restore hidden icon |
 | Ctrl+Shift+W | Toggle fullscreen |
 | Ctrl+Shift+R | Release / recapture remote input |
 | Ctrl+Shift+Q | Disconnect |
-| Ctrl+Alt+End | Request Ctrl+Alt+Del on the host |
+| Ctrl+Alt+End | Request host Ctrl+Alt+Del |
 
-Secure attention requires the host's installed Parsec service and permissions;
-a portable host may not execute it.
+Ctrl+Alt+Del requires the installed Parsec host service and permissions; a
+portable host may not execute it.
 
 ## Experimental features and limits
 
-**Vendor HEVC decoding, zero-copy, 10-bit HEVC, HEVC 4:4:4, display timing,
-USB HID input and multichannel audio remain experimental.** Use H.264 with
-experimental options disabled for the most conservative configuration.
+**Vendor HEVC, zero-copy, 10-bit HEVC, 4:4:4, display timing, USB HID and
+multichannel audio remain experimental.** For conservative operation, use H.264,
+stereo Opus and Automatic timing with experimental options disabled.
 
-- **Zero-copy:** presents original 8-bit NV12 decoder surfaces through Windows
-  Presentation API. Normal rendering uses a GPU conversion/scaling pass. Neither
-  path reads decoded frames back to the CPU. Internal driver/compositor copies
-  and direct scanout are not independently verified.
-- **10-bit HEVC:** the Media Foundation path can produce 10-bit RGB SDR.
-  An optional experimental AMD AMF Main10 path reuses P010 GPU output;
-  it is off by default and live-validated on Radeon 780M (performance A/B pending). Live
-  Main 10 host encoding has been confirmed with NVIDIA; AMD configurations have
-  not consistently worked in testing. This is not HDR. An initial host encoder
-  error asks you to disable 10-bit and reconnect; no automatic 8-bit retry occurs.
-- **HEVC 4:4:4:** available experimentally on compatible NVIDIA and Intel
-  client GPUs, with compatible host encoding. **Intel is not live-validated**;
-  its decoder and output support must pass runtime checks. The 8-bit GPU path
-  has been confirmed live over BUD on NVIDIA RTX 3060; other configurations
-  remain unverified. Combining 4:4:4 with 10-bit HEVC is implemented
-  experimentally with direct Y410-to-RGB10 GPU conversion; live 1920x1080
-  playback is confirmed on RTX 3060 over BUD/TURN-UDP. AMD cannot enable 4:4:4 in Settings.
-  The tested AMD Radeon 780M driver did not expose the required D3D11 profile.
-  H.264 remains 4:2:0; original-NV12 zero-copy is not combined with
-  this path. Host/account terms and permissions still apply.
-- **USB HID:** BUD only, with USB/Yubikey passthrough enabled on the stock host.
-  Supports mouse buttons, dragging, scrolling, relative camera input and keyboard
-  forwarding. HID mouse input disables the display selector. Use the host primary
-  display (or one active physical/virtual display) and matching keyboard layouts.
-  On stock Windows hosts the client requests the primary output when necessary,
-  and pauses HID mouse forwarding until the host reports that output selected.
-  Absolute desktop reports remain bounded; relative camera input is unchanged.
-  The primary-output restriction has synthetic coverage; live multi-monitor
-  validation is still required.
-  No host patch is required; the host needs its supported USB driver.
-- **Raw PCM:** BUD only; the host must allow it (`network_raw_audio=1`). WebRTC
-  audio remains stereo Opus. Multichannel playback has **synthetic test coverage
-  only**, without confirmed live surround playback/channel ordering.
-- **Timing:** local values measure CPU durations, not GPU completion, physical
-  scanout or end-to-end latency. Traffic includes transport overhead rather than
-  pure video bitrate. New format-change handling still needs live GPU validation.
+- **Video:** live decoded frames remain on the GPU. Normal rendering uses the
+  conversion/output pass; zero-copy presents original 8-bit NV12 surfaces.
+  Driver/compositor copies and direct scanout are not independently verified.
+- **10-bit:** RGB10 output is SDR, not HDR. NVIDIA host encoding is confirmed;
+  other host encoders may refuse it or send 8-bit. An initial encoder failure
+  asks you to disable 10-bit and reconnect. Optional AMF Main10 output is
+  live-validated on AMD Radeon 780M; Media Foundation remains its default.
+- **4:4:4:** 8/10-bit playback is live-validated on NVIDIA RTX 3060. Intel support
+  is capability-gated and **not live-validated**. AMD selection is disabled.
+  H.264 stays 4:2:0; 4:4:4 does not combine with original-NV12 zero-copy.
+  Compatible host encoding, account permissions and service terms still apply.
+- **HID:** requires BUD and the stock host's USB/Yubikey passthrough plus its
+  supported USB driver. HID mouse uses the host primary display and disables
+  display switching; forwarding pauses until that selection is reported.
+  Use matching host/client keyboard layouts. No host patch is needed.
+- **Audio:** raw PCM is BUD-only and requires host permission
+  (`network_raw_audio=1`). WebRTC remains stereo Opus. Multichannel audio has
+  synthetic coverage only; live surround playback/channel order is unconfirmed.
+- **Displays and timing:** host virtual-display limitations can delay switching.
+  Reported timings are CPU/host durations, not GPU completion, scanout or total
+  latency. Adaptive catch-up, QoS benefit and physical audio-device recovery
+  still require broader live testing; no measured latency gain is claimed.
 
-Gamepads, microphone/camera forwarding, HDR, multi-monitor HID mapping and
-friend/invitation authorization are not part of the current native client.
+Gamepads, microphone/camera forwarding, HDR and multi-monitor HID mapping are
+not implemented. See the [changelog](CHANGELOG.md) for shipped changes.
 
-## Settings and troubleshooting
+## Troubleshooting and development
 
-Preferences and the optionally remembered session live in **`settings.json`
-beside the EXE**. Session tokens and saved server credentials use Windows
-CurrentUser DPAPI; passwords and two-factor codes are not saved. Keep this file
-when replacing the EXE. `--data-dir "C:\YourFolder"` selects another writable folder.
+Enable **Event logging** in Network settings for `client-events.jsonl` beside
+settings.json. Include the build, GPU/driver, transport and reproduction steps
+with a log or screenshot when reporting issues. Logs omit credentials, media,
+clipboard text and continuous input. **Do not publish settings.json or tokens.**
+Saved credentials use Windows CurrentUser DPAPI; copying them to another machine
+or Windows account does not transfer access. `--data-dir "C:\YourFolder"` selects
+another writable data directory.
 
-Enable **Event logging** in Network settings to create **`client-events.jsonl`**
-in the same folder. Logs contain UTC timestamps, connection transitions and
-media errors, without credentials, clipboard text, media content or continuous
-input events. When reporting a problem, include the build, GPU/driver, transport,
-reproduction steps and a log or screenshot. **Do not publish `settings.json`
-or account tokens.**
-
-[Native implementation notes](docs/native-core.md) ·
-[Settings comparison](docs/native-settings-comparison.md) ·
-[Protocol research references](docs/NATIVE_REFERENCES.md)
-
-## Build
-
-Use the Rust MSVC toolchain and Windows C++ Build Tools/SDK:
+Build with Rust MSVC and Windows C++ Build Tools/SDK:
 
 ```powershell
 cargo build --locked --release --manifest-path src-native/Cargo.toml
 ```
 
-The binary is `src-native/target/x86_64-pc-windows-msvc/release/evoparseq.exe`.
-CI packages it as **EvoParseq.exe**, checks the native dependency graph and runs
-native regression tests. Application source is in `src-native/src`;
-transport/video adapters are in `src-native/crates`. Only the current native
-runtime and its supported components are retained in this branch.
+CI packages `src-native/target/x86_64-pc-windows-msvc/release/evoparseq.exe` as
+EvoParseq.exe. Application logic lives in `src-native/src`; platform, transport
+and video adapters reuse the existing bounded workers and GPU path.
+
+[Architecture](docs/native-core.md) · [Settings comparison](docs/native-settings-comparison.md) ·
+[Development references](docs/NATIVE_REFERENCES.md)
 
 ## Credits and independence
 
 Thanks to **Duy (Nguyen Duy)** and [lowlat](https://github.com/nomi-san/lowlat)
-for inspiration, technical feedback and open-source components. EvoParseq reuses
-selected, pinned MIT-licensed protocol, transport and GPU components, retaining
-their licenses and attribution. It is independently developed and maintained;
-it is not an official lowlat client.
+for inspiration, feedback and selected MIT-licensed protocol, transport and GPU
+components. Their licenses and local-change notices are retained. EvoParseq is
+independently developed and maintained; it is not an official lowlat client.
 
-The project's own code is provided under the [MIT license](LICENSE). Third-party
-licenses and applicable Parsec service terms still apply. This native client
-was developed without access to Parsec's proprietary source code and does not
-patch the official host or client. Parsec and Unity names and marks belong to
-their respective owners; no affiliation or endorsement is implied.
+Our code uses the [MIT license](LICENSE). Applicable Parsec service terms and
+third-party licenses still apply. Development did not use Parsec's proprietary
+source code, and EvoParseq does not patch the official host or client. Parsec and
+Unity names and marks belong to their owners; no affiliation is implied.

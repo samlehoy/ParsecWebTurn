@@ -2,7 +2,7 @@ name: Native transport and video backends
 on:
   workflow_dispatch:
   push:
-    branches: [codex/native-core]
+    branches: [dev]
     paths: ['src-native/crates/**', '.github/workflows/native-backends.yml', 'scripts/test-bud-turn-stream.sh']
   pull_request:
     paths: ['src-native/crates/**', '.github/workflows/native-backends.yml', 'scripts/test-bud-turn-stream.sh']
