@@ -19,6 +19,9 @@ first EvoParseq release from `dev`; the previous stable remains available.
   and fullscreen. Selection fields use dropdowns, host-reported choices where
   available and compatible presets otherwise. Restore hidden controls by shortcut
   and keep local menus available while forwarding remote input.
+  Keep the stream canvas black during startup, fix overlay/stats window
+  ordering and confirm asynchronous host-settings updates before accepting
+  another apply, avoiding stale values and repeated clicks.
 - **Host display selection:** switch the current stream between listed physical
   or virtual outputs, requesting the selected display's host resolution. HID
   mouse mode restricts selection to the primary output and pauses forwarding
@@ -32,6 +35,9 @@ first EvoParseq release from `dev`; the previous stable remains available.
   dimensions for older runtimes. Add optional Main10 component selection with
   original P010 GPU output and the existing RGB10 conversion; Radeon 780M
   playback is confirmed. Media Foundation remains the default Main10 route.
+- **Video format changes:** rebuild HEVC GPU sessions when the host changes
+  the encoded format, preserve parameter-set dependency order, and retire old
+  codec state during encoder rebuilds without adding frame copies.
 - **Clear 10-bit failure handling:** preserve the requested mode. An initial host
   encoder failure prompts the user to disable 10-bit and reconnect instead of
   silently reopening an 8-bit session. Stats retain actual stream/output precision.
