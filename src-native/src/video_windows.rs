@@ -608,6 +608,9 @@ fn publish_report(shared: &Shared, window: &crate::window::Window) {
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = Some(report);
 }
+fn worker_stopped(shared: &Shared) -> bool {
+    shared.0.lock().unwrap_or_else(|e| e.into_inner()).stopped
+}
 fn run(
     shared: &Shared,
     window: &Arc<crate::window::Window>,
@@ -718,13 +721,16 @@ fn run(
                         .as_mut()
                         .unwrap()
                         .disable_vsr(
-                            "VSR could not keep up with incoming video; normal rendering retained",
-                        );
+                        "VSR disabled after compressed-video backlog; normal rendering retained",
+                    );
                     shared
                         .0
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .finish_native_call(Instant::now());
+                    if worker_stopped(shared) {
+                        return Ok(());
+                    }
                     vsr_disabled = true;
                 }
             } else {
@@ -791,6 +797,9 @@ fn run(
                     shared,
                 )?
             };
+            if worker_stopped(shared) {
+                return Ok(());
+            }
             if !reused {
                 session = None;
             } else {
@@ -821,16 +830,19 @@ fn run(
                         // Keep this packet and its IDR: no extra frame copy,
                         // network round trip, or decoder fallback is needed.
                         let preserve = session.as_ref().is_some_and(Session::has_vsr);
-                        if !preserve
-                            || !unsafe {
+                        let reused = preserve
+                            && unsafe {
                                 session.as_mut().unwrap().reset_preserving_renderer(
                                     frame.codec,
                                     Some(next),
                                     frame.rotation,
                                     shared,
                                 )?
-                            }
-                        {
+                            };
+                        if preserve && worker_stopped(shared) {
+                            return Ok(());
+                        }
+                        if !reused {
                             session = None;
                         }
                         awaiting_random_access = true;
