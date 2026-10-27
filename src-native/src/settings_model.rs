@@ -5,6 +5,8 @@ use zeroize::Zeroizing;
 
 pub const TCP_QOS_LABEL: &str = "TCP/TLS QoS";
 pub const TCP_QOS_HINT: &str = "Windows outgoing TURN traffic only; network support varies.\nUnsupported or refused: continue unmarked.\nReconnect after changing.";
+pub const VSR_LABELS: [&str; 5] = ["Off", "Low", "Medium", "High", "Ultra"];
+pub const VSR_HINT: &str = "Experimental NVIDIA RTX GPU upscaling; normal rendering only.\nAdds GPU processing/memory and may increase latency.\nActivates when upscaling; reconnect after changing.";
 pub const DISPLAY_TIMING_HINT: &str = "Experimental: normal GPU rendering; reconnect to apply.\nVRR needs an enabled compatible monitor and driver.\nZero copy keeps Windows-managed timing.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -169,6 +171,7 @@ pub struct Availability {
     pub bud: bool,
     pub audio_limits: bool,
     pub amf_main10: bool,
+    pub nvidia_vsr: bool,
     pub chroma_444: bool,
     pub zero_copy: bool,
     pub relay: bool,
@@ -249,7 +252,10 @@ impl Form {
                 && self.values.experimental_ten_bit
                 && !self.values.experimental_chroma_444,
             chroma_444: self.values.prefer_hevc && chroma_allowed,
-            zero_copy: self.values.prefer_hevc && !self.values.experimental_chroma_444,
+            nvidia_vsr: cfg!(nvidia_vsr_sdk) && vendor == Some(0x10de),
+            zero_copy: self.values.prefer_hevc
+                && !self.values.experimental_chroma_444
+                && self.values.nvidia_vsr == 0,
             relay,
             custom_turn: relay && !self.cloudflare(),
             cloudflare_turn: relay && self.cloudflare(),
@@ -257,6 +263,7 @@ impl Form {
     }
     fn candidate(&self) -> Result<Settings> {
         let mut settings = self.values.clone();
+        settings.nvidia_vsr = settings.nvidia_vsr.min(4);
         // Preserve the existing parse order and validation even for inactive
         // numeric fields. Domain/secret validation remains in Manager::save.
         settings.audio_min_buffer_ms = self
@@ -608,6 +615,33 @@ mod tests {
             let restored: Settings =
                 serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
             assert_eq!(InputMode::current(&restored), mode);
+        }
+    }
+}
+
+#[cfg(test)]
+mod vsr_tests {
+    use super::*;
+    #[test]
+    fn vsr_defaults_off_retains_quality_and_excludes_original_surface_display() {
+        let settings = Settings::default();
+        assert_eq!(settings.nvidia_vsr, 0);
+        for quality in 0..=4 {
+            let mut settings = settings.clone();
+            settings.prefer_hevc = true;
+            settings.nvidia_vsr = quality;
+            let restored: Settings =
+                serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+            assert_eq!(restored.nvidia_vsr, quality);
+            for vendor in [0x10de, 0x1002, 0x8086] {
+                let mut form = Form::new(restored.clone(), Some(vendor));
+                let available = form.availability();
+                assert_eq!(
+                    available.nvidia_vsr,
+                    cfg!(nvidia_vsr_sdk) && vendor == 0x10de
+                );
+                assert_eq!(available.zero_copy, quality == 0);
+            }
         }
     }
 }

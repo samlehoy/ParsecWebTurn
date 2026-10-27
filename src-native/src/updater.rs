@@ -80,6 +80,11 @@ impl Mode {
         }
     }
 }
+const RTX_CREDIT: &str = if cfg!(nvidia_vsr_sdk) {
+    "Optional NVIDIA RTX Video SDK 1.1.0 / NVIDIA RTX technology. The embedded NVIDIA runtime and linked SDK library are proprietary and excluded from the EvoParseq MIT license; see NVIDIA-RTX-VIDEO-LICENSE.pdf in the download package. VSR may increase latency, GPU load and memory use."
+} else {
+    ""
+};
 pub const MIGRATION: &str = "Upgrading from ParsecWebTurn: close the old application and keep settings.json in the same folder. Replace the executable using the transition ZIP, or use EvoParseq.exe from the normal ZIP. Network, video, audio and input settings are retained. Sign in again: the old web-core sign-in cannot be imported. Original files are not deleted automatically.";
 pub struct Content {
     pub version: String,
@@ -91,7 +96,7 @@ pub fn content(mode: Mode, view: &View) -> Content {
         return Content {
             version: format!("Version {} | Windows x64\r\nNative Rust core", env!("CARGO_PKG_VERSION")),
             status: "Independent client for compatible, unmodified Parsec hosts.".into(),
-            notes: format!("Networking, GPU video, audio and input are handled by the native Rust client. No Parsec WebAssembly core is bundled, loaded or executed.\r\n\r\nProject: {REPOSITORY}\r\n\r\nEvoParseq is an independent community project, not affiliated with or endorsed by Parsec/Unity or lowlat.\r\n\r\nThanks to nomi-san/lowlat for inspiration and the reused open-source components. Original license and attribution notices are included with the application.\r\nhttps://github.com/nomi-san/lowlat\r\n\r\n{MIGRATION}"),
+            notes: format!("Networking, GPU video, audio and input are handled by the native Rust client. No Parsec WebAssembly core is bundled, loaded or executed.\r\n\r\nProject: {REPOSITORY}\r\n\r\nEvoParseq is an independent community project, not affiliated with or endorsed by Parsec/Unity or lowlat.\r\n\r\nThanks to nomi-san/lowlat for inspiration and the reused open-source components. Original license and attribution notices are included with the application.\r\nhttps://github.com/nomi-san/lowlat\r\n\r\n{RTX_CREDIT}\r\n\r\n{MIGRATION}"),
         };
     }
     Content {

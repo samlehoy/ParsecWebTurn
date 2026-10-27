@@ -299,6 +299,13 @@ impl Window {
             .as_ref()
             .is_some_and(|manager| manager.view().0.experimental_zero_copy)
     }
+    pub fn nvidia_vsr(&self) -> u8 {
+        self.connection_settings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map_or(0, |manager| manager.view().0.nvidia_vsr.min(4))
+    }
     pub fn experimental_amf_main10(&self) -> bool {
         self.connection_settings
             .lock()

@@ -108,6 +108,8 @@ pub struct Settings {
     pub experimental_hid_keyboard: bool,
     pub prefer_hevc: bool,
     pub presentation_mode: PresentationMode,
+    /// Optional RTX Video quality: 0 off, 1..=4 low through ultra.
+    pub nvidia_vsr: u8,
     pub experimental_ten_bit: bool,
     pub experimental_amf_main10: bool,
     pub experimental_chroma_444: bool,
@@ -154,6 +156,7 @@ impl Default for Settings {
             experimental_hid_keyboard: false,
             prefer_hevc: false,
             presentation_mode: PresentationMode::Automatic,
+            nvidia_vsr: 0,
             experimental_ten_bit: false,
             experimental_amf_main10: false,
             experimental_chroma_444: false,

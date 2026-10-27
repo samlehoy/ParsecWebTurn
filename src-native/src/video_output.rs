@@ -211,6 +211,7 @@ pub struct Snapshot {
     /// RGB swap-chain precision, not the monitor/link's physical bit depth.
     pub display_rgb_bit_depth: Option<u8>,
     pub display_output_fallback: Option<String>,
+    pub vsr_status: Option<&'static str>,
     pub codec: Option<crate::video_stream::Codec>,
     pub enabled: bool,
     pub decoder_initialized: bool,

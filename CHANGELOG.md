@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added optional experimental NVIDIA RTX Video Super Resolution to normal DXGI rendering: Off/Low/Medium/High/Ultra, GPU-only pixel processing, preserved 8/10-bit output, and fallback to ordinary rendering. Off by default; adds GPU processing/memory and one GPU output copy and may increase latency. Actual hardware behavior and latency require live validation.
+
 - Add optional experimental VRR for normal DXGI presentation, shared by the
   existing vendor and Media Foundation decoders. Query DXGI tearing support,
   preserve flags across resize/8-bit/10-bit output changes, and retain bounded

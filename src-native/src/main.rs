@@ -52,6 +52,8 @@ mod media_scheduling;
 #[cfg(windows)]
 mod native_core;
 #[cfg(windows)]
+mod nvidia_vsr;
+#[cfg(windows)]
 mod performance;
 mod platform;
 #[cfg(windows)]

@@ -44,6 +44,10 @@ try {
     $taskPackage = Join-Path $taskStaging $taskPackageName
     New-Item -ItemType Directory -Path $taskPackage -Force | Out-Null
     foreach ($taskFile in @('EvoParseq.exe','README.md','LICENSE','CHANGELOG.md','MIGRATION.md')) { Copy-Item -LiteralPath $taskFile -Destination $taskPackage }
+    if ($env:EVOPARSEQ_RTX_VIDEO_SDK) {
+        Copy-Item (Join-Path $env:EVOPARSEQ_RTX_VIDEO_SDK 'NVIDIA_RTX_Video_SDK_License.pdf') (Join-Path $taskPackage 'NVIDIA-RTX-VIDEO-LICENSE.pdf')
+        'Optional NVIDIA RTX Video SDK 1.1.0: NVIDIA RTX technology. Its embedded runtime and linked SDK library are proprietary NVIDIA components, excluded from the EvoParseq MIT license. See NVIDIA-RTX-VIDEO-LICENSE.pdf. VSR is off by default and may increase latency, GPU load and memory use. The runtime is cached under LocalAppData/EvoParseq/rtx-video only after opt-in; remove that directory to clear it.' | Set-Content (Join-Path $taskPackage 'NVIDIA-RTX-VIDEO-NOTICE.txt') -Encoding utf8
+    }
     Copy-Item src-native/vendor/webrtc-0.14.0/LICENSE-MIT (Join-Path $taskPackage 'WEBRTC-LICENSE-MIT.txt')
     Copy-Item src-native/vendor/webrtc-0.14.0/LICENSE-APACHE (Join-Path $taskPackage 'WEBRTC-LICENSE-APACHE.txt')
     Copy-Item src-native/vendor/webrtc-0.14.0/LOCAL-CHANGES.md (Join-Path $taskPackage 'WEBRTC-LOCAL-CHANGES.md')

@@ -515,6 +515,9 @@ fn rows(
             .unwrap_or_else(|| "Not reported".into()),
     );
     if let Some(v) = video {
+        if let Some(status) = v.vsr_status {
+            row("RTX Video Super Resolution", status.into());
+        }
         if let Some(mode) = v.presentation_mode {
             row("Display timing", mode.into());
         }

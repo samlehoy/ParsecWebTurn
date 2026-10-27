@@ -630,7 +630,7 @@ fn run(
     let mut zero_failed = false;
     let mut zero_fallback = None;
     #[cfg(feature = "vendor-video")]
-    let zero_requested = window.experimental_zero_copy();
+    let zero_requested = window.experimental_zero_copy() && window.nvidia_vsr() == 0;
     let amf_main10_requested = window.experimental_amf_main10();
     #[cfg(not(feature = "vendor-video"))]
     let zero_requested = false;
@@ -873,6 +873,11 @@ fn run(
             native.rotation = frame.rotation;
             if let Some(renderer) = &mut native.renderer {
                 renderer.rotation = frame.rotation;
+                if !verify_synthetic_pixels {
+                    unsafe {
+                        renderer.configure_vsr(window.nvidia_vsr());
+                    }
+                }
             }
             if zero_requested && frame.rotation != 0 {
                 native.zero_copy_status =
@@ -2053,6 +2058,8 @@ fn timing_present(
 }
 
 struct Renderer {
+    vsr: Option<crate::nvidia_vsr::Vsr>,
+    vsr_status: Option<&'static str>,
     rotation: u8,
     rotation_context: Option<ID3D11VideoContext1>,
     timing_status: &'static str,
@@ -2145,6 +2152,37 @@ impl Drop for Renderer {
     }
 }
 impl Renderer {
+    unsafe fn configure_vsr(&mut self, quality: u8) {
+        if quality == 0 {
+            return;
+        }
+        let vendor = self
+            .device
+            .cast::<IDXGIDevice>()
+            .and_then(|d| d.GetAdapter())
+            .and_then(|a| a.GetDesc())
+            .map(|d| d.VendorId);
+        if vendor != Ok(0x10de) {
+            self.vsr_status = Some("Unavailable: NVIDIA RTX GPU required");
+            return;
+        }
+        match crate::nvidia_vsr::Vsr::new(&self.device, quality) {
+            Ok(vsr) => {
+                self.vsr = Some(vsr);
+                self.vsr_status = Some("Ready; waiting for an upscaled frame");
+            }
+            Err(error) => self.disable_vsr(error),
+        }
+    }
+    fn disable_vsr(&mut self, error: impl std::fmt::Display) {
+        self.vsr = None;
+        self.vsr_status = Some("Unavailable; normal GPU rendering");
+        crate::event_log::record(
+            "WARN",
+            "video_vsr_fallback",
+            serde_json::json!({"reason":error.to_string()}),
+        );
+    }
     unsafe fn create(
         hwnd: HWND,
         preferred_gpu: Option<&crate::connection_settings::GpuPreference>,
@@ -2261,6 +2299,8 @@ impl Renderer {
             factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER),
         )?;
         Ok(Self {
+            vsr: None,
+            vsr_status: None,
             rotation: 0,
             rotation_context: None,
             timing_status,
@@ -2556,7 +2596,11 @@ impl Renderer {
                 "video-processor-enumerate",
                 self.video_device.CreateVideoProcessorEnumerator(&desc),
             )?;
-            let mut output_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            let mut output_format = if self.vsr.is_some() {
+                DXGI_FORMAT_R8G8B8A8_UNORM
+            } else {
+                DXGI_FORMAT_B8G8R8A8_UNORM
+            };
             if td.Format == DXGI_FORMAT_Y410
                 || (td.Format == DXGI_FORMAT_P010 && self.ten_bit_fallback.is_none())
             {
@@ -2621,6 +2665,38 @@ impl Renderer {
             });
         }
         self.ten_bit_attempted |= self.output_format == DXGI_FORMAT_R10G10B10A2_UNORM;
+        let back: ID3D11Texture2D = api("video-backbuffer", self.swap.GetBuffer(0))?;
+        let [left, top, right, bottom] = crate::viewport::Viewport {
+            source: display_extents(width, height, self.rotation),
+            client: size,
+        }
+        .rect()
+        .ok_or_else(|| unavailable("video-viewport"))?;
+        let source_size = display_extents(width, height, self.rotation);
+        let upscale =
+            (right - left) as u32 > source_size.0 && (bottom - top) as u32 > source_size.1;
+        let mut vsr_output = None;
+        let conversion_target = if upscale {
+            if let Some(vsr) = &mut self.vsr {
+                match vsr.prepare(&self.device, source_size, size, self.output_format) {
+                    Ok(s) => {
+                        vsr_output = Some(s.output.clone());
+                        s.input.clone()
+                    }
+                    Err(error) => {
+                        self.disable_vsr(error);
+                        back.clone()
+                    }
+                }
+            } else {
+                back.clone()
+            }
+        } else {
+            if self.vsr.is_some() {
+                self.vsr_status = Some("Inactive: viewport does not upscale the video");
+            }
+            back.clone()
+        };
         let cached = self.processor.as_mut().unwrap();
         let enumeration = &cached.enumeration;
         let processor = &cached.processor;
@@ -2662,7 +2738,6 @@ impl Renderer {
             update(shared, |s| s.input_views_created += 1);
             input
         };
-        let back: ID3D11Texture2D = api("video-backbuffer", self.swap.GetBuffer(0))?;
         let output_desc = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
             ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
             Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 {
@@ -2672,7 +2747,7 @@ impl Renderer {
         let output = if let Some((_, view)) = cached
             .outputs
             .iter()
-            .find(|(resource, _)| resource == &back)
+            .find(|(resource, _)| resource == &conversion_target)
         {
             view.clone()
         } else {
@@ -2680,7 +2755,7 @@ impl Renderer {
             api(
                 "video-processor-output-view",
                 self.video_device.CreateVideoProcessorOutputView(
-                    &back,
+                    &conversion_target,
                     enumeration,
                     &output_desc,
                     Some(&mut output),
@@ -2690,17 +2765,18 @@ impl Renderer {
             if cached.outputs.len() == 2 {
                 cached.outputs.remove(0);
             }
-            cached.outputs.push((back.clone(), output.clone()));
+            cached
+                .outputs
+                .push((conversion_target.clone(), output.clone()));
             update(shared, |s| s.output_views_created += 1);
             output
         };
         // Preserve aspect ratio and letterbox on the GPU, without CPU pixels.
-        let [left, top, right, bottom] = crate::viewport::Viewport {
-            source: display_extents(width, height, self.rotation),
-            client: size,
-        }
-        .rect()
-        .ok_or_else(|| unavailable("video-viewport"))?;
+        let (left, top, right, bottom) = if vsr_output.is_some() {
+            (0, 0, source_size.0 as i32, source_size.1 as i32)
+        } else {
+            (left, top, right, bottom)
+        };
         let target = RECT {
             left,
             top,
@@ -2710,8 +2786,16 @@ impl Renderer {
         let full = RECT {
             left: 0,
             top: 0,
-            right: size.0 as i32,
-            bottom: size.1 as i32,
+            right: if vsr_output.is_some() {
+                source_size.0
+            } else {
+                size.0
+            } as i32,
+            bottom: if vsr_output.is_some() {
+                source_size.1
+            } else {
+                size.1
+            } as i32,
         };
         self.video_context
             .VideoProcessorSetOutputTargetRect(processor, true, Some(&full));
@@ -2769,7 +2853,35 @@ impl Renderer {
         );
         ManuallyDrop::drop(&mut stream.pInputSurface);
         api("video-processor-blt", result)?;
+        if let Some(vsr_output) = vsr_output {
+            let target = crate::viewport::Viewport {
+                source: source_size,
+                client: size,
+            }
+            .rect()
+            .unwrap();
+            let result = self.vsr.as_mut().unwrap().evaluate(&self.cleanup.0, target);
+            self.cleanup.0.ClearState();
+            if let Err(error) = result {
+                self.disable_vsr(error);
+                self.processor = None;
+                update(shared, |s| s.vsr_status = self.vsr_status);
+                // Let this call's backbuffer references drop before resizing to
+                // the normal format on the next frame. No decoder reset.
+                return Ok(Presentation::Busy);
+            }
+            self.cleanup.0.CopyResource(&back, &vsr_output);
+            if self.vsr_status != Some("Active: GPU processing; may increase latency") {
+                crate::event_log::record(
+                    "INFO",
+                    "video_vsr_active",
+                    serde_json::json!({"cpu_pixel_copy":false,"gpu_output_copy":true,"source_width":source_size.0,"source_height":source_size.1}),
+                );
+            }
+            self.vsr_status = Some("Active: GPU processing; may increase latency");
+        }
         update(shared, |s| {
+            s.vsr_status = self.vsr_status;
             s.display_rgb_bit_depth =
                 Some(if self.output_format == DXGI_FORMAT_R10G10B10A2_UNORM {
                     10

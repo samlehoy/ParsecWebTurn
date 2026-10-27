@@ -148,3 +148,9 @@ Our code uses the [MIT license](LICENSE). Applicable Parsec service terms and
 third-party licenses still apply. Development did not use Parsec's proprietary
 source code, and EvoParseq does not patch the official host or client. Parsec and
 Unity names and marks belong to their owners; no affiliation is implied.
+
+### Optional RTX Video Super Resolution
+
+The Video settings offer experimental NVIDIA RTX VSR (Off/Low/Medium/High/Ultra) in SDK-enabled Windows builds. It is off by default and applies only when the normal DXGI renderer upscales the picture. It stays entirely on the GPU, but adds source RGB/output textures, AI processing and one GPU output copy. It can increase latency, GPU load and memory use. VSR uses normal rendering rather than the original-surface zero-copy path; hardware/driver/API failures retain normal GPU rendering. GPU behavior and performance require live validation.
+
+This optional integration uses NVIDIA RTX Video SDK 1.1.0 / NVIDIA RTX technology. Its proprietary linked library and embedded release runtime are excluded from this repository's MIT license; SDK-enabled downloads include NVIDIA's license. No CUDA toolkit installation is needed. After first opt-in, the release runtime is cached in `%LOCALAPPDATA%/EvoParseq/rtx-video`; removing that directory clears the cache.
