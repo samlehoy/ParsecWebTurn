@@ -143,6 +143,15 @@ pub struct Settings {
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
+impl Settings {
+    pub fn nvidia_vsr_quality(&self, vendor: Option<u32>) -> u8 {
+        if cfg!(nvidia_vsr_sdk) && vendor == Some(0x10de) {
+            self.nvidia_vsr.min(4)
+        } else {
+            0
+        }
+    }
+}
 impl Default for Settings {
     // Legacy defaults apply to existing JSON; a new native installation uses fresh().
     fn default() -> Self {

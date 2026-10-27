@@ -128,6 +128,22 @@ mod sdk {
         sync::OnceLock,
     };
     use windows::core::Interface;
+    use windows::Win32::Graphics::Direct3D10::ID3D10Multithread;
+    struct ContextLock(ID3D10Multithread);
+    impl ContextLock {
+        unsafe fn enter(device: &ID3D11Device) -> anyhow::Result<Self> {
+            let lock: ID3D10Multithread = device.cast()?;
+            lock.Enter();
+            Ok(Self(lock))
+        }
+    }
+    impl Drop for ContextLock {
+        fn drop(&mut self) {
+            unsafe {
+                self.0.Leave();
+            }
+        }
+    }
 
     // Layout and signatures from RTX Video SDK 1.1 public nvsdk_ngx*.h C API.
     #[repr(C)]
@@ -202,7 +218,7 @@ mod sdk {
                 )
                 .join("EvoParseq")
                 .join("rtx-video")
-                .join(hash);
+                .join(&hash);
                 std::fs::create_dir_all(&root)?;
                 let dll = root.join("nvngx_vsr.dll");
                 if !dll.exists() {
@@ -253,6 +269,7 @@ mod sdk {
                     other_sinks_disabled: false,
                 },
             };
+            let _lock = ContextLock::enter(device)?;
             check(NVSDK_NGX_D3D11_Init(
                 0,
                 path.as_ptr(),
@@ -291,6 +308,7 @@ mod sdk {
             rect: [i32; 4],
             quality: u8,
         ) -> anyhow::Result<()> {
+            let _lock = ContextLock::enter(&self.device)?;
             NVSDK_NGX_Parameter_SetD3d11Resource(
                 self.parameters,
                 c"Input1".as_ptr(),
@@ -325,6 +343,7 @@ mod sdk {
     impl Drop for Instance {
         fn drop(&mut self) {
             unsafe {
+                let _lock = ContextLock::enter(&self.device).ok();
                 if !self.handle.is_null() {
                     NVSDK_NGX_D3D11_ReleaseFeature(self.handle);
                 }

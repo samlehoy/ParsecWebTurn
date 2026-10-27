@@ -629,8 +629,9 @@ fn run(
     let mut vendor_fallback = None;
     let mut zero_failed = false;
     let mut zero_fallback = None;
+    let vsr_quality = window.nvidia_vsr();
     #[cfg(feature = "vendor-video")]
-    let zero_requested = window.experimental_zero_copy() && window.nvidia_vsr() == 0;
+    let zero_requested = window.experimental_zero_copy() && vsr_quality == 0;
     let amf_main10_requested = window.experimental_amf_main10();
     #[cfg(not(feature = "vendor-video"))]
     let zero_requested = false;
@@ -875,7 +876,7 @@ fn run(
                 renderer.rotation = frame.rotation;
                 if !verify_synthetic_pixels {
                     unsafe {
-                        renderer.configure_vsr(window.nvidia_vsr());
+                        renderer.configure_vsr(vsr_quality);
                     }
                 }
             }
@@ -2875,7 +2876,7 @@ impl Renderer {
                 crate::event_log::record(
                     "INFO",
                     "video_vsr_active",
-                    serde_json::json!({"cpu_pixel_copy":false,"gpu_output_copy":true,"source_width":source_size.0,"source_height":source_size.1}),
+                    serde_json::json!({"app_cpu_pixel_copy":false,"gpu_output_copy":true,"source_width":source_size.0,"source_height":source_size.1}),
                 );
             }
             self.vsr_status = Some("Active: GPU processing; may increase latency");

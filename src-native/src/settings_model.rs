@@ -255,7 +255,7 @@ impl Form {
             nvidia_vsr: cfg!(nvidia_vsr_sdk) && vendor == Some(0x10de),
             zero_copy: self.values.prefer_hevc
                 && !self.values.experimental_chroma_444
-                && self.values.nvidia_vsr == 0,
+                && self.values.nvidia_vsr_quality(vendor) == 0,
             relay,
             custom_turn: relay && !self.cloudflare(),
             cloudflare_turn: relay && self.cloudflare(),
@@ -640,7 +640,10 @@ mod vsr_tests {
                     available.nvidia_vsr,
                     cfg!(nvidia_vsr_sdk) && vendor == 0x10de
                 );
-                assert_eq!(available.zero_copy, quality == 0);
+                assert_eq!(
+                    available.zero_copy,
+                    quality == 0 || vendor != 0x10de || !cfg!(nvidia_vsr_sdk)
+                );
             }
         }
     }
