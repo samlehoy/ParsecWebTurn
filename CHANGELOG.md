@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add optional experimental VRR for normal DXGI presentation, shared by the
+  existing vendor and Media Foundation decoders. Query DXGI tearing support,
+  preserve flags across resize/8-bit/10-bit output changes, and retain bounded
+  nonblocking presentation. Fall back without extra frame copies; distinguish
+  application-side enablement from unverified physical panel activation.
+
 - Coalesce adjacent mouse positions and accumulate relative camera deltas in the
   bounded input queue without crossing button, wheel, focus or mode boundaries.
   Reserve input capacity and release/disconnect on unrecoverable queue overflow.

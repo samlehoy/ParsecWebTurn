@@ -17,6 +17,27 @@ The Windows SDK/MSVC toolchain and Rust are build-time requirements. The portabl
 application uses EvoParseq.exe and settings.json; ordinary use does not require
 administrator rights. The configured static CRT and bundled Opus remain in place.
 
+## Experimental DXGI VRR
+
+Select **Video / Display timing / VRR**, disable Zero copy, save and reconnect.
+This uses the existing normal DXGI renderer with all existing decoder backends;
+it adds no frame generation, decoded-frame copies or jitter buffer. Unsupported
+DXGI flags fall back to the existing timing path. Existing defaults are unchanged.
+
+Enable Adaptive-Sync/FreeSync/G-SYNC in the physical monitor and graphics driver.
+For initial testing use borderless fullscreen, the GPU driving that monitor, and
+a continuous 60 FPS stream below the display's maximum refresh. Compare against
+Low latency using the same scene, codec and network route. Confirm activation
+with the driver's VRR indicator or a monitor OSD that reports live refresh;
+Windows' configured refresh and Connection stats alone are not proof of VRR.
+Low-framerate compensation may make the OSD show a multiple of stream FPS.
+
+Connection stats reports **VRR path enabled** only for accepted DXGI flags and
+explicitly leaves panel activation unverified. Event logging records
+`video_vrr_configured` and any `video_vrr_fallback`. On a fixed-refresh or disabled
+VRR display, allowing tearing may produce tearing. Zero copy retains its separate
+Windows Presentation API timing; no host changes or custom host messages are used.
+
 ## Native components
 
 - `native_core/account.rs`: account sign-in, optional two-factor authentication,

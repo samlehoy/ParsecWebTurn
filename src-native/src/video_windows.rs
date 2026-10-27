@@ -398,7 +398,8 @@ impl Pipeline {
         let surface_generation = window.begin_video();
         let surface_window = window.clone();
         let presentation_mode = window.presentation_mode();
-        let wake = (presentation_mode == PresentationMode::LowLatency)
+        let wake = presentation_mode
+            .low_latency()
             .then(WorkerWake::create)
             .flatten();
         let shared = Arc::new((
@@ -1023,7 +1024,7 @@ fn run(
         // Offer fresh input first: never present an older pending backbuffer
         // ahead of a newer decoded output. Still service pending output when
         // this feed produced no picture, without waiting for an empty queue.
-        if presentation_mode == PresentationMode::LowLatency && retry_pending {
+        if presentation_mode.low_latency() && retry_pending {
             shared
                 .0
                 .lock()
@@ -1213,10 +1214,7 @@ struct Session {
 impl Session {
     fn pending_wait_handle(&self) -> Option<HANDLE> {
         let renderer = self.renderer.as_ref()?;
-        if renderer.mode != PresentationMode::LowLatency
-            || !renderer.pending_present
-            || renderer.latency_slot
-        {
+        if !renderer.mode.low_latency() || !renderer.pending_present || renderer.latency_slot {
             return None;
         }
         renderer.latency_event.as_ref().map(|event| event.0)
@@ -2006,11 +2004,60 @@ impl Drop for ContextCleanup {
         }
     }
 }
+/// Retry only optional swap-chain flags, before any decoded frame is used.
+fn timing_swapchain<T>(
+    mut flags: u32,
+    mut create: impl FnMut(u32) -> windows::core::Result<T>,
+) -> windows::core::Result<(T, u32)> {
+    let can_retry = |result: &windows::core::Result<T>| {
+        result.as_ref().err().is_some_and(|error| {
+            !matches!(
+                error.code(),
+                DXGI_ERROR_DEVICE_REMOVED | DXGI_ERROR_DEVICE_RESET | DXGI_ERROR_DEVICE_HUNG
+            )
+        })
+    };
+    let mut result = create(flags);
+    if can_retry(&result) && flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0 as u32 != 0 {
+        flags &= !(DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0 as u32);
+        result = create(flags);
+    }
+    if can_retry(&result) && flags != 0 {
+        flags = 0;
+        result = create(flags);
+    }
+    result.map(|swap| (swap, flags))
+}
+
+/// An unsupported optional Present flag can retry the same backbuffer. Device
+/// loss and busy/occluded statuses must keep their existing recovery semantics.
+fn timing_present(
+    mode: PresentationMode,
+    allow_tearing: &mut bool,
+    mut present: impl FnMut(u32, DXGI_PRESENT) -> windows::core::HRESULT,
+) -> windows::core::HRESULT {
+    let tearing = *allow_tearing && mode == PresentationMode::Vrr;
+    let flags = DXGI_PRESENT_DO_NOT_WAIT
+        | if tearing {
+            DXGI_PRESENT_ALLOW_TEARING
+        } else {
+            DXGI_PRESENT(0)
+        };
+    let status = present(u32::from(mode == PresentationMode::Vsync), flags);
+    if tearing && status == DXGI_ERROR_INVALID_CALL {
+        *allow_tearing = false;
+        present(0, DXGI_PRESENT_DO_NOT_WAIT)
+    } else {
+        status
+    }
+}
+
 struct Renderer {
     rotation: u8,
     rotation_context: Option<ID3D11VideoContext1>,
     timing_status: &'static str,
     mode: PresentationMode,
+    allow_tearing: bool,
     swap_flags: DXGI_SWAP_CHAIN_FLAG,
     latency_event: Option<LatencyEvent>,
     latency_slot: bool,
@@ -2124,6 +2171,20 @@ impl Renderer {
             .trim_end_matches('\0')
             .to_owned();
         let factory: IDXGIFactory2 = api("video-dxgi-factory", adapter.GetParent())?;
+        // This checks the OS/driver presentation feature, not whether a panel
+        // is currently scanning with VRR. No per-frame capability queries.
+        let tearing_supported = mode == PresentationMode::Vrr
+            && factory.cast::<IDXGIFactory5>().is_ok_and(|factory| {
+                let mut supported = windows::core::BOOL(0);
+                factory
+                    .CheckFeatureSupport(
+                        DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                        &mut supported as *mut _ as *mut _,
+                        std::mem::size_of_val(&supported) as u32,
+                    )
+                    .is_ok()
+                    && supported.as_bool()
+            });
         let size = (1024, 720);
         let mut desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: size.0,
@@ -2138,45 +2199,56 @@ impl Renderer {
             Scaling: DXGI_SCALING_STRETCH,
             SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
             AlphaMode: DXGI_ALPHA_MODE_IGNORE,
-            Flags: if mode == PresentationMode::Automatic {
+            Flags: (if mode == PresentationMode::Automatic {
                 0
             } else {
                 DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32
+            }) | if tearing_supported {
+                DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0 as u32
+            } else {
+                0
             },
             ..Default::default()
         };
-        let mut fallback = false;
-        let created = factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None);
-        // Optional timing control cannot make a previously working GPU fail.
-        let created = if created.is_err() && desc.Flags != 0 {
-            fallback = true;
-            desc.Flags = 0;
-            factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None)
-        } else {
-            created
-        };
-        let swap = api("video-swapchain", created)?;
-        let latency_event = if desc.Flags != 0 {
-            swap.cast::<IDXGISwapChain2>().ok().and_then(|s| {
-                let handle = s.GetFrameLatencyWaitableObject();
-                let event = (!handle.is_invalid()).then(|| LatencyEvent(handle));
-                if s.SetMaximumFrameLatency(1).is_ok() {
-                    event
-                } else {
-                    None
-                }
-            })
-        } else {
-            None
-        };
-        fallback |= mode != PresentationMode::Automatic && latency_event.is_none();
-        let timing_status = match (mode, fallback) {
-            (PresentationMode::Automatic, _) => "Automatic",
-            (PresentationMode::LowLatency, false) => "Low latency; maximum queued presentations: 1",
-            (PresentationMode::Vsync, false) => "VSync; maximum queued presentations: 1",
-            (PresentationMode::LowLatency, true) => "Low latency unavailable; automatic timing",
-            (PresentationMode::Vsync, true) => "VSync; queue control unavailable",
-        };
+        let requested_flags = desc.Flags;
+        let (swap, flags) = api(
+            "video-swapchain",
+            timing_swapchain(requested_flags, |flags| {
+                let mut candidate = desc;
+                candidate.Flags = flags;
+                factory.CreateSwapChainForHwnd(&device, hwnd, &candidate, None, None)
+            }),
+        )?;
+        desc.Flags = flags;
+        let allow_tearing = flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0 as u32 != 0;
+        let latency_event =
+            if flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32 != 0 {
+                swap.cast::<IDXGISwapChain2>().ok().and_then(|s| {
+                    let handle = s.GetFrameLatencyWaitableObject();
+                    let event = (!handle.is_invalid()).then(|| LatencyEvent(handle));
+                    if s.SetMaximumFrameLatency(1).is_ok() {
+                        event
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
+        let fallback = flags != requested_flags
+            || (mode != PresentationMode::Automatic && latency_event.is_none())
+            || (mode == PresentationMode::Vrr && !allow_tearing);
+        let timing_status = mode.timing_status(latency_event.is_some(), allow_tearing);
+        if mode == PresentationMode::Vrr {
+            crate::event_log::record(
+                "INFO",
+                "video_vrr_configured",
+                serde_json::json!({
+                    "dxgi_tearing_supported":tearing_supported,"swap_chain_allows_tearing":allow_tearing,
+                    "queue_control":latency_event.is_some(),"panel_activation_verified":false,"adapter":adapter_name,
+                }),
+            );
+        }
         if fallback {
             crate::event_log::record(
                 "WARN",
@@ -2193,6 +2265,7 @@ impl Renderer {
             rotation_context: None,
             timing_status,
             mode,
+            allow_tearing,
             swap_flags: DXGI_SWAP_CHAIN_FLAG(desc.Flags as i32),
             latency_event,
             latency_slot: false,
@@ -2356,7 +2429,7 @@ impl Renderer {
     }
     fn disable_queue_control(&mut self, shared: &Shared) {
         self.latency_event = None;
-        self.timing_status = "Presentation queue control unavailable";
+        self.timing_status = self.mode.timing_status(false, self.allow_tearing);
         update(shared, |s| s.presentation_mode = Some(self.timing_status));
         crate::event_log::record(
             "WARN",
@@ -2369,10 +2442,19 @@ impl Renderer {
             return Ok(None);
         }
         let started = Instant::now();
-        let status = self.swap.Present(
-            u32::from(self.mode == PresentationMode::Vsync),
-            DXGI_PRESENT_DO_NOT_WAIT,
-        );
+        let was_tearing = self.allow_tearing;
+        let status = timing_present(self.mode, &mut self.allow_tearing, |interval, flags| {
+            self.swap.Present(interval, flags)
+        });
+        if was_tearing && !self.allow_tearing {
+            self.timing_status = self.mode.timing_status(self.latency_event.is_some(), false);
+            update(shared, |s| s.presentation_mode = Some(self.timing_status));
+            crate::event_log::record(
+                "WARN",
+                "video_vrr_fallback",
+                serde_json::json!({"stage":"present_flag_rejected"}),
+            );
+        }
         update(shared, |s| {
             s.local_timing.present_call.record(started.elapsed());
             s.present_max_us = s
@@ -2725,6 +2807,89 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vrr_creation_falls_back_in_order_without_hiding_device_loss() {
+        let wait = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32;
+        let tear = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0 as u32;
+        for accepted in [wait | tear, wait, 0] {
+            let mut attempts = Vec::new();
+            let (swap, flags) = timing_swapchain(wait | tear, |flags| {
+                attempts.push(flags);
+                if flags == accepted {
+                    Ok(42)
+                } else {
+                    Err(windows::core::Error::from_hresult(DXGI_ERROR_INVALID_CALL))
+                }
+            })
+            .unwrap();
+            assert_eq!(swap, 42);
+            assert_eq!(flags, accepted);
+            assert_eq!(
+                attempts,
+                match accepted {
+                    n if n == wait | tear => vec![wait | tear],
+                    n if n == wait => vec![wait | tear, wait],
+                    _ => vec![wait | tear, wait, 0],
+                }
+            );
+        }
+        let mut attempts = 0;
+        let result = timing_swapchain::<()>(wait | tear, |_| {
+            attempts += 1;
+            Err(windows::core::Error::from_hresult(
+                DXGI_ERROR_DEVICE_REMOVED,
+            ))
+        });
+        assert_eq!(result.unwrap_err().code(), DXGI_ERROR_DEVICE_REMOVED);
+        assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn vrr_present_flags_never_mix_with_vsync_and_only_rejected_flags_retry() {
+        for mode in PresentationMode::ALL {
+            let mut allow = mode == PresentationMode::Vrr;
+            let mut calls = Vec::new();
+            let status = timing_present(mode, &mut allow, |interval, flags| {
+                calls.push((interval, flags));
+                windows::core::HRESULT(0)
+            });
+            assert_eq!(status, windows::core::HRESULT(0));
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].0, u32::from(mode == PresentationMode::Vsync));
+            assert_eq!(
+                calls[0].1 .0 & DXGI_PRESENT_ALLOW_TEARING.0 != 0,
+                mode == PresentationMode::Vrr
+            );
+            assert_ne!(calls[0].1 .0 & DXGI_PRESENT_DO_NOT_WAIT.0, 0);
+        }
+        for first in [
+            DXGI_ERROR_INVALID_CALL,
+            DXGI_ERROR_DEVICE_REMOVED,
+            DXGI_ERROR_WAS_STILL_DRAWING,
+            windows::Win32::Foundation::DXGI_STATUS_OCCLUDED,
+        ] {
+            let mut calls = Vec::new();
+            let mut allow = true;
+            let status = timing_present(PresentationMode::Vrr, &mut allow, |interval, flags| {
+                calls.push((interval, flags));
+                if calls.len() == 1 {
+                    first
+                } else {
+                    windows::core::HRESULT(0)
+                }
+            });
+            if first == DXGI_ERROR_INVALID_CALL {
+                assert_eq!(calls.len(), 2);
+                assert!(!allow);
+                assert_eq!(calls[1], (0, DXGI_PRESENT_DO_NOT_WAIT));
+                assert_eq!(status, windows::core::HRESULT(0));
+            } else {
+                assert_eq!(calls.len(), 1);
+                assert!(allow);
+                assert_eq!(status, first);
+            }
+        }
+    }
     #[test]
     fn display_wait_prioritizes_input_without_consuming_the_display_signal() {
         let wake = WorkerWake::create().expect("input event");

@@ -508,7 +508,15 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         &VideoFormat::LABELS,
         VideoFormat::current(&s) as usize,
     );
-    row_label(hwnd, page, "Display timing", "Experimental: applies to normal GPU rendering.\nZero copy keeps Windows-managed timing. Reconnect to apply.", 626, 0, 48);
+    row_label(
+        hwnd,
+        page,
+        "Display timing",
+        crate::settings_model::DISPLAY_TIMING_HINT,
+        626,
+        0,
+        60,
+    );
     let timing = add(
         hwnd,
         page,
@@ -520,18 +528,18 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         0,
         page.font,
     );
-    for label in [
-        "Automatic (existing behavior)",
-        "Low latency (one queued presentation)",
-        "VSync (synchronize to display refresh)",
-    ] {
-        SendMessageW(timing, CB_ADDSTRING, 0, wide(label).as_ptr() as isize);
+    for mode in crate::connection_settings::PresentationMode::ALL {
+        SendMessageW(
+            timing,
+            CB_ADDSTRING,
+            0,
+            wide(mode.label()).as_ptr() as isize,
+        );
     }
-    let selection = match s.presentation_mode {
-        crate::connection_settings::PresentationMode::Automatic => 0,
-        crate::connection_settings::PresentationMode::LowLatency => 1,
-        crate::connection_settings::PresentationMode::Vsync => 2,
-    };
+    let selection = crate::connection_settings::PresentationMode::ALL
+        .iter()
+        .position(|mode| *mode == s.presentation_mode)
+        .unwrap_or(0);
     SendMessageW(timing, CB_SETCURSEL, selection, 0);
 
     {
@@ -1094,12 +1102,12 @@ unsafe fn save(hwnd: HWND, page: &mut Page) {
     read_options(hwnd, model);
     let s = &mut model.values;
     s.native_core.hide_session_button = checked(hwnd, HIDE_SESSION_BUTTON);
-    s.presentation_mode =
-        match SendMessageW(GetDlgItem(hwnd, PRESENTATION as i32), CB_GETCURSEL, 0, 0) {
-            1 => crate::connection_settings::PresentationMode::LowLatency,
-            2 => crate::connection_settings::PresentationMode::Vsync,
-            _ => crate::connection_settings::PresentationMode::Automatic,
-        };
+    s.presentation_mode = crate::connection_settings::PresentationMode::from_index(SendMessageW(
+        GetDlgItem(hwnd, PRESENTATION as i32),
+        CB_GETCURSEL,
+        0,
+        0,
+    ) as usize);
     s.allow_raw_audio = checked(hwnd, AUDIO_RAW);
     s.experimental_surround_audio = checked(hwnd, AUDIO_SURROUND);
     s.event_logging = checked(hwnd, EVENT_LOG);
@@ -1611,6 +1619,12 @@ mod tests {
             assert_eq!(
                 manager.view().0.presentation_mode,
                 crate::connection_settings::PresentationMode::Vsync
+            );
+            SendMessageW(GetDlgItem(page, PRESENTATION as i32), CB_SETCURSEL, 3, 0);
+            SendMessageW(page, WM_COMMAND, SAVE, 0);
+            assert_eq!(
+                manager.view().0.presentation_mode,
+                crate::connection_settings::PresentationMode::Vrr
             );
             assert!(manager.view().0.event_logging);
             assert!(manager.view().0.experimental_tcp_qos);

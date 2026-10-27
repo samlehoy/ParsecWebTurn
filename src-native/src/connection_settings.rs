@@ -31,6 +31,42 @@ pub enum PresentationMode {
     Automatic,
     LowLatency,
     Vsync,
+    Vrr,
+}
+
+impl PresentationMode {
+    pub const ALL: [Self; 4] = [Self::Automatic, Self::LowLatency, Self::Vsync, Self::Vrr];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Automatic => "Automatic (existing behavior)",
+            Self::LowLatency => "Low latency (one queued presentation)",
+            Self::Vsync => "VSync (synchronize to display refresh)",
+            Self::Vrr => "VRR (experimental; compatible display required)",
+        }
+    }
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or_default()
+    }
+    pub fn low_latency(self) -> bool {
+        matches!(self, Self::LowLatency | Self::Vrr)
+    }
+    pub fn timing_status(self, queue_control: bool, tearing: bool) -> &'static str {
+        match (self, queue_control, tearing) {
+            (Self::Automatic, _, _) => "Automatic",
+            (Self::LowLatency, true, _) => "Low latency; maximum queued presentations: 1",
+            (Self::LowLatency, false, _) => "Low latency unavailable; automatic timing",
+            (Self::Vsync, true, _) => "VSync; maximum queued presentations: 1",
+            (Self::Vsync, false, _) => "VSync; queue control unavailable",
+            (Self::Vrr, true, true) => {
+                "VRR path enabled; queue limit: 1; panel activation unverified"
+            }
+            (Self::Vrr, false, true) => {
+                "VRR path enabled; queue control unavailable; panel activation unverified"
+            }
+            (Self::Vrr, true, false) => "VRR unavailable; using low-latency timing",
+            (Self::Vrr, false, false) => "VRR unavailable; using automatic timing",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -729,11 +765,9 @@ mod tests {
                 .presentation_mode,
             PresentationMode::Automatic
         );
-        for mode in [
-            PresentationMode::Automatic,
-            PresentationMode::LowLatency,
-            PresentationMode::Vsync,
-        ] {
+        for (index, mode) in PresentationMode::ALL.into_iter().enumerate() {
+            assert_eq!(PresentationMode::from_index(index), mode);
+            assert!(!mode.label().is_empty());
             let settings = Settings {
                 presentation_mode: mode,
                 ..Default::default()
@@ -742,6 +776,17 @@ mod tests {
                 serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
             assert_eq!(restored.presentation_mode, mode);
         }
+        assert_eq!(
+            PresentationMode::from_index(usize::MAX),
+            PresentationMode::Automatic
+        );
+        assert!(PresentationMode::Vrr.low_latency());
+        assert!(PresentationMode::Vrr
+            .timing_status(true, true)
+            .contains("unverified"));
+        assert!(PresentationMode::Vrr
+            .timing_status(true, false)
+            .contains("unavailable"));
     }
     use super::*;
 

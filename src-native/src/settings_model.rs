@@ -5,6 +5,7 @@ use zeroize::Zeroizing;
 
 pub const TCP_QOS_LABEL: &str = "TCP/TLS QoS";
 pub const TCP_QOS_HINT: &str = "Windows outgoing TURN traffic only; network support varies.\nUnsupported or refused: continue unmarked.\nReconnect after changing.";
+pub const DISPLAY_TIMING_HINT: &str = "Experimental: normal GPU rendering; reconnect to apply.\nVRR needs an enabled compatible monitor and driver.\nZero copy keeps Windows-managed timing.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tab {

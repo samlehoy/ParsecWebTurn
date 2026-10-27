@@ -39,8 +39,10 @@ This prerelease does not replace the stable release in the updater.
 - **Diagnostics:** route, RTT, traffic, FPS, actual decoder/format, audio queues,
   host/local timings and system resource use. Optional bounded event logs record
   failures without continuous mouse/key activity.
-- **Presentation:** Automatic, Low latency and VSync modes, with reference-safe
-  catch-up after bursts; WebRTC additionally uses bounded recent queue history.
+- **Presentation:** Automatic, Low latency, VSync and experimental DXGI VRR,
+  with reference-safe catch-up after bursts. VRR requires an enabled compatible
+  display/driver; DXGI support alone does not verify panel activation. Zero copy
+  retains Windows-managed timing. WebRTC uses bounded recent queue history.
 
 Host permissions, encoders and graphics drivers determine the actual stream.
 **Connection stats shows the received depth/chroma and application RGB output**;
