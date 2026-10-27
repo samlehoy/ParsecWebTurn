@@ -4,7 +4,7 @@ use std::{
     collections::VecDeque,
     time::{Duration, Instant},
 };
-const WINDOW: Duration = Duration::from_secs(2);
+pub const WINDOW: Duration = Duration::from_secs(2);
 const CAPACITY: usize = 16;
 struct Observation {
     at: Instant,

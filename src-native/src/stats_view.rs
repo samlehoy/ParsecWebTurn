@@ -237,6 +237,7 @@ fn rows(
     cpu: (Option<f64>, Option<f64>, Option<f64>),
 ) -> Vec<(String, String)> {
     let values = v;
+    let recent_fresh = s.at.elapsed() <= crate::stats_recent::WINDOW;
     let mut rows = Vec::new();
     let mut row = |a: &str, b: String| rows.push((a.into(), b));
     #[cfg(feature = "bud")]
@@ -445,8 +446,14 @@ fn rows(
         if let Some(mode) = v.presentation_mode {
             row("Display timing", mode.into());
         }
-        row("Decoded video rate", number(values.fps, "fps"));
-        row("Present submissions", number(values.present_fps, "fps"));
+        row(
+            "Decoded video rate",
+            number(values.fps.filter(|_| recent_fresh), "fps"),
+        );
+        row(
+            "Present submissions",
+            number(values.present_fps.filter(|_| recent_fresh), "fps"),
+        );
         row(
             "Presentation rate scope",
             "Accepted submissions; not monitor scanout".into(),
@@ -471,6 +478,7 @@ fn rows(
                             "{:.2} / {} / {:.2} / {:.2}",
                             value.latest_ms,
                             values.recent_timing_ms[i]
+                                .filter(|_| recent_fresh)
                                 .map_or_else(|| "—".into(), |v| format!("{v:.2}")),
                             value.average_ms,
                             value.peak_ms
@@ -665,6 +673,21 @@ mod tests {
             .rows
             .iter()
             .any(|(k, v)| k == "Presentation rate scope" && v.contains("not monitor scanout")));
+        sample.at -= std::time::Duration::from_secs(3);
+        let stale = Presentation::new(
+            &sample,
+            &values,
+            (None, None, None),
+            None,
+            &Default::default(),
+        );
+        assert!(stale.rows.contains(&(
+            "Decoder API service".into(),
+            "9.00 / — / 9.00 / 9.00".into()
+        )));
+        assert!(stale
+            .rows
+            .contains(&("Present submissions".into(), "—".into())));
     }
     #[test]
     fn cards_preserve_units_unknowns_and_stale_connection_policy() {
