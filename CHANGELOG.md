@@ -2,6 +2,11 @@
 
 ## Unreleased — native client development
 
+- Extend existing reference-safe display catch-up to WebRTC. Decode queued
+  references in order while omitting obsolete display updates during a burst;
+  retain the same BUD behavior and the existing bounded GPU/video worker path.
+  No new frame copies, pacing queue, thread, timer or transport changes.
+
 - Add opt-in experimental Windows AudioVideo QoS for BUD and WebRTC TURN
   TCP/TLS, using one shared portable adapter with a no-op fallback elsewhere.
   Mark once per connected socket; refusal is nonfatal and optionally logged.

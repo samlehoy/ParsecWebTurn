@@ -369,17 +369,6 @@ pub struct Pipeline {
 }
 impl Pipeline {
     pub fn start(window: Arc<crate::window::Window>) -> Self {
-        Self::start_mode(window, false, false)
-    }
-    #[cfg(feature = "bud")]
-    pub fn start_bud(window: Arc<crate::window::Window>) -> Self {
-        Self::start_mode(window, false, true)
-    }
-    fn start_mode(
-        window: Arc<crate::window::Window>,
-        verify_synthetic_pixels: bool,
-        bud_catch_up: bool,
-    ) -> Self {
         let surface_generation = window.begin_video();
         let surface_window = window.clone();
         let presentation_mode = window.presentation_mode();
@@ -396,11 +385,6 @@ impl Pipeline {
         let state = shared.clone();
         let error_state = shared.clone();
         let preferred_gpu = window.video_gpu();
-        shared
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .bud_catch_up = bud_catch_up;
         let spawned = std::thread::Builder::new()
             .name("native-video-d3d11".into())
             .spawn(move || {
@@ -408,7 +392,7 @@ impl Pipeline {
                     run(
                         &state,
                         &window,
-                        verify_synthetic_pixels,
+                        false,
                         preferred_gpu.as_ref(),
                         surface_generation,
                         presentation_mode,
@@ -885,10 +869,7 @@ fn run(
             retry_pending = q.reset_generation == generation
                 && !q.stopped
                 && q.report.failure_stage.is_none()
-                && !crate::video_output::skip_display_for_backlog(
-                    q.bud_catch_up,
-                    q.report.queue_depth,
-                );
+                && !crate::video_output::skip_display_for_backlog(q.report.queue_depth);
         }
         header_bytes = 0;
         if let Some(error) = failure {
@@ -1511,7 +1492,7 @@ impl Session {
         if let Some(display) = &mut self.display {
             let catching_up = {
                 let q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
-                crate::video_output::skip_display_for_backlog(q.bud_catch_up, q.report.queue_depth)
+                crate::video_output::skip_display_for_backlog(q.report.queue_depth)
             };
             let hwnd = window
                 .ensure_video_surface()
@@ -2218,8 +2199,7 @@ impl Renderer {
                 .local_timing
                 .surface_dispatch
                 .record(dispatched.duration_since(ready));
-            let skip =
-                crate::video_output::skip_display_for_backlog(q.bud_catch_up, q.report.queue_depth);
+            let skip = crate::video_output::skip_display_for_backlog(q.report.queue_depth);
             if skip {
                 q.report.display_updates_skipped += 1;
             }

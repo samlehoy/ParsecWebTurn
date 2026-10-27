@@ -100,8 +100,10 @@ impl InFlight {
 
 /// Do not discard compressed references. Only omit obsolete display updates
 /// when at least two later compressed messages already await decoding.
-pub fn skip_display_for_backlog(bud: bool, queued: usize) -> bool {
-    bud && queued >= 2
+/// Both transports use the same existing worker and bounded queue; this rule
+/// never waits for more input and leaves the final two updates eligible.
+pub fn skip_display_for_backlog(queued: usize) -> bool {
+    queued >= 2
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -179,7 +181,6 @@ pub struct Frame {
 }
 
 pub struct Queue {
-    pub bud_catch_up: bool,
     pub report: Snapshot,
     pub stopped: bool,
     frames: VecDeque<Frame>,
@@ -196,7 +197,6 @@ pub struct Queue {
 impl Default for Queue {
     fn default() -> Self {
         Self {
-            bud_catch_up: false,
             report: Snapshot {
                 waiting_for_idr: true,
                 ..Default::default()
@@ -525,7 +525,7 @@ mod tests {
 
     #[test]
     fn burst_catch_up_decodes_every_reference_but_reduces_display_work() {
-        fn model(bud: bool, count: usize, render_us: u64) -> (Vec<i64>, u64, usize) {
+        fn model(catch_up: bool, count: usize, render_us: u64) -> (Vec<i64>, u64, usize) {
             let mut q = Queue::default();
             for index in 0..count {
                 assert!(q.submit(&[index as u8], index == 0, false, index as i64));
@@ -536,7 +536,7 @@ mod tests {
             while let Some(frame) = q.pop() {
                 decoded.push(frame.timestamp_100ns);
                 elapsed += 2_000; // Same modeled decode cost for every reference.
-                if !skip_display_for_backlog(bud, q.report.queue_depth) {
+                if !catch_up || !skip_display_for_backlog(q.report.queue_depth) {
                     elapsed += render_us;
                     displayed += 1;
                 }
@@ -551,8 +551,47 @@ mod tests {
         // No claimed improvement when display work is free or no burst exists.
         assert_eq!(model(false, 24, 0).1, model(true, 24, 0).1);
         assert_eq!(model(false, 1, 4_000), model(true, 1, 4_000));
-        assert!(!skip_display_for_backlog(false, MAX_FRAMES));
+        assert!(!skip_display_for_backlog(0));
+        assert!(!skip_display_for_backlog(1));
         eprintln!("synthetic burst: baseline={}us/{} display submissions; catch-up={}us/{}; all {} references decoded", baseline.1, baseline.2, catch_up.1, catch_up.2, catch_up.0.len());
+    }
+
+    #[test]
+    fn display_catch_up_drains_bursts_without_losing_the_tail_or_references() {
+        let mut queue = Queue::default();
+        let mut identity = 0i64;
+        for burst in [1, 2, 3, 12, 1, 24, 1] {
+            let first = identity;
+            for offset in 0..burst {
+                // Include parameter-set and random-access updates in the
+                // decoded input sequence, not just ordinary predicted pictures.
+                let idr = offset == 0;
+                let parameters = offset == 0 || offset == 1;
+                assert!(queue.submit(&[identity as u8], idr, parameters, identity));
+                identity += 1;
+            }
+            let mut decoded = Vec::new();
+            let mut displayed = Vec::new();
+            while let Some(frame) = queue.pop() {
+                decoded.push((frame.timestamp_100ns, frame.idr, frame.parameters));
+                if !skip_display_for_backlog(queue.report.queue_depth) {
+                    displayed.push(frame.timestamp_100ns);
+                }
+                queue.recycle(frame.bytes);
+            }
+            let expected: Vec<_> = (first..identity)
+                .enumerate()
+                .map(|(offset, id)| (id, offset == 0, offset <= 1))
+                .collect();
+            assert_eq!(decoded, expected);
+            assert_eq!(displayed.len(), burst.min(2));
+            assert_eq!(displayed.last(), Some(&(identity - 1)));
+            assert_eq!(queue.report.queue_depth, 0);
+            assert_eq!(queue.report.queue_bytes, 0);
+            assert_eq!(queue.report.frames_dropped, 0);
+            assert_eq!(queue.reset_generation, 0);
+            assert!(!queue.report.waiting_for_idr);
+        }
     }
     #[test]
     fn late_refresh_failures_cannot_stop_a_new_or_recovered_generation() {
