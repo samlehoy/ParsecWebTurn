@@ -212,6 +212,7 @@ pub struct Snapshot {
     pub display_rgb_bit_depth: Option<u8>,
     pub display_output_fallback: Option<String>,
     pub vsr_status: Option<&'static str>,
+    pub recovery_reason: Option<&'static str>,
     pub codec: Option<crate::video_stream::Codec>,
     pub enabled: bool,
     pub decoder_initialized: bool,
@@ -290,6 +291,7 @@ pub struct Queue {
     pub stream_generation: u64,
     recovery_started: Option<Instant>,
     recovery_attempts: u8,
+    optional_setup: bool,
     request_pending: bool,
     last_request: Option<Instant>,
 }
@@ -312,6 +314,7 @@ impl Default for Queue {
             stream_generation: 0,
             recovery_started: None,
             recovery_attempts: 0,
+            optional_setup: false,
             request_pending: false,
             last_request: None,
         }
@@ -407,7 +410,7 @@ impl Queue {
             || self.report.queue_bytes.saturating_add(bytes.len()) > MAX_BYTES
         {
             // Following deltas are unusable after a missing reference picture.
-            self.recover(Instant::now());
+            self.recover_for(Instant::now(), "compressed_queue_full");
             self.report.frames_dropped = self.report.frames_dropped.saturating_add(1);
             return false;
         }
@@ -503,15 +506,40 @@ impl Queue {
         true
     }
 
+    pub fn optional_setup(&mut self, active: bool) {
+        self.optional_setup = active;
+        if !active && self.report.recovering {
+            self.recovery_started = Some(Instant::now());
+        }
+    }
     pub fn recover(&mut self, now: Instant) -> bool {
+        self.recover_for(now, "decoder_recovery")
+    }
+    fn recover_for(&mut self, now: Instant, reason: &'static str) -> bool {
         if self.stopped || self.report.failure_stage.is_some() {
             return false;
         }
-        if self.recovery_attempts >= 3 {
+        let warmup = self.optional_setup && reason == "compressed_queue_full";
+        if !warmup && self.recovery_attempts >= 3 {
             self.fail("video-recovery-exhausted", None);
             return false;
         }
-        self.recovery_attempts += 1;
+        if !warmup {
+            self.recovery_attempts += 1;
+        }
+        self.report.recovery_reason = Some(if warmup {
+            "optional_video_setup_backlog"
+        } else {
+            reason
+        });
+        crate::event_log::record(
+            "WARN",
+            "video_recovery_requested",
+            serde_json::json!({
+                "reason":self.report.recovery_reason,"queue_depth":self.report.queue_depth,
+                "queue_bytes":self.report.queue_bytes,"attempt":self.recovery_attempts,
+            }),
+        );
         self.reset_generation += 1;
         self.clear();
         self.report.waiting_for_idr = true;
@@ -536,9 +564,10 @@ impl Queue {
     }
 
     pub fn check_recovery(&mut self, now: Instant) {
-        if self
-            .recovery_started
-            .is_some_and(|start| now.duration_since(start) >= Duration::from_secs(5))
+        if !self.optional_setup
+            && self
+                .recovery_started
+                .is_some_and(|start| now.duration_since(start) >= Duration::from_secs(5))
         {
             self.fail("video-recovery-timeout", None);
         }
@@ -562,6 +591,7 @@ impl Queue {
     }
 
     pub fn recovered(&mut self) {
+        self.report.recovery_reason = None;
         self.report.waiting_for_idr = false;
         self.recovery_started = None;
         self.request_pending = false;
@@ -1162,5 +1192,42 @@ mod tests {
         assert!(!serde_json::to_string(&q.report)
             .unwrap()
             .contains("private-video"));
+    }
+}
+
+#[cfg(test)]
+mod optional_warmup_tests {
+    use super::*;
+    #[test]
+    fn bounded_optional_warmup_drops_stale_input_without_consuming_error_retries() {
+        let mut queue = Queue::default();
+        let start = Instant::now();
+        queue.begin_native_call(NativeOperation::Setup, start);
+        queue.optional_setup(true);
+        for _ in 0..5 {
+            for _ in 0..MAX_FRAMES {
+                assert!(queue.submit(&[1], true, false, 0));
+            }
+            assert!(!queue.submit(&[1], true, false, 0));
+            assert_eq!(queue.recovery_attempts, 0);
+            assert_eq!(queue.report.queue_depth, 0);
+            assert_eq!(
+                queue.report.recovery_reason,
+                Some("optional_video_setup_backlog")
+            );
+            assert!(queue.report.failure_stage.is_none());
+        }
+        queue.optional_setup(false);
+        for _ in 0..MAX_FRAMES {
+            assert!(queue.submit(&[1], true, false, 0));
+        }
+        assert!(!queue.submit(&[1], true, false, 0));
+        assert_eq!(queue.recovery_attempts, 1);
+        assert_eq!(queue.report.recovery_reason, Some("compressed_queue_full"));
+        queue.check_native_call(start + Duration::from_secs(10));
+        assert_eq!(
+            queue.report.failure_stage,
+            Some("video-native-setup-timeout-restart-required")
+        );
     }
 }

@@ -69,6 +69,15 @@ impl PresentationMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VsrRuntimeConsent {
+    #[default]
+    Ask,
+    Allowed,
+    Declined,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GpuPreference {
@@ -110,6 +119,7 @@ pub struct Settings {
     pub presentation_mode: PresentationMode,
     /// Optional RTX Video quality: 0 off, 1..=4 low through ultra.
     pub nvidia_vsr: u8,
+    pub vsr_runtime_consent: VsrRuntimeConsent,
     pub experimental_ten_bit: bool,
     pub experimental_amf_main10: bool,
     pub experimental_chroma_444: bool,
@@ -166,6 +176,7 @@ impl Default for Settings {
             prefer_hevc: false,
             presentation_mode: PresentationMode::Automatic,
             nvidia_vsr: 0,
+            vsr_runtime_consent: VsrRuntimeConsent::Ask,
             experimental_ten_bit: false,
             experimental_amf_main10: false,
             experimental_chroma_444: false,
@@ -374,6 +385,12 @@ struct Cached {
 }
 
 impl Manager {
+    pub fn directory(&self) -> PathBuf {
+        self.path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf()
+    }
     pub fn open(path: PathBuf) -> Arc<Self> {
         let loaded = (|| -> Result<Settings> {
             let file = match std::fs::File::open(&path) {

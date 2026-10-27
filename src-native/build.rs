@@ -13,10 +13,6 @@ fn main() {
             );
             println!("cargo:rustc-cfg=nvidia_vsr_sdk");
             println!(
-                "cargo:rustc-env=EVOPARSEQ_VSR_RUNTIME={}",
-                runtime.display()
-            );
-            println!(
                 "cargo:rustc-link-search=native={}",
                 root.join("lib/Windows/x64").display()
             );

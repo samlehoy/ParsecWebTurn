@@ -80,6 +80,8 @@ mod video_stream;
 mod video_windows;
 mod viewport;
 #[cfg(windows)]
+mod vsr_runtime;
+#[cfg(windows)]
 mod wake_lock;
 #[cfg(windows)]
 mod window;

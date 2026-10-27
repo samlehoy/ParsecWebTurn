@@ -619,6 +619,8 @@ fn run(
     let scheduling = crate::media_scheduling::Registration::video();
     update(shared, |s| s.mmcss_registered = scheduling.is_some());
     let mut session: Option<Session> = None;
+    let mut reuse_vsr_session = false;
+    let mut vsr_disabled = false;
     let mut headers = Vec::new();
     let mut header_bytes = 0usize;
     let mut generation = 0;
@@ -694,7 +696,30 @@ fn run(
         if next_generation != generation {
             generation = next_generation;
             awaiting_random_access = true;
-            session = None;
+            reuse_vsr_session = session.as_ref().is_some_and(Session::has_vsr);
+            if reuse_vsr_session {
+                let overloaded = shared
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .report
+                    .recovery_reason
+                    == Some("compressed_queue_full");
+                if overloaded {
+                    session
+                        .as_mut()
+                        .unwrap()
+                        .renderer
+                        .as_mut()
+                        .unwrap()
+                        .disable_vsr(
+                            "VSR could not keep up with incoming video; normal rendering retained",
+                        );
+                    vsr_disabled = true;
+                }
+            } else {
+                session = None;
+            }
             headers.clear();
             header_bytes = 0;
             window.set_video_ready_for(surface_generation, false);
@@ -741,6 +766,28 @@ fn run(
         let Some(mut frame) = frame else {
             continue;
         };
+        if reuse_vsr_session {
+            let next_hevc = if frame.codec == crate::video_stream::Codec::Hevc {
+                crate::video_stream::hevc_configuration(&frame.bytes)
+                    .or_else(|| session.as_ref().and_then(|s| s.hevc))
+            } else {
+                None
+            };
+            let reused = unsafe {
+                session.as_mut().unwrap().reset_preserving_renderer(
+                    frame.codec,
+                    next_hevc,
+                    frame.rotation,
+                    shared,
+                )?
+            };
+            if !reused {
+                session = None;
+            } else {
+                update(shared, |s| s.decoder_initialized = true);
+            }
+            reuse_vsr_session = false;
+        }
         // A display-mode transition retires the decoder through the existing
         // keyframe recovery path. Never mix old and new orientation on outputs.
         if session
@@ -763,7 +810,19 @@ fn run(
                         // Retire the old GPU pools before feeding the new SPS.
                         // Keep this packet and its IDR: no extra frame copy,
                         // network round trip, or decoder fallback is needed.
-                        session = None;
+                        let preserve = session.as_ref().is_some_and(Session::has_vsr);
+                        if !preserve
+                            || !unsafe {
+                                session.as_mut().unwrap().reset_preserving_renderer(
+                                    frame.codec,
+                                    Some(next),
+                                    frame.rotation,
+                                    shared,
+                                )?
+                            }
+                        {
+                            session = None;
+                        }
                         awaiting_random_access = true;
                         parameters.retain_hevc_configuration(next);
                         headers.clear();
@@ -874,10 +933,30 @@ fn run(
             native.rotation = frame.rotation;
             if let Some(renderer) = &mut native.renderer {
                 renderer.rotation = frame.rotation;
-                if !verify_synthetic_pixels {
+                if vsr_disabled {
+                    renderer.vsr_status =
+                        Some("Disabled after processing backlog; normal GPU rendering");
+                }
+                if !verify_synthetic_pixels && vsr_quality != 0 && !vsr_disabled {
+                    shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .optional_setup(true);
+                    let began = Instant::now();
                     unsafe {
-                        renderer.configure_vsr(vsr_quality);
+                        renderer.configure_vsr(vsr_quality, &window.data_directory());
                     }
+                    shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .optional_setup(false);
+                    crate::event_log::record(
+                        "INFO",
+                        "video_vsr_setup_finished",
+                        serde_json::json!({"elapsed_ms":began.elapsed().as_secs_f64()*1000.0,"available":renderer.vsr.is_some()}),
+                    );
                 }
             }
             if zero_requested && frame.rotation != 0 {
@@ -1218,6 +1297,69 @@ struct Session {
     _release: NativeRelease,
 }
 impl Session {
+    fn has_vsr(&self) -> bool {
+        self.renderer.as_ref().is_some_and(|r| r.vsr.is_some())
+    }
+    unsafe fn reset_preserving_renderer(
+        &mut self,
+        codec: crate::video_stream::Codec,
+        hevc: Option<crate::video_stream::HevcConfiguration>,
+        rotation: u8,
+        shared: &Shared,
+    ) -> Result<bool> {
+        shared
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .begin_native_call(NativeOperation::Setup, Instant::now());
+        let result = (|| {
+            if self.renderer.is_none()
+                || (codec == crate::video_stream::Codec::Hevc) != self.hevc.is_some()
+                || hevc.is_some_and(|h| (h.bit_depth == 10) != self.ten_bit)
+            {
+                return Ok(false);
+            }
+            // Retire cached decoder views before replacing its reference pool. RGB
+            // effect textures and the SDK instance stay on the original device.
+            let renderer = self.renderer.as_mut().unwrap();
+            renderer.processor = None;
+            renderer.pending_present = false;
+            renderer.latency_slot = false;
+            renderer.rotation = rotation;
+            if let Some(decoder) = &self.decoder {
+                api(
+                    "video-process-input",
+                    decoder.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0),
+                )?;
+                api(
+                    "video-process-input",
+                    decoder.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0),
+                )?;
+            } else {
+                #[cfg(feature = "vendor-video")]
+                if !self.vendor.as_mut().is_some_and(|v| v.reset_direct()) {
+                    return Ok(false);
+                }
+                #[cfg(not(feature = "vendor-video"))]
+                return Ok(false);
+            }
+            self.hevc = hevc;
+            self.rotation = rotation;
+            self.in_flight = Default::default();
+            crate::event_log::record(
+                "INFO",
+                "video_renderer_preserved",
+                serde_json::json!({"vsr":renderer.vsr.is_some()}),
+            );
+            Ok(true)
+        })();
+        shared
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .finish_native_call(Instant::now());
+        result
+    }
     fn pending_wait_handle(&self) -> Option<HANDLE> {
         let renderer = self.renderer.as_ref()?;
         if !renderer.mode.low_latency() || !renderer.pending_present || renderer.latency_slot {
@@ -2153,7 +2295,7 @@ impl Drop for Renderer {
     }
 }
 impl Renderer {
-    unsafe fn configure_vsr(&mut self, quality: u8) {
+    unsafe fn configure_vsr(&mut self, quality: u8, data: &std::path::Path) {
         if quality == 0 {
             return;
         }
@@ -2167,7 +2309,7 @@ impl Renderer {
             self.vsr_status = Some("Unavailable: NVIDIA RTX GPU required");
             return;
         }
-        match crate::nvidia_vsr::Vsr::new(&self.device, quality) {
+        match crate::nvidia_vsr::Vsr::new(&self.device, quality, data) {
             Ok(vsr) => {
                 self.vsr = Some(vsr);
                 self.vsr_status = Some("Ready; waiting for an upscaled frame");
@@ -2861,7 +3003,22 @@ impl Renderer {
             }
             .rect()
             .unwrap();
+            let warming = self.vsr.as_ref().unwrap().warming();
+            if warming {
+                shared
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .optional_setup(true);
+            }
             let result = self.vsr.as_mut().unwrap().evaluate(&self.cleanup.0, target);
+            if warming {
+                shared
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .optional_setup(false);
+            }
             self.cleanup.0.ClearState();
             if let Err(error) = result {
                 self.disable_vsr(error);

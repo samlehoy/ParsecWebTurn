@@ -1128,6 +1128,7 @@ unsafe fn update_enabled(hwnd: HWND) {
 unsafe fn save(hwnd: HWND, page: &mut Page) {
     let model = &mut page.model;
     read_options(hwnd, model);
+    let vsr_available = model.availability().nvidia_vsr;
     let s = &mut model.values;
     s.native_core.hide_session_button = checked(hwnd, HIDE_SESSION_BUTTON);
     s.presentation_mode = crate::connection_settings::PresentationMode::from_index(SendMessageW(
@@ -1163,7 +1164,26 @@ unsafe fn save(hwnd: HWND, page: &mut Page) {
     model.token = zeroize::Zeroizing::new(text(hwnd, TOKEN));
     model.forget_password = checked(hwnd, FORGET_PASSWORD);
     model.forget_token = checked(hwnd, FORGET_TOKEN);
+    let needs_vsr = s.nvidia_vsr != 0
+        && vsr_available
+        && !crate::vsr_runtime::present(&page.manager.directory());
+    if needs_vsr && s.vsr_runtime_consent != crate::connection_settings::VsrRuntimeConsent::Allowed
+    {
+        let accepted = MessageBoxW(hwnd, wide("The NVIDIA VSR runtime is missing. Allow its verified download from NVIDIA on the next app start? Normal video remains available without it.").as_ptr(), wide("EvoParseq - NVIDIA VSR").as_ptr(), MB_YESNO | MB_DEFBUTTON2 | MB_ICONQUESTION) == IDYES;
+        if accepted {
+            s.vsr_runtime_consent = crate::connection_settings::VsrRuntimeConsent::Allowed;
+        } else {
+            s.nvidia_vsr = 0;
+            SendMessageW(GetDlgItem(hwnd, NVIDIA_VSR as i32), CB_SETCURSEL, 0, 0);
+        }
+    }
     if model.save(&page.manager) {
+        if needs_vsr
+            && model.values.vsr_runtime_consent
+                == crate::connection_settings::VsrRuntimeConsent::Allowed
+        {
+            model.feedback.push_str(crate::vsr_runtime::RESTART_HINT);
+        }
         PostMessageW(
             GetParent(hwnd),
             crate::native_core::session_ui::VISIBILITY,

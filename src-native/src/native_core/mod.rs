@@ -70,6 +70,7 @@ fn run() -> Result<()> {
         "native_core_started",
         serde_json::json!({"transport":if settings.view().0.bud {"BUD"} else {"WebRTC"}}),
     );
+    prepare_vsr_runtime(&settings);
     let mut session = None;
     loop {
         let Some(selection) = ui::choose(settings.clone(), session.take())? else {
@@ -106,5 +107,65 @@ fn run() -> Result<()> {
             }
         }
         session = Some(selection.session);
+    }
+}
+
+fn prepare_vsr_runtime(settings: &crate::connection_settings::Manager) {
+    use crate::connection_settings::VsrRuntimeConsent;
+    if !cfg!(nvidia_vsr_sdk) || settings.view().1.is_some() {
+        return;
+    }
+    let data = settings.directory();
+    if crate::vsr_runtime::reuse_previous(&data).unwrap_or(false) {
+        return;
+    }
+    if !crate::gpu_windows::enumerate()
+        .is_ok_and(|gpus| gpus.iter().any(|g| g.preference.vendor_id == 0x10de))
+    {
+        return;
+    }
+    let mut preferences = settings.view().0;
+    if preferences.vsr_runtime_consent == VsrRuntimeConsent::Ask {
+        let text: Vec<u16> = crate::vsr_runtime::PROMPT
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let title: Vec<u16> = "EvoParseq - optional NVIDIA VSR"
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let accepted = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+                std::ptr::null_mut(),
+                text.as_ptr(),
+                title.as_ptr(),
+                windows_sys::Win32::UI::WindowsAndMessaging::MB_YESNO
+                    | windows_sys::Win32::UI::WindowsAndMessaging::MB_DEFBUTTON2
+                    | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONQUESTION,
+            )
+        } == windows_sys::Win32::UI::WindowsAndMessaging::IDYES;
+        preferences.vsr_runtime_consent = if accepted {
+            VsrRuntimeConsent::Allowed
+        } else {
+            VsrRuntimeConsent::Declined
+        };
+        if settings
+            .save(preferences.clone(), "", "", false, false)
+            .is_err()
+        {
+            return;
+        }
+    }
+    if preferences.vsr_runtime_consent == VsrRuntimeConsent::Allowed {
+        if let Err(error) = crate::vsr_runtime::install(&data) {
+            crate::event_log::record(
+                "WARN",
+                "vsr_runtime_install_failed",
+                serde_json::json!({"reason":error.to_string()}),
+            );
+            unsafe {
+                ui::message_box(std::ptr::null_mut(), "The optional NVIDIA VSR runtime could not be downloaded or verified. Normal GPU video remains available. See the event log.");
+            }
+        }
     }
 }

@@ -63,21 +63,27 @@ pub struct Vsr {
     sdk: sdk::Instance,
     surfaces: Option<Surfaces>,
     quality: u8,
+    evaluated: bool,
 }
 impl Vsr {
-    pub unsafe fn new(device: &ID3D11Device, quality: u8) -> anyhow::Result<Self> {
+    pub unsafe fn new(
+        device: &ID3D11Device,
+        quality: u8,
+        data: &std::path::Path,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!((1..=4).contains(&quality), "Invalid RTX VSR quality");
         #[cfg(nvidia_vsr_sdk)]
         {
             Ok(Self {
-                sdk: sdk::Instance::new(device)?,
+                sdk: sdk::Instance::new(device, data)?,
                 surfaces: None,
                 quality,
+                evaluated: false,
             })
         }
         #[cfg(not(nvidia_vsr_sdk))]
         {
-            let _ = device;
+            let _ = (device, data);
             anyhow::bail!("RTX Video SDK was not included in this build")
         }
     }
@@ -96,6 +102,9 @@ impl Vsr {
         }
         Ok(self.surfaces.as_ref().unwrap())
     }
+    pub fn warming(&self) -> bool {
+        !self.evaluated
+    }
     pub unsafe fn evaluate(
         &mut self,
         context: &ID3D11DeviceContext,
@@ -108,7 +117,9 @@ impl Vsr {
         context.ClearRenderTargetView(&surfaces.clear, &[0.0, 0.0, 0.0, 1.0]);
         #[cfg(nvidia_vsr_sdk)]
         {
-            self.sdk.evaluate(context, surfaces, target, self.quality)
+            let result = self.sdk.evaluate(context, surfaces, target, self.quality);
+            self.evaluated = result.is_ok();
+            result
         }
         #[cfg(not(nvidia_vsr_sdk))]
         {
@@ -123,9 +134,7 @@ mod sdk {
     use super::*;
     use std::{
         ffi::{c_char, c_void},
-        path::PathBuf,
         ptr::null_mut,
-        sync::OnceLock,
     };
     use windows::core::Interface;
     use windows::Win32::Graphics::Direct3D10::ID3D10Multithread;
@@ -203,57 +212,14 @@ mod sdk {
         anyhow::ensure!(result == 1, "RTX Video SDK status 0x{result:08X}");
         Ok(())
     }
-    /// Materialize only the SDK's release VSR runtime on first opt-in. The user
-    /// still distributes/runs one EXE; no CUDA toolkit or SDK installation.
-    fn runtime_directory() -> anyhow::Result<PathBuf> {
-        static PATH: OnceLock<Result<PathBuf, String>> = OnceLock::new();
-        PATH.get_or_init(|| {
-            (|| -> anyhow::Result<PathBuf> {
-                use sha2::{Digest, Sha256};
-                let bytes = include_bytes!(env!("EVOPARSEQ_VSR_RUNTIME"));
-                let hash = format!("{:x}", Sha256::digest(bytes));
-                let root = PathBuf::from(
-                    std::env::var_os("LOCALAPPDATA")
-                        .ok_or_else(|| anyhow::anyhow!("LOCALAPPDATA unavailable"))?,
-                )
-                .join("EvoParseq")
-                .join("rtx-video")
-                .join(&hash);
-                std::fs::create_dir_all(&root)?;
-                let dll = root.join("nvngx_vsr.dll");
-                if !dll.exists() {
-                    let temporary = root.join(format!("runtime-{}.tmp", std::process::id()));
-                    std::fs::write(&temporary, bytes)?;
-                    if let Err(error) = std::fs::rename(&temporary, &dll) {
-                        let _ = std::fs::remove_file(&temporary);
-                        if !dll.exists() {
-                            return Err(error.into());
-                        }
-                    }
-                }
-                // Verify cached code before NGX loads it; no untrusted replacement.
-                let mut file = std::fs::File::open(&dll)?;
-                let mut digest = Sha256::new();
-                std::io::copy(&mut file, &mut digest)?;
-                anyhow::ensure!(
-                    format!("{:x}", digest.finalize()) == hash,
-                    "RTX Video runtime checksum mismatch"
-                );
-                Ok(root)
-            })()
-            .map_err(|e| e.to_string())
-        })
-        .clone()
-        .map_err(anyhow::Error::msg)
-    }
     pub struct Instance {
         device: ID3D11Device,
         parameters: *mut c_void,
         handle: *mut c_void,
     }
     impl Instance {
-        pub unsafe fn new(device: &ID3D11Device) -> anyhow::Result<Self> {
-            let root = runtime_directory()?;
+        pub unsafe fn new(device: &ID3D11Device, data: &std::path::Path) -> anyhow::Result<Self> {
+            let root = crate::vsr_runtime::validated_directory(data)?;
             use std::os::windows::ffi::OsStrExt;
             let path: Vec<u16> = root.as_os_str().encode_wide().chain(Some(0)).collect();
             let paths = [path.as_ptr()];

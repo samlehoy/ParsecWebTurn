@@ -237,6 +237,15 @@ impl Decoder {
         };
         Ok(Self { inner, sequence: 0 })
     }
+    /// Reset only the direct decoder's reference/surface pool on its owner thread.
+    /// The D3D11 device is unchanged, so attached rendering/effect state stays valid.
+    pub fn reset_direct(&mut self) -> bool {
+        if let Inner::Direct(cell) = &mut self.inner {
+            cell.with_dependent_mut(|owner, backend| *backend = direct::Backend::new(&owner.device));
+            self.sequence = 0;
+            true
+        } else { false }
+    }
     fn device(&self) -> &Device {
         match &self.inner {
             Inner::Direct(c) => &c.borrow_owner().device,
