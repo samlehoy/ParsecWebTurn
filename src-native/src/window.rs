@@ -1895,7 +1895,10 @@ mod tests {
                         }
                     })
                     .collect();
-                assert_eq!(motion, [(-400, 0), (1, 0), (0, -300), (0, 1)]); // Immediate reversal on both axes; absolute reports excluded.
+                // The queue combines adjacent relative reports; both immediate
+                // reversals contribute exactly, absolute RAWINPUT is excluded.
+                // input_windows tests also verify the per-report translation.
+                assert_eq!(motion, [(-399, -299)]);
                 let mut held = POINT::default();
                 unsafe {
                     GetCursorPos(&mut held);
