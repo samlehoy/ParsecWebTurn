@@ -19,6 +19,8 @@ pub enum Event {
     Clipboard,
     // Local scheduling hint only; never translated into remote mouse input.
     CursorReady,
+    // Local fail-safe; never translated into remote input.
+    InputOverflow,
     Motion(i32, i32),
     RelativeMotion(i32, i32),
     RelativeMode(bool),
@@ -29,6 +31,32 @@ pub enum Event {
     Fullscreen(bool),
     #[cfg(feature = "bud")]
     HidInputRelease,
+}
+
+impl Event {
+    pub(crate) fn is_motion(&self) -> bool {
+        matches!(self, Self::Motion(..) | Self::RelativeMotion(..))
+    }
+
+    /// Only adjacent movement in the same coordinate mode is replaceable.
+    /// Checked sums preserve every relative delta, including integer extremes.
+    pub(crate) fn merge_motion(&mut self, next: &Self) -> bool {
+        match (self, next) {
+            (Self::Motion(x, y), Self::Motion(nx, ny)) => {
+                (*x, *y) = (*nx, *ny);
+                true
+            }
+            (Self::RelativeMotion(x, y), Self::RelativeMotion(nx, ny)) => {
+                if let (Some(sx), Some(sy)) = (x.checked_add(*nx), y.checked_add(*ny)) {
+                    (*x, *y) = (sx, sy);
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

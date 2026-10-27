@@ -220,9 +220,10 @@ impl Attempt {
     pub fn failure(&self) -> Option<&'static str> {
         match self {
             Self::Bud(bud) => bud.failure(),
-            Self::Web(web) => (web.failed.load(Ordering::Acquire)
-                || web.transport.failure_stage().is_some())
-            .then_some("WebRTC connection failed"),
+            Self::Web(web) => web.transport.native_video_failure().or_else(|| {
+                (web.failed.load(Ordering::Acquire) || web.transport.failure_stage().is_some())
+                    .then_some("WebRTC connection failed")
+            }),
         }
     }
     pub fn host_status(&self) -> Option<i32> {

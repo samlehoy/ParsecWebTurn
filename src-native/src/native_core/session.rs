@@ -274,7 +274,16 @@ pub(super) fn run(
                 platform.awake();
             }
         }
-        if attempt.failure().is_some() {
+        if let Some(failure) = attempt.failure() {
+            if failure == "video-native-previous-worker-still-running" {
+                anyhow::bail!("The previous video session is still closing. Retry in a moment; restart EvoParseq if it does not finish.");
+            }
+            if failure.starts_with("video-native-") {
+                if established {
+                    let _ = platform.send_input(&mut input, &attempt, &Event::Focus(false));
+                }
+                anyhow::bail!("The video driver did not finish its operation. Restart EvoParseq before reconnecting. See the event log.");
+            }
             if let Some(code) = attempt.host_status() {
                 return Err(platform.host_error(code).into());
             }
@@ -368,6 +377,13 @@ pub(super) fn run(
         }
         platform.take_events(&mut batch);
         for event in batch.drain(..) {
+            if matches!(event, Event::InputOverflow) {
+                crate::event_log::record("ERROR", "input_queue_overflow", serde_json::json!({}));
+                if established {
+                    let _ = platform.send_input(&mut input, &attempt, &Event::Focus(false));
+                }
+                anyhow::bail!("Input queue overloaded. Input was released; reconnect to continue.");
+            }
             if local.shortcut(&event, established, platform, |frame| attempt.send(frame))? {
                 continue;
             }

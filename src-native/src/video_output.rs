@@ -7,6 +7,28 @@ use std::time::{Duration, Instant};
 pub const MAX_FRAMES: usize = 32;
 pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 
+/// Caller-side deadline, not cancellation of a native driver operation.
+#[derive(Clone, Copy)]
+pub enum NativeOperation {
+    Setup,
+    Feed,
+    Present,
+    Release,
+}
+impl NativeOperation {
+    fn timeout(self) -> Duration {
+        Duration::from_secs(if matches!(self, Self::Release) { 2 } else { 10 })
+    }
+    fn failure(self) -> &'static str {
+        match self {
+            Self::Setup => "video-native-setup-timeout-restart-required",
+            Self::Feed => "video-native-feed-timeout-restart-required",
+            Self::Present => "video-native-present-timeout-restart-required",
+            Self::Release => "video-native-release-timeout-restart-required",
+        }
+    }
+}
+
 /// CPU wall-clock durations only. No inference about GPU completion/scanout.
 #[derive(Clone, Default, Serialize)]
 pub struct Timing {
@@ -255,6 +277,8 @@ pub struct Frame {
 }
 
 pub struct Queue {
+    native_call: Option<(NativeOperation, Instant)>,
+    pub native_stalled: bool,
     display_catch_up: DisplayCatchUp,
     pub report: Snapshot,
     pub stopped: bool,
@@ -272,6 +296,8 @@ pub struct Queue {
 impl Default for Queue {
     fn default() -> Self {
         Self {
+            native_call: None,
+            native_stalled: false,
             display_catch_up: Default::default(),
             report: Snapshot {
                 waiting_for_idr: true,
@@ -292,6 +318,30 @@ impl Default for Queue {
 }
 
 impl Queue {
+    pub fn begin_native_call(&mut self, operation: NativeOperation, now: Instant) {
+        self.check_native_call(now);
+        if !self.native_stalled {
+            self.native_call = Some((operation, now));
+        }
+    }
+
+    pub fn finish_native_call(&mut self, now: Instant) {
+        self.check_native_call(now);
+        self.native_call = None;
+    }
+
+    pub fn check_native_call(&mut self, now: Instant) {
+        if !self.native_stalled {
+            if let Some((operation, began)) = self.native_call {
+                if now.saturating_duration_since(began) >= operation.timeout() {
+                    self.native_stalled = true;
+                    self.stopped = true;
+                    self.fail(operation.failure(), None);
+                }
+            }
+        }
+    }
+
     pub fn with_display_policy(policy: DisplayCatchUpPolicy) -> Self {
         let mut queue = Self::default();
         queue.display_catch_up.policy = policy;
@@ -560,6 +610,90 @@ impl Queue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_deadlines_cover_only_active_calls_and_never_claim_resource_release() {
+        let now = Instant::now();
+        for operation in [
+            NativeOperation::Setup,
+            NativeOperation::Feed,
+            NativeOperation::Present,
+            NativeOperation::Release,
+        ] {
+            let mut queue = Queue::default();
+            queue.check_native_call(now + Duration::from_secs(3600));
+            assert!(
+                !queue.native_stalled,
+                "an idle stream is not a stuck driver"
+            );
+            queue.begin_native_call(operation, now);
+            queue.check_native_call(now + operation.timeout() - Duration::from_nanos(1));
+            assert!(!queue.native_stalled);
+            queue.check_native_call(now + operation.timeout());
+            assert!(queue.native_stalled && queue.stopped);
+            assert_eq!(queue.report.failure_stage, Some(operation.failure()));
+            assert!(!queue.report.worker_finished && !queue.report.resources_released);
+            queue.finish_native_call(now + operation.timeout() + Duration::from_secs(1));
+            queue.begin_native_call(NativeOperation::Feed, now + Duration::from_secs(100));
+            assert!(
+                queue.native_call.is_none(),
+                "late completion must not restart a retired worker"
+            );
+            assert_eq!(queue.report.failure_stage, Some(operation.failure()));
+        }
+        let mut healthy = Queue::default();
+        healthy.begin_native_call(NativeOperation::Feed, now);
+        healthy.finish_native_call(now + Duration::from_millis(1));
+        healthy.check_native_call(now + Duration::from_secs(3600));
+        assert!(!healthy.native_stalled);
+    }
+
+    #[test]
+    fn stalled_native_owner_keeps_resource_until_its_call_returns() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc, Arc, Mutex,
+        };
+        struct Resource(Arc<AtomicBool>, std::thread::ThreadId);
+        impl Drop for Resource {
+            fn drop(&mut self) {
+                assert_eq!(self.1, std::thread::current().id());
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let queue = Arc::new(Mutex::new(Queue::default()));
+        let released = Arc::new(AtomicBool::new(false));
+        let (start, ready) = mpsc::channel();
+        let (resume, blocked) = mpsc::channel();
+        let q = queue.clone();
+        let dropped = released.clone();
+        let worker = std::thread::spawn(move || {
+            let resource = Resource(dropped, std::thread::current().id());
+            let began = Instant::now();
+            q.lock()
+                .unwrap()
+                .begin_native_call(NativeOperation::Feed, began);
+            start.send(began).unwrap();
+            blocked.recv_timeout(Duration::from_secs(2)).unwrap();
+            q.lock().unwrap().finish_native_call(Instant::now());
+            drop(resource);
+        });
+        let began = ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        {
+            let mut q = queue.lock().unwrap();
+            q.check_native_call(began + Duration::from_secs(10));
+            assert!(q.native_stalled && q.stopped);
+            assert!(!q.report.resources_released);
+            // Queue cancellation and compressed-buffer cleanup cannot free an
+            // owner-thread resource still inside a native call.
+            q.clear();
+            assert!(!released.load(Ordering::Acquire));
+        }
+        resume.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(released.load(Ordering::Acquire));
+        assert!(queue.lock().unwrap().native_stalled);
+    }
     #[test]
     fn announced_encoder_rebuild_retires_old_codec_without_spending_error_budget() {
         use crate::video_stream::Codec;

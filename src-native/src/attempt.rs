@@ -569,6 +569,17 @@ impl Attempt {
             .then_some(state.progress.failure_stage.unwrap_or(FailureStage::Worker))
     }
 
+    #[cfg(windows)]
+    pub fn native_video_failure(&self) -> Option<&'static str> {
+        let pipeline = self
+            .completion
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .video_output
+            .clone();
+        pipeline.and_then(|v| v.native_failure())
+    }
+
     pub fn host_status(&self) -> Option<i32> {
         // A host status can precede SCTP closure in the same read batch. Keep
         // its authenticated numeric reason available before a generic failure.

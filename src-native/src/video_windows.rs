@@ -1,7 +1,7 @@
 //! Documented Media Foundation H.264/HEVC -> D3D11 NV12/P010 -> DXGI presentation.
 //! COM and all GPU objects are created, used and released on one worker thread.
 use crate::connection_settings::PresentationMode;
-use crate::video_output::{Frame, Queue, Snapshot};
+use crate::video_output::{Frame, NativeOperation, Queue, Snapshot};
 use std::{
     mem::ManuallyDrop,
     sync::{Arc, Condvar, Mutex},
@@ -360,7 +360,30 @@ impl Drop for WorkerWake {
         }
     }
 }
-type Shared = Arc<(Mutex<Queue>, Condvar, Option<WorkerWake>)>;
+type WorkerState = (Mutex<Queue>, Condvar, Option<WorkerWake>);
+type Shared = Arc<WorkerState>;
+static PREVIOUS_WORKER: Mutex<Option<std::sync::Weak<WorkerState>>> = Mutex::new(None);
+// A timed-out driver may still own GPU objects. Do not create an unbounded
+// succession of replacement workers in this process; restarting clears this.
+static NATIVE_STALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn check_native(q: &mut Queue, now: Instant) {
+    q.check_native_call(now);
+    if q.native_stalled {
+        NATIVE_STALLED.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[derive(Default)]
+struct NativeRelease(Option<Shared>);
+impl Drop for NativeRelease {
+    fn drop(&mut self) {
+        if let Some(shared) = &self.0 {
+            let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            q.finish_native_call(Instant::now());
+            check_native(&mut q, Instant::now());
+        }
+    }
+}
 pub struct Pipeline {
     shared: Shared,
     started: Instant,
@@ -392,37 +415,63 @@ impl Pipeline {
         let state = shared.clone();
         let error_state = shared.clone();
         let preferred_gpu = window.video_gpu();
-        let spawned = std::thread::Builder::new()
-            .name("native-video-d3d11".into())
-            .spawn(move || {
-                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run(
-                        &state,
-                        &window,
-                        false,
-                        preferred_gpu.as_ref(),
-                        surface_generation,
-                        presentation_mode,
-                    )
-                }));
-                let mut q = state.0.lock().unwrap_or_else(|e| e.into_inner());
-                match outcome {
-                    Ok(Err(failure)) => q.fail(failure.stage, failure.hresult),
-                    Err(_) => q.fail("video-worker-panic", None),
-                    Ok(Ok(())) => {}
-                }
-                q.stopped = true;
-                // A retired pipeline must release its reuse pool even while
-                // an attempt owner still holds the final statistics snapshot.
-                q.clear();
-                q.report.worker_finished = true;
-                q.report.resources_released = true;
-                window.finish_video(surface_generation);
-                *window
-                    .video_report
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = Some(q.report.clone());
+        let mut previous = PREVIOUS_WORKER.lock().unwrap_or_else(|e| e.into_inner());
+        let busy = previous
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .is_some_and(|old| {
+                let mut q = old.0.lock().unwrap_or_else(|e| e.into_inner());
+                check_native(&mut q, Instant::now());
+                !q.report.worker_finished
             });
+        let spawned = if NATIVE_STALLED.load(std::sync::atomic::Ordering::Acquire) || busy {
+            let mut q = error_state.0.lock().unwrap_or_else(|e| e.into_inner());
+            q.fail(
+                if busy && !NATIVE_STALLED.load(std::sync::atomic::Ordering::Acquire) {
+                    "video-native-previous-worker-still-running"
+                } else {
+                    "video-native-backend-retired-restart-required"
+                },
+                None,
+            );
+            Err(std::io::Error::other("video backend retired"))
+        } else {
+            *previous = Some(Arc::downgrade(&state));
+            std::thread::Builder::new()
+                .name("native-video-d3d11".into())
+                .spawn(move || {
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run(
+                            &state,
+                            &window,
+                            false,
+                            preferred_gpu.as_ref(),
+                            surface_generation,
+                            presentation_mode,
+                        )
+                    }));
+                    let mut q = state.0.lock().unwrap_or_else(|e| e.into_inner());
+                    q.finish_native_call(Instant::now());
+                    check_native(&mut q, Instant::now());
+                    match outcome {
+                        Ok(Err(failure)) => q.fail(failure.stage, failure.hresult),
+                        Err(_) => q.fail("video-worker-panic", None),
+                        Ok(Ok(())) => {}
+                    }
+                    q.stopped = true;
+                    // A retired pipeline must release its reuse pool even while
+                    // an attempt owner still holds the final statistics snapshot.
+                    q.clear();
+                    q.report.worker_finished = true;
+                    q.report.resources_released = true;
+                    window.finish_video(surface_generation);
+                    *window
+                        .video_report
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = Some(q.report.clone());
+                })
+        };
+        drop(previous);
         if spawned.is_err() {
             let mut q = error_state.0.lock().unwrap_or_else(|e| e.into_inner());
             q.fail("video-worker-start", None);
@@ -446,9 +495,12 @@ impl Pipeline {
         info: crate::video_stream::PacketInfo,
         _rotation: u8,
     ) -> bool {
-        let timestamp = i64::try_from(self.started.elapsed().as_nanos() / 100).unwrap_or(i64::MAX);
+        let now = Instant::now();
+        let timestamp =
+            i64::try_from(now.duration_since(self.started).as_nanos() / 100).unwrap_or(i64::MAX);
         let (mut buffer, generation) = {
             let mut q = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            check_native(&mut q, now);
             if q.stopped || q.report.failure_stage.is_some() {
                 q.report.frames_dropped = q.report.frames_dropped.saturating_add(1);
                 return false;
@@ -494,8 +546,9 @@ impl Pipeline {
     }
     pub fn take_keyframe_request(&self) -> Option<u64> {
         let mut q = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
-        q.take_keyframe_request(Instant::now())
-            .map(|_| q.reset_generation)
+        let now = Instant::now();
+        check_native(&mut q, now);
+        q.take_keyframe_request(now).map(|_| q.reset_generation)
     }
     pub fn recovery_request_failed(&self, generation: u64) {
         self.shared
@@ -509,12 +562,16 @@ impl Pipeline {
         }
     }
     pub fn snapshot(&self) -> Snapshot {
-        self.shared
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .report
-            .clone()
+        let mut q = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        check_native(&mut q, Instant::now());
+        q.report.clone()
+    }
+    pub fn native_failure(&self) -> Option<&'static str> {
+        let mut q = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        check_native(&mut q, Instant::now());
+        q.report
+            .failure_stage
+            .filter(|stage| stage.starts_with("video-native-"))
     }
     pub fn stop(&self) {
         self.window.finish_video(self.surface_generation);
@@ -660,12 +717,22 @@ fn run(
                 });
             }
         }
-        if frame.is_none() {
+        if frame.is_none() && retry_display {
             if let Some(session) = &mut session {
+                shared
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .begin_native_call(NativeOperation::Present, Instant::now());
                 unsafe {
                     if session.retry_display(shared, window)? {
                         publish_report(shared, window);
                     }
+                }
+                let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+                q.finish_native_call(Instant::now());
+                if q.stopped {
+                    break;
                 }
             }
         }
@@ -776,6 +843,11 @@ fn run(
             } else {
                 None
             };
+            shared
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .begin_native_call(NativeOperation::Setup, Instant::now());
             let hwnd = window
                 .ensure_video_surface()
                 .map_err(|_| unavailable("video-surface-create"))?;
@@ -796,6 +868,7 @@ fn run(
                     ),
                 )?
             };
+            native._release.0 = Some(shared.clone());
             native.rotation = frame.rotation;
             if let Some(renderer) = &mut native.renderer {
                 renderer.rotation = frame.rotation;
@@ -832,6 +905,13 @@ fn run(
                     native.zero_copy_status.clone()
                 };
             });
+            {
+                let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+                q.finish_native_call(Instant::now());
+                if q.stopped {
+                    return Ok(());
+                }
+            }
             session = Some(native);
         }
         let mut failure = None;
@@ -839,28 +919,35 @@ fn run(
         for frame in headers.drain(..).chain(std::iter::once(frame)) {
             let feed_started = Instant::now();
             let (decoded_before, output_before) = {
-                let q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+                let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+                q.begin_native_call(NativeOperation::Feed, feed_started);
                 (
                     q.report.frames_decoded,
                     q.report.local_timing.output_service_ns,
                 )
             };
             let result = unsafe { session.as_mut().unwrap().feed(&frame, shared, window) };
+            let feed_finished = Instant::now();
+            let feed_elapsed = feed_finished.saturating_duration_since(feed_started);
             update(shared, |s| {
                 let output_ns = s
                     .local_timing
                     .output_service_ns
                     .saturating_sub(output_before);
-                let service_ns = feed_started.elapsed().as_nanos().saturating_sub(output_ns);
+                let service_ns = feed_elapsed.as_nanos().saturating_sub(output_ns);
                 s.local_timing
                     .decoder_service
                     .record(Duration::from_nanos(service_ns.min(u64::MAX as u128) as u64));
                 s.decode_feed_max_us = s
                     .decode_feed_max_us
-                    .max(feed_started.elapsed().as_micros().min(u64::MAX as u128) as u64)
+                    .max(feed_elapsed.as_micros().min(u64::MAX as u128) as u64)
             });
             let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            q.finish_native_call(feed_finished);
             q.recycle(frame.bytes);
+            if q.stopped {
+                return Ok(());
+            }
             if let Err(error) = result {
                 q.report.frames_dropped = q.report.frames_dropped.saturating_add(1);
                 failure = Some(error);
@@ -937,8 +1024,18 @@ fn run(
         // ahead of a newer decoded output. Still service pending output when
         // this feed produced no picture, without waiting for an empty queue.
         if presentation_mode == PresentationMode::LowLatency && retry_pending {
+            shared
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .begin_native_call(NativeOperation::Present, Instant::now());
             unsafe {
                 session.as_mut().unwrap().retry_display(shared, window)?;
+            }
+            let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            q.finish_native_call(Instant::now());
+            if q.stopped {
+                break;
             }
         }
         publish_report(shared, window);
@@ -1109,6 +1206,9 @@ struct Session {
     renderer: Option<Renderer>,
     output_format: Option<OutputFormat>,
     _runtime: Option<Runtime>,
+    // Last field: native objects above are dropped on their owner before the
+    // release deadline is completed. No observer owns a decoder/texture.
+    _release: NativeRelease,
 }
 impl Session {
     fn pending_wait_handle(&self) -> Option<HANDLE> {
@@ -1248,6 +1348,7 @@ impl Session {
                                 renderer: None,
                                 output_format: None,
                                 _runtime: None,
+                                _release: NativeRelease::default(),
                             }))
                         }
                         Err(error) => zero_copy_status = Some(format!("Fallback: {error}")),
@@ -1280,6 +1381,7 @@ impl Session {
                     renderer: Some(renderer),
                     output_format: None,
                     _runtime: None,
+                    _release: NativeRelease::default(),
                 }))
             })();
             match candidate {
@@ -1409,6 +1511,7 @@ impl Session {
             renderer: Some(renderer),
             output_format: None,
             _runtime: Some(runtime),
+            _release: NativeRelease::default(),
         };
         result.output_type()?;
         api(
@@ -1851,6 +1954,13 @@ impl Session {
 }
 impl Drop for Session {
     fn drop(&mut self) {
+        if let Some(shared) = &self._release.0 {
+            shared
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .begin_native_call(NativeOperation::Release, Instant::now());
+        }
         unsafe {
             if let Some(decoder) = &self.decoder {
                 let _ = decoder.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);

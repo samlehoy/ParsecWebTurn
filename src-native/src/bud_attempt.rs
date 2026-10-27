@@ -282,7 +282,15 @@ impl Attempt {
     }
 
     pub fn failure(&self) -> Option<&'static str> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).failure
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.failure.or_else(|| {
+            state
+                .ingress
+                .video_output
+                .as_ref()
+                .and_then(|video| video.failure_stage)
+                .filter(|stage| stage.starts_with("video-native-"))
+        })
     }
 }
 impl Drop for Attempt {

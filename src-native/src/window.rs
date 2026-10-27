@@ -118,7 +118,7 @@ impl Window {
             settings_active: AtomicBool::new(false),
             hwnd: AtomicUsize::new(0),
             closing: AtomicBool::new(false),
-            events: Default::default(),
+            events: crate::event_queue::Queue::input(),
             dimensions: Mutex::new((1024, 720)),
 
             video_report: Default::default(),

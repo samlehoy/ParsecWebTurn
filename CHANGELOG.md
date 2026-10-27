@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Coalesce adjacent mouse positions and accumulate relative camera deltas in the
+  bounded input queue without crossing button, wheel, focus or mode boundaries.
+  Reserve input capacity and release/disconnect on unrecoverable queue overflow.
+- Detect stalled native video setup, processing, presentation and teardown on
+  existing supervision loops. Keep GPU resources on their owning worker and
+  prevent replacement-worker accumulation; native timeouts require an app restart.
+
 - Organize Connection stats into Overview, Network, Video, Audio and Timings
   tabs with a fixed header, independent scrolling and all existing measurements.
 
