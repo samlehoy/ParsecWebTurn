@@ -7,6 +7,15 @@ use std::time::{Duration, Instant};
 pub const MAX_FRAMES: usize = 32;
 pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 
+/// Preserve optional effect/device state only for known non-driver resets.
+/// A genuine decoder error must retain the original full recreation path.
+pub fn can_preserve_effect(reason: Option<&str>) -> bool {
+    matches!(
+        reason,
+        None | Some("optional_video_setup_backlog" | "compressed_queue_full")
+    )
+}
+
 /// Caller-side deadline, not cancellation of a native driver operation.
 #[derive(Clone, Copy)]
 pub enum NativeOperation {
@@ -1198,6 +1207,14 @@ mod tests {
 #[cfg(test)]
 mod optional_warmup_tests {
     use super::*;
+    #[test]
+    fn optional_effect_reuse_does_not_mask_decoder_errors_or_unknown_resets() {
+        assert!(can_preserve_effect(None)); // explicit encoder rebuild
+        assert!(can_preserve_effect(Some("optional_video_setup_backlog")));
+        assert!(can_preserve_effect(Some("compressed_queue_full")));
+        assert!(!can_preserve_effect(Some("decoder_recovery")));
+        assert!(!can_preserve_effect(Some("unknown_future_failure")));
+    }
     #[test]
     fn bounded_optional_warmup_drops_stale_input_without_consuming_error_retries() {
         let mut queue = Queue::default();

@@ -699,7 +699,14 @@ fn run(
         if next_generation != generation {
             generation = next_generation;
             awaiting_random_access = true;
-            reuse_vsr_session = session.as_ref().is_some_and(Session::has_vsr);
+            let recovery_reason = shared
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .report
+                .recovery_reason;
+            reuse_vsr_session = session.as_ref().is_some_and(Session::has_vsr)
+                && crate::video_output::can_preserve_effect(recovery_reason);
             if reuse_vsr_session {
                 let overloaded = shared
                     .0
