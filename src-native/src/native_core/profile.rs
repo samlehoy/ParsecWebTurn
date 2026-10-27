@@ -214,7 +214,7 @@ mod tests {
     fn rotation_stays_with_compressed_frame_and_uses_oriented_input_extents() {
         let mut queue = crate::video_output::Queue::default();
         assert!(queue.submit(&[1, 2, 3], true, false, 42));
-        queue.set_last_rotation(1);
+        queue.set_last_packet(1, true);
         let frame = queue.pop().unwrap();
         assert_eq!((frame.timestamp_100ns, frame.rotation), (42, 1));
         let source = crate::video_windows::display_extents(1920, 1080, frame.rotation);
