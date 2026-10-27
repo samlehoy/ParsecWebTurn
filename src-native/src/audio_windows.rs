@@ -1,19 +1,21 @@
 //! Shared-mode, event-driven WASAPI PCM output. COM objects stay on the worker.
+use crate::audio_endpoint_windows::{Event, Registration, Signal};
 use crate::audio_layout::Layout;
+use crate::audio_recovery::Recovery;
 use anyhow::{bail, Result};
 use serde::Serialize;
 use std::{
     collections::VecDeque,
-    sync::{mpsc, Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex,
+    },
     thread::JoinHandle,
 };
-use windows::{
-    core::PCWSTR,
-    Win32::{
-        Foundation::*,
-        Media::Audio::*,
-        System::{Com::*, Threading::*},
-    },
+use windows::Win32::{
+    Foundation::*,
+    Media::Audio::*,
+    System::{Com::*, Threading::*},
 };
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
@@ -32,6 +34,10 @@ pub struct Snapshot {
     pub device_padding: u32,
     pub failure_hresult: Option<String>,
     pub resources_released: bool,
+    pub recovering: bool,
+    pub recovery_attempts: u64,
+    pub recoveries: u64,
+    pub last_device_error: Option<String>,
 }
 #[derive(Default)]
 struct State {
@@ -46,6 +52,8 @@ pub struct Playback {
     worker: Mutex<Option<JoinHandle<()>>>,
     max_frames: usize,
     custom_buffer: bool,
+    signal: Arc<Signal>,
+    flush_source: Arc<AtomicBool>,
 }
 impl Playback {
     pub fn create_layout(
@@ -81,22 +89,40 @@ impl Playback {
             }),
         );
         let state = shared.clone();
+        let signal = Signal::new()?;
+        let worker_signal = signal.clone();
+        let flush_source = Arc::new(AtomicBool::new(false));
+        let worker_flush = flush_source.clone();
         let (tx, rx) = mpsc::sync_channel(1);
         let worker = std::thread::spawn(move || {
-            let result = unsafe { render(&state, &window, min_frames, &tx, layout) };
+            let result = unsafe {
+                run(
+                    &state,
+                    &window,
+                    min_frames,
+                    &tx,
+                    layout,
+                    worker_signal,
+                    worker_flush,
+                )
+            };
             if let Err(error) = result {
                 state
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .report
                     .failure_hresult = Some(format!("0x{:08X}", error.code().0 as u32));
+                crate::event_log::record(
+                    "ERROR",
+                    "audio_output_failed",
+                    serde_json::json!({"hresult": format!("0x{:08X}", error.code().0 as u32)}),
+                );
                 let _ = tx.try_send(false);
             }
-            state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .report
-                .resources_released = true;
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            state.report.resources_released = true;
+            state.report.device_opened = false;
+            state.report.recovering = false;
         });
         let output = Self {
             layout,
@@ -104,6 +130,8 @@ impl Playback {
             worker: Mutex::new(Some(worker)),
             max_frames,
             custom_buffer: custom.is_some(),
+            signal,
+            flush_source,
         };
         if rx.recv_timeout(std::time::Duration::from_secs(3)).ok() != Some(true) {
             output.stop();
@@ -119,6 +147,8 @@ impl Playback {
         let channels = usize::from(self.layout.channels);
         let frames = pcm.len() / channels;
         if s.stopped
+            || s.report.recovering
+            || self.flush_source.load(Ordering::Acquire)
             || s.report.failure_hresult.is_some()
             || (!self.custom_buffer && s.pcm.len() / channels + frames > self.max_frames)
         {
@@ -154,6 +184,11 @@ impl Playback {
         s.report.queued_frames = 0;
         s.reset = true;
     }
+    /// A single consumer flushes its upstream PCM/packet generation before
+    /// accepting audio on a restored endpoint. Ordinary playback is one read.
+    pub fn take_recovery_flush(&self) -> bool {
+        self.flush_source.load(Ordering::Acquire) && self.flush_source.swap(false, Ordering::AcqRel)
+    }
     pub fn snapshot(&self) -> Snapshot {
         self.shared
             .lock()
@@ -166,6 +201,7 @@ impl Playback {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .stopped = true;
+        self.signal.event.wake();
         if let Some(worker) = self.worker.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = worker.join();
         }
@@ -181,14 +217,6 @@ impl Drop for Apartment {
     fn drop(&mut self) {
         unsafe {
             CoUninitialize();
-        }
-    }
-}
-struct Event(HANDLE);
-impl Drop for Event {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = CloseHandle(self.0);
         }
     }
 }
@@ -261,18 +289,153 @@ pub fn device_layout() -> Result<Layout> {
         Ok(if supported { layout } else { Layout::STEREO })
     }
 }
+enum DeviceExit {
+    Stopped,
+    DefaultChanged,
+}
+struct Devices {
+    enumerator: IMMDeviceEnumerator,
+    signal: Arc<Signal>,
+    flush_source: Arc<AtomicBool>,
+}
+fn clear_pcm(state: &mut State, channels: usize) {
+    state.report.frames_dropped += (state.pcm.len() / channels) as u64;
+    state.pcm.clear();
+    state.report.queued_frames = 0;
+    state.report.device_padding = 0;
+}
+fn mark_recovering(state: &mut State, channels: usize, error: Option<windows::core::HRESULT>) {
+    clear_pcm(state, channels);
+    state.report.recovering = true;
+    state.report.device_opened = false;
+    state.report.device_capacity_frames = 0;
+    if let Some(code) = error {
+        state.report.last_device_error = Some(format!("0x{:08X}", code.0 as u32));
+    }
+}
+fn mark_open(state: &mut State, channels: usize, restored: bool, flush: &AtomicBool) {
+    if restored {
+        clear_pcm(state, channels);
+        flush.store(true, Ordering::Release);
+        state.report.recoveries = state.report.recoveries.saturating_add(1);
+    }
+    state.report.device_opened = true;
+    state.report.recovering = false;
+}
+fn recoverable(error: windows::core::HRESULT) -> bool {
+    matches!(
+        error,
+        AUDCLNT_E_DEVICE_INVALIDATED
+            | AUDCLNT_E_RESOURCES_INVALIDATED
+            | AUDCLNT_E_SERVICE_NOT_RUNNING
+            | AUDCLNT_E_ENDPOINT_CREATE_FAILED
+            | AUDCLNT_E_DEVICE_IN_USE
+            | AUDCLNT_E_BUFFER_ERROR
+    ) || error == windows::core::HRESULT::from_win32(ERROR_NOT_FOUND.0)
+}
+unsafe fn run(
+    shared: &Mutex<State>,
+    window: &crate::window::Window,
+    min_frames: usize,
+    ready: &mpsc::SyncSender<bool>,
+    layout: Layout,
+    signal: Arc<Signal>,
+    flush_source: Arc<AtomicBool>,
+) -> windows::core::Result<()> {
+    CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
+    let _com = Apartment;
+    let _scheduling = crate::media_scheduling::Registration::audio();
+    let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+    let _notifications = match Registration::new(&enumerator, signal.clone()) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            crate::event_log::record(
+                "WARN",
+                "audio_endpoint_notifications_unavailable",
+                serde_json::json!({"hresult":format!("0x{:08X}", error.code().0 as u32)}),
+            );
+            None // Keep invalid-device recovery even if notifications are unavailable.
+        }
+    };
+    let devices = Devices {
+        enumerator,
+        signal,
+        flush_source,
+    };
+    let mut recovery = Recovery::default();
+    let mut last_error = None;
+    loop {
+        if window.closing.load(Ordering::Acquire)
+            || shared.lock().unwrap_or_else(|e| e.into_inner()).stopped
+        {
+            return Ok(());
+        }
+        let generation = devices.signal.generation();
+        if recovery.recovering() {
+            let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+            state.report.recovery_attempts = state.report.recovery_attempts.saturating_add(1);
+        }
+        let error = match render(
+            shared,
+            window,
+            min_frames,
+            ready,
+            layout,
+            &devices,
+            &mut recovery,
+        ) {
+            Ok(DeviceExit::Stopped) => return Ok(()),
+            Ok(DeviceExit::DefaultChanged) => None,
+            Err(error)
+                if recoverable(error.code())
+                    || (recovery.recovering() && error.code() == AUDCLNT_E_UNSUPPORTED_FORMAT) =>
+            {
+                Some(error.code())
+            }
+            Err(error) => return Err(error),
+        };
+        let first = recovery.begin();
+        {
+            let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+            mark_recovering(&mut state, usize::from(layout.channels), error);
+        }
+        if first || (error.is_some() && error != last_error) {
+            crate::event_log::record(
+                if error.is_some() { "WARN" } else { "INFO" },
+                "audio_output_recovery_started",
+                serde_json::json!({"reason":if error.is_some(){"endpoint_error"}else{"default_device_changed"},"hresult":error.map(|e|format!("0x{:08X}",e.0 as u32))}),
+            );
+        }
+        last_error = error;
+        // No endpoint at startup is an audio outage, not a reason to stop video.
+        let _ = ready.try_send(true);
+        if error.is_none() || devices.signal.generation() != generation {
+            recovery.endpoint_changed();
+            continue;
+        }
+        let delay = recovery.failed();
+        if WaitForSingleObject(devices.signal.event.0, delay.as_millis() as u32) == WAIT_FAILED {
+            return Err(windows::core::Error::from_win32());
+        }
+        if devices.signal.generation() != generation {
+            recovery.endpoint_changed();
+        }
+    }
+}
+
 unsafe fn render(
     shared: &Mutex<State>,
     window: &crate::window::Window,
     min_frames: usize,
     ready: &mpsc::SyncSender<bool>,
     layout: Layout,
-) -> windows::core::Result<()> {
-    CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
-    let _com = Apartment;
-    let _scheduling = crate::media_scheduling::Registration::audio();
-    let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-    let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
+    devices: &Devices,
+    recovery: &mut Recovery,
+) -> windows::core::Result<DeviceExit> {
+    let generation = devices.signal.generation();
+    let device = devices
+        .enumerator
+        .GetDefaultAudioEndpoint(eRender, eConsole)?;
     let mut client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
     let stereo = WAVEFORMATEX {
         wFormatTag: WAVE_FORMAT_PCM as u16,
@@ -334,7 +497,7 @@ unsafe fn render(
             None,
         )?;
     }
-    let event = Event(CreateEventW(None, false, false, PCWSTR::null())?);
+    let event = Event::new()?;
     client.SetEventHandle(event.0)?;
     let render: IAudioRenderClient = client.GetService()?;
     let capacity = client.GetBufferSize()?;
@@ -352,21 +515,41 @@ unsafe fn render(
     }
     let mut started = !custom;
     let _started = Started(client.clone());
-    shared
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .report
-        .device_opened = true;
-    let _ = ready.send(true);
+    if devices.signal.generation() != generation {
+        return Ok(DeviceExit::DefaultChanged);
+    }
+    let restored = recovery.restored();
+    {
+        let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+        mark_open(&mut state, channels, restored, &devices.flush_source);
+    }
+    if restored {
+        crate::event_log::record(
+            "INFO",
+            "audio_output_recovered",
+            serde_json::json!({"channels":layout.channels,"low_latency_device":fast}),
+        );
+    }
+    let _ = ready.try_send(true);
     let mut buffering = true;
     loop {
-        WaitForSingleObject(event.0, if custom && !started { 5 } else { 50 });
+        let wait = WaitForMultipleObjects(
+            &[event.0, devices.signal.event.0],
+            false,
+            if custom && !started { 5 } else { 50 },
+        );
+        if wait == WAIT_FAILED {
+            return Err(windows::core::Error::from_win32());
+        }
         if window.closing.load(std::sync::atomic::Ordering::Acquire) {
             break;
         }
         let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
         if s.stopped {
             break;
+        }
+        if devices.signal.generation() != generation {
+            return Ok(DeviceExit::DefaultChanged);
         }
         if s.reset {
             client.Stop()?;
@@ -442,12 +625,81 @@ unsafe fn render(
             buffering = true;
         }
     }
-    Ok(())
+    Ok(DeviceExit::Stopped)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture(custom_buffer: bool) -> Playback {
+        Playback {
+            layout: Layout::STEREO,
+            shared: Arc::new(Mutex::new(State::default())),
+            worker: Mutex::new(None),
+            max_frames: 4800,
+            custom_buffer,
+            signal: Signal::new().unwrap(),
+            flush_source: Arc::new(AtomicBool::new(false)),
+        }
+    }
+    #[test]
+    fn reopening_drops_old_pcm_and_waits_for_one_upstream_retirement() {
+        for custom in [false, true] {
+            let output = fixture(custom);
+            output.queue(&[1, -1, 2, -2]);
+            {
+                let mut state = output.shared.lock().unwrap();
+                state.report.device_padding = 480;
+                mark_recovering(&mut state, 2, Some(AUDCLNT_E_DEVICE_INVALIDATED));
+                assert!(state.pcm.is_empty());
+                assert_eq!(state.report.device_padding, 0);
+            }
+            output.queue(&[3, -3]);
+            assert!(output.shared.lock().unwrap().pcm.is_empty());
+            {
+                let mut state = output.shared.lock().unwrap();
+                mark_open(&mut state, 2, true, &output.flush_source);
+                assert_eq!(state.report.recoveries, 1);
+                assert!(state.report.failure_hresult.is_none());
+            }
+            output.queue(&[4, -4]); // The consumer has not retired its upstream queue yet.
+            assert!(output.shared.lock().unwrap().pcm.is_empty());
+            assert!(output.take_recovery_flush());
+            assert!(!output.take_recovery_flush());
+            output.queue(&[5, -5]);
+            assert_eq!(output.shared.lock().unwrap().pcm, [5, -5]);
+            assert_eq!(output.snapshot().frames_dropped, 4);
+        }
+    }
+    #[test]
+    fn stop_wakes_a_worker_waiting_in_recovery() {
+        let output = fixture(false);
+        let shared = output.shared.clone();
+        let signal = output.signal.clone();
+        let worker = std::thread::spawn(move || {
+            unsafe {
+                assert_eq!(WaitForSingleObject(signal.event.0, 2000), WAIT_OBJECT_0);
+            }
+            let mut state = shared.lock().unwrap();
+            assert!(state.stopped);
+            state.report.resources_released = true;
+        });
+        *output.worker.lock().unwrap() = Some(worker);
+        output.stop();
+        assert!(output.snapshot().resources_released);
+    }
+    #[test]
+    fn device_errors_are_retryable_but_programming_errors_remain_terminal() {
+        assert!(recoverable(AUDCLNT_E_DEVICE_INVALIDATED));
+        assert!(recoverable(AUDCLNT_E_RESOURCES_INVALIDATED));
+        assert!(recoverable(AUDCLNT_E_SERVICE_NOT_RUNNING));
+        assert!(recoverable(windows::core::HRESULT::from_win32(
+            ERROR_NOT_FOUND.0
+        )));
+        assert!(!recoverable(E_INVALIDARG));
+        assert!(!recoverable(E_POINTER));
+    }
 
     #[test]
     fn surround_queue_budget_counts_frames_and_keeps_channels_together() {
@@ -456,6 +708,8 @@ mod tests {
             layout,
             shared: Arc::new(Mutex::new(State::default())),
             worker: Mutex::new(None),
+            signal: Signal::new().unwrap(),
+            flush_source: Arc::new(AtomicBool::new(false)),
             max_frames: 3,
             custom_buffer: true,
         };
@@ -475,6 +729,8 @@ mod tests {
             layout: Layout::STEREO,
             shared: Arc::new(Mutex::new(State::default())),
             worker: Mutex::new(None),
+            signal: Signal::new().unwrap(),
+            flush_source: Arc::new(AtomicBool::new(false)),
             max_frames: 4,
             custom_buffer: true,
         };
@@ -495,6 +751,8 @@ mod tests {
             layout: Layout::STEREO,
             shared: Arc::new(Mutex::new(State::default())),
             worker: Mutex::new(None),
+            signal: Signal::new().unwrap(),
+            flush_source: Arc::new(AtomicBool::new(false)),
             max_frames: 3,
             custom_buffer: false,
         };

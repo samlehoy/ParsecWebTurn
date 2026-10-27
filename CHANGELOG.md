@@ -2,6 +2,12 @@
 
 ## Unreleased — native client development
 
+- Recover the shared WASAPI audio output after transient endpoint errors and
+  follow Windows default-output changes without reconnecting the stream.
+  Retire stale queued/in-flight audio before resuming, preserve Opus continuity
+  and existing buffer settings, and report recovery transitions in diagnostics.
+  Reuse the audio worker with bounded retries; live device-switch testing remains.
+
 - Extend existing reference-safe display catch-up to WebRTC. Decode queued
   references in order while omitting obsolete display updates during a burst;
   retain the same BUD behavior and the existing bounded GPU/video worker path.

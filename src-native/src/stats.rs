@@ -138,10 +138,14 @@ impl Shared {
                         .as_ref()
                         .and_then(|old| old.audio_playback.as_ref())
                         .is_none_or(|old| {
-                            old.underruns != audio.underruns
-                                || old.layout != audio.layout
-                                || old.frames_dropped != audio.frames_dropped
+                            old.layout != audio.layout
+                                || old.recovering != audio.recovering
+                                || old.recoveries != audio.recoveries
                                 || old.failure_hresult != audio.failure_hresult
+                                || old.last_device_error != audio.last_device_error
+                                || (!audio.recovering
+                                    && (old.underruns != audio.underruns
+                                        || old.frames_dropped != audio.frames_dropped))
                         })
                         || data
                             .1
@@ -160,7 +164,9 @@ impl Shared {
                         "minimum_ms":audio.minimum_ms,"maximum_ms":audio.maximum_ms,
                         "custom":audio.custom_buffer,"low_latency_device":audio.low_latency_device,
                         "underruns":audio.underruns,"dropped_frames":audio.frames_dropped,
-                        "hresult":audio.failure_hresult,"decoded_queue_ms":sample.audio_decoded_queue_ms
+                        "hresult":audio.failure_hresult,"decoded_queue_ms":sample.audio_decoded_queue_ms,
+                        "recovering":audio.recovering,"recoveries":audio.recoveries,"recovery_attempts":audio.recovery_attempts,
+                        "last_device_error":audio.last_device_error
                     }),
                 );
             }

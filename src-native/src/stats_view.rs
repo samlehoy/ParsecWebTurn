@@ -548,6 +548,20 @@ fn rows(
                 }
             ),
         );
+        if audio.recovering || audio.recoveries > 0 || audio.failure_hresult.is_some() {
+            row(
+                "Audio output",
+                if audio.recovering {
+                    "Reconnecting"
+                } else if audio.failure_hresult.is_some() {
+                    "Unavailable"
+                } else {
+                    "Ready"
+                }
+                .into(),
+            );
+            row("Audio recoveries", audio.recoveries.to_string());
+        }
         row("Audio underruns", audio.underruns.to_string());
         row(
             "Audio device buffer",

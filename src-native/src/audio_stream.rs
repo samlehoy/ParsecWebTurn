@@ -30,9 +30,23 @@ struct State {
     free_pcm: Vec<Vec<i16>>,
     free_packets: Vec<Vec<u8>>,
     stopped: bool,
+    generation: u64,
 
     native_consumer: Option<std::thread::Thread>,
 }
+impl State {
+    fn discard_pending(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        while let Some(pcm) = self.pcm.pop_front() {
+            self.report.packets_dropped += 1;
+            if self.free_pcm.len() < RECYCLED_BUFFERS {
+                self.free_pcm.push(pcm);
+            }
+        }
+        self.report.queued_samples = 0;
+    }
+}
+
 pub struct Handoff {
     pub layout: Layout,
     pub pcm: Vec<i16>,
@@ -95,17 +109,21 @@ impl Sender {
             }
             return false;
         }
-        let mut packet = {
+        let (mut packet, generation) = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.stopped || bytes.is_empty() || bytes.len() > 65_536 {
                 state.report.packets_dropped += 1;
                 return false;
             }
-            state.free_packets.pop().unwrap_or_default()
+            (
+                state.free_packets.pop().unwrap_or_default(),
+                state.generation,
+            )
         };
         packet.clear();
         packet.extend_from_slice(bytes);
         match self.tx.try_send(Packet {
+            generation,
             bytes: packet,
             raw,
             layout,
@@ -128,6 +146,7 @@ impl Sender {
     }
 }
 struct Packet {
+    generation: u64,
     bytes: Vec<u8>,
     raw: bool,
     layout: Layout,
@@ -155,6 +174,12 @@ impl NativeReceiver {
     }
     pub fn recycle_handoff(&self, block: Handoff) {
         recycle_pcm(&self.state, block);
+    }
+    /// Retire staged and in-flight old audio at an output-recovery boundary.
+    /// The decoder still consumes Opus packets in order to preserve its state.
+    pub fn discard_pending(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.discard_pending();
     }
 }
 fn recycle_pcm(shared: &Mutex<State>, block: Handoff) {
@@ -352,6 +377,13 @@ impl Pipeline {
                         continue;
                     }
                     match decoded {
+                        Ok(()) if packet.generation != state.generation => {
+                            state.report.packets_decoded += 1;
+                            state.report.packets_dropped += 1;
+                            if state.free_pcm.len() < RECYCLED_BUFFERS {
+                                state.free_pcm.push(pcm);
+                            }
+                        }
                         Ok(()) => {
                             if state.report.layout != Some(packet.layout) {
                                 state.pcm.clear();
@@ -469,6 +501,58 @@ impl Drop for Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_barrier_retires_staged_and_inflight_audio_without_stopping_decoder() {
+        let pipeline = Pipeline::start_with_budget(Some(100));
+        let receiver = pipeline.native_receiver();
+        receiver.set_native_consumer(std::thread::current());
+        {
+            // Holding the existing state lock keeps the decoder from publishing
+            // this packet before the same retirement operation used by recovery.
+            let mut state = pipeline.state.lock().unwrap();
+            stage_pcm(&mut state, vec![90, -90], MAX_SAMPLES);
+            pipeline
+                .tx
+                .as_ref()
+                .unwrap()
+                .try_send(Packet {
+                    generation: state.generation,
+                    bytes: [111i16, -111]
+                        .iter()
+                        .flat_map(|v| v.to_le_bytes())
+                        .collect(),
+                    raw: true,
+                    layout: Layout::STEREO,
+                })
+                .unwrap_or_else(|_| panic!("Fixture audio channel rejected its first packet"));
+            state.discard_pending();
+            assert_eq!(state.report.queued_samples, 0);
+        }
+        assert!(pipeline.sender().unwrap().submit_pcm(
+            &[222i16, -222]
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>()
+        ));
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let block = loop {
+            if let Some(block) = receiver.take_native_pcm() {
+                break block;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "Fresh PCM did not reach the consumer"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(20));
+        };
+        assert_eq!(block.pcm, [222, -222]);
+        assert_eq!(pipeline.snapshot().packets_decoded, 2);
+        assert_eq!(pipeline.snapshot().decode_errors, 0);
+        assert_eq!(pipeline.snapshot().packets_dropped, 2);
+        receiver.recycle_handoff(block);
+        assert!(receiver.take_native_pcm().is_none());
+    }
 
     #[test]
     fn native_pcm_handoff_keeps_layout_and_recycles() {

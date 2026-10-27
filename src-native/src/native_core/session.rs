@@ -274,6 +274,12 @@ pub(super) fn run(
             }
         }
         if let Some(audio) = &audio_source {
+            if output
+                .as_ref()
+                .is_some_and(|playback| playback.take_recovery_flush())
+            {
+                audio.discard_pending();
+            }
             for index in 0..8 {
                 if index == 7 {
                     std::thread::current().unpark();
