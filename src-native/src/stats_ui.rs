@@ -658,12 +658,30 @@ mod tests {
         let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut pixels, null_mut(), 0);
         assert!(!bitmap.is_null() && !pixels.is_null());
         let old = SelectObject(dc, bitmap);
-        SendMessageW(
-            hwnd,
-            WM_PRINT,
-            dc as usize,
-            (PRF_CLIENT | PRF_CHILDREN) as isize,
-        );
+        SendMessageW(hwnd, WM_PRINTCLIENT, dc as usize, 0);
+        // WM_PRINT's child traversal uses non-client origin offsets on this
+        // offscreen DC. Reuse the actual owner-draw painter with the controls'
+        // measured client-space bounds instead; no pixel relocation or video.
+        let page = &*(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Page);
+        for (i, &button) in page.tabs.iter().enumerate() {
+            let mut bounds = RECT::default();
+            assert_ne!(GetWindowRect(button, &mut bounds), 0);
+            MapWindowPoints(null_mut(), hwnd, (&mut bounds as *mut RECT).cast(), 2);
+            assert_eq!(bounds.top, 122);
+            assert!(bounds.bottom <= CONTENT_TOP);
+            draw_tab(
+                &DRAWITEMSTRUCT {
+                    CtlType: ODT_BUTTON,
+                    CtlID: (TAB_BASE + i) as u32,
+                    itemAction: ODA_DRAWENTIRE,
+                    hwndItem: button,
+                    hDC: dc,
+                    rcItem: bounds,
+                    ..std::mem::zeroed()
+                },
+                page,
+            );
+        }
         GdiFlush();
         let mut rgba = std::slice::from_raw_parts(
             pixels.cast::<u8>(),
