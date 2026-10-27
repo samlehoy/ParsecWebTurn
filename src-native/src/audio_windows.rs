@@ -415,7 +415,7 @@ unsafe fn run(
         }
         let delay = recovery.failed();
         if WaitForSingleObject(devices.signal.event.0, delay.as_millis() as u32) == WAIT_FAILED {
-            return Err(windows::core::Error::from_win32());
+            return Err(windows::core::Error::from_thread());
         }
         if devices.signal.generation() != generation {
             recovery.endpoint_changed();
@@ -539,7 +539,7 @@ unsafe fn render(
             if custom && !started { 5 } else { 50 },
         );
         if wait == WAIT_FAILED {
-            return Err(windows::core::Error::from_win32());
+            return Err(windows::core::Error::from_thread());
         }
         if window.closing.load(std::sync::atomic::Ordering::Acquire) {
             break;
