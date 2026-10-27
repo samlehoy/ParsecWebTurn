@@ -235,6 +235,13 @@ impl Window {
                                 }
                             }
 
+                            let stats = ui.stats_page.load(Ordering::Acquire) as HWND;
+                            if !stats.is_null()
+                                && (msg.hwnd == stats || IsChild(stats, msg.hwnd) != 0)
+                                && IsDialogMessageW(stats, &msg) != 0
+                            {
+                                continue;
+                            }
                             TranslateMessage(&msg);
                             DispatchMessageW(&msg);
                         }

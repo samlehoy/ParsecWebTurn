@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Organize Connection stats into Overview, Network, Video, Audio and Timings
+  tabs with a fixed header, independent scrolling and all existing measurements.
+
 - Preserve clipboard write failures and retry only the newest remote value,
   at most five times within one second on the existing session loop. Cancel
   pending writes on focus loss, permission changes or a new local copy.

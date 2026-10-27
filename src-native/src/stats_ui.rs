@@ -8,9 +8,11 @@ use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
     System::LibraryLoader::*,
-    UI::{Controls::SetScrollInfo, WindowsAndMessaging::*},
+    UI::{Controls::*, WindowsAndMessaging::*},
 };
 pub const OPEN: usize = 4301;
+const TAB_BASE: usize = 4400;
+const CONTENT_TOP: i32 = 174;
 const BG: u32 = crate::branding::BACKGROUND;
 const FG: u32 = 0xeeeeee;
 const MUTED: u32 = 0xbcbcbc;
@@ -19,6 +21,8 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
 }
 struct Page {
+    tab: crate::stats_view::Tab,
+    tabs: [HWND; 5],
     notify: HWND,
     window_owned: bool,
     bus: Arc<Shared>,
@@ -40,6 +44,38 @@ impl Drop for Page {
             DeleteObject(self.heading);
         }
         self.bus.visible.store(false, Ordering::Release);
+    }
+}
+unsafe fn layout_tabs(hwnd: HWND, page: &Page) {
+    let mut rect = RECT::default();
+    GetClientRect(hwnd, &mut rect);
+    let width = ((rect.right - 56 - 4 * 8) / 5).max(1);
+    for (i, &button) in page.tabs.iter().enumerate() {
+        if !button.is_null() {
+            MoveWindow(button, 28 + i as i32 * (width + 8), 122, width, 34, 1);
+        }
+    }
+}
+unsafe fn draw_tab(item: &DRAWITEMSTRUCT, page: &Page) {
+    let index = item.CtlID as usize - TAB_BASE;
+    let selected = crate::stats_view::Tab::ALL[index] == page.tab;
+    let brush = CreateSolidBrush(if selected { CYAN } else { 0x302921 });
+    FillRect(item.hDC, &item.rcItem, brush);
+    DeleteObject(brush);
+    SelectObject(item.hDC, page.font);
+    SetBkMode(item.hDC, TRANSPARENT as i32);
+    SetTextColor(item.hDC, if selected { 0x101010 } else { FG });
+    let mut rect = item.rcItem;
+    DrawTextW(
+        item.hDC,
+        wide(crate::stats_view::Tab::ALL[index].caption()).as_ptr(),
+        -1,
+        &mut rect,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+    );
+    if item.itemState & ODS_FOCUS != 0 {
+        InflateRect(&mut rect, -3, -3);
+        DrawFocusRect(item.hDC, &rect);
     }
 }
 unsafe fn font(size: i32) -> HFONT {
@@ -72,6 +108,8 @@ pub unsafe fn open(parent: HWND, bus: Arc<Shared>) -> HWND {
         ..std::mem::zeroed()
     });
     let page = Box::new(Page {
+        tab: Default::default(),
+        tabs: [null_mut(); 5],
         notify: parent,
         window_owned: false,
         sample: bus.read().unwrap_or_default(),
@@ -91,7 +129,7 @@ pub unsafe fn open(parent: HWND, bus: Arc<Shared>) -> HWND {
         0,
         class.as_ptr(),
         wide("Connection stats").as_ptr(),
-        WS_OVERLAPPEDWINDOW | WS_VSCROLL,
+        WS_OVERLAPPEDWINDOW | WS_VSCROLL | WS_CLIPCHILDREN,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         760,
@@ -150,7 +188,7 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
     DeleteObject(background);
     let left = 28;
     let right = client.right - 28;
-    let mut y = 26 - page.scroll;
+    let mut y = 26;
     text(
         memory,
         page.heading,
@@ -171,7 +209,8 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
         page.usage,
         page.memory_usage,
         &timing,
-    );
+    )
+    .select(page.tab);
     text(
         memory,
         page.font,
@@ -184,7 +223,9 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
             bottom: y + 28,
         },
     );
-    y += 40;
+    y = CONTENT_TOP - page.scroll;
+    let saved_clip = SaveDC(memory);
+    IntersectClipRect(memory, 0, CONTENT_TOP, client.right, client.bottom);
     let cards = &presentation.cards;
     let width = (right - left - 16) / 2;
     for (i, (label, value)) in cards.iter().enumerate() {
@@ -283,17 +324,18 @@ unsafe fn paint(hwnd: HWND, page: &mut Page, dc: HDC) {
     );
     text(memory, page.font, MUTED, &footer, footer_rect);
     y = footer_rect.bottom + 24;
-    page.height = y + page.scroll;
+    page.height = (y + page.scroll - CONTENT_TOP).max(0);
     let info = SCROLLINFO {
         cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
         fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
         nMin: 0,
         nMax: page.height,
-        nPage: client.bottom.max(0) as u32,
+        nPage: (client.bottom - CONTENT_TOP).max(0) as u32,
         nPos: page.scroll,
         nTrackPos: 0,
     };
     SetScrollInfo(hwnd, SB_VERT, &info, 1);
+    RestoreDC(memory, saved_clip);
     BitBlt(dc, 0, 0, client.right, client.bottom, memory, 0, 0, SRCCOPY);
     SelectObject(memory, old);
     DeleteObject(bitmap);
@@ -313,6 +355,48 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
     if !ptr.is_null() {
         let page = &mut *ptr;
         match message {
+            WM_CREATE => {
+                for (i, tab) in crate::stats_view::Tab::ALL.into_iter().enumerate() {
+                    let button = CreateWindowExW(
+                        0,
+                        wide("BUTTON").as_ptr(),
+                        wide(tab.caption()).as_ptr(),
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
+                        0,
+                        0,
+                        1,
+                        1,
+                        hwnd,
+                        (TAB_BASE + i) as HMENU,
+                        GetModuleHandleW(null()),
+                        null(),
+                    );
+                    if button.is_null() {
+                        return -1;
+                    }
+                    page.tabs[i] = button;
+                    SendMessageW(button, WM_SETFONT, page.font as usize, 0);
+                }
+                layout_tabs(hwnd, page);
+                return 0;
+            }
+            WM_DRAWITEM if wp >= TAB_BASE && wp < TAB_BASE + 5 => {
+                draw_tab(&*(lp as *const DRAWITEMSTRUCT), page);
+                return 1;
+            }
+            WM_COMMAND if wp & 0xffff == 2 => {
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            WM_COMMAND if wp & 0xffff >= TAB_BASE && wp & 0xffff < TAB_BASE + 5 => {
+                page.tab = crate::stats_view::Tab::ALL[(wp & 0xffff) - TAB_BASE];
+                page.scroll = 0;
+                for &button in &page.tabs {
+                    InvalidateRect(button, null(), 0);
+                }
+                InvalidateRect(hwnd, null(), 0);
+                return 0;
+            }
             WM_ACTIVATE => {
                 PostMessageW(
                     page.notify,
@@ -341,9 +425,10 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
                 return 0;
             }
             WM_SIZE => {
+                layout_tabs(hwnd, page);
                 let mut rect: RECT = std::mem::zeroed();
                 GetClientRect(hwnd, &mut rect);
-                page.scroll = page.scroll.min((page.height - rect.bottom).max(0));
+                page.scroll = page.scroll.min((page.height - viewport).max(0));
                 if wp == SIZE_MINIMIZED as usize {
                     page.resources = Default::default();
                     page.usage = (None, None, None);
@@ -365,14 +450,15 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
             WM_MOUSEWHEEL | WM_VSCROLL => {
                 let mut rect = std::mem::zeroed();
                 GetClientRect(hwnd, &mut rect);
+                let viewport = (rect.bottom - CONTENT_TOP).max(0);
                 let target = if message == WM_MOUSEWHEEL {
                     page.scroll - ((wp >> 16) as i16 as i32) * 90 / 120
                 } else {
                     match wp as i32 & 0xffff {
                         SB_LINEUP => page.scroll - 32,
                         SB_LINEDOWN => page.scroll + 32,
-                        SB_PAGEUP => page.scroll - rect.bottom,
-                        SB_PAGEDOWN => page.scroll + rect.bottom,
+                        SB_PAGEUP => page.scroll - viewport,
+                        SB_PAGEDOWN => page.scroll + viewport,
                         SB_TOP => 0,
                         SB_BOTTOM => page.height,
                         SB_THUMBTRACK | SB_THUMBPOSITION => {
@@ -494,6 +580,11 @@ mod tests {
             let page = &*(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Page);
             assert!(page.scroll > 0);
             capture(hwnd, "stats-bottom");
+            SendMessageW(hwnd, WM_COMMAND, TAB_BASE + 4, 0);
+            assert_eq!(
+                (*(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Page)).tab,
+                crate::stats_view::Tab::Timing
+            );
             bus.host_timing.set_requested(generation, true);
             bus.host_timing.receive(
                 generation,
@@ -509,6 +600,7 @@ mod tests {
             #[cfg(feature = "bud")]
             {
                 let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Page;
+                SendMessageW(hwnd, WM_COMMAND, TAB_BASE + 1, 0);
                 (*state).sample.bud = Some(evoparseq_bud::bud::Snapshot::default());
                 RedrawWindow(hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_UPDATENOW);
                 SendMessageW(hwnd, WM_VSCROLL, SB_BOTTOM as usize, 0);
@@ -527,8 +619,19 @@ mod tests {
             SendMessageW(hwnd, WM_VSCROLL, SB_TOP as usize, 0);
             capture(hwnd, "stats-narrow");
             let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Page;
+            SendMessageW(hwnd, WM_COMMAND, TAB_BASE + 4, 0);
             (*state).scroll = 700;
             capture(hwnd, "stats-local-timing-narrow");
+            for (i, tab) in crate::stats_view::Tab::ALL.into_iter().enumerate() {
+                SendMessageW(hwnd, WM_COMMAND, TAB_BASE + i, 0);
+                assert_eq!((*state).tab, tab);
+                assert_eq!((*state).scroll, 0);
+                assert!(bus.requested());
+                capture(
+                    hwnd,
+                    &format!("stats-tab-{}", tab.caption().to_ascii_lowercase()),
+                );
+            }
             SendMessageW(hwnd, WM_SIZE, SIZE_MINIMIZED as usize, 0);
             assert!(!bus.requested());
             SendMessageW(hwnd, WM_SIZE, SIZE_RESTORED as usize, 0);
@@ -554,7 +657,12 @@ mod tests {
         let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut pixels, null_mut(), 0);
         assert!(!bitmap.is_null() && !pixels.is_null());
         let old = SelectObject(dc, bitmap);
-        SendMessageW(hwnd, WM_PRINTCLIENT, dc as usize, 0);
+        SendMessageW(
+            hwnd,
+            WM_PRINT,
+            dc as usize,
+            (PRF_CLIENT | PRF_CHILDREN) as isize,
+        );
         GdiFlush();
         let mut rgba = std::slice::from_raw_parts(
             pixels.cast::<u8>(),
@@ -570,7 +678,7 @@ mod tests {
             pixel.swap(0, 2);
             pixel[3] = 255;
         }
-        if let Some(path) = std::env::var_os("PARSEC_SETTINGS_SCREENSHOTS") {
+        if let Some(path) = std::env::var_os("EVOPARSEQ_STATS_CAPTURE") {
             let path = std::path::PathBuf::from(path);
             std::fs::create_dir_all(&path).unwrap();
             image::save_buffer(

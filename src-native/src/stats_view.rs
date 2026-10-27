@@ -3,6 +3,43 @@ use crate::stats::{MemoryUsage, Sample, Values};
 
 /// Empty values denote section headings; all units/text are decided here.
 pub type Row = (String, String);
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tab {
+    #[default]
+    Overview,
+    Network,
+    Video,
+    Audio,
+    Timing,
+}
+impl Tab {
+    pub const ALL: [Self; 5] = [
+        Self::Overview,
+        Self::Network,
+        Self::Video,
+        Self::Audio,
+        Self::Timing,
+    ];
+    pub fn caption(self) -> &'static str {
+        match self {
+            Self::Overview => "Overview",
+            Self::Network => "Network",
+            Self::Video => "Video",
+            Self::Audio => "Audio",
+            Self::Timing => "Timings",
+        }
+    }
+    fn section(label: &str) -> Self {
+        match label {
+            "NETWORK" | "BUD DELIVERY" | "SECURITY" => Self::Network,
+            "VIDEO" => Self::Video,
+            "AUDIO" => Self::Audio,
+            "LOCAL VIDEO TIMING" | "HOST TIMING" => Self::Timing,
+            _ => Self::Overview,
+        }
+    }
+}
+
 pub struct Presentation<'a> {
     pub status: &'a str,
     pub cards: Vec<(&'static str, String)>,
@@ -10,6 +47,41 @@ pub struct Presentation<'a> {
     pub footer: String,
 }
 impl<'a> Presentation<'a> {
+    /// Shared categorization; changing tabs never changes sampling or backend state.
+    pub fn select(mut self, tab: Tab) -> Self {
+        let mut section = Tab::Overview;
+        self.rows.retain(|(label, value)| {
+            if value.is_empty() {
+                section = Tab::section(label);
+            }
+            section == tab
+                || (tab == Tab::Overview
+                    && match section {
+                        Tab::Network => matches!(label.as_str(), "Transport" | "Route"),
+                        Tab::Video => matches!(
+                            label.as_str(),
+                            "Codec" | "Resolution" | "Present submissions"
+                        ),
+                        _ => false,
+                    })
+        });
+        if tab != Tab::Overview {
+            self.cards.clear();
+        }
+        self.footer = match tab {
+            Tab::Overview => "Use the tabs for connection, video, audio and timing details. An unavailable measurement is unknown, not zero.".into(),
+            Tab::Network => self.footer,
+            Tab::Video => "Presentation submissions are accepted by the renderer, not confirmed monitor scanout. Reported color depth and chroma describe the received stream and application output.".into(),
+            Tab::Audio => "Audio queues and drop counters describe audio frames, not video frames. Recovery counters track local audio-output reopening.".into(),
+            Tab::Timing => "Local timings are CPU wall time, excluding GPU completion and monitor scanout. Recent averages cover up to two seconds; an em dash means no fresh samples. Session means/peaks are retained. Host reports are host durations, not capture-to-display latency.".into(),
+        };
+        if self.rows.is_empty() {
+            self.rows
+                .push(("Details".into(), "Waiting for relevant telemetry".into()));
+        }
+        self
+    }
+
     pub fn new(
         sample: &'a Sample,
         values: &Values,
@@ -633,6 +705,55 @@ pub fn compact_metrics(
 mod tests {
     use super::*;
 
+    #[test]
+    fn tabs_keep_every_detail_and_separate_video_audio_network_and_timings() {
+        let mut sample = Sample {
+            video: Some(crate::video_output::Snapshot {
+                decoder_initialized: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        sample
+            .video
+            .as_mut()
+            .unwrap()
+            .local_timing
+            .decoder_service
+            .record(std::time::Duration::from_millis(1));
+        let timing = crate::frame_timing::Shared::default().snapshot(0);
+        let values = Values::default();
+        let make = || {
+            Presentation::new(
+                &sample,
+                &values,
+                (Some(1.0), Some(2.0), None),
+                None,
+                &timing,
+            )
+        };
+        let all = make().rows;
+        let pages: Vec<_> = Tab::ALL.into_iter().map(|t| make().select(t)).collect();
+        assert!(pages[0].cards.len() > 0);
+        assert!(pages[1..].iter().all(|p| p.cards.is_empty()));
+        for row in all {
+            assert!(
+                pages.iter().any(|p| p.rows.contains(&row)),
+                "Missing row: {row:?}"
+            );
+        }
+        assert!(pages[1].rows.iter().any(|(k, _)| k == "SECURITY"));
+        assert!(!pages[2]
+            .rows
+            .iter()
+            .any(|(k, _)| k == "Decoder API service"));
+        assert!(pages[3].rows.iter().any(|(k, _)| k == "Sample rate"));
+        assert!(pages[4]
+            .rows
+            .iter()
+            .any(|(k, _)| k == "Decoder API service"));
+        assert!(pages[0].rows.iter().any(|(k, _)| k == "CPU (all cores)"));
+    }
     #[test]
     fn recent_timing_and_submission_rates_keep_scope_and_lifetime_values() {
         let mut sample = Sample {
