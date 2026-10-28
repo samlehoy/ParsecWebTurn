@@ -509,7 +509,11 @@ impl Window {
         let bit = 1usize << button;
         if down {
             self.pressed_buttons.fetch_or(bit, Ordering::AcqRel);
-            SetCapture(self.handle());
+            // Reacquiring our own capture can send WM_CAPTURECHANGED and
+            // synthesize releases for every held button during a chord.
+            if GetCapture() != self.handle() {
+                SetCapture(self.handle());
+            }
         } else if self.pressed_buttons.fetch_and(!bit, Ordering::AcqRel) & !bit == 0
             && GetCapture() == self.handle()
         {
