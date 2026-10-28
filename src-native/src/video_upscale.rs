@@ -35,6 +35,20 @@ impl Effect {
             Self::Intel(_) => "Intel",
         }
     }
+    pub fn initial_capability(&self) -> Option<bool> {
+        match self {
+            Self::Nvidia(_) => Some(true),
+            #[cfg(feature = "vendor-video")]
+            Self::Intel(_) => None,
+        }
+    }
+    pub fn ready_status(&self) -> &'static str {
+        match self {
+            Self::Nvidia(_) => "Ready; waiting for an upscaled frame",
+            #[cfg(feature = "vendor-video")]
+            Self::Intel(_) => "Waiting for upscaling; Intel AI capability not yet checked",
+        }
+    }
     pub fn format(&self) -> DXGI_FORMAT {
         match self {
             Self::Nvidia(_) => DXGI_FORMAT_R8G8B8A8_UNORM,

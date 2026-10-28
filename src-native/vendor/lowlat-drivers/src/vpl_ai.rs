@@ -35,6 +35,16 @@ fn strict(status: mfxStatus) -> Result<()> {
         Err(Error::Status(status))
     }
 }
+fn operation<T>(name: &'static str, api: Option<(u16, u16)>, result: Result<T>) -> Result<T> {
+    result.map_err(|error| match error {
+        Error::Status(status) => Error::Ai {
+            operation: name,
+            status,
+            api,
+        },
+        other => other,
+    })
+}
 fn filter() -> AiFilter {
     AiFilter {
         header: mfxExtBuffer {
@@ -155,6 +165,7 @@ pub struct Scaler {
     close: VppClose,
     // Retain the DLL until every session/surface has been released.
     runtime: Vpl,
+    api: Option<(u16, u16)>,
 }
 impl fmt::Debug for Scaler {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -198,7 +209,11 @@ impl Scaler {
             let mut raw = core::ptr::null_mut();
             let initialize_status = initialize(init, &raw mut raw);
             if raw.is_null() {
-                return Err(Error::Status(initialize_status));
+                return operation(
+                    "MFXInitialize (no session)",
+                    None,
+                    Err(Error::Status(initialize_status)),
+                );
             }
             let mut this = Self {
                 input: None,
@@ -207,18 +222,33 @@ impl Scaler {
                 run,
                 close,
                 runtime,
+                api: None,
             };
-            strict(initialize_status)?;
-            strict((this.runtime.set_handle)(
-                raw,
-                MFX_HANDLE_D3D11_DEVICE,
-                device,
-            ))?;
+            operation("MFXInitialize", None, strict(initialize_status))?;
+            operation(
+                "MFXVideoCORE_SetHandle",
+                None,
+                strict((this.runtime.set_handle)(
+                    raw,
+                    MFX_HANDLE_D3D11_DEVICE,
+                    device,
+                )),
+            )?;
             let mut version: mfxVersion = zeroed();
-            strict((this.runtime.query_version)(raw, &raw mut version))?;
+            operation(
+                "MFXQueryVersion",
+                None,
+                strict((this.runtime.query_version)(raw, &raw mut version)),
+            )?;
             let v = version.__bindgen_anon_1;
+            this.api = Some((v.Major, v.Minor));
+            let api = this.api;
             if (v.Major, v.Minor) < (2, 13) {
-                return Err(Error::Status(MFX_ERR_UNSUPPORTED));
+                return operation(
+                    "AI requires runtime API >= 2.13",
+                    api,
+                    Err(Error::Status(MFX_ERR_UNSUPPORTED)),
+                );
             }
             let mut ai = filter();
             let mut ai_out = filter();
@@ -250,7 +280,11 @@ impl Scaler {
             out.ExtParam = out_ext.as_mut_ptr();
             // Warnings (filter skipped, partial acceleration, altered parameters)
             // are rejection, never a claim that ordinary scaling is AI.
-            strict(query(raw, &raw mut param, &raw mut out))?;
+            operation(
+                "MFXVideoVPP_Query (AI, BGRA8, GPU memory)",
+                api,
+                strict(query(raw, &raw mut param, &raw mut out)),
+            )?;
             if ai_out.mode != 1
                 || ai_out.header.BufferId != AI_FILTER
                 || out.IOPattern != param.IOPattern
@@ -258,21 +292,45 @@ impl Scaler {
                 || !same_info(out.__bindgen_anon_1.vpp.In, param.__bindgen_anon_1.vpp.In)
                 || !same_info(out.__bindgen_anon_1.vpp.Out, param.__bindgen_anon_1.vpp.Out)
             {
-                return Err(Error::Status(MFX_ERR_UNSUPPORTED));
+                return operation(
+                    "AI Query changed required parameters",
+                    api,
+                    Err(Error::Status(MFX_ERR_UNSUPPORTED)),
+                );
             }
-            strict(init_vpp(raw, &raw mut param))?;
+            operation(
+                "MFXVideoVPP_Init (AI)",
+                api,
+                strict(init_vpp(raw, &raw mut param)),
+            )?;
             ai_out.mode = 0;
-            strict(get_param(raw, &raw mut out))?;
+            operation(
+                "MFXVideoVPP_GetVideoParam (AI)",
+                api,
+                strict(get_param(raw, &raw mut out)),
+            )?;
             if ai_out.mode != 1
                 || out.IOPattern != param.IOPattern
                 || out.AsyncDepth != 1
                 || !same_info(out.__bindgen_anon_1.vpp.In, param.__bindgen_anon_1.vpp.In)
                 || !same_info(out.__bindgen_anon_1.vpp.Out, param.__bindgen_anon_1.vpp.Out)
             {
-                return Err(Error::Status(MFX_ERR_UNSUPPORTED));
+                return operation(
+                    "active AI parameters were not confirmed",
+                    api,
+                    Err(Error::Status(MFX_ERR_UNSUPPORTED)),
+                );
             }
-            this.input = Some(Surface::acquire(get_in, raw)?);
-            this.output = Some(Surface::acquire(get_out, raw)?);
+            this.input = Some(operation(
+                "MFXMemory_GetSurfaceForVPP",
+                api,
+                Surface::acquire(get_in, raw),
+            )?);
+            this.output = Some(operation(
+                "MFXMemory_GetSurfaceForVPPOut",
+                api,
+                Surface::acquire(get_out, raw),
+            )?);
             this.input_texture(device)?;
             this.output_texture(device)?;
             Ok(this)
@@ -283,20 +341,28 @@ impl Scaler {
     /// `device` must be the same live device passed to new.
     pub unsafe fn input_texture(&self, device: *mut c_void) -> Result<*mut c_void> {
         unsafe {
-            self.input
-                .as_ref()
-                .ok_or(Error::Unavailable)?
-                .texture(device)
+            operation(
+                "input native D3D11 surface/device",
+                self.api,
+                self.input
+                    .as_ref()
+                    .ok_or(Error::Unavailable)?
+                    .texture(device),
+            )
         }
     }
     /// # Safety
     /// Same as input_texture; synchronize processing before reading pixels.
     pub unsafe fn output_texture(&self, device: *mut c_void) -> Result<*mut c_void> {
         unsafe {
-            self.output
-                .as_ref()
-                .ok_or(Error::Unavailable)?
-                .texture(device)
+            operation(
+                "output native D3D11 surface/device",
+                self.api,
+                self.output
+                    .as_ref()
+                    .ok_or(Error::Unavailable)?
+                    .texture(device),
+            )
         }
     }
     /// Process precisely one frame. Bound completion wait; never enqueue history
@@ -312,17 +378,25 @@ impl Scaler {
                 return Err(Error::Status(MFX_WRN_DEVICE_BUSY));
             }
             let mut sync = core::ptr::null_mut();
-            strict((self.run)(
-                self.raw.as_ptr(),
-                input,
-                output,
-                core::ptr::null_mut(),
-                &raw mut sync,
-            ))?;
+            operation(
+                "MFXVideoVPP_RunFrameVPPAsync",
+                self.api,
+                strict((self.run)(
+                    self.raw.as_ptr(),
+                    input,
+                    output,
+                    core::ptr::null_mut(),
+                    &raw mut sync,
+                )),
+            )?;
             if sync.is_null() {
                 return Err(Error::Unavailable);
             }
-            strict((self.runtime.sync_operation)(self.raw.as_ptr(), sync, 100))
+            operation(
+                "MFXVideoCORE_SyncOperation (100 ms limit)",
+                self.api,
+                strict((self.runtime.sync_operation)(self.raw.as_ptr(), sync, 100)),
+            )
         }
     }
 }
@@ -342,6 +416,25 @@ impl Drop for Scaler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unsupported_diagnostics_distinguish_api_age_from_ai_configuration() {
+        let old: Result<()> = operation(
+            "AI requires runtime API >= 2.13",
+            Some((2, 12)),
+            Err(Error::Status(-3)),
+        );
+        let config: Result<()> = operation(
+            "MFXVideoVPP_Query (AI, BGRA8, GPU memory)",
+            Some((2, 17)),
+            Err(Error::Status(-3)),
+        );
+        assert!(old.unwrap_err().to_string().contains("runtime API 2.12"));
+        let config = config.unwrap_err().to_string();
+        assert!(config.contains("MFXVideoVPP_Query"));
+        assert!(config.contains("MFX_ERR_UNSUPPORTED"));
+        assert!(config.contains("runtime API 2.17"));
+        assert!(operation("query", Some((2, 17)), strict(0)).is_ok());
+    }
     #[test]
     fn ai_accepts_only_exact_success_and_keeps_video_memory_geometry() {
         assert!(strict(0).is_ok());

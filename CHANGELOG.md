@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Distinguish Intel AI runtime-version rejection, unsupported AI configuration and native GPU-surface checks in the event log. Report the failing API and installed runtime API version; adapter setup alone no longer reports Intel AI as available before its capability check.
+
 - Add opt-in Intel VPL AI Super Resolution for 8-bit SDR normal DXGI upscaling, using the documented stable VPL 2.17.0 API and installed Intel driver runtime. No bundled/downloaded Intel DLL or model. Strict AI capability/active-parameter and same-device GPU-surface checks retain ordinary rendering on unsupported hardware. No CPU pixel readback or generated frames; adds optional GPU processing/output copy and bounded VPP synchronization. Hardware behavior and latency remain unverified.
 
 - Preserve warmed VSR state on the same D3D11 device while resetting decoder references after encoder rebuilds or bounded startup backlog. Keep the original queue limits and native watchdog; disable VSR rather than repeatedly rebuilding it if steady-state processing cannot keep up. Log recovery causes and VSR setup duration.

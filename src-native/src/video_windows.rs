@@ -984,7 +984,9 @@ fn run(
                     crate::event_log::record(
                         "INFO",
                         "video_vsr_setup_finished",
-                        serde_json::json!({"elapsed_ms":began.elapsed().as_secs_f64()*1000.0,"available":renderer.vsr.is_some()}),
+                        serde_json::json!({"elapsed_ms":began.elapsed().as_secs_f64()*1000.0,
+                            "vendor":renderer.vsr.as_ref().map(|v| v.vendor()),
+                            "available":renderer.vsr.as_ref().map(|v| v.initial_capability()).unwrap_or(Some(false))}),
                     );
                 }
             }
@@ -2330,8 +2332,8 @@ impl Renderer {
         }
         match crate::video_upscale::Effect::new(&self.device, quality) {
             Ok(vsr) => {
+                self.vsr_status = Some(vsr.ready_status());
                 self.vsr = Some(vsr);
-                self.vsr_status = Some("Ready; waiting for an upscaled frame");
             }
             Err(error) => self.disable_vsr(error),
         }

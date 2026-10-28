@@ -120,6 +120,12 @@ pub enum Error {
     Unreachable,
     /// A call failed, with its status.
     Status(i32),
+    /// Optional AI failure, separate from existing decoder error behavior.
+    Ai {
+        operation: &'static str,
+        status: i32,
+        api: Option<(u16, u16)>,
+    },
 }
 
 impl fmt::Display for Error {
@@ -131,6 +137,20 @@ impl fmt::Display for Error {
             Self::Unprotected => f.write_str("device lock could not be turned on"),
             Self::Unreachable => f.write_str("adapter out of the older runtime's reach"),
             Self::Status(s) => write!(f, "Intel video runtime returned {s}"),
+            Self::Ai {
+                operation,
+                status,
+                api,
+            } => {
+                write!(f, "Intel AI {operation}: status {status}")?;
+                if *status == -3 {
+                    f.write_str(" (MFX_ERR_UNSUPPORTED)")?;
+                }
+                if let Some((major, minor)) = api {
+                    write!(f, "; runtime API {major}.{minor}")?;
+                }
+                Ok(())
+            }
         }
     }
 }
