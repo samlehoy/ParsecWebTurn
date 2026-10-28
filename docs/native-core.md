@@ -430,7 +430,9 @@ status reports P010 and 10-bit decoded output; final Windows composition,
 scanout, display depth and HDR are not inferred. Normal rendering is unchanged.
 See [Microsoft displayable surfaces](https://learn.microsoft.com/en-us/windows/win32/direct3d11/displayable-surfaces).
 
-Live validation of this P010 presentation path is pending on all vendors.
+The maintainer live-confirmed HEVC Main10 4:2:0 P010 Zero copy on the tested AMD
+and NVIDIA systems. This confirms those tested combinations, not every GPU or
+driver; runtime capability checks and MF fallback remain necessary.
 Under the current unified policy, Intel HEVC variants (including VPL 8-bit)
 have not been live-tested: the available Intel test machine has HEVC disabled.
 Earlier hardware observations do not validate the current extended VPL paths.

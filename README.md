@@ -105,6 +105,8 @@ stereo Opus and Automatic timing with experimental options disabled.
 
 - **Video:** live decoded frames remain on the GPU. Normal rendering uses the
   conversion/output pass; zero-copy presents original 8-bit NV12 or capability-checked 10-bit P010 surfaces.
+  HEVC 10-bit 4:2:0 Zero copy is live-confirmed by the maintainer on tested AMD
+  and NVIDIA systems. Current Intel HEVC paths remain untested live.
   Driver/compositor copies and direct scanout are not independently verified.
 - **10-bit:** RGB10 output is SDR, not HDR. NVIDIA host encoding is confirmed;
   other host encoders may refuse it or send 8-bit. An initial encoder failure
