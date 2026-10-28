@@ -26,6 +26,9 @@ pub struct IntelAiVsr {
     evaluated: bool,
 }
 impl IntelAiVsr {
+    /// # Safety
+    /// Create, use and drop the effect on the device's video/render owner
+    /// thread; do not race context access while enabling its protection.
     pub unsafe fn new(device: &ID3D11Device) -> Result<Self> {
         let desc = unsafe { device.cast::<IDXGIDevice>()?.GetAdapter()?.GetDesc()? };
         ensure!(
@@ -34,7 +37,8 @@ impl IntelAiVsr {
         );
         let lock: ID3D10Multithread = device.cast()?;
         unsafe {
-            lock.SetMultithreadProtected(true);
+            // The return value is the previous state; verify the new state below.
+            let _ = lock.SetMultithreadProtected(true);
         }
         ensure!(
             unsafe { lock.GetMultithreadProtected().as_bool() },
@@ -53,6 +57,9 @@ impl IntelAiVsr {
         let key = (source, target, viewport.map(|v| v as u32));
         self.resources.as_ref().is_none_or(|r| r.key != key)
     }
+    /// # Safety
+    /// Call on the effect's owner thread after retiring GPU users of any
+    /// previous surface pair. Returned textures belong to this effect's device.
     pub unsafe fn prepare(
         &mut self,
         source: (u32, u32),
@@ -136,6 +143,10 @@ impl IntelAiVsr {
         let r = self.resources.as_ref().unwrap();
         Ok((r.input.clone(), r.output.clone()))
     }
+    /// # Safety
+    /// Use the immediate context of this effect's device on its owner thread.
+    /// Finish writing the prepared input before calling, and do not reuse the
+    /// input/output while the scaler reads/writes them.
     pub unsafe fn evaluate(&mut self, context: &ID3D11DeviceContext) -> Result<()> {
         let r = self
             .resources
