@@ -671,7 +671,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     page.building_tab = None;
     add(hwnd, page, "STATIC",
         "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection.",
-        0, [0, 1056 + BUD_EXTRA, 820, 48], NOTICE, 0, page.small);
+        0, [0, 1056 + BUD_EXTRA, 820, 64], NOTICE, 0, page.small);
     page.model.feedback = error.unwrap_or_else(|| {
         "Saved in settings.json. Secrets are protected for your Windows user.".into()
     });
@@ -806,7 +806,7 @@ unsafe fn layout(hwnd: HWND) {
         Tab::Input => 570,
         Tab::Video => 1034,
     };
-    let height = footer + 122 + HEADER_EXTRA;
+    let height = footer + 138 + HEADER_EXTRA;
     page.scroll = page.scroll.clamp(0, (height - client.bottom).max(0));
     let info = SCROLLINFO {
         cbSize: size_of::<SCROLLINFO>() as u32,
@@ -829,7 +829,7 @@ unsafe fn layout(hwnd: HWND) {
         let id = GetDlgCtrlID(item.hwnd) as usize;
         let new_top = match id {
             NOTICE => Some(footer),
-            STATUS => Some(footer + 62),
+            STATUS => Some(footer + 78),
             _ => None,
         };
         if let Some(top) = new_top {

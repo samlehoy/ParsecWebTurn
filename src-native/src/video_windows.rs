@@ -987,6 +987,10 @@ fn run(
                 }
                 Err(error) => return Err(error),
             };
+            if !vendor_failed && native.decoder.is_some() && native.fallback.is_some() {
+                vendor_failed = true;
+                vendor_fallback = native.fallback.clone();
+            }
             native._release.0 = Some(shared.clone());
             crate::event_log::record(
                 "INFO",
