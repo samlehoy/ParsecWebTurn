@@ -1572,7 +1572,6 @@ impl Session {
                             }))
                         }
                         Err(error) => {
-                            zero_copy_status = Some(format!("Fallback: {error}"));
                             anyhow::bail!("original-surface presentation unavailable: {error:#}");
                         }
                     }
@@ -1610,7 +1609,12 @@ impl Session {
             match candidate {
                 Ok(Some(session)) => return Ok(session),
                 Ok(None) => {}
-                Err(error) => fallback = Some(format!("Using Media Foundation: {error:#}")),
+                Err(error) => {
+                    if _zero_copy {
+                        zero_copy_status = Some(format!("Fallback: {error:#}"));
+                    }
+                    fallback = Some(format!("Using Media Foundation: {error:#}"));
+                }
             }
         }
         if !_allow_vendor && !verify_synthetic_pixels {

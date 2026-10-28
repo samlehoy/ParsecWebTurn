@@ -137,7 +137,7 @@ impl Backend {
                         (sps.width, sps.height) == state.size,
                         "Intel HEVC geometry changed"
                     );
-                    let format = output_format(sps.chroma_format_idc as u8, sps.bit_depth_luma_minus8 + 8)?;
+                    let format = output_format(sps.chroma_format_idc, sps.bit_depth_luma_minus8 + 8)?;
                     let expected = (format.0, format.1, sps.chroma_format_idc as u16, u16::from(sps.bit_depth_luma_minus8) + 8);
                     ensure!(state.output.is_none_or(|old| old == expected), "Intel HEVC format changed");
                     state.output = Some(expected);

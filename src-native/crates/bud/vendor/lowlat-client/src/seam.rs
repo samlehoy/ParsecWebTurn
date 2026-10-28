@@ -311,14 +311,13 @@ impl Client {
         Ok(())
     }
 
-    pub fn request_external_keyframe(&self) -> bool {
-        self.request_external_keyframe_format(false)
-    }
     pub fn request_external_keyframe_format(&self, fallback_420: bool) -> bool {
         let Some(thread) = self.attempt.as_ref().and_then(|a| a.thread.as_ref()) else {
             return false;
         };
-        if fallback_420 { self.telemetry.fallback_420.store(true, Ordering::Release); }
+        if fallback_420 {
+            self.telemetry.fallback_420.store(true, Ordering::Release);
+        }
         self.telemetry.request.store(true, Ordering::Release);
         let _ = thread.wake_handle().notify();
         true
@@ -439,13 +438,13 @@ mod external_media_tests {
             let lease = units.take().unwrap();
             assert_eq!(lease.bytes(), b"original-compressed-access-unit");
         }
-        assert!(client.request_external_keyframe());
+        assert!(client.request_external_keyframe_format(false));
         assert!(client.request_external_keyframe_format(true));
         assert!(client.telemetry.fallback_420.load(Ordering::Acquire));
-        assert!(client.request_external_keyframe());
+        assert!(client.request_external_keyframe_format(false));
         assert!(client.telemetry.fallback_420.load(Ordering::Acquire));
         client.end_connection("external-test");
-        assert!(!client.request_external_keyframe());
+        assert!(!client.request_external_keyframe_format(false));
     }
 
     #[test]

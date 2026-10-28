@@ -536,7 +536,9 @@ impl Driver {
         if self.telemetry.request.swap(false, Ordering::AcqRel) {
             if self.telemetry.fallback_420.load(Ordering::Acquire) {
                 self.init.flags &= !init::FLAG_COLOR444;
-                self.telemetry.declared_flags.store(self.init.flags, Ordering::Release);
+                self.telemetry
+                    .declared_flags
+                    .store(self.init.flags, Ordering::Release);
             }
             self.request_keyframe(endpoint.session());
         }
