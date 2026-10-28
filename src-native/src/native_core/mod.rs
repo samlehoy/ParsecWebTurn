@@ -165,7 +165,7 @@ fn prepare_vsr_runtime(settings: &crate::connection_settings::Manager) {
         }
     }
     if preferences.vsr_runtime_consent == VsrRuntimeConsent::Allowed {
-        if let Err(error) = crate::vsr_runtime::install(&data) {
+        if let Err(error) = crate::vsr_runtime::install() {
             crate::event_log::record(
                 "WARN",
                 "vsr_runtime_install_failed",

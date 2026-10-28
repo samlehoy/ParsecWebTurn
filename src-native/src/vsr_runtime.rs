@@ -15,15 +15,29 @@ const ARCHIVE_HASH: &str = "abf4f34e2b5a618e355b0d5a0365d8ecc3db4396e756e4c850a8
 const ARCHIVE_SIZE: u64 = 63_493_768;
 const DLL_SIZE: u64 = 19_140_144;
 const URL: &str = "https://api.ngc.nvidia.com/v2/models/nvidia/multimedia/dlpp/versions/1.5/files/RTX_Video_SDK_v1.1.0.zip";
-pub const PROMPT: &str = "Download the optional NVIDIA RTX Video Super Resolution runtime from NVIDIA?\n\nThe download is about 61 MB. The checked NVIDIA DLL (about 19 MB) will be stored in a VSR subfolder beside settings.json and the encrypted sign-in data. Sign-in opens after setup finishes.\n\nVSR requires a compatible RTX GPU/driver, is off by default and may increase latency. The NVIDIA SDK license is included in the application package. Choosing No keeps ordinary GPU video available.";
+pub const PROMPT: &str = "Download the optional NVIDIA RTX Video Super Resolution runtime from NVIDIA?\n\nThe download is about 61 MB. The checked NVIDIA DLL (about 19 MB) will be stored under %LOCALAPPDATA%/EvoParseq/vsr/1.1.0 for your Windows user (no administrator rights required). Sign-in opens after setup finishes.\n\nVSR requires a compatible RTX GPU/driver, is off by default and may increase latency. The NVIDIA SDK license is included in the application package. Choosing No keeps ordinary GPU video available.";
 pub const RESTART_HINT: &str =
     " Restart the app to download the approved NVIDIA VSR runtime before sign-in.";
 
-pub fn directory(data: &Path) -> PathBuf {
-    data.join("vsr").join("1.1.0")
+fn directory_under(local: &Path) -> PathBuf {
+    local.join("EvoParseq").join("vsr").join("1.1.0")
 }
-pub fn present(data: &Path) -> bool {
-    directory(data).join("nvngx_vsr.dll").is_file()
+fn local_directory() -> Result<PathBuf> {
+    let local = std::env::var_os("LOCALAPPDATA")
+        .filter(|value| !value.is_empty())
+        .context("Windows local application data folder unavailable")?;
+    let local = PathBuf::from(local);
+    ensure!(
+        local.is_absolute(),
+        "Windows local application data folder must be absolute"
+    );
+    Ok(local)
+}
+pub fn directory() -> Result<PathBuf> {
+    Ok(directory_under(&local_directory()?))
+}
+pub fn present() -> bool {
+    directory().is_ok_and(|root| root.join("nvngx_vsr.dll").is_file())
 }
 fn hash(mut file: &File) -> Result<String> {
     let mut digest = Sha256::new();
@@ -38,35 +52,46 @@ fn verify(path: &Path, size: u64, expected: &str) -> Result<()> {
     );
     Ok(())
 }
-pub fn validated_directory(data: &Path) -> Result<PathBuf> {
-    let root = directory(data);
+pub fn validated_directory() -> Result<PathBuf> {
+    let root = directory()?;
     verify(&root.join("nvngx_vsr.dll"), DLL_SIZE, DLL_HASH)
         .context("VSR runtime missing or invalid; approve its download in Settings and restart")?;
     Ok(std::fs::canonicalize(root)?)
 }
 /// Reuse only our previously pinned runtime, not arbitrary driver/application DLLs.
 pub fn reuse_previous(data: &Path) -> Result<bool> {
-    if present(data) {
+    let root = directory()?;
+    if present() {
+        validated_directory()?;
         return Ok(true);
     }
-    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
-        return Ok(false);
-    };
-    let old = PathBuf::from(local)
-        .join("EvoParseq/rtx-video")
-        .join(DLL_HASH)
-        .join("nvngx_vsr.dll");
-    if !old.is_file() {
-        return Ok(false);
+    let local = local_directory()?;
+    let candidates = [
+        data.join("vsr/1.1.0"),
+        local.join("EvoParseq/rtx-video").join(DLL_HASH),
+    ];
+    reuse_from(&root, &candidates)
+}
+fn reuse_from(root: &Path, candidates: &[PathBuf]) -> Result<bool> {
+    for old in candidates {
+        let source = old.join("nvngx_vsr.dll");
+        if !source.is_file() {
+            continue;
+        }
+        verify(&source, DLL_SIZE, DLL_HASH)?;
+        std::fs::create_dir_all(&root)?;
+        let temporary = Temporary(root.join("runtime.tmp"));
+        std::fs::copy(&source, &temporary.0)?;
+        verify(&temporary.0, DLL_SIZE, DLL_HASH)?;
+        std::fs::rename(&temporary.0, root.join("nvngx_vsr.dll"))?;
+        let license = old.join("NVIDIA-RTX-VIDEO-LICENSE.pdf");
+        if license.is_file() {
+            let _ = std::fs::copy(license, root.join("NVIDIA-RTX-VIDEO-LICENSE.pdf"));
+        }
+        // Leave the old cache intact: another running/older EXE may still use it.
+        return Ok(true);
     }
-    verify(&old, DLL_SIZE, DLL_HASH)?;
-    let root = directory(data);
-    std::fs::create_dir_all(&root)?;
-    let temporary = root.join("runtime.tmp");
-    std::fs::copy(old, &temporary)?;
-    verify(&temporary, DLL_SIZE, DLL_HASH)?;
-    std::fs::rename(&temporary, root.join("nvngx_vsr.dll"))?;
-    Ok(true)
+    Ok(false)
 }
 struct Temporary(PathBuf);
 impl Drop for Temporary {
@@ -75,8 +100,8 @@ impl Drop for Temporary {
     }
 }
 
-pub fn install(data: &Path) -> Result<()> {
-    let root = directory(data);
+pub fn install() -> Result<()> {
+    let root = directory()?;
     std::fs::create_dir_all(&root)?;
     let temporary = Temporary(root.join("sdk-download.tmp"));
     let client = reqwest::blocking::Client::builder()
@@ -152,6 +177,19 @@ fn extract(archive: &Path, output: &Path, offset: u64, compressed: u64, size: u6
 mod tests {
     use super::*;
     #[test]
+    fn invalid_previous_cache_is_not_migrated() {
+        let fixture =
+            std::env::temp_dir().join(format!("evoparseq-vsr-migrate-{}", std::process::id()));
+        let old = fixture.join("portable/vsr/1.1.0");
+        let target = directory_under(&fixture.join("local-app-data"));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("nvngx_vsr.dll"), b"not NVIDIA code").unwrap();
+        assert!(reuse_from(&target, &[old.clone()]).is_err());
+        assert!(!target.exists());
+        assert!(old.join("nvngx_vsr.dll").exists());
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+    #[test]
     fn mismatched_vendor_runtime_is_rejected_before_loading() {
         let path =
             std::env::temp_dir().join(format!("evoparseq-vsr-corrupt-{}", std::process::id()));
@@ -173,6 +211,14 @@ mod tests {
             std::env::temp_dir().join(format!("evoparseq-vsr-extract-{}", std::process::id()));
         extract(&archive, &path, 37_964_664, 14_455_982, DLL_SIZE).unwrap();
         verify(&path, DLL_SIZE, DLL_HASH).unwrap();
-        std::fs::remove_file(path).unwrap();
+        let migrated = path.with_extension("cache");
+        let previous = path.with_extension("old");
+        std::fs::create_dir_all(&previous).unwrap();
+        std::fs::rename(&path, previous.join("nvngx_vsr.dll")).unwrap();
+        assert!(reuse_from(&migrated, &[previous.clone()]).unwrap());
+        verify(&migrated.join("nvngx_vsr.dll"), DLL_SIZE, DLL_HASH).unwrap();
+        assert!(previous.join("nvngx_vsr.dll").exists());
+        std::fs::remove_dir_all(previous).unwrap();
+        std::fs::remove_dir_all(migrated).unwrap();
     }
 }

@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Preserve warmed VSR state on the same D3D11 device while resetting decoder references after encoder rebuilds or bounded startup backlog. Keep the original queue limits and native watchdog; disable VSR rather than repeatedly rebuilding it if steady-state processing cannot keep up. Log recovery causes and VSR setup duration.
-- Remove the VSR runtime from the EXE. Ask before first-start setup, reuse a verified previous cache, or download the exact official NVIDIA SDK payload with archive and DLL SHA-256 verification. Store it under `vsr/1.1.0` beside settings.json and encrypted sign-in data. No download or installation runs on the video worker.
+- Remove the VSR runtime from the EXE. Ask before first-start setup, reuse a verified previous cache, or download the exact official NVIDIA SDK payload with archive and DLL SHA-256 verification. Store it under `vsr/1.1.0` under %LOCALAPPDATA%/EvoParseq (no administrator rights required). No download or installation runs on the video worker.
 
 - Added optional experimental NVIDIA RTX Video Super Resolution to normal DXGI rendering: Off/Low/Medium/High/Ultra, GPU-only pixel processing, preserved 8/10-bit output, and fallback to ordinary rendering. Off by default; adds GPU processing/memory and one GPU output copy and may increase latency. Actual hardware behavior and latency require live validation.
 

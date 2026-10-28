@@ -974,7 +974,7 @@ fn run(
                         .optional_setup(true);
                     let began = Instant::now();
                     unsafe {
-                        renderer.configure_vsr(vsr_quality, &window.data_directory());
+                        renderer.configure_vsr(vsr_quality);
                     }
                     shared
                         .0
@@ -2324,7 +2324,7 @@ impl Drop for Renderer {
     }
 }
 impl Renderer {
-    unsafe fn configure_vsr(&mut self, quality: u8, data: &std::path::Path) {
+    unsafe fn configure_vsr(&mut self, quality: u8) {
         if quality == 0 {
             return;
         }
@@ -2338,7 +2338,7 @@ impl Renderer {
             self.vsr_status = Some("Unavailable: NVIDIA RTX GPU required");
             return;
         }
-        match crate::nvidia_vsr::Vsr::new(&self.device, quality, data) {
+        match crate::nvidia_vsr::Vsr::new(&self.device, quality) {
             Ok(vsr) => {
                 self.vsr = Some(vsr);
                 self.vsr_status = Some("Ready; waiting for an upscaled frame");

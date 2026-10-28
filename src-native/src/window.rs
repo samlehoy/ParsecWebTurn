@@ -299,14 +299,6 @@ impl Window {
             .as_ref()
             .is_some_and(|manager| manager.view().0.experimental_zero_copy)
     }
-    pub fn data_directory(&self) -> std::path::PathBuf {
-        self.connection_settings
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map(|manager| manager.directory())
-            .unwrap_or_default()
-    }
     pub fn nvidia_vsr(&self) -> u8 {
         let settings = self
             .connection_settings

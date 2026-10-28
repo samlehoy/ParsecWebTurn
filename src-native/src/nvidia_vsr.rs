@@ -66,16 +66,12 @@ pub struct Vsr {
     evaluated: bool,
 }
 impl Vsr {
-    pub unsafe fn new(
-        device: &ID3D11Device,
-        quality: u8,
-        data: &std::path::Path,
-    ) -> anyhow::Result<Self> {
+    pub unsafe fn new(device: &ID3D11Device, quality: u8) -> anyhow::Result<Self> {
         anyhow::ensure!((1..=4).contains(&quality), "Invalid RTX VSR quality");
         #[cfg(nvidia_vsr_sdk)]
         {
             Ok(Self {
-                sdk: sdk::Instance::new(device, data)?,
+                sdk: sdk::Instance::new(device)?,
                 surfaces: None,
                 quality,
                 evaluated: false,
@@ -83,7 +79,7 @@ impl Vsr {
         }
         #[cfg(not(nvidia_vsr_sdk))]
         {
-            let _ = (device, data);
+            let _ = device;
             anyhow::bail!("RTX Video SDK was not included in this build")
         }
     }
@@ -218,8 +214,8 @@ mod sdk {
         handle: *mut c_void,
     }
     impl Instance {
-        pub unsafe fn new(device: &ID3D11Device, data: &std::path::Path) -> anyhow::Result<Self> {
-            let root = crate::vsr_runtime::validated_directory(data)?;
+        pub unsafe fn new(device: &ID3D11Device) -> anyhow::Result<Self> {
+            let root = crate::vsr_runtime::validated_directory()?;
             use std::os::windows::ffi::OsStrExt;
             let path: Vec<u16> = root.as_os_str().encode_wide().chain(Some(0)).collect();
             let paths = [path.as_ptr()];
