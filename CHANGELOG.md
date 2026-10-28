@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Combine NVIDIA and Intel AI controls into one GPU-dependent AI upscaling selector, preserving each vendor's saved choice and existing precision/Zero copy rules. Remove completed investigative test fixtures; retain API/runtime/capability failure logging for issue reports.
+
 - On rejected Intel AI capability checks, log query-only comparisons of ordinary BGRA/NV12 GPU scaling and NV12 AI at the requested and 2x ratio. These one-time failure diagnostics do not process frames, change the selected effect or add per-frame work.
 
 - Distinguish Intel AI runtime-version rejection, unsupported AI configuration and native GPU-surface checks in the event log. Report the failing API and installed runtime API version; adapter setup alone no longer reports Intel AI as available before its capability check.

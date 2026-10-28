@@ -5,8 +5,59 @@ use zeroize::Zeroizing;
 
 pub const TCP_QOS_LABEL: &str = "TCP/TLS QoS";
 pub const TCP_QOS_HINT: &str = "Windows outgoing TURN traffic only; network support varies.\nUnsupported or refused: continue unmarked.\nReconnect after changing.";
-pub const VSR_LABELS: [&str; 5] = ["Off", "Low", "Medium", "High", "Ultra"];
-pub const VSR_HINT: &str = "Experimental NVIDIA RTX GPU upscaling; normal rendering only.\nAdds GPU processing/memory and may increase latency.\nActivates when upscaling; reconnect after changing.";
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiUpscaler {
+    Unavailable,
+    Nvidia,
+    Intel,
+}
+impl AiUpscaler {
+    pub fn for_vendor(vendor: Option<u32>) -> Self {
+        match vendor {
+            Some(0x10de) if cfg!(nvidia_vsr_sdk) => Self::Nvidia,
+            Some(0x8086) if cfg!(feature = "vendor-video") => Self::Intel,
+            _ => Self::Unavailable,
+        }
+    }
+    pub fn labels(self) -> &'static [&'static str] {
+        match self {
+            Self::Nvidia => &["Off", "Low", "Medium", "High", "Ultra"],
+            Self::Intel => &["Off", "On"],
+            Self::Unavailable => &["Unavailable for selected GPU"],
+        }
+    }
+    pub fn hint(self) -> &'static str {
+        match self {
+            Self::Nvidia => "Experimental NVIDIA RTX VSR; normal GPU rendering.\nAdds GPU work/memory and may increase latency.\nActivates when upscaling; reconnect after changing.",
+            Self::Intel => "Experimental Intel VPL AI; hardware support unverified.\n8-bit SDR, normal GPU rendering; may increase latency.\nRequires driver support; reconnect after changing.",
+            Self::Unavailable => "AI upscaling is unavailable for the selected GPU.\nNVIDIA RTX and supported Intel GPU/driver combinations only.\nNormal GPU rendering remains available.",
+        }
+    }
+    pub fn enabled(self, settings: &Settings) -> bool {
+        match self {
+            Self::Nvidia => true,
+            Self::Intel => !settings.experimental_ten_bit && !settings.experimental_chroma_444,
+            Self::Unavailable => false,
+        }
+    }
+    pub fn selection(self, settings: &Settings) -> usize {
+        match self {
+            Self::Nvidia => usize::from(settings.nvidia_vsr.min(4)),
+            Self::Intel => usize::from(settings.intel_ai_vsr),
+            Self::Unavailable => 0,
+        }
+    }
+    pub fn apply(self, settings: &mut Settings, selection: usize) {
+        if selection >= self.labels().len() {
+            return;
+        }
+        match self {
+            Self::Nvidia => settings.nvidia_vsr = selection as u8,
+            Self::Intel => settings.intel_ai_vsr = selection == 1,
+            Self::Unavailable => {}
+        }
+    }
+}
 pub const DISPLAY_TIMING_HINT: &str = "Experimental: normal GPU rendering; reconnect to apply.\nVRR needs an enabled compatible monitor and driver.\nZero copy keeps Windows-managed timing.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -171,8 +222,7 @@ pub struct Availability {
     pub bud: bool,
     pub audio_limits: bool,
     pub amf_main10: bool,
-    pub nvidia_vsr: bool,
-    pub intel_ai_vsr: bool,
+    pub ai_upscale: bool,
     pub chroma_444: bool,
     pub zero_copy: bool,
     pub relay: bool,
@@ -221,15 +271,20 @@ impl Form {
     pub fn cloudflare(&self) -> bool {
         self.values.provider == "cloudflare"
     }
-    pub fn availability(&mut self) -> Availability {
-        let vendor = self
-            .gpu_selection
+    fn gpu_vendor(&self) -> Option<u32> {
+        self.gpu_selection
             .and_then(|i| self.gpu_choices.get(i))
             .and_then(|gpu| {
                 gpu.as_ref()
                     .map(|g| g.vendor_id)
                     .or(self.default_gpu_vendor)
-            });
+            })
+    }
+    pub fn ai_upscaler(&self) -> AiUpscaler {
+        AiUpscaler::for_vendor(self.gpu_vendor())
+    }
+    pub fn availability(&mut self) -> Availability {
+        let vendor = self.gpu_vendor();
         let chroma_allowed = vendor.is_some_and(full_chroma_vendor_allowed);
         if !chroma_allowed {
             self.values.experimental_chroma_444 = false;
@@ -253,11 +308,7 @@ impl Form {
                 && self.values.experimental_ten_bit
                 && !self.values.experimental_chroma_444,
             chroma_444: self.values.prefer_hevc && chroma_allowed,
-            intel_ai_vsr: cfg!(feature = "vendor-video")
-                && vendor == Some(0x8086)
-                && !self.values.experimental_ten_bit
-                && !self.values.experimental_chroma_444,
-            nvidia_vsr: cfg!(nvidia_vsr_sdk) && vendor == Some(0x10de),
+            ai_upscale: self.ai_upscaler().enabled(&self.values),
             zero_copy: self.values.prefer_hevc
                 && !self.values.experimental_chroma_444
                 && self.values.ai_upscale_quality(vendor) == 0,
@@ -640,19 +691,38 @@ mod vsr_tests {
             let mut form = Form::new(restored.clone(), Some(vendor));
             let available = form.availability();
             let allowed = vendor == 0x8086 && cfg!(feature = "vendor-video");
-            assert_eq!(available.intel_ai_vsr, allowed);
+            assert_eq!(
+                available.ai_upscale,
+                (cfg!(nvidia_vsr_sdk) && vendor == 0x10de)
+                    || (cfg!(feature = "vendor-video") && vendor == 0x8086)
+            );
             assert_eq!(available.zero_copy, !allowed);
             assert_eq!(
                 form.values.ai_upscale_quality(Some(vendor)),
                 u8::from(allowed)
             );
         }
+        // The rendered backend owns the edit even if the GPU selector has just
+        // changed. Switching providers must not turn NVIDIA Ultra into Intel On.
+        settings.nvidia_vsr = 4;
+        AiUpscaler::Nvidia.apply(&mut settings, 3);
+        assert!(settings.intel_ai_vsr);
+        AiUpscaler::Intel.apply(&mut settings, 0);
+        assert_eq!(settings.nvidia_vsr, 3);
+        assert!(!settings.intel_ai_vsr);
+        AiUpscaler::Unavailable.apply(&mut settings, 0);
+        assert_eq!(settings.nvidia_vsr, 3);
+        assert_eq!(AiUpscaler::Nvidia.selection(&settings), 3);
+        assert_eq!(AiUpscaler::Intel.selection(&settings), 0);
+        assert_eq!(AiUpscaler::Nvidia.labels().len(), 5);
+        assert_eq!(AiUpscaler::Intel.labels().len(), 2);
+        settings.intel_ai_vsr = true;
         for ten_bit in [false, true] {
             settings.experimental_ten_bit = ten_bit;
             settings.experimental_chroma_444 = !ten_bit;
             assert_eq!(settings.ai_upscale_quality(Some(0x8086)), 0);
             let mut form = Form::new(settings.clone(), Some(0x8086));
-            assert!(!form.availability().intel_ai_vsr);
+            assert!(!form.availability().ai_upscale);
             assert_eq!(form.values.experimental_ten_bit, ten_bit);
         }
     }
@@ -671,8 +741,9 @@ mod vsr_tests {
                 let mut form = Form::new(restored.clone(), Some(vendor));
                 let available = form.availability();
                 assert_eq!(
-                    available.nvidia_vsr,
-                    cfg!(nvidia_vsr_sdk) && vendor == 0x10de
+                    available.ai_upscale,
+                    (cfg!(nvidia_vsr_sdk) && vendor == 0x10de)
+                        || (cfg!(feature = "vendor-video") && vendor == 0x8086)
                 );
                 assert_eq!(
                     available.zero_copy,

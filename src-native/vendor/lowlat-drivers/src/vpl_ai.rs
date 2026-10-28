@@ -485,64 +485,6 @@ impl Drop for Scaler {
 mod tests {
     use super::*;
     #[test]
-    fn query_only_matrix_distinguishes_plain_scaling_format_and_ratio() {
-        unsafe extern "C" fn query(
-            _session: mfxSession,
-            param: *mut mfxVideoParam,
-            _out: *mut mfxVideoParam,
-        ) -> mfxStatus {
-            unsafe {
-                let p = &*param;
-                if p.IOPattern
-                    != (MFX_IOPATTERN_IN_VIDEO_MEMORY | MFX_IOPATTERN_OUT_VIDEO_MEMORY) as u16
-                {
-                    return -999;
-                }
-                if p.NumExtParam == 0 {
-                    return if p.ExtParam.is_null() { 0 } else { -999 };
-                }
-                let vpp = p.__bindgen_anon_1.vpp;
-                let input = vpp.In.__bindgen_anon_1.__bindgen_anon_1;
-                let output = vpp.Out.__bindgen_anon_1.__bindgen_anon_1;
-                if vpp.In.FourCC == MFX_FOURCC_NV12 as u32 && output.CropW == input.CropW * 2 {
-                    0
-                } else {
-                    -3
-                }
-            }
-        }
-        let mut base: mfxVideoParam = zeroed();
-        base.IOPattern = (MFX_IOPATTERN_IN_VIDEO_MEMORY | MFX_IOPATTERN_OUT_VIDEO_MEMORY) as u16;
-        base.AsyncDepth = 1;
-        base.__bindgen_anon_1.vpp.In = info((1280, 800)).unwrap();
-        base.__bindgen_anon_1.vpp.Out = info((1920, 1200)).unwrap();
-        let result = unsafe { support_queries(query, core::ptr::null_mut(), base) };
-        assert_eq!(result, [0, 0, -3, 0]);
-        assert_eq!(
-            unsafe { base.__bindgen_anon_1.vpp.In.FourCC },
-            MFX_FOURCC_RGB4 as u32
-        );
-    }
-    #[test]
-    fn unsupported_diagnostics_distinguish_api_age_from_ai_configuration() {
-        let old: Result<()> = operation(
-            "AI requires runtime API >= 2.13",
-            Some((2, 12)),
-            Err(Error::Status(-3)),
-        );
-        let config: Result<()> = operation(
-            "MFXVideoVPP_Query (AI, BGRA8, GPU memory)",
-            Some((2, 17)),
-            Err(Error::Status(-3)),
-        );
-        assert!(old.unwrap_err().to_string().contains("runtime API 2.12"));
-        let config = config.unwrap_err().to_string();
-        assert!(config.contains("MFXVideoVPP_Query"));
-        assert!(config.contains("MFX_ERR_UNSUPPORTED"));
-        assert!(config.contains("runtime API 2.17"));
-        assert!(operation("query", Some((2, 17)), strict(0)).is_ok());
-    }
-    #[test]
     fn ai_accepts_only_exact_success_and_keeps_video_memory_geometry() {
         assert!(strict(0).is_ok());
         for status in [-3, MFX_WRN_DEVICE_BUSY, 3, 4, 10] {

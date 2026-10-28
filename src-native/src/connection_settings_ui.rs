@@ -3,7 +3,9 @@
 #[path = "settings_controls.rs"]
 pub(crate) mod controls;
 use crate::connection_settings::Manager;
-use crate::settings_model::{BinaryChoice, Form, InputMode, RouteMode, Tab, VideoFormat};
+use crate::settings_model::{
+    AiUpscaler, BinaryChoice, Form, InputMode, RouteMode, Tab, VideoFormat,
+};
 use std::{
     ptr::{null, null_mut},
     sync::Arc,
@@ -74,8 +76,7 @@ const AUDIO_MAX: usize = 4127;
 const AUDIO_RAW: usize = 4128;
 const AUDIO_SURROUND: usize = 4132;
 const PRESENTATION: usize = 4133;
-const NVIDIA_VSR: usize = 4139;
-const INTEL_AI_VSR: usize = 4140;
+const AI_UPSCALE: usize = 4139;
 const SECTION: usize = 4202;
 const NOTICE: usize = 4203;
 fn wide(s: &str) -> Vec<u16> {
@@ -92,6 +93,8 @@ struct Page {
     manager: Arc<Manager>,
     model: Form,
     gpu_labels: Vec<String>,
+    ai_upscaler: Option<AiUpscaler>,
+    ai_hint: HWND,
     background: HBRUSH,
     field: HBRUSH,
     font: HFONT,
@@ -165,6 +168,8 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         manager,
         model: Form::new(saved, crate::video_windows::video_gpu_vendor(None)),
         gpu_labels: vec!["Automatic (Windows default)".into()],
+        ai_upscaler: None,
+        ai_hint: null_mut(),
         background: CreateSolidBrush(BG),
         field: CreateSolidBrush(FIELD),
         font: font(16, 400),
@@ -570,48 +575,19 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         );
         check(hwnd, HIDE_SESSION_BUTTON, s.native_core.hide_session_button);
     }
-    row_label(
-        hwnd,
-        page,
-        "RTX Video Super Resolution",
-        crate::settings_model::VSR_HINT,
-        924,
-        0,
-        64,
-    );
-    let vsr = add(
+    page.ai_hint = row_label(hwnd, page, "AI upscaling (experimental)", "", 924, 0, 64);
+    let ai = add(
         hwnd,
         page,
         "COMBOBOX",
         "",
         CBS_DROPDOWNLIST as u32 | WS_VSCROLL | WS_TABSTOP,
         [420, 924, 400, 180],
-        NVIDIA_VSR,
+        AI_UPSCALE,
         0,
         page.font,
     );
-    controls::combo(vsr);
-    for label in crate::settings_model::VSR_LABELS {
-        SendMessageW(vsr, CB_ADDSTRING, 0, wide(label).as_ptr() as isize);
-    }
-    SendMessageW(vsr, CB_SETCURSEL, s.nvidia_vsr.min(4) as usize, 0);
-    row_label(hwnd, page, "Intel AI Super Resolution", "Experimental VPL AI upscaling; 8-bit SDR, normal GPU rendering.\nRequires GPU/runtime support; may increase latency.\nReconnect after changing. No software or ordinary-scaler fallback.", 1034, 0, 64);
-    let intel_vsr = add(
-        hwnd,
-        page,
-        "COMBOBOX",
-        "",
-        CBS_DROPDOWNLIST as u32 | WS_VSCROLL | WS_TABSTOP,
-        [420, 1034, 400, 180],
-        INTEL_AI_VSR,
-        0,
-        page.font,
-    );
-    controls::combo(intel_vsr);
-    for label in ["Off", "On (experimental, hardware unverified)"] {
-        SendMessageW(intel_vsr, CB_ADDSTRING, 0, wide(label).as_ptr() as isize);
-    }
-    SendMessageW(intel_vsr, CB_SETCURSEL, usize::from(s.intel_ai_vsr), 0);
+    controls::combo(ai);
     page.building_tab = Some(Tab::Network);
     #[cfg(feature = "bud")]
     {
@@ -762,7 +738,7 @@ unsafe fn row_label(
     y: i32,
     group: u8,
     help_height: i32,
-) {
+) -> HWND {
     add(
         hwnd,
         page,
@@ -784,7 +760,7 @@ unsafe fn row_label(
         HELP,
         group,
         page.small,
-    );
+    )
 }
 #[allow(clippy::too_many_arguments)] // Label, help and native editor describe one settings row.
 unsafe fn row(
@@ -833,7 +809,7 @@ unsafe fn layout(hwnd: HWND) {
         Tab::Network => 1056 + BUD_EXTRA,
         Tab::Audio => 750,
         Tab::Input => 570,
-        Tab::Video => 1150,
+        Tab::Video => 1034,
     };
     let height = footer + 122 + HEADER_EXTRA;
     page.scroll = page.scroll.clamp(0, (height - client.bottom).max(0));
@@ -1074,7 +1050,8 @@ unsafe fn checked(hwnd: HWND, id: usize) -> bool {
 }
 // Read native editor values; parsing, option rules and save feedback belong
 // to the shared model. This runs on user edits/saving, never on a media frame.
-unsafe fn read_options(hwnd: HWND, model: &mut Form) {
+unsafe fn read_options(hwnd: HWND, page: &mut Page) {
+    let model = &mut page.model;
     model.gpu_selection = usize::try_from(SendMessageW(
         GetDlgItem(hwnd, GPU as i32),
         CB_GETCURSEL,
@@ -1087,8 +1064,9 @@ unsafe fn read_options(hwnd: HWND, model: &mut Form) {
         mode.apply(s);
     }
     s.experimental_chroma_444 = checked(hwnd, CHROMA_444);
-    s.nvidia_vsr = selection(hwnd, NVIDIA_VSR).min(4) as u8;
-    s.intel_ai_vsr = selection(hwnd, INTEL_AI_VSR) == 1;
+    if let Some(backend) = page.ai_upscaler {
+        backend.apply(s, selection(hwnd, AI_UPSCALE));
+    }
     s.custom_audio_buffer = checked(hwnd, AUDIO_CUSTOM);
     if let Some(mode) = RouteMode::ALL.get(selection(hwnd, ROUTE_MODE)) {
         mode.apply(s);
@@ -1106,8 +1084,27 @@ unsafe fn read_options(hwnd: HWND, model: &mut Form) {
 }
 unsafe fn update_enabled(hwnd: HWND) {
     let page = &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Page);
-    read_options(hwnd, &mut page.model);
+    read_options(hwnd, page);
     let enabled = page.model.availability();
+    let backend = page.model.ai_upscaler();
+    if page.ai_upscaler != Some(backend) {
+        let control = GetDlgItem(hwnd, AI_UPSCALE as i32);
+        SendMessageW(control, WM_SETREDRAW, 0, 0);
+        SendMessageW(control, CB_RESETCONTENT, 0, 0);
+        for label in backend.labels() {
+            SendMessageW(control, CB_ADDSTRING, 0, wide(label).as_ptr() as isize);
+        }
+        SendMessageW(
+            control,
+            CB_SETCURSEL,
+            backend.selection(&page.model.values),
+            0,
+        );
+        SetWindowTextW(page.ai_hint, wide(backend.hint()).as_ptr());
+        page.ai_upscaler = Some(backend);
+        SendMessageW(control, WM_SETREDRAW, 1, 0);
+        InvalidateRect(control, null(), 0);
+    }
     check(hwnd, CHROMA_444, page.model.values.experimental_chroma_444);
     for (id, on) in [
         (INPUT_MODE, enabled.bud),
@@ -1116,8 +1113,7 @@ unsafe fn update_enabled(hwnd: HWND) {
         (AUDIO_RAW, enabled.bud),
         (AUDIO_SURROUND, enabled.bud),
         (CHROMA_444, enabled.chroma_444),
-        (NVIDIA_VSR, enabled.nvidia_vsr),
-        (INTEL_AI_VSR, enabled.intel_ai_vsr),
+        (AI_UPSCALE, enabled.ai_upscale),
         (TCP_QOS, enabled.relay),
         (PROVIDER, enabled.relay),
         (TURN, enabled.custom_turn),
@@ -1146,9 +1142,10 @@ unsafe fn update_enabled(hwnd: HWND) {
     layout(hwnd);
 }
 unsafe fn save(hwnd: HWND, page: &mut Page) {
+    read_options(hwnd, page);
     let model = &mut page.model;
-    read_options(hwnd, model);
-    let vsr_available = model.availability().nvidia_vsr;
+    let vsr_available =
+        model.ai_upscaler() == AiUpscaler::Nvidia && model.availability().ai_upscale;
     let s = &mut model.values;
     s.native_core.hide_session_button = checked(hwnd, HIDE_SESSION_BUTTON);
     s.presentation_mode = crate::connection_settings::PresentationMode::from_index(SendMessageW(
@@ -1195,10 +1192,10 @@ unsafe fn save(hwnd: HWND, page: &mut Page) {
             PostMessageW(
                 hwnd,
                 WM_COMMAND,
-                NVIDIA_VSR | ((CBN_SELCHANGE as usize) << 16),
+                AI_UPSCALE | ((CBN_SELCHANGE as usize) << 16),
                 0,
             );
-            SendMessageW(GetDlgItem(hwnd, NVIDIA_VSR as i32), CB_SETCURSEL, 0, 0);
+            SendMessageW(GetDlgItem(hwnd, AI_UPSCALE as i32), CB_SETCURSEL, 0, 0);
         }
     }
     if model.save(&page.manager) {
@@ -1420,7 +1417,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     return 0;
                 }
 
-                CHROMA_444 | NVIDIA_VSR | INTEL_AI_VSR if (wp >> 16) as u32 == CBN_SELCHANGE => {
+                CHROMA_444 | AI_UPSCALE if (wp >> 16) as u32 == CBN_SELCHANGE => {
                     update_enabled(hwnd);
                     return 0;
                 }
