@@ -1787,7 +1787,12 @@ mod tests {
             ] {
                 window.events.drain();
                 unsafe {
-                    SendMessageW(window.handle(), first_down, 0, (120 << 16) | 120);
+                    SendMessageW(
+                        window.handle(),
+                        first_down,
+                        if first == 0 { 1 } else { 2 },
+                        (120 << 16) | 120,
+                    );
                     assert_eq!(
                         window.pressed_buttons.load(Ordering::Acquire),
                         1 << first,
@@ -1801,7 +1806,12 @@ mod tests {
                         "second press: {:?}",
                         window.events.drain()
                     );
-                    SendMessageW(window.handle(), first_up, 0, (120 << 16) | 120);
+                    SendMessageW(
+                        window.handle(),
+                        first_up,
+                        if second == 0 { 1 } else { 2 },
+                        (120 << 16) | 120,
+                    );
                     assert_eq!(window.pressed_buttons.load(Ordering::Acquire), 1 << second);
                     SendMessageW(window.handle(), second_up, 0, (120 << 16) | 120);
                     assert_eq!(window.pressed_buttons.load(Ordering::Acquire), 0);
