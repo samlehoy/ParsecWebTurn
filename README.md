@@ -61,7 +61,14 @@ a selected preference alone does not prove that the host accepted it.
    after changing transport or connection capabilities; session video requests
    can be applied while connected.
 
-Windows x64 and compatible D3D11 graphics drivers are required. Zero-copy
+**Client GPU requirement: Direct3D feature level 11.0 or newer**, with compatible
+D3D11 video-support drivers, on Windows x64. The DirectX version shown on
+dxdiag's System tab is the installed runtime version; check **Feature Levels**
+on its Display tab for the GPU's capabilities. DirectX 10.x hardware, such as
+the GeForce 210, is unsupported. Support below feature level 11.0 is not planned,
+as it would require developing and maintaining a separate video path in parallel.
+
+Zero-copy
 requires Windows 11 and suitable drivers. Ordinary client use needs no admin
 rights. The stock host must already be configured for hosting.
 
