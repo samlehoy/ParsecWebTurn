@@ -115,7 +115,15 @@ fn run() -> Result<()> {
         );
         return Ok(());
     }
-    let root = if args.is_empty() {
+    let root = if args.is_empty() && cfg!(target_os = "macos") {
+        // A signed .app bundle must not be modified and may run translocated
+        // read-only, so macOS keeps settings beside the native profile.
+        let root =
+            std::path::PathBuf::from(std::env::var("HOME").context("Home directory unavailable")?)
+                .join("Library/Application Support/ParsecWebTurn");
+        std::fs::create_dir_all(&root)?;
+        root
+    } else if args.is_empty() {
         std::env::current_exe()?
             .parent()
             .context("Application directory unavailable")?
