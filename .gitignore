@@ -22,6 +22,9 @@ Profile/
 SettingsProfile/
 WebView2Profile/
 extension/
+# DTLS protocol extensions are source code, not a legacy browser profile.
+!src-native/vendor/dtls-0.13.0/src/extension/
+!src-native/vendor/dtls-0.13.0/src/extension/**
 .launcher.lock
 .turn-cache.json
 .evoparseq-*.tmp
