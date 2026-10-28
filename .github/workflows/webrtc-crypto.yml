@@ -1,0 +1,39 @@
+name: WebRTC cryptography and TURN interoperability
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev]
+    paths: ['src-native/vendor/dtls-0.13.0/**', 'src-native/Cargo.lock', 'src-native/tests/turn-integration/**', '.github/workflows/webrtc-crypto.yml']
+permissions:
+  contents: read
+concurrency:
+  group: webrtc-crypto-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-native/tests/turn-integration
+      - name: Verify DTLS dependency boundary and crypto tests
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path src-native/vendor/dtls-0.13.0/Cargo.toml -- --check
+          tree=$(cargo tree --locked --manifest-path src-native/tests/turn-integration/Cargo.toml -p dtls --edges normal --prefix none)
+          printf '%s\n' "$tree"
+          if printf '%s\n' "$tree" | grep -Eq '^(p256|p384) v0\.13\.|^elliptic-curve v0\.13\.|^crypto-bigint v0\.5\.'; then
+            echo 'Legacy curve dependency in the DTLS subtree'
+            exit 1
+          fi
+          cargo test --locked --manifest-path src-native/tests/turn-integration/Cargo.toml -p dtls --lib -- --test-threads=1
+      - name: Verify WebRTC direct and TURN UDP/TCP/TLS
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y coturn openssl
+          sudo systemctl stop coturn || true
+          bash src-native/tests/turn-integration/run.sh

@@ -50,6 +50,9 @@ try {
     }
     Copy-Item src-native/vendor/webrtc-0.14.0/LICENSE-MIT (Join-Path $taskPackage 'WEBRTC-LICENSE-MIT.txt')
     Copy-Item src-native/vendor/webrtc-0.14.0/LICENSE-APACHE (Join-Path $taskPackage 'WEBRTC-LICENSE-APACHE.txt')
+    Copy-Item src-native/vendor/dtls-0.13.0/LICENSE-MIT (Join-Path $taskPackage 'DTLS-LICENSE-MIT.txt')
+    Copy-Item src-native/vendor/dtls-0.13.0/LICENSE-APACHE (Join-Path $taskPackage 'DTLS-LICENSE-APACHE.txt')
+    Copy-Item src-native/vendor/dtls-0.13.0/EVOPARSEQ.md (Join-Path $taskPackage 'DTLS-LOCAL-CHANGES.md')
     Copy-Item src-native/vendor/webrtc-0.14.0/LOCAL-CHANGES.md (Join-Path $taskPackage 'WEBRTC-LOCAL-CHANGES.md')
     Copy-Item src-native/vendor/webrtc-ice-0.14.0/LOCAL-CHANGES.md (Join-Path $taskPackage 'ICE-LOCAL-CHANGES.md')
     Copy-Item src-native/vendor/turn-0.11.0/LOCAL-CHANGES.md (Join-Path $taskPackage 'TURN-LOCAL-CHANGES.md')

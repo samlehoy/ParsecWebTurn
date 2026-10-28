@@ -34,6 +34,9 @@ that every compressed stream will decode successfully.
   Win32 input and CurrentUser DPAPI.
 - W3C/IETF WebRTC, ICE, STUN, TURN, DTLS and SCTP; local third-party patches
   retain their upstream licenses and document changes in `EVOPARSEQ.md`.
+  The DTLS 0.13 patch upgrades its NIST curve dependencies without replacing
+  the protocol engine; see `src-native/vendor/dtls-0.13.0/EVOPARSEQ.md` for the
+  exact scope and the unchanged older BUD cryptography dependency.
 - Vendor codec documentation and runtime capability queries. Device vendor
   names alone never establish an implemented decoder/output format.
 
