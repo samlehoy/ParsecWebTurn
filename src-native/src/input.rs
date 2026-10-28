@@ -9,16 +9,20 @@ pub enum Shortcut {
     SecureAttention,
 }
 
-pub fn shortcut(code: &str, modifiers: i32) -> Option<Shortcut> {
-    match (code, modifiers & 15) {
-        ("KeyM" | "KeyO", 3) => Some(Shortcut::Menu),
-        ("KeyS", 3) => Some(Shortcut::Statistics),
-        ("KeyW", 3) => Some(Shortcut::Fullscreen),
-        ("KeyR", 3) => Some(Shortcut::ReleaseInput),
-        ("KeyQ", 3) => Some(Shortcut::Disconnect),
-        ("End", 6) => Some(Shortcut::SecureAttention),
+pub fn shortcut_binding(code: &str) -> Option<(i32, Shortcut)> {
+    match code {
+        "KeyM" | "KeyO" => Some((3, Shortcut::Menu)),
+        "KeyS" => Some((3, Shortcut::Statistics)),
+        "KeyW" => Some((3, Shortcut::Fullscreen)),
+        "KeyR" => Some((3, Shortcut::ReleaseInput)),
+        "KeyQ" => Some((3, Shortcut::Disconnect)),
+        "End" => Some((6, Shortcut::SecureAttention)),
         _ => None,
     }
+}
+pub fn shortcut(code: &str, modifiers: i32) -> Option<Shortcut> {
+    let (required, action) = shortcut_binding(code)?;
+    (modifiers & 15 == required).then_some(action)
 }
 
 #[derive(Debug, PartialEq, Eq)]

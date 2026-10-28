@@ -23,26 +23,33 @@ pub unsafe fn key_message(message: u32, wp: WPARAM, lp: LPARAM) -> Option<KeyMes
     if !captured && !matches!(message, WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP) {
         return None;
     }
-    Some(KeyMessage {
-        code: code(
-            if captured {
-                (wp & 255) as u32
-            } else {
-                wp as u32
-            },
-            ((lp >> 16) & 255) as u8,
-            lp & (1 << 24) != 0,
-        )?,
-        down: if captured {
-            lp & (1 << 31) == 0
+    let code = code(
+        if captured {
+            (wp & 255) as u32
         } else {
-            matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN)
+            wp as u32
         },
-        repeated: lp & (1 << 30) != 0,
+        ((lp >> 16) & 255) as u8,
+        lp & (1 << 24) != 0,
+    )?;
+    let down = if captured {
+        lp & (1 << 31) == 0
+    } else {
+        matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN)
+    };
+    let repeated = lp & (1 << 30) != 0;
+    // This metadata is for local shortcut routing, not remote key delivery.
+    // Repeats, releases and non-command keys need no additional modifier query.
+    Some(KeyMessage {
+        code,
+        down,
+        repeated,
         modifiers: if captured {
             (lp & 63) as i32
-        } else {
+        } else if down && !repeated && crate::input::shortcut_binding(code).is_some() {
             modifiers()
+        } else {
+            0
         },
     })
 }

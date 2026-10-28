@@ -11,6 +11,49 @@ static TARGET: AtomicUsize = AtomicUsize::new(0);
 static GENERATION: AtomicUsize = AtomicUsize::new(0);
 static MODIFIER_KEYS: AtomicUsize = AtomicUsize::new(0);
 static CAPTURED: [AtomicBool; 256] = [const { AtomicBool::new(false) }; 256];
+// Physical locations of the shared client shortcut triggers. Translate through
+// the current Windows layout; e.g. physical KeyQ need not have virtual key Q.
+const SHORTCUT_SCANS: [u32; 7] = [0x10, 0x11, 0x13, 0x18, 0x1f, 0x32, 0xe04f];
+
+/// Seed only state whose initial value changes modifier or shortcut behavior.
+/// Other keys are tracked from foreground hook events; their initial repeat
+/// flag cannot activate a client shortcut. No full-keyboard polling is needed.
+fn initial_keys(
+    mut down: impl FnMut(u16) -> bool,
+    mut toggled: impl FnMut(u16) -> bool,
+    mut virtual_key: impl FnMut(u32) -> u32,
+) -> (usize, [bool; 256]) {
+    let mut modifiers = 0;
+    let mut pressed = [false; 256];
+    for vk in [
+        VK_LSHIFT,
+        VK_RSHIFT,
+        VK_LCONTROL,
+        VK_RCONTROL,
+        VK_LMENU,
+        VK_RMENU,
+        VK_LWIN,
+        VK_RWIN,
+    ] {
+        pressed[usize::from(vk)] = down(vk);
+        if pressed[usize::from(vk)] {
+            modifiers |= modifier_bit(vk);
+        }
+    }
+    for (vk, bit) in [(VK_CAPITAL, 256), (VK_NUMLOCK, 512)] {
+        pressed[usize::from(vk)] = down(vk);
+        if toggled(vk) {
+            modifiers |= bit;
+        }
+    }
+    for scan in SHORTCUT_SCANS {
+        let vk = virtual_key(scan);
+        if vk > 0 && vk < 256 {
+            pressed[vk as usize] = down(vk as u16);
+        }
+    }
+    (modifiers, pressed)
+}
 #[derive(Default)]
 pub struct State {
     hook: usize,
@@ -24,31 +67,14 @@ impl State {
                 self.hook = 0;
             }
         } else if self.hook == 0 && GetForegroundWindow() == hwnd {
-            let mut keys = 0;
-            for vk in [
-                VK_LSHIFT,
-                VK_RSHIFT,
-                VK_LCONTROL,
-                VK_RCONTROL,
-                VK_LMENU,
-                VK_RMENU,
-                VK_LWIN,
-                VK_RWIN,
-            ] {
-                if GetAsyncKeyState(i32::from(vk)) < 0 {
-                    keys |= modifier_bit(vk);
-                }
-            }
-            for (vk, bit) in [(VK_CAPITAL, 256), (VK_NUMLOCK, 512)] {
-                if GetKeyState(i32::from(vk)) & 1 != 0 {
-                    keys |= bit;
-                }
-            }
+            let (keys, pressed) = initial_keys(
+                |vk| GetAsyncKeyState(i32::from(vk)) < 0,
+                |vk| GetKeyState(i32::from(vk)) & 1 != 0,
+                |scan| MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX),
+            );
             MODIFIER_KEYS.store(keys, Ordering::Relaxed);
-            // Snapshot once when acquiring capture, outside the callback.
-            // A held game's key must remain a repeat if immersion starts mid-hold.
-            for (vk, key) in CAPTURED.iter().enumerate() {
-                key.store(GetAsyncKeyState(vk as i32) < 0, Ordering::Relaxed);
+            for (key, down) in CAPTURED.iter().zip(pressed) {
+                key.store(down, Ordering::Relaxed);
             }
             let hook = SetWindowsHookExW(
                 WH_KEYBOARD_LL,
@@ -218,6 +244,8 @@ pub(crate) fn test_immersive_chords(hwnd: HWND) -> WPARAM {
 pub(crate) fn test_reserved_pair(hwnd: HWND) {
     unsafe {
         assert_eq!(TARGET.load(Ordering::Acquire), hwnd as usize);
+        // Synthetic modifiers must not depend on the runner's lock-key LEDs.
+        MODIFIER_KEYS.store(0, Ordering::Relaxed);
         let down = KBDLLHOOKSTRUCT {
             vkCode: VK_TAB as u32,
             scanCode: 15,
@@ -250,6 +278,73 @@ pub(crate) fn test_reserved_pair(hwnd: HWND) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn capture_seed_queries_only_required_keys_and_respects_layout_mapping() {
+        let mut reads = Vec::new();
+        let mut locks = Vec::new();
+        let mut scans = Vec::new();
+        let (keys, pressed) = initial_keys(
+            |vk| {
+                reads.push(vk);
+                [VK_RCONTROL, VK_RSHIFT, VK_NUMLOCK, b'A' as u16, b'B' as u16].contains(&vk)
+            },
+            |vk| {
+                locks.push(vk);
+                vk == VK_CAPITAL
+            },
+            |scan| {
+                scans.push(scan);
+                // AZERTY-style virtual keys differ from physical shortcut names.
+                match scan {
+                    0x10 => u32::from(b'A'),
+                    0x11 => u32::from(b'Z'),
+                    0x13 => u32::from(b'R'),
+                    0x18 => u32::from(b'O'),
+                    0x1f => u32::from(b'S'),
+                    0x32 => 0xbc,
+                    0xe04f => u32::from(VK_END),
+                    _ => panic!("unexpected physical key query"),
+                }
+            },
+        );
+        assert_eq!(reads.len(), 17);
+        assert_eq!(locks, [VK_CAPITAL, VK_NUMLOCK]);
+        assert_eq!(scans, SHORTCUT_SCANS);
+        assert!(
+            !reads.contains(&(b'B' as u16)),
+            "ordinary keys must not be polled"
+        );
+        assert_eq!(pressed.iter().filter(|&&down| down).count(), 4);
+        for vk in [VK_RCONTROL, VK_RSHIFT, VK_NUMLOCK, b'A' as u16] {
+            assert!(pressed[usize::from(vk)]);
+        }
+        assert!(!pressed[usize::from(b'Q')]);
+        assert_eq!(modifiers(keys), 1 | 2 | 16);
+    }
+    #[test]
+    fn unmapped_shortcuts_are_not_queried_and_seed_targets_cover_shared_bindings() {
+        let mut reads = Vec::new();
+        let (keys, pressed) = initial_keys(
+            |vk| {
+                reads.push(vk);
+                false
+            },
+            |_| false,
+            |scan| if scan == 0x10 { 256 } else { 0 },
+        );
+        assert_eq!(reads.len(), 10);
+        assert_eq!(keys, 0);
+        assert!(!pressed.into_iter().any(|down| down));
+        for scan in 1..=255u8 {
+            if crate::input_windows::code(0, scan, false)
+                .is_some_and(|code| crate::input::shortcut_binding(code).is_some())
+            {
+                assert!(SHORTCUT_SCANS.contains(&u32::from(scan)));
+            }
+        }
+        assert!(SHORTCUT_SCANS.contains(&0xe04f));
+        assert!(crate::input::shortcut_binding("End").is_some());
+    }
     #[test]
     fn modifier_sides_and_lock_bits_are_independent() {
         let keys = modifier_bit(VK_LCONTROL) | modifier_bit(VK_RCONTROL);

@@ -411,3 +411,13 @@ Ctrl+Alt+Del remains a Windows secure sequence; Ctrl+Alt+End uses the existing
 host-service request. This does not add host patches or injected client input.
 Hook/API behavior follows Microsoft's documented
 [LowLevelKeyboardProc](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc).
+
+Capture startup queries only eight sided modifiers, two lock keys and the seven
+physical client-shortcut triggers (at most 17 asynchronous reads, rather than
+the previous 264). Shortcut scans are translated with the current Windows
+keyboard layout; existing held-key repeat suppression and lock state remain.
+Other keys are learned from foreground events. Local shortcut routing also
+avoids extra modifier queries for ordinary legacy keys, repeats and releases.
+There is no full-keyboard polling loop, background sampler or per-frame work.
+The original Defender report remains unresolved; this cleanup does not establish
+the cause of its behavioral classification or guarantee future scan results.

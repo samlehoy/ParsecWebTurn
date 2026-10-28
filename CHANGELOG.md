@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Limit immersive startup state queries to the required modifier, lock and
+  layout-mapped client-shortcut keys, replacing 264 asynchronous queries with
+  at most 17 per acquisition. Track other keys from foreground events and omit
+  redundant local-shortcut modifier queries on repeats, releases and ordinary
+  keys. This is input-scope cleanup, not a verified antivirus-detection fix.
+
 - Keep immersive keyboard events on one ordered, focus-scoped hook path for
   normal and HID input, including sided modifiers and ordinary game shortcuts.
   Unify client shortcut recognition, require exact modifier combinations, and
