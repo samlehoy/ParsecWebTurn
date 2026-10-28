@@ -39,7 +39,7 @@ existing ParsecWebTurn updater to recognize the transition. For example, clients
 on stable 0.9.4 require a stable version greater than 0.9.4. A development CI
 artifact or prerelease is not offered by that stable updater.
 
-The `dev` branch now develops EvoParseq. Version 0.9.5-dev.1 is a prerelease,
+The `dev` branch now develops EvoParseq. Version 0.9.5-dev.2 is a prerelease,
 so the stable ParsecWebTurn updater does not offer it automatically. Download
 the EvoParseq or transition package manually to try it. The `main` branch and
 stable v0.9.4 remain ParsecWebTurn. A future stable EvoParseq release can use

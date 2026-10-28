@@ -1,48 +1,56 @@
 # EvoParseq changelog
 
-## Unreleased
+## v0.9.5-dev.2 — AI upscaling, diagnostics and input fixes (2026-10-28)
 
-- Preserve simultaneous mouse-button holds: do not reacquire Win32 mouse capture when the stream window already owns it. Avoid synthetic releases on the second button press in both HID and ordinary input; retain independent button releases, focus-loss cleanup and relative-camera behavior. Cover both press orders and HID camera transitions with regressions.
+Implemented changes since EvoParseq v0.9.5-dev.1.
 
-- Update only the existing WebRTC DTLS engine's P-256/P-384 cryptography to the 0.14 curve line and SEC1 0.8, using the documented fallible OS-RNG API. Retain DTLS 0.13 integration, record ciphers, ICE/SCTP behavior and media paths; add ring ECDH interoperability and malformed-point regressions plus isolated TURN verification. BUD cryptography remains a separate unchanged dependency chain.
-
-- Check the coded HEVC Main/Main10 size once through D3D11 on the AMF decoder's selected device before initializing AMF. Reject unsupported configurations through the existing logged Media Foundation fallback; retain visible-size AMF initialization and unchanged frame processing. Update Tokio to 1.54.1, webpki-roots to 1.0.11 and serde_json to 1.0.154 in the application and transport test locks.
-
-- Combine NVIDIA and Intel AI controls into one GPU-dependent AI upscaling selector, preserving each vendor's saved choice and existing precision/Zero copy rules. Remove completed investigative test fixtures; retain API/runtime/capability failure logging for issue reports.
-
-- On rejected Intel AI capability checks, log query-only comparisons of ordinary BGRA/NV12 GPU scaling and NV12 AI at the requested and 2x ratio. These one-time failure diagnostics do not process frames, change the selected effect or add per-frame work.
-
-- Distinguish Intel AI runtime-version rejection, unsupported AI configuration and native GPU-surface checks in the event log. Report the failing API and installed runtime API version; adapter setup alone no longer reports Intel AI as available before its capability check.
-
-- Add opt-in Intel VPL AI Super Resolution for 8-bit SDR normal DXGI upscaling, using the documented stable VPL 2.17.0 API and installed Intel driver runtime. No bundled/downloaded Intel DLL or model. Strict AI capability/active-parameter and same-device GPU-surface checks retain ordinary rendering on unsupported hardware. No CPU pixel readback or generated frames; adds optional GPU processing/output copy and bounded VPP synchronization. Hardware behavior and latency remain unverified.
-
-- Preserve warmed VSR state on the same D3D11 device while resetting decoder references after encoder rebuilds or bounded startup backlog. Keep the original queue limits and native watchdog; disable VSR rather than repeatedly rebuilding it if steady-state processing cannot keep up. Log recovery causes and VSR setup duration.
-- Remove the VSR runtime from the EXE. Ask before first-start setup, reuse a verified previous cache, or download the exact official NVIDIA SDK payload with archive and DLL SHA-256 verification. Store it under `vsr/1.1.0` under %LOCALAPPDATA%/EvoParseq (no administrator rights required). No download or installation runs on the video worker.
-
-- Added optional experimental NVIDIA RTX Video Super Resolution to normal DXGI rendering: Off/Low/Medium/High/Ultra, GPU-only pixel processing, preserved 8/10-bit output, and fallback to ordinary rendering. Off by default; adds GPU processing/memory and one GPU output copy and may increase latency. Actual hardware behavior and latency require live validation.
-
-- Add optional experimental VRR for normal DXGI presentation, shared by the
-  existing vendor and Media Foundation decoders. Query DXGI tearing support,
-  preserve flags across resize/8-bit/10-bit output changes, and retain bounded
-  nonblocking presentation. Fall back without extra frame copies; distinguish
-  application-side enablement from unverified physical panel activation.
-
-- Coalesce adjacent mouse positions and accumulate relative camera deltas in the
-  bounded input queue without crossing button, wheel, focus or mode boundaries.
-  Reserve input capacity and release/disconnect on unrecoverable queue overflow.
-- Detect stalled native video setup, processing, presentation and teardown on
-  existing supervision loops. Keep GPU resources on their owning worker and
-  prevent replacement-worker accumulation; native timeouts require an app restart.
-
-- Organize Connection stats into Overview, Network, Video, Audio and Timings
-  tabs with a fixed header, independent scrolling and all existing measurements.
-
-- Preserve clipboard write failures and retry only the newest remote value,
-  at most five times within one second on the existing session loop. Cancel
-  pending writes on focus loss, permission changes or a new local copy.
-- Show recent video timing averages from a bounded two-second telemetry window,
-  alongside existing session statistics. Distinguish decoded FPS from accepted
-  presentation-submission FPS without new per-frame measurements or GPU work.
+- **Simultaneous mouse-button holds:** fix capture being reacquired when the
+  stream window already owns it. Holding left and right together no longer
+  generates premature releases. Independent releases, focus-loss cleanup and
+  relative-camera transitions retain their existing behavior.
+- **Input under load:** combine adjacent absolute mouse positions and sum
+  relative camera movement without crossing button, wheel, focus or mode
+  boundaries. Reserve queue capacity for other input and fail safely on
+  unrecoverable overflow instead of leaving held input behind.
+- **Clipboard reliability:** retry a failed Windows clipboard write using only
+  the newest remote text, with bounded retries. Cancel obsolete writes after
+  focus/permission changes or a new local copy.
+- **Organized Connection stats:** group diagnostics into Overview, Network,
+  Video, Audio and Timings tabs with a fixed header and separate scrolling.
+  Add recent two-second video timing averages, expire stale values and show
+  decoded FPS separately from presentation-submission FPS.
+- **Native video stall handling:** supervise decoder/device setup, processing,
+  presentation and teardown. Keep driver-owned resources on their owning worker
+  and prevent accumulating replacement workers. An unrecoverable native timeout
+  requires restarting the app.
+- **Experimental DXGI VRR:** add optional variable-refresh presentation to the
+  normal DXGI path used by vendor and Media Foundation decoders. Check tearing
+  support, preserve configuration through resize/precision changes and fall back
+  without adding decoded-frame copies. Physical panel activation depends on the
+  display, driver and Windows settings.
+- **Experimental AI upscaling:** one GPU-dependent selector offers NVIDIA RTX
+  VSR quality levels or Intel VPL AI. Off by default, upscaling only, with normal
+  GPU rendering retained on unsupported configurations. NVIDIA RTX 3060 playback
+  is live-confirmed. Intel support is implemented but **not hardware-validated**;
+  installed runtimes may reject the AI filter.
+- **Optional NVIDIA runtime:** keep the VSR DLL outside the EXE. With explicit
+  consent, download the pinned official NVIDIA RTX Video SDK 1.1.0 payload and
+  verify both archive and DLL SHA-256 hashes. Reuse verified caches and store the
+  runtime under `%LOCALAPPDATA%/EvoParseq/vsr/1.1.0`, without administrator rights.
+  Intel uses its installed driver runtime and downloads no DLL or model.
+- **VSR startup/recovery:** preserve warmed effect state on the same GPU during
+  decoder-reference recovery, reducing repeated setup and black-picture
+  interruptions. Genuine native errors still recreate the decoder; repeated
+  steady-state overload disables the effect rather than growing the queue.
+- **AMD HEVC compatibility:** check coded Main/Main10 dimensions once through
+  D3D11 on the selected GPU before AMF initialization. Unsupported configurations
+  take the existing logged Media Foundation fallback; visible-size AMF setup and
+  normal frame processing remain unchanged.
+- **WebRTC cryptography and maintenance:** update the existing DTLS engine's
+  P-256/P-384 dependencies while preserving the WebRTC/ICE/SCTP integration,
+  certificate checks, record ciphers and transport policy. Update Tokio to
+  1.54.1, webpki-roots to 1.0.11 and serde_json to 1.0.154. Remove unused legacy
+  control callback payloads and unnecessary copies.
 
 ## v0.9.5-dev.1 — Native Rust core and session controls (2026-10-27)
 

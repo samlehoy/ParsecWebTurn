@@ -86,13 +86,6 @@ pub fn text(kind: u8, id: i32, value: &str) -> Result<Bytes> {
 
 pub enum Message {
     Status(i32),
-    EncodeLatency(f32),
-    Event(Value),
-    HostMode(i32),
-    Guests {
-        list: Vec<Value>,
-        me: Value,
-    },
     Buffer {
         event: Value,
         payload: Option<std::ops::Range<usize>>,
@@ -130,13 +123,12 @@ pub fn decode(bytes: &[u8]) -> Result<Message> {
         bail!("invalid control frame size");
     }
     let number = |offset| i32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap());
-    let (a, b, c) = (number(0), number(4), number(8));
+    let (a, b) = (number(0), number(4));
     Ok(match bytes[12] {
         10 => Message::Status(a),
-        21 => Message::EncodeLatency(b as f32 / 1000.0),
-        20 => Message::Event(json!({"type":2,"gamepadID":a,"motorBig":b,"motorSmall":c})),
-        16 => Message::Event(json!({"type":if a!=0 {4} else {5}})),
-        28 => Message::HostMode(a),
+        // Timing is collected by the transport. The native session does not
+        // consume the former web-core gamepad, host-mode or guest callbacks.
+        16 | 20 | 21 | 28 => Message::Ignored,
         25 => {
             let size = usize::try_from(a).context("negative guest list length")?;
             if size == 0 || size != bytes.len() - 13 || bytes.last() != Some(&0) {
@@ -146,13 +138,7 @@ pub fn decode(bytes: &[u8]) -> Result<Message> {
             if list.len() > 256 || list.iter().any(|v| !v.is_object()) {
                 bail!("invalid guest list");
             }
-            let me = list
-                .iter()
-                .rev()
-                .find(|v| v["id"].as_i64() == Some(i64::from(b)))
-                .cloned()
-                .unwrap_or_else(|| json!({}));
-            Message::Guests { list, me }
+            Message::Ignored
         }
         17 => {
             let size = usize::try_from(a).context("negative user-data length")?;
@@ -318,7 +304,7 @@ mod tests {
             [255, 255, 255, 253, 1, 2, 3, 4, 0, 0, 0, 0, 10]
         );
         let frame = text(25, 42, "[]").unwrap();
-        assert!(matches!(decode(&frame).unwrap(),Message::Guests {list,..} if list.is_empty()));
+        assert!(matches!(decode(&frame).unwrap(), Message::Ignored));
         let frame = text(17, 42, "árvíz").unwrap();
         assert_eq!(
             i32::from_be_bytes(frame[..4].try_into().unwrap()),

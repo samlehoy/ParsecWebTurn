@@ -1,109 +1,87 @@
-EvoParseq v0.9.5-dev.1 - Native Rust core and session controls
+EvoParseq v0.9.5-dev.2 - AI upscaling, diagnostics and input fixes
 
-This Windows prerelease moves the native-core development into **dev** as
-**EvoParseq**, an independent native Rust client for existing, unmodified Parsec
-hosts. It replaces the previous client runtime rather than embedding the
-proprietary Parsec WebAssembly core. The changes below cover the implemented
-changes since the latest stable release, **ParsecWebTurn v0.9.4**.
+This Windows prerelease builds on **EvoParseq v0.9.5-dev.1**, with optional GPU
+upscaling, clearer diagnostics and input/recovery fixes for existing, unmodified
+Parsec hosts.
 
 **This is a development preview. ParsecWebTurn v0.9.4 remains the stable release.**
 
 ## What's new and improved
 
-- **Native core:** implement account sign-in, optional two-factor authentication,
-  computer discovery, authenticated signaling and owner-session control directly
-  in Rust. Remembered sessions use Windows CurrentUser encryption; passwords and
-  two-factor codes are not saved. The computer picker refreshes in the background.
-- **Native WebRTC and BUD sessions:** retain the existing media and transport
-  backends while replacing their WASM-dependent orchestration. Use explicit
-  transport selection, direct connections, custom TURN UDP/TLS/TCP, Force TURN,
-  STUN-only and Cloudflare credentials without a silent transport switch.
-- **New EvoParseq interface:** add application branding, native About/update
-  windows, a draggable overlay icon, performance summary and session controls for
-  resolution, bandwidth, frame rate, constant FPS, orientation, immersive input
-  and fullscreen. Selection fields use dropdowns, host-reported choices where
-  available and compatible presets otherwise. Restore hidden controls by shortcut
-  and keep local menus available while forwarding remote input.
-  Keep the stream canvas black during startup, fix overlay/stats window
-  ordering and confirm asynchronous host-settings updates before accepting
-  another apply, avoiding stale values and repeated clicks.
-- **Host display selection:** switch the current stream between listed physical
-  or virtual outputs, requesting the selected display's host resolution. HID
-  mouse mode restricts selection to the primary output and pauses forwarding
-  until that output is reported, preserving the absolute-positioning contract.
-- **Experimental HEVC 4:4:4:** add compatible NVIDIA/Intel 8-bit AYUV and 10-bit
-  Y410 decode/output paths with a single GPU RGB conversion and no decoded-frame
-  CPU readback. NVIDIA RTX 3060 8/10-bit playback is live-validated; Intel remains
-  capability-gated and unverified. AMD selection is disabled. H.264 stays 4:2:0,
-  and original-NV12 zero-copy is not combined with 4:4:4.
-- **AMD HEVC improvements:** initialize cropped AMF streams with their visible
-  dimensions for older runtimes. Add optional Main10 component selection with
-  original P010 GPU output and the existing RGB10 conversion; Radeon 780M
-  playback is confirmed. Media Foundation remains the default Main10 route.
-- **Video format changes:** rebuild HEVC GPU sessions when the host changes
-  the encoded format, preserve parameter-set dependency order, and retire old
-  codec state during encoder rebuilds without adding frame copies.
-- **Clear 10-bit failure handling:** preserve the requested mode. An initial host
-  encoder failure prompts the user to disable 10-bit and reconnect instead of
-  silently reopening an 8-bit session. Stats retain actual stream/output precision.
-- **Presentation catch-up:** extend the reference-safe BUD approach to WebRTC,
-  decoding dependencies in order while skipping obsolete display work after a
-  burst. Bounded recent queue history adapts WebRTC catch-up to sustained late
-  input and resets after recovery. No extra frame copy, rendering thread or
-  pacing buffer is introduced.
-- **Automatic audio-output recovery:** reopen shared WASAPI after transient
-  device errors and Windows default-output changes, without reconnecting video.
-  Retire stale queued and in-flight audio, preserve Opus state and existing
-  buffer preferences, and expose recovery transitions in logs/stats.
-- **Optional TCP/TLS QoS:** add an off-by-default experimental Windows AudioVideo
-  marking option for outgoing BUD/WebRTC TURN sockets. Refusal is nonfatal;
-  existing TLS verification and transport IO remain intact. It does not set
-  Cloudflare/server priorities or prioritize incoming relay traffic.
-- **Cursor, settings and diagnostics:** size remote cursor images to the client's
-  Windows cursor canvas while preserving shape/hotspot proportions. Group routing,
-  video-format, HID and audio choices into dropdowns; retain saved preferences.
-  Keep BUD video encode timing separate from audio timing reports and reuse
-  existing telemetry for the session overlay and diagnostics.
-- **Maintenance and packaging:** separate shared sign-in, settings, session,
-  diagnostics and input rules from Win32 adapters while retaining the GPU/media
-  path. Remove the old runtime, adapters, diagnostic launchers and obsolete
-  prototype dependencies/documentation. Refresh Tokio to 1.53.3,
-  rustls-webpki to 0.103.16 and webpki-roots to 1.0.10. Ship portable EvoParseq
-  and legacy-named transition packages with retained third-party notices.
+- **Simultaneous mouse-button holds:** fix capture being reacquired when the
+  stream window already owns it. Holding left and right together no longer
+  generates premature releases. Independent releases, focus-loss cleanup and
+  relative-camera transitions retain their existing behavior.
+- **Input under load:** combine adjacent absolute mouse positions and sum
+  relative camera movement without crossing button, wheel, focus or mode
+  boundaries. Reserve queue capacity for other input and fail safely on
+  unrecoverable overflow instead of leaving held input behind.
+- **Clipboard reliability:** retry a failed Windows clipboard write using only
+  the newest remote text, with bounded retries. Cancel obsolete writes after
+  focus/permission changes or a new local copy.
+- **Organized Connection stats:** group diagnostics into Overview, Network,
+  Video, Audio and Timings tabs with a fixed header and separate scrolling.
+  Add recent two-second video timing averages, expire stale values and show
+  decoded FPS separately from presentation-submission FPS.
+- **Native video stall handling:** supervise decoder/device setup, processing,
+  presentation and teardown. Keep driver-owned resources on their owning worker
+  and prevent accumulating replacement workers. An unrecoverable native timeout
+  requires restarting the app.
+- **Experimental DXGI VRR:** add optional variable-refresh presentation to the
+  normal DXGI path used by vendor and Media Foundation decoders. Check tearing
+  support, preserve configuration through resize/precision changes and fall back
+  without adding decoded-frame copies. Physical panel activation depends on the
+  display, driver and Windows settings.
+- **Experimental AI upscaling:** one GPU-dependent selector offers NVIDIA RTX
+  VSR quality levels or Intel VPL AI. Off by default, upscaling only, with normal
+  GPU rendering retained on unsupported configurations. NVIDIA RTX 3060 playback
+  is live-confirmed. Intel support is implemented but **not hardware-validated**;
+  installed runtimes may reject the AI filter.
+- **Optional NVIDIA runtime:** keep the VSR DLL outside the EXE. With explicit
+  consent, download the pinned official NVIDIA RTX Video SDK 1.1.0 payload and
+  verify both archive and DLL SHA-256 hashes. Reuse verified caches and store the
+  runtime under `%LOCALAPPDATA%/EvoParseq/vsr/1.1.0`, without administrator rights.
+  Intel uses its installed driver runtime and downloads no DLL or model.
+- **VSR startup/recovery:** preserve warmed effect state on the same GPU during
+  decoder-reference recovery, reducing repeated setup and black-picture
+  interruptions. Genuine native errors still recreate the decoder; repeated
+  steady-state overload disables the effect rather than growing the queue.
+- **AMD HEVC compatibility:** check coded Main/Main10 dimensions once through
+  D3D11 on the selected GPU before AMF initialization. Unsupported configurations
+  take the existing logged Media Foundation fallback; visible-size AMF setup and
+  normal frame processing remain unchanged.
+- **WebRTC cryptography and maintenance:** update the existing DTLS engine's
+  P-256/P-384 dependencies while preserving the WebRTC/ICE/SCTP integration,
+  certificate checks, record ciphers and transport policy. Update Tokio to
+  1.54.1, webpki-roots to 1.0.11 and serde_json to 1.0.154. Remove unused legacy
+  control callback payloads and unnecessary copies.
 
 ## Compatibility and validation
 
-**Vendor HEVC, zero-copy, 10-bit HEVC, HEVC 4:4:4, display timing, USB HID input
-and multichannel audio remain experimental.** H.264, stereo Opus and Automatic
-presentation are the conservative choices. Current native authorization supports
-owner connections; friend/invitation flows are not implemented.
+**AI upscaling, VRR/display timing, vendor HEVC, zero-copy, 10-bit HEVC,
+HEVC 4:4:4, USB HID and multichannel audio remain experimental.** For conservative
+operation, use H.264, stereo Opus and Automatic timing with optional effects off.
 
-10-bit is SDR, not HDR. Host encoding capability determines the actual stream;
-NVIDIA host Main10 is confirmed, while other encoder configurations can differ.
-Intel 4:4:4 is not live-validated. Original-surface zero-copy remains 8-bit NV12
-and requires Windows 11 plus compatible drivers. Multichannel audio still has
-synthetic coverage only. Adaptive catch-up, real TURN QoS benefit and physical
-audio-device recovery need broader live validation; no universal latency gain
-is claimed. Host virtual-display limitations may delay display switching.
+AI upscaling is **GPU processing, not the application's Zero copy mode**. It
+adds GPU resources/work and an output copy, and may increase latency. Intel AI
+currently supports 8-bit SDR normal rendering only; actual runtime support is
+required. VRR application flags do not prove physical variable-refresh scanout.
+10-bit output remains SDR, not HDR. No universal performance improvement is claimed.
 
-HID requires BUD and USB/Yubikey passthrough with the supported driver on the
-stock host. HID mouse uses the primary display; use matching keyboard layouts.
-BUD raw PCM requires host permission (`network_raw_audio=1`); WebRTC audio remains
-stereo Opus. Ctrl+Alt+Del requires the installed host service and permissions.
-No host patch or extra client helper is required.
+Existing host permissions, HID primary-display restrictions and codec/driver
+requirements still apply. The DTLS upgrade does not replace the separate BUD
+cryptography dependency chain. See README for the full compatibility limits.
 
 ## Updating
 
-Close the old client and extract **EvoParseq-v0.9.5-dev.1-win64.zip**. Keep your
-`settings.json` under the same Windows account. Sign in again: the previous
-web-core login is not imported, while native remembered sessions and compatible
-preferences remain Windows-user protected. Do not copy protected credentials
-between machines/accounts expecting them to decrypt.
+Close the client and extract **EvoParseq-v0.9.5-dev.2-win64.zip**. Keep your
+`settings.json` under the same Windows account; native encrypted remembered
+sessions and compatible settings are retained. Protected credentials are not
+portable between machines or Windows accounts.
 
-For existing shortcuts, **ParsecWebTurn-v0.9.5-dev.1-win64.zip** contains the same
-EvoParseq executable under the legacy name. Both ZIPs exclude settings.json.
-Run only one client and keep a backup until the transition is verified.
+**ParsecWebTurn-v0.9.5-dev.2-win64.zip** contains the same executable under the
+legacy name for existing shortcuts. Both ZIPs exclude settings.json; the NVIDIA
+runtime is not bundled. Run only one client and keep a backup while testing.
 
-This is a **Windows x64 prerelease**, not an automatic stable-channel upgrade.
-The main branch and stable ParsecWebTurn v0.9.4 remain unchanged. See README and
-MIGRATION.md for capabilities, limitations and the future stable-update path.
+This is a **Windows x64 prerelease**, installed manually. The main branch and
+stable ParsecWebTurn v0.9.4 remain unchanged.

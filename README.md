@@ -13,7 +13,7 @@ requires no browser, WebView or helper executable.
 Parsec, Unity or lowlat.** A Parsec account and a compatible host are required.
 
 The **`dev` branch now contains EvoParseq**. The current preview is
-[**v0.9.5-dev.1**](https://github.com/vampywiz17/ParsecWebTurn/releases/tag/v0.9.5-dev.1).
+[**v0.9.5-dev.2**](https://github.com/vampywiz17/ParsecWebTurn/releases/tag/v0.9.5-dev.2).
 The `main` branch and stable **ParsecWebTurn v0.9.4** remain available separately.
 This prerelease does not replace the stable release in the updater.
 
@@ -50,8 +50,8 @@ a selected preference alone does not prove that the host accepted it.
 
 ## Download and run
 
-1. Download `EvoParseq-v0.9.5-dev.1-win64.zip` from the
-   [preview release](https://github.com/vampywiz17/ParsecWebTurn/releases/tag/v0.9.5-dev.1).
+1. Download `EvoParseq-v0.9.5-dev.2-win64.zip` from the
+   [preview release](https://github.com/vampywiz17/ParsecWebTurn/releases/tag/v0.9.5-dev.2).
    Development artifacts are also available from successful
    [dev CI runs](https://github.com/vampywiz17/ParsecWebTurn/actions/workflows/native-core.yml?query=branch%3Adev).
 2. Extract to a writable folder and run **EvoParseq.exe**. Settings and optional
@@ -151,10 +151,24 @@ Unity names and marks belong to their owners; no affiliation is implied.
 
 ### Optional AI upscaling
 
-The Video tab has one **AI upscaling (experimental)** selector. Its choices follow the selected GPU: NVIDIA RTX VSR offers Off/Low/Medium/High/Ultra; Intel VPL AI offers Off/On; other GPUs show the control disabled. Each vendor's saved preference is preserved when switching GPUs.
+The Video tab offers one **AI upscaling (experimental)** selector: NVIDIA RTX
+VSR has Off/Low/Medium/High/Ultra; Intel VPL AI has Off/On. Other GPUs disable the
+control. Each vendor's saved preference is retained.
 
-On Intel, AI Super Resolution is experimental and hardware unverified. It uses the documented Intel VPL **2.17.0** API and the GPU runtime already installed by the Intel display driver; no Intel DLL, model, dispatcher or installer is bundled or downloaded. The runtime must explicitly accept and report the AI filter and return native D3D11 textures on the renderer's device. Unsupported configurations retain normal GPU rendering. This first integration supports 8-bit SDR in normal DXGI mode, upscaling only; 10-bit, 4:4:4 and original-surface Zero copy retain their existing paths. It adds AI GPU work, two reusable RGB surfaces, one GPU output copy and a bounded VPP completion wait, which may increase latency. No CPU pixel mapping/readback, extra application worker or frame generation is used. Model/runtime-internal work and performance still need live Intel validation.
+Both paths upscale on the GPU in normal DXGI mode. They add GPU processing,
+resources and an output copy, may increase latency, and are **not Zero copy**.
+Unsupported configurations retain ordinary rendering. No CPU pixel readback
+or generated frames are introduced.
 
-On NVIDIA, the selector uses experimental RTX VSR in SDK-enabled Windows builds. It is off by default and applies only when the normal DXGI renderer upscales the picture. It stays entirely on the GPU, but adds source RGB/output textures, AI processing and one GPU output copy. It can increase latency, GPU load and memory use. VSR uses normal rendering rather than the original-surface zero-copy path; hardware/driver/API failures retain normal GPU rendering. GPU behavior and performance require live validation.
-
-This optional integration uses NVIDIA RTX Video SDK 1.1.0 / NVIDIA RTX technology. Its proprietary linked library and optional release runtime are excluded from this repository's MIT license; SDK-enabled downloads include NVIDIA's license. No CUDA toolkit installation is needed. On first launch on a machine with an NVIDIA GPU, the app asks permission to download the pinned official NVIDIA runtime before sign-in. The archive and DLL are SHA-256 checked. The DLL is stored in `vsr/1.1.0` under `%LOCALAPPDATA%/EvoParseq` (per Windows user; no administrator rights required); an already verified cache from the earlier test build is reused without downloading. Declining keeps normal video available. After declining, enabling VSR in Settings can authorize setup on the next launch. The runtime is not embedded in the EXE.
+- **NVIDIA:** RTX Video SDK 1.1.0; RTX 3060 playback is live-confirmed.
+  The runtime is outside the EXE. On first launch with an NVIDIA GPU, setup asks
+  permission before downloading the pinned official NVIDIA payload. Archive
+  and DLL hashes are checked; verified caches are reused. The DLL lives under
+  `%LOCALAPPDATA%/EvoParseq/vsr/1.1.0`, without admin rights. Declining leaves
+  normal video available; enabling VSR later can authorize setup on next launch.
+  SDK-enabled packages include NVIDIA's license; no CUDA toolkit is required.
+- **Intel:** documented VPL 2.17 API with the installed Intel driver runtime,
+  without a bundled/downloaded DLL or model. **Hardware operation is unverified.**
+  Strict checks require the AI filter and same-device D3D11 surfaces; rejected
+  runtime/configuration details remain in event logs. Currently limited to
+  8-bit SDR upscaling; 10-bit, 4:4:4 and Zero copy keep their existing paths.
