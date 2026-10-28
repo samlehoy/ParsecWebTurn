@@ -16,7 +16,7 @@ native-core = ["windows-sys/Win32_System_SystemServices", "bud", "evoparseq-bud/
 evoparseq-socket-qos = { path = "crates/socket-qos" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = "1.0.154"
 sha2 = "0.10"
 # Already present through PNG; also decode the pinned optional NVIDIA SDK payload.
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
@@ -27,7 +27,7 @@ base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", features = ["sink"] }
-tokio = { version = "1.53.3", features = ["rt-multi-thread", "sync", "time", "net"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync", "time", "net"] }
 webrtc = "=0.14.0"
 image = { version = "0.25", default-features = false, features = ["png"] }
 libopus_sys = { version = "=0.3.3", features = ["bundled", "static"] }

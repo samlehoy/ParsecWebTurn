@@ -14,7 +14,7 @@ turn-stream = ["dep:evoparseq-socket-qos", "dep:rustls", "dep:webpki-roots", "de
 
 [dependencies]
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"], optional = true }
-webpki-roots = { version = "1.0.10", optional = true }
+webpki-roots = { version = "1.0.11", optional = true }
 rustls-native-certs = { version = "0.8", optional = true }
 lowlat-common = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
 lowlat-core = { path = "../lowlat-core" }

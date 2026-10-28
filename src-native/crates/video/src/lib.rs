@@ -14,6 +14,62 @@ use self_cell::self_cell;
 use std::time::{Duration, Instant};
 use windows::{Win32::Graphics::Direct3D11::ID3D11Device, core::Interface};
 
+// AMF can accept Init even when the engine cannot decode the coded dimensions.
+// Ask D3D11 on that same device once, before AMF allocates its live decoder.
+// No surfaces, compressed input or GPU commands are submitted by this probe.
+fn verify_amf_size(device: &ID3D11Device, coded: (u32, u32), bit_depth: u8) -> Result<()> {
+    use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::*};
+    let (profile, format) = match bit_depth {
+        8 => (D3D11_DECODER_PROFILE_HEVC_VLD_MAIN, DXGI_FORMAT_NV12),
+        10 => (D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10, DXGI_FORMAT_P010),
+        _ => anyhow::bail!("unsupported AMF depth"),
+    };
+    let desc = D3D11_VIDEO_DECODER_DESC {
+        Guid: profile,
+        SampleWidth: coded.0,
+        SampleHeight: coded.1,
+        OutputFormat: format,
+    };
+    let check = || -> Result<()> {
+        let video: ID3D11VideoDevice = device.cast().context("D3D11 video device")?;
+        // SAFETY: the device and all descriptors live through each synchronous
+        // call. The temporary decoder is released before AMF initialization.
+        unsafe {
+            ensure!(
+                video
+                    .CheckVideoDecoderFormat(&desc.Guid, desc.OutputFormat)?
+                    .as_bool(),
+                "D3D11 decoder output format unavailable"
+            );
+            let count = video.GetVideoDecoderConfigCount(&desc)?;
+            let mut last_error = None;
+            for index in 0..count {
+                let mut config = D3D11_VIDEO_DECODER_CONFIG::default();
+                let result = video
+                    .GetVideoDecoderConfig(&desc, index, &mut config)
+                    .and_then(|()| video.CreateVideoDecoder(&desc, &config));
+                match result {
+                    Ok(decoder) => {
+                        drop(decoder);
+                        return Ok(());
+                    }
+                    Err(error) => last_error = Some(error),
+                }
+            }
+            if let Some(error) = last_error {
+                return Err(error.into());
+            }
+            anyhow::bail!("D3D11 offers no decoder configuration for the coded size")
+        }
+    };
+    check().with_context(|| {
+        format!(
+            "AMF HEVC hardware-size check: {}x{}, {bit_depth}-bit",
+            coded.0, coded.1
+        )
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     AmdAmf,
@@ -202,6 +258,11 @@ impl Decoder {
                     10 => amf::Layout::P010,
                     _ => anyhow::bail!("unsupported AMF depth"),
                 };
+                let raw = device.device.device().cast();
+                // SAFETY: borrow the very device AMF will use; no second adapter.
+                let native = unsafe { ID3D11Device::from_raw_borrowed(&raw) }
+                    .context("missing AMF D3D11 device")?;
+                verify_amf_size(native, size, bit_depth)?;
                 let owner = AmfOwner {
                     device,
                     runtime: amf::Amf::load()?,
@@ -340,6 +401,34 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn amf_size_probe_rejects_software_hevc_without_an_amf_runtime() {
+        use windows::Win32::Graphics::{Direct3D::D3D_DRIVER_TYPE_WARP, Direct3D11::*};
+        let mut device = None;
+        // SAFETY: WARP is an isolated software device; no live session/GPU state.
+        unsafe {
+            D3D11CreateDevice(
+                None,
+                D3D_DRIVER_TYPE_WARP,
+                None,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                None,
+            )
+            .unwrap();
+        }
+        let device = device.unwrap();
+        for depth in [8, 10] {
+            let error = verify_amf_size(&device, (1920, 1088), depth).unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains("AMF HEVC hardware-size check: 1920x1088"));
+            assert!(message.contains(&format!("{depth}-bit")));
+        }
+        assert!(verify_amf_size(&device, (1920, 1088), 12).is_err());
+    }
     #[test]
     fn cropped_amf_init_uses_visible_size_but_other_backends_keep_coded_size() {
         assert_eq!(

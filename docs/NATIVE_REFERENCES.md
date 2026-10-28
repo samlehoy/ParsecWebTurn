@@ -18,6 +18,16 @@ reviewed upstream revisions `befd5a29c7a331111f11378c0b5623de788e9769`,
 `b174dc6ac8d4923f45abe0c3a0a0a41fc0b76c49`. The receive-only cursor cache
 reference is `e548d48c81ae50937940b2b47f700557cd9d50a4`.
 
+The AMF initialization guard follows the finding in
+[`565f375`](https://github.com/nomi-san/lowlat/commit/565f375136c7fe3da925ae8c4e9cbbba0b43b87e):
+AMF may accept dimensions that the decode engine cannot use. EvoParseq's own
+HEVC-only adapter checks the coded size and Main/NV12 or Main10/P010 profile
+with a temporary D3D11 decoder on that same device, releasing it before AMF
+initialization. AMF keeps its visible-size initialization. There is no frame
+submission, pixel copy, extra queue or per-frame probe; failure uses the existing
+logged Media Foundation fallback. This is a D3D11 configuration check, not proof
+that every compressed stream will decode successfully.
+
 ## Native APIs and protocols
 
 - Microsoft documented D3D11 video, DXGI, Windows Presentation API, WASAPI,

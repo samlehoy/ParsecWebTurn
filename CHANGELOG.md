@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Check the coded HEVC Main/Main10 size once through D3D11 on the AMF decoder's selected device before initializing AMF. Reject unsupported configurations through the existing logged Media Foundation fallback; retain visible-size AMF initialization and unchanged frame processing. Update Tokio to 1.54.1, webpki-roots to 1.0.11 and serde_json to 1.0.154 in the application and transport test locks.
+
 - Combine NVIDIA and Intel AI controls into one GPU-dependent AI upscaling selector, preserving each vendor's saved choice and existing precision/Zero copy rules. Remove completed investigative test fixtures; retain API/runtime/capability failure logging for issue reports.
 
 - On rejected Intel AI capability checks, log query-only comparisons of ordinary BGRA/NV12 GPU scaling and NV12 AI at the requested and 2x ratio. These one-time failure diagnostics do not process frames, change the selected effect or add per-frame work.
