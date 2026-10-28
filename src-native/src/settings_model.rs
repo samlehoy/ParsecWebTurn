@@ -172,6 +172,7 @@ pub struct Availability {
     pub audio_limits: bool,
     pub amf_main10: bool,
     pub nvidia_vsr: bool,
+    pub intel_ai_vsr: bool,
     pub chroma_444: bool,
     pub zero_copy: bool,
     pub relay: bool,
@@ -252,10 +253,14 @@ impl Form {
                 && self.values.experimental_ten_bit
                 && !self.values.experimental_chroma_444,
             chroma_444: self.values.prefer_hevc && chroma_allowed,
+            intel_ai_vsr: cfg!(feature = "vendor-video")
+                && vendor == Some(0x8086)
+                && !self.values.experimental_ten_bit
+                && !self.values.experimental_chroma_444,
             nvidia_vsr: cfg!(nvidia_vsr_sdk) && vendor == Some(0x10de),
             zero_copy: self.values.prefer_hevc
                 && !self.values.experimental_chroma_444
-                && self.values.nvidia_vsr_quality(vendor) == 0,
+                && self.values.ai_upscale_quality(vendor) == 0,
             relay,
             custom_turn: relay && !self.cloudflare(),
             cloudflare_turn: relay && self.cloudflare(),
@@ -622,6 +627,35 @@ mod tests {
 #[cfg(test)]
 mod vsr_tests {
     use super::*;
+    #[test]
+    fn intel_ai_is_opt_in_and_never_changes_precision_or_other_gpu_policy() {
+        let mut settings = Settings::default();
+        assert!(!settings.intel_ai_vsr);
+        settings.prefer_hevc = true;
+        settings.intel_ai_vsr = true;
+        let restored: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert!(restored.intel_ai_vsr);
+        for vendor in [0x8086, 0x1002, 0x10de] {
+            let mut form = Form::new(restored.clone(), Some(vendor));
+            let available = form.availability();
+            let allowed = vendor == 0x8086 && cfg!(feature = "vendor-video");
+            assert_eq!(available.intel_ai_vsr, allowed);
+            assert_eq!(available.zero_copy, !allowed);
+            assert_eq!(
+                form.values.ai_upscale_quality(Some(vendor)),
+                u8::from(allowed)
+            );
+        }
+        for ten_bit in [false, true] {
+            settings.experimental_ten_bit = ten_bit;
+            settings.experimental_chroma_444 = !ten_bit;
+            assert_eq!(settings.ai_upscale_quality(Some(0x8086)), 0);
+            let mut form = Form::new(settings.clone(), Some(0x8086));
+            assert!(!form.availability().intel_ai_vsr);
+            assert_eq!(form.values.experimental_ten_bit, ten_bit);
+        }
+    }
     #[test]
     fn vsr_defaults_off_retains_quality_and_excludes_original_surface_display() {
         let settings = Settings::default();

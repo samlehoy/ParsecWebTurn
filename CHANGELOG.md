@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add opt-in Intel VPL AI Super Resolution for 8-bit SDR normal DXGI upscaling, using the documented stable VPL 2.17.0 API and installed Intel driver runtime. No bundled/downloaded Intel DLL or model. Strict AI capability/active-parameter and same-device GPU-surface checks retain ordinary rendering on unsupported hardware. No CPU pixel readback or generated frames; adds optional GPU processing/output copy and bounded VPP synchronization. Hardware behavior and latency remain unverified.
+
 - Preserve warmed VSR state on the same D3D11 device while resetting decoder references after encoder rebuilds or bounded startup backlog. Keep the original queue limits and native watchdog; disable VSR rather than repeatedly rebuilding it if steady-state processing cannot keep up. Log recovery causes and VSR setup duration.
 - Remove the VSR runtime from the EXE. Ask before first-start setup, reuse a verified previous cache, or download the exact official NVIDIA SDK payload with archive and DLL SHA-256 verification. Store it under `vsr/1.1.0` under %LOCALAPPDATA%/EvoParseq (no administrator rights required). No download or installation runs on the video worker.
 

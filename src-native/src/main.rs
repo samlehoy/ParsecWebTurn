@@ -77,6 +77,8 @@ mod video_color;
 mod video_output;
 mod video_stream;
 #[cfg(windows)]
+mod video_upscale;
+#[cfg(windows)]
 mod video_windows;
 mod viewport;
 #[cfg(windows)]

@@ -75,6 +75,7 @@ const AUDIO_RAW: usize = 4128;
 const AUDIO_SURROUND: usize = 4132;
 const PRESENTATION: usize = 4133;
 const NVIDIA_VSR: usize = 4139;
+const INTEL_AI_VSR: usize = 4140;
 const SECTION: usize = 4202;
 const NOTICE: usize = 4203;
 fn wide(s: &str) -> Vec<u16> {
@@ -594,6 +595,23 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         SendMessageW(vsr, CB_ADDSTRING, 0, wide(label).as_ptr() as isize);
     }
     SendMessageW(vsr, CB_SETCURSEL, s.nvidia_vsr.min(4) as usize, 0);
+    row_label(hwnd, page, "Intel AI Super Resolution", "Experimental VPL AI upscaling; 8-bit SDR, normal GPU rendering.\nRequires GPU/runtime support; may increase latency.\nReconnect after changing. No software or ordinary-scaler fallback.", 1034, 0, 64);
+    let intel_vsr = add(
+        hwnd,
+        page,
+        "COMBOBOX",
+        "",
+        CBS_DROPDOWNLIST as u32 | WS_VSCROLL | WS_TABSTOP,
+        [420, 1034, 400, 180],
+        INTEL_AI_VSR,
+        0,
+        page.font,
+    );
+    controls::combo(intel_vsr);
+    for label in ["Off", "On (experimental, hardware unverified)"] {
+        SendMessageW(intel_vsr, CB_ADDSTRING, 0, wide(label).as_ptr() as isize);
+    }
+    SendMessageW(intel_vsr, CB_SETCURSEL, usize::from(s.intel_ai_vsr), 0);
     page.building_tab = Some(Tab::Network);
     #[cfg(feature = "bud")]
     {
@@ -815,7 +833,7 @@ unsafe fn layout(hwnd: HWND) {
         Tab::Network => 1056 + BUD_EXTRA,
         Tab::Audio => 750,
         Tab::Input => 570,
-        Tab::Video => 1034,
+        Tab::Video => 1150,
     };
     let height = footer + 122 + HEADER_EXTRA;
     page.scroll = page.scroll.clamp(0, (height - client.bottom).max(0));
@@ -1070,6 +1088,7 @@ unsafe fn read_options(hwnd: HWND, model: &mut Form) {
     }
     s.experimental_chroma_444 = checked(hwnd, CHROMA_444);
     s.nvidia_vsr = selection(hwnd, NVIDIA_VSR).min(4) as u8;
+    s.intel_ai_vsr = selection(hwnd, INTEL_AI_VSR) == 1;
     s.custom_audio_buffer = checked(hwnd, AUDIO_CUSTOM);
     if let Some(mode) = RouteMode::ALL.get(selection(hwnd, ROUTE_MODE)) {
         mode.apply(s);
@@ -1098,6 +1117,7 @@ unsafe fn update_enabled(hwnd: HWND) {
         (AUDIO_SURROUND, enabled.bud),
         (CHROMA_444, enabled.chroma_444),
         (NVIDIA_VSR, enabled.nvidia_vsr),
+        (INTEL_AI_VSR, enabled.intel_ai_vsr),
         (TCP_QOS, enabled.relay),
         (PROVIDER, enabled.relay),
         (TURN, enabled.custom_turn),
@@ -1400,7 +1420,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     return 0;
                 }
 
-                CHROMA_444 | NVIDIA_VSR if (wp >> 16) as u32 == CBN_SELCHANGE => {
+                CHROMA_444 | NVIDIA_VSR | INTEL_AI_VSR if (wp >> 16) as u32 == CBN_SELCHANGE => {
                     update_enabled(hwnd);
                     return 0;
                 }

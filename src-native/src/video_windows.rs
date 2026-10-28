@@ -634,7 +634,7 @@ fn run(
     let mut vendor_fallback = None;
     let mut zero_failed = false;
     let mut zero_fallback = None;
-    let vsr_quality = window.nvidia_vsr();
+    let vsr_quality = window.ai_upscale_quality();
     #[cfg(feature = "vendor-video")]
     let zero_requested = window.experimental_zero_copy() && vsr_quality == 0;
     let amf_main10_requested = window.experimental_amf_main10();
@@ -2230,7 +2230,7 @@ fn timing_present(
 }
 
 struct Renderer {
-    vsr: Option<crate::nvidia_vsr::Vsr>,
+    vsr: Option<crate::video_upscale::Effect>,
     vsr_status: Option<&'static str>,
     rotation: u8,
     rotation_context: Option<ID3D11VideoContext1>,
@@ -2328,17 +2328,7 @@ impl Renderer {
         if quality == 0 {
             return;
         }
-        let vendor = self
-            .device
-            .cast::<IDXGIDevice>()
-            .and_then(|d| d.GetAdapter())
-            .and_then(|a| a.GetDesc())
-            .map(|d| d.VendorId);
-        if vendor != Ok(0x10de) {
-            self.vsr_status = Some("Unavailable: NVIDIA RTX GPU required");
-            return;
-        }
-        match crate::nvidia_vsr::Vsr::new(&self.device, quality) {
+        match crate::video_upscale::Effect::new(&self.device, quality) {
             Ok(vsr) => {
                 self.vsr = Some(vsr);
                 self.vsr_status = Some("Ready; waiting for an upscaled frame");
@@ -2768,11 +2758,10 @@ impl Renderer {
                 "video-processor-enumerate",
                 self.video_device.CreateVideoProcessorEnumerator(&desc),
             )?;
-            let mut output_format = if self.vsr.is_some() {
-                DXGI_FORMAT_R8G8B8A8_UNORM
-            } else {
-                DXGI_FORMAT_B8G8R8A8_UNORM
-            };
+            let mut output_format = self
+                .vsr
+                .as_ref()
+                .map_or(DXGI_FORMAT_B8G8R8A8_UNORM, |v| v.format());
             if td.Format == DXGI_FORMAT_Y410
                 || (td.Format == DXGI_FORMAT_P010 && self.ten_bit_fallback.is_none())
             {
@@ -2850,10 +2839,32 @@ impl Renderer {
         let mut vsr_output = None;
         let conversion_target = if upscale {
             if let Some(vsr) = &mut self.vsr {
-                match vsr.prepare(&self.device, source_size, size, self.output_format) {
-                    Ok(s) => {
-                        vsr_output = Some(s.output.clone());
-                        s.input.clone()
+                let setup = vsr.needs_setup(source_size, size, [left, top, right, bottom]);
+                if setup {
+                    shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .optional_setup(true);
+                }
+                let result = vsr.prepare(
+                    &self.device,
+                    source_size,
+                    size,
+                    [left, top, right, bottom],
+                    self.output_format,
+                );
+                if setup {
+                    shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .optional_setup(false);
+                }
+                match result {
+                    Ok((input, output)) => {
+                        vsr_output = Some(output);
+                        input
                     }
                     Err(error) => {
                         self.disable_vsr(error);
@@ -3057,12 +3068,15 @@ impl Renderer {
                 // the normal format on the next frame. No decoder reset.
                 return Ok(Presentation::Busy);
             }
-            self.cleanup.0.CopyResource(&back, &vsr_output);
+            self.vsr
+                .as_ref()
+                .unwrap()
+                .copy_output(&self.cleanup.0, &back, &vsr_output, size);
             if self.vsr_status != Some("Active: GPU processing; may increase latency") {
                 crate::event_log::record(
                     "INFO",
                     "video_vsr_active",
-                    serde_json::json!({"app_cpu_pixel_copy":false,"gpu_output_copy":true,"source_width":source_size.0,"source_height":source_size.1}),
+                    serde_json::json!({"vendor":self.vsr.as_ref().unwrap().vendor(),"app_cpu_pixel_copy":false,"gpu_output_copy":true,"source_width":source_size.0,"source_height":source_size.1}),
                 );
             }
             self.vsr_status = Some("Active: GPU processing; may increase latency");

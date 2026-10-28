@@ -32,6 +32,10 @@ use core::marker::PhantomData;
 use core::ptr::NonNull;
 use std::ffi::CString;
 
+/// Optional, documented VPL AI video processing; independent of decoding.
+#[path = "vpl_ai.rs"]
+pub mod ai;
+
 use lowlat_common::dynlib::Library;
 
 use crate::d3d11::{Adapter, Device};

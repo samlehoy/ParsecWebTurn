@@ -119,6 +119,7 @@ pub struct Settings {
     pub presentation_mode: PresentationMode,
     /// Optional RTX Video quality: 0 off, 1..=4 low through ultra.
     pub nvidia_vsr: u8,
+    pub intel_ai_vsr: bool,
     pub vsr_runtime_consent: VsrRuntimeConsent,
     pub experimental_ten_bit: bool,
     pub experimental_amf_main10: bool,
@@ -154,6 +155,18 @@ pub struct Settings {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 impl Settings {
+    pub fn ai_upscale_quality(&self, vendor: Option<u32>) -> u8 {
+        if cfg!(feature = "vendor-video")
+            && vendor == Some(0x8086)
+            && self.intel_ai_vsr
+            && !self.experimental_ten_bit
+            && !self.experimental_chroma_444
+        {
+            1
+        } else {
+            self.nvidia_vsr_quality(vendor)
+        }
+    }
     pub fn nvidia_vsr_quality(&self, vendor: Option<u32>) -> u8 {
         if cfg!(nvidia_vsr_sdk) && vendor == Some(0x10de) {
             self.nvidia_vsr.min(4)
@@ -176,6 +189,7 @@ impl Default for Settings {
             prefer_hevc: false,
             presentation_mode: PresentationMode::Automatic,
             nvidia_vsr: 0,
+            intel_ai_vsr: false,
             vsr_runtime_consent: VsrRuntimeConsent::Ask,
             experimental_ten_bit: false,
             experimental_amf_main10: false,

@@ -299,7 +299,7 @@ impl Window {
             .as_ref()
             .is_some_and(|manager| manager.view().0.experimental_zero_copy)
     }
-    pub fn nvidia_vsr(&self) -> u8 {
+    pub fn ai_upscale_quality(&self) -> u8 {
         let settings = self
             .connection_settings
             .lock()
@@ -307,15 +307,12 @@ impl Window {
             .as_ref()
             .map(|manager| manager.view().0);
         settings.map_or(0, |settings| {
-            if settings.nvidia_vsr == 0 || !cfg!(nvidia_vsr_sdk) {
-                return 0;
-            }
             let vendor = settings
                 .video_gpu
                 .as_ref()
                 .map(|g| g.vendor_id)
                 .or_else(|| crate::video_windows::video_gpu_vendor(None));
-            settings.nvidia_vsr_quality(vendor)
+            settings.ai_upscale_quality(vendor)
         })
     }
     pub fn experimental_amf_main10(&self) -> bool {
