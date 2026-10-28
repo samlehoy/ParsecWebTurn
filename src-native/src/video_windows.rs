@@ -1492,7 +1492,11 @@ impl Session {
     fn renderer_name(&self) -> &'static str {
         #[cfg(feature = "vendor-video")]
         if self.display.is_some() {
-            return "Original NV12 / Windows Presentation API";
+            return if self.ten_bit {
+                "Original P010 / Windows Presentation API"
+            } else {
+                "Original NV12 / Windows Presentation API"
+            };
         }
         "D3D11 VideoProcessor / DXGI"
     }
@@ -1541,7 +1545,7 @@ impl Session {
                     config.chroma,
                     config.bit_depth,
                 )?;
-                if _zero_copy && (config.chroma == 3 || config.bit_depth == 10) {
+                if _zero_copy && config.chroma == 3 {
                     zero_copy_status = Some("This format uses normal GPU rendering".into());
                 }
                 let luid = (u64::from(adapter.AdapterLuid.HighPart as u32) << 32)
@@ -1549,23 +1553,32 @@ impl Session {
                 drop((probe_context, probe));
                 if _zero_copy
                     && config.chroma == 1
-                    && config.bit_depth == 8
+                    && matches!(config.bit_depth, 8 | 10)
                     && evoparseq_video::original_surface_vendor_allowed(adapter.VendorId)
                 {
-                    match evoparseq_video::display::Session::open(luid, hwnd) {
+                    match evoparseq_video::display::Session::open(
+                        luid,
+                        hwnd,
+                        config.bit_depth == 10,
+                    ) {
                         Ok(display) => {
                             return Ok(Some(Self {
                                 hevc,
                                 rotation: 0,
                                 in_flight: Default::default(),
-                                ten_bit: false,
+                                ten_bit: config.bit_depth == 10,
                                 surface_generation,
                                 low_latency_request_accepted: false,
                                 decoder: None,
                                 vendor: None,
                                 display: Some(display),
                                 zero_copy_status: Some(
-                                    "Starting original NV12 surface presentation".into(),
+                                    if config.bit_depth == 10 {
+                                        "Starting original P010 surface presentation"
+                                    } else {
+                                        "Starting original NV12 surface presentation"
+                                    }
+                                    .into(),
                                 ),
                                 fallback: None,
                                 _manager: None,
@@ -1647,9 +1660,6 @@ impl Session {
             manager.ResetDevice(&renderer.device, token),
         )?;
         let ten_bit = hevc.is_some_and(|h| h.bit_depth == 10);
-        if _zero_copy && ten_bit {
-            zero_copy_status = Some("Unavailable for Main 10; using normal GPU rendering".into());
-        }
         let decoder = create_decoder(codec, ten_bit)?;
         let attrs = api("video-decoder-attributes", decoder.GetAttributes())?;
         if api(
@@ -1909,16 +1919,14 @@ impl Session {
                     s.width = Some(layout.width);
                     s.height = Some(layout.height);
                     s.nominal_range = Some(if layout.full_range { 1 } else { 2 });
-                    s.decoded_bit_depth = Some(8);
+                    s.decoded_bit_depth = Some(if self.ten_bit { 10 } else { 8 });
                     s.decoded_chroma = Some("4:2:0");
                     s.gpu_surface_output = true;
                     s.d3d11_decoder_surface = Some(true);
                 }
                 if output.presented > 0 {
-                    s.zero_copy_status = Some(
-                        "Original NV12 surfaces; no app conversion pass. Scanout not verified."
-                            .into(),
-                    );
+                    s.zero_copy_status =
+                        Some(crate::video_output::original_surface_status(self.ten_bit).into());
                 }
             });
             if output.presented > 0 {

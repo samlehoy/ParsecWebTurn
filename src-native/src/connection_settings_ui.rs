@@ -611,7 +611,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     {
         page.building_tab = Some(Tab::Video);
         let y = 532;
-        let hint = "Present original HEVC decoder surfaces on supported GPUs.\nWindows 11 / compatible driver. Reconnect after changing.";
+        let hint = "HEVC 4:2:0: NV12 (8-bit) or P010 (10-bit).\nRequires driver support; otherwise MF. Reconnect to apply.";
         row_label(hwnd, page, "Video presentation", hint, y, 0, 40);
         binary_choice(hwnd, page, ZERO_COPY, 532);
         check(hwnd, ZERO_COPY, s.experimental_zero_copy);

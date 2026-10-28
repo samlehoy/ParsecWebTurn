@@ -1,4 +1,4 @@
-//! Experimental original NV12 decoder surfaces -> Windows Presentation API.
+//! Experimental original NV12/P010 decoder surfaces -> Windows Presentation API.
 //! No processor, shader, pixel upload/readback, RGB target or frame copy.
 use crate::{Layout, direct};
 use anyhow::{Context as _, Result, ensure};
@@ -38,9 +38,32 @@ struct Device {
     video: ID3D11VideoDevice,
     video_context: ID3D11VideoContext,
     name: String,
+    format: DXGI_FORMAT,
+}
+fn verify_p010_displayable(device: &ID3D11Device) -> Result<()> {
+    let mut support = D3D11_FEATURE_DATA_FORMAT_SUPPORT2 {
+        InFormat: DXGI_FORMAT_P010,
+        ..Default::default()
+    };
+    // One setup-time query. P010 displayable support is optional even when
+    // NV12 and Main10 decoding are available on this adapter.
+    unsafe {
+        device
+            .CheckFeatureSupport(
+                D3D11_FEATURE_FORMAT_SUPPORT2,
+                (&mut support as *mut D3D11_FEATURE_DATA_FORMAT_SUPPORT2).cast(),
+                size_of::<D3D11_FEATURE_DATA_FORMAT_SUPPORT2>() as u32,
+            )
+            .context("P010 displayable capability query")?;
+    }
+    ensure!(
+        support.OutFormatSupport2 & D3D11_FORMAT_SUPPORT2_DISPLAYABLE.0 as u32 != 0,
+        "P010 displayable surfaces unavailable"
+    );
+    Ok(())
 }
 impl Device {
-    fn open(luid: u64) -> Result<Self> {
+    fn open(luid: u64, ten_bit: bool) -> Result<Self> {
         let runtime = D3d11::load()?;
         let probe = runtime.open(Luid {
             high: (luid >> 32) as i32,
@@ -88,6 +111,9 @@ impl Device {
                 support.DisplayableTexture.as_bool(),
                 "displayable textures unavailable"
             );
+            if ten_bit {
+                verify_p010_displayable(&native)?;
+            }
             Ok(Self {
                 video: native.cast()?,
                 video_context: context.cast()?,
@@ -96,6 +122,11 @@ impl Device {
                 name: String::from_utf16_lossy(&desc.Description)
                     .trim_end_matches('\0')
                     .into(),
+                format: if ten_bit {
+                    DXGI_FORMAT_P010
+                } else {
+                    DXGI_FORMAT_NV12
+                },
             })
         }
     }
@@ -111,6 +142,11 @@ impl direct::DeviceAccess for Device {
         &self,
         desc: &ffi::D3D11_TEXTURE2D_DESC,
     ) -> std::result::Result<Com<ffi::ID3D11Texture2D>, Error> {
+        // Reject a depth change instead of allocating an unintended format.
+        // Checked only while building the DPB, with no per-frame query/copy.
+        if desc.Format != self.format.0 {
+            return Err(Error::Unavailable);
+        }
         // SAFETY: both bindings describe the same documented C ABI structure.
         const {
             assert!(size_of::<ffi::D3D11_TEXTURE2D_DESC>() == size_of::<D3D11_TEXTURE2D_DESC>());
@@ -323,9 +359,9 @@ pub struct Output {
 impl Session {
     /// All creation, feed and destruction must take place on the video worker.
     /// `hwnd` must remain valid until this session is dropped.
-    pub fn open(luid: u64, hwnd: HWND) -> Result<Self> {
+    pub fn open(luid: u64, hwnd: HWND, ten_bit: bool) -> Result<Self> {
         let apartment = ComApartment::enter()?;
-        let device = Device::open(luid)?;
+        let device = Device::open(luid, ten_bit)?;
         let cell = Cell::try_new(device, |device| -> Result<State<'_>> {
             Ok(State {
                 presenter: Presenter::new(device, hwnd)?,
@@ -412,6 +448,26 @@ impl Session {
 mod tests {
     use super::*;
     use lowlat_decode::hevc::{Read, Stream};
+    #[test]
+    fn p010_displayable_capability_rejects_software_device() {
+        let mut device = None;
+        // Isolated WARP device: no live adapter, renderer, session or readback.
+        unsafe {
+            D3D11CreateDevice(
+                None,
+                windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_WARP,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                None,
+            )
+            .unwrap();
+        }
+        assert!(verify_p010_displayable(&device.unwrap()).is_err());
+    }
     fn units() -> Vec<&'static [u8]> {
         let mut bytes: &[u8] = include_bytes!("../fixtures/synthetic-720p-hevc.bin");
         let mut result = Vec::new();

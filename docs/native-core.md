@@ -105,7 +105,7 @@ Windows Presentation API timing; no host changes or custom host messages are use
   H.264 uses Media Foundation. Normal HEVC uses NVIDIA direct D3D11, AMD AMF (4:2:0), or Intel VPL (4:2:0/4:4:4), at 8 or 10 bits. Media Foundation is the compatibility fallback.
 - `video_windows.rs`: decoder surfaces feed the existing D3D11 video processor
   directly, followed by DXGI presentation. No CPU pixel readback or intermediate
-  decoded-frame export/copy is added. Original NV12 presentation uses Windows
+  decoded-frame export/copy is added. Original NV12/P010 presentation uses Windows
   Presentation API and explicit surface leases.
 - `audio_stream.rs` and `audio_windows.rs`: bounded decoded PCM queues, reusable
   buffers and native WASAPI playback. Stereo Opus works on both transports;
@@ -332,7 +332,7 @@ upstream decoder or dependency upgrade.
 
 Normal HEVC defaults to direct D3D11 on NVIDIA, AMF on AMD (4:2:0 only), and VPL on Intel. All accept 8/10-bit streams; Intel VPL also accepts 4:4:4 when its runtime and GPU support it. VPL Query and actual texture validation reject format changes, CPU output and cross-device surfaces. New NVIDIA P010 and Intel extended-format operation still need live validation. No extra decoded-frame copy or conversion pass is added.
 
-The obsolete AMF Main10 preference/selector was removed; old JSON values are ignored. The existing Main10 component and visible-size initialization are retained. AMD 4:4:4 remains unavailable. Original-surface presentation remains 8-bit NV12 only.
+The obsolete AMF Main10 preference/selector was removed; old JSON values are ignored. The existing Main10 component and visible-size initialization are retained. AMD 4:4:4 remains unavailable. Original-surface presentation supports 8-bit NV12 and optional 10-bit P010, still only 4:2:0.
 
 Failures attempt Media Foundation. For a 4:4:4 compatibility failure, both transports request fresh 4:2:0 with the original bit depth, then use MF for the rest of that connection. The saved preference is unchanged. The request is bounded by existing recovery limits/deadlines; a host refusing the new format fails explicitly. No silent 10-to-8-bit downgrade is performed.
 
@@ -413,3 +413,24 @@ avoids extra modifier queries for ordinary legacy keys, repeats and releases.
 There is no full-keyboard polling loop, background sampler or per-frame work.
 The original Defender report remains unresolved; this cleanup does not establish
 the cause of its behavioral classification or guarantee future scan results.
+
+### Original P010 presentation
+
+HEVC Main10 4:2:0 can use the same original-surface presenter as 8-bit NV12.
+The setup checks D3D11_FEATURE_DISPLAYABLE plus P010's optional
+D3D11_FEATURE_FORMAT_SUPPORT2 / D3D11_FORMAT_SUPPORT2_DISPLAYABLE support.
+The direct decoder also requires a Main10/P010 profile and an independent-texture
+configuration before creating the DPB. It decodes into the displayable P010
+textures themselves; the existing presentation leases protect those allocations.
+There is no application pixel copy, CPU readback, RGB intermediate, conversion
+pass, new queue/thread or per-frame capability probe. 4:4:4 remains excluded.
+A missing capability, allocation/decode/presentation error uses the existing
+logged MF fallback, retaining the actual Main10 bit depth. Original-surface
+status reports P010 and 10-bit decoded output; final Windows composition,
+scanout, display depth and HDR are not inferred. Normal rendering is unchanged.
+See [Microsoft displayable surfaces](https://learn.microsoft.com/en-us/windows/win32/direct3d11/displayable-surfaces).
+
+Live validation of this P010 presentation path is pending on all vendors.
+Under the current unified policy, Intel HEVC variants (including VPL 8-bit)
+have not been live-tested: the available Intel test machine has HEVC disabled.
+Earlier hardware observations do not validate the current extended VPL paths.

@@ -7,6 +7,15 @@ use std::time::{Duration, Instant};
 pub const MAX_FRAMES: usize = 32;
 pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 
+/// Describe original YUV surfaces without inferring compositor/scanout behavior.
+pub fn original_surface_status(ten_bit: bool) -> &'static str {
+    if ten_bit {
+        "Original P010 surfaces; no app conversion pass. Scanout and final output depth not verified."
+    } else {
+        "Original NV12 surfaces; no app conversion pass. Scanout not verified."
+    }
+}
+
 /// Preserve optional effect/device state only for known non-driver resets.
 /// A genuine decoder error must retain the original full recreation path.
 pub fn can_preserve_effect(reason: Option<&str>) -> bool {

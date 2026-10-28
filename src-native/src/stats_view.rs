@@ -454,7 +454,7 @@ fn rows(
     if let Some(status) = video.and_then(|v| v.zero_copy_status.as_deref()) {
         row(
             "Zero copy (experimental)",
-            if status.starts_with("Original NV12") {
+            if status.starts_with("Original NV12") || status.starts_with("Original P010") {
                 "Active"
             } else if status.starts_with("Starting") {
                 "Starting"
@@ -463,6 +463,12 @@ fn rows(
             }
             .into(),
         );
+        if status.starts_with("Original P010") {
+            row(
+                "Display output",
+                "Windows-managed; final color depth not verified".into(),
+            );
+        }
     }
     if video.is_some_and(|v| v.recovering) {
         row(
@@ -1029,6 +1035,20 @@ mod tests {
             sample.video.as_ref().unwrap().failure_hresult.as_deref(),
             Some("0x80004005")
         );
+        let video = sample.video.as_mut().unwrap();
+        video.zero_copy_status = Some(crate::video_output::original_surface_status(true).into());
+        video.decoded_bit_depth = Some(10);
+        let displayed = rows(&sample, &Values::default(), (None, None, None));
+        assert!(displayed
+            .iter()
+            .any(|(k, v)| k == "Zero copy (experimental)" && v == "Active"));
+        assert!(displayed
+            .iter()
+            .any(|(k, v)| k == "Decoded color depth" && v == "10-bit"));
+        assert!(displayed
+            .iter()
+            .any(|(k, v)| k == "Display output" && v.contains("not verified")));
+        assert!(!displayed.iter().any(|(k, _)| k == "RGB output"));
         sample.video.as_mut().unwrap().zero_copy_status =
             Some("Fallback: unsupported allocation".into());
         let displayed = rows(&sample, &Values::default(), (None, None, None));

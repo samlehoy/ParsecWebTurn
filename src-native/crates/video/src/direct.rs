@@ -487,7 +487,7 @@ impl<'a> Backend<'a> {
         let ten_bit = depth == 2;
         if !matches!(job.sps.chroma_format_idc, 1 | 3)
             || !matches!(depth, 0 | 2)
-            || (self.displayable && (ten_bit || full_chroma))
+            || (self.displayable && full_chroma)
             || job.sps.bit_depth_chroma_minus8 != depth
             || job.sps.separate_colour_plane
             || (!full_chroma && job.sps.is_range_extended())

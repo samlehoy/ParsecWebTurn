@@ -104,14 +104,14 @@ multichannel audio remain experimental.** For conservative operation, use H.264,
 stereo Opus and Automatic timing with experimental options disabled.
 
 - **Video:** live decoded frames remain on the GPU. Normal rendering uses the
-  conversion/output pass; zero-copy presents original 8-bit NV12 surfaces.
+  conversion/output pass; zero-copy presents original 8-bit NV12 or capability-checked 10-bit P010 surfaces.
   Driver/compositor copies and direct scanout are not independently verified.
 - **10-bit:** RGB10 output is SDR, not HDR. NVIDIA host encoding is confirmed;
   other host encoders may refuse it or send 8-bit. An initial encoder failure
   asks you to disable 10-bit and reconnect. AMF Main10 output is live-validated on AMD Radeon 780M and is now the AMD default.
 - **4:4:4:** 8/10-bit playback is live-validated on NVIDIA RTX 3060. Intel support
   is capability-gated and **not live-validated**. AMD selection is disabled.
-  H.264 stays 4:2:0; 4:4:4 does not combine with original-NV12 zero-copy.
+  H.264 stays 4:2:0; 4:4:4 does not combine with original-surface zero-copy.
   Compatible host encoding, account permissions and service terms still apply.
 - **HID:** requires BUD and the stock host's USB/Yubikey passthrough plus its
   supported USB driver. HID mouse uses the host primary display and disables
