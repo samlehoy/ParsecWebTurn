@@ -1,5 +1,14 @@
 # EvoParseq changelog
 
+## Unreleased
+
+- Keep immersive keyboard events on one ordered, focus-scoped hook path for
+  normal and HID input, including sided modifiers and ordinary game shortcuts.
+  Unify client shortcut recognition, require exact modifier combinations, and
+  consume local trigger repeats/releases without also forwarding them. Retain
+  the release-input shortcut and local menus; reject stale captured messages
+  after capture ends and clear cached remote modifiers when detaching input.
+
 ## v0.9.5-dev.2 — AI upscaling, diagnostics and input fixes (2026-10-28)
 
 Implemented changes since EvoParseq v0.9.5-dev.1.

@@ -14,6 +14,7 @@ use std::sync::{
 #[derive(Clone, Debug)]
 pub enum Event {
     NativeSession(Command),
+    Shortcut(crate::input::Shortcut),
     Size(i32, i32),
     Focus(bool),
     Clipboard,

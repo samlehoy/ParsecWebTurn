@@ -84,7 +84,15 @@ installation is manual.
 | Ctrl+Shift+W | Toggle fullscreen |
 | Ctrl+Shift+R | Release / recapture remote input |
 | Ctrl+Shift+Q | Disconnect |
+| Ctrl+Shift+S | Open Connection stats |
 | Ctrl+Alt+End | Request host Ctrl+Alt+Del |
+
+These exact shortcuts stay local; their trigger keys are not also forwarded to
+the host. In Keyboard or Keyboard + Mouse immersive mode, other supported keys
+and combinations (including Alt+Tab, Alt+Enter, Windows-key chords and F8/F11)
+are forwarded while the stream has input focus. Extra Alt/Windows modifiers do
+not activate a Ctrl+Shift client shortcut. Local menus and released input retain
+normal Windows handling; Ctrl+Shift+R releases or recaptures remote input.
 
 Ctrl+Alt+Del requires the installed Parsec host service and permissions; a
 portable host may not execute it.

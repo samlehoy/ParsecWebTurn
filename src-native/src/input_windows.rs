@@ -12,18 +12,56 @@ use windows_sys::Win32::{
 
 pub const CAPTURED_KEY: u32 = WM_APP + 13;
 
-fn code(vk: u32, scan: u8, extended: bool) -> Option<&'static str> {
+pub struct KeyMessage {
+    pub code: &'static str,
+    pub down: bool,
+    pub repeated: bool,
+    pub modifiers: i32,
+}
+pub unsafe fn key_message(message: u32, wp: WPARAM, lp: LPARAM) -> Option<KeyMessage> {
+    let captured = message == CAPTURED_KEY;
+    if !captured && !matches!(message, WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP) {
+        return None;
+    }
+    Some(KeyMessage {
+        code: code(
+            if captured {
+                (wp & 255) as u32
+            } else {
+                wp as u32
+            },
+            ((lp >> 16) & 255) as u8,
+            lp & (1 << 24) != 0,
+        )?,
+        down: if captured {
+            lp & (1 << 31) == 0
+        } else {
+            matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN)
+        },
+        repeated: lp & (1 << 30) != 0,
+        modifiers: if captured {
+            (lp & 63) as i32
+        } else {
+            modifiers()
+        },
+    })
+}
+
+pub(crate) fn code(vk: u32, scan: u8, extended: bool) -> Option<&'static str> {
     let special = match vk {
         0x08 => "Backspace",
         0x09 => "Tab",
         0x0D if extended => "NumpadEnter",
         0x0D => "Enter",
         0x10 if scan == 0x36 => "ShiftRight",
-        0x10 => "ShiftLeft",
+        0xA1 => "ShiftRight",
+        0x10 | 0xA0 => "ShiftLeft",
         0x11 if extended => "ControlRight",
-        0x11 => "ControlLeft",
+        0xA3 => "ControlRight",
+        0x11 | 0xA2 => "ControlLeft",
         0x12 if extended => "AltRight",
-        0x12 => "AltLeft",
+        0xA5 => "AltRight",
+        0x12 | 0xA4 => "AltLeft",
         0x14 => "CapsLock",
         0x1B => "Escape",
         0x20 => "Space",
@@ -181,11 +219,11 @@ pub fn captured_key(
     // Hook modifiers describe the original event; do not replace them with a
     // later UI-thread GetKeyState result (Alt may already have been released).
     emit_key(
-        wp,
+        wp & 255,
         lp,
         lp & (1 << 31) == 0,
         keys,
-        |_| (lp & 15) as i32,
+        |_| (lp & 63) as i32,
         emit,
     );
 }
@@ -277,6 +315,40 @@ pub unsafe fn modifiers() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hook_keys_preserve_sided_modifiers_repeat_flags_and_capture_metadata() {
+        for (vk, scan, extended, expected) in [
+            (VK_LSHIFT, 0x2a, false, "ShiftLeft"),
+            (VK_RSHIFT, 0x36, false, "ShiftRight"),
+            (VK_LCONTROL, 0x1d, false, "ControlLeft"),
+            (VK_RCONTROL, 0x1d, true, "ControlRight"),
+            (VK_LMENU, 0x38, false, "AltLeft"),
+            (VK_RMENU, 0x38, true, "AltRight"),
+        ] {
+            let key = KBDLLHOOKSTRUCT {
+                vkCode: u32::from(vk),
+                scanCode: scan,
+                flags: if extended { LLKHF_EXTENDED } else { 0 },
+                ..Default::default()
+            };
+            let lp = captured_key_data(&key, true, 63) | (1 << 30);
+            let wp = (17 << 8) | usize::from(vk);
+            let message = unsafe { key_message(CAPTURED_KEY, wp, lp) }.unwrap();
+            assert_eq!(
+                (
+                    message.code,
+                    message.down,
+                    message.repeated,
+                    message.modifiers
+                ),
+                (expected, true, true, 63)
+            );
+            captured_key(wp, lp, &Default::default(), |event| {
+                assert!(matches!(event, Event::Key(true, code, 63) if code == expected));
+            });
+        }
+        assert!(unsafe { key_message(WM_MOUSEMOVE, 0, 0) }.is_none());
+    }
     fn point(x: i16, y: i16) -> LPARAM {
         (u32::from(x as u16) | (u32::from(y as u16) << 16)) as isize
     }

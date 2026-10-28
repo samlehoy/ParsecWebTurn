@@ -38,18 +38,6 @@ const DISPLAYS: u32 = WM_APP + 28;
 const PANEL_HEIGHT: i32 = 764;
 pub const RESULT: u32 = WM_APP + 26;
 pub const VISIBILITY: u32 = WM_APP + 27;
-#[derive(Debug, PartialEq, Eq)]
-pub enum Shortcut {
-    Menu,
-    SecureAttention,
-}
-pub fn shortcut(key: usize, modifiers: i32) -> Option<Shortcut> {
-    match (key, modifiers & 15) {
-        (key, 3) if key == b'M' as usize || key == b'O' as usize => Some(Shortcut::Menu),
-        (key, 6) if key == VK_END as usize => Some(Shortcut::SecureAttention),
-        _ => None,
-    }
-}
 impl Status {
     // Preserve the existing Win32 message values in the platform adapter.
     fn message(self) -> usize {
@@ -925,17 +913,6 @@ mod tests {
             stacking_target(owner, button, null_mut(), null_mut(), null_mut()),
             None
         );
-    }
-    #[test]
-    fn native_shortcuts_keep_the_existing_mapping() {
-        assert_eq!(shortcut(b'M' as usize, 3), Some(Shortcut::Menu));
-        assert_eq!(shortcut(b'O' as usize, 3), Some(Shortcut::Menu));
-        assert_eq!(
-            shortcut(VK_END as usize, 6),
-            Some(Shortcut::SecureAttention)
-        );
-        assert_eq!(shortcut(VK_DELETE as usize, 6), None);
-        assert_eq!(shortcut(b'M' as usize, 7), None);
     }
     #[test]
     fn panel_controls_emit_native_actions_without_network() {

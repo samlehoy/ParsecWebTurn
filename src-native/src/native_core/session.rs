@@ -61,7 +61,6 @@ struct Local {
     video: profile::Video,
     fullscreen: bool,
     detached: bool,
-    local_keys: std::collections::BTreeSet<&'static str>,
     last_clipboard: String,
     pending_clipboard: Option<PendingClipboard>,
 }
@@ -77,7 +76,6 @@ impl Local {
             fullscreen: video.fullscreen,
             video,
             detached: false,
-            local_keys: Default::default(),
             last_clipboard: String::new(),
             pending_clipboard: None,
         })
@@ -105,37 +103,31 @@ impl Local {
         desktop: &impl Desktop,
         mut send: impl FnMut(&[u8]) -> Result<()>,
     ) -> Result<bool> {
-        if let Event::Key(true, code, mods) = event {
-            if mods & 3 == 3 && matches!(*code, "KeyQ" | "KeyW" | "KeyR") {
-                self.local_keys.insert(*code);
-                match *code {
-                    "KeyQ" => desktop.stop(),
-                    "KeyW" => {
-                        self.fullscreen = !self.fullscreen;
-                        desktop.fullscreen(self.fullscreen);
-                    }
-                    "KeyR" => {
-                        if established {
-                            send(&crate::control::header(24, 0, 0, 0))?;
-                        }
-                        self.detached = !self.detached;
-                        desktop.input_state(crate::input_state::State {
-                            detached: self.detached,
-                            mode: self.video.mode(),
-                            ..Default::default()
-                        });
-                    }
-                    _ => unreachable!(),
+        use crate::input::Shortcut;
+        let Event::Shortcut(action) = event else {
+            return Ok(false);
+        };
+        match action {
+            Shortcut::Disconnect => desktop.stop(),
+            Shortcut::Fullscreen => {
+                self.fullscreen = !self.fullscreen;
+                desktop.fullscreen(self.fullscreen);
+            }
+            Shortcut::ReleaseInput => {
+                if established {
+                    send(&crate::control::header(24, 0, 0, 0))?;
                 }
-                return Ok(true);
+                self.detached = !self.detached;
+                desktop.input_state(crate::input_state::State {
+                    detached: self.detached,
+                    mode: self.video.mode(),
+                    ..Default::default()
+                });
             }
+            // Menu, stats and secure attention are handled by the view adapter.
+            _ => {}
         }
-        if let Event::Key(false, code, _) = event {
-            if self.local_keys.remove(code) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        Ok(true)
     }
     fn receive_clipboard(&mut self, text: &str, desktop: &impl Desktop) {
         // A newer remote value supersedes pending text, even if it matches the
@@ -385,6 +377,11 @@ pub(super) fn run(
                 anyhow::bail!("Input queue overloaded. Input was released; reconnect to continue.");
             }
             if local.shortcut(&event, established, platform, |frame| attempt.send(frame))? {
+                if matches!(event, Event::Shortcut(crate::input::Shortcut::ReleaseInput)) {
+                    // The release command also clears host modifiers. Do not
+                    // resurrect them when input is recaptured without key-ups.
+                    input = Default::default();
+                }
                 continue;
             }
             local.clipboard_event(&event, established, platform, |frame| attempt.send(frame))?;
@@ -609,7 +606,7 @@ mod tests {
         }
     }
     #[test]
-    fn desktop_controls_preserve_shortcut_releases_and_immersive_state_order() {
+    fn desktop_controls_use_routed_actions_and_preserve_immersive_state_order() {
         let desktop = TestDesktop::default();
         let video = profile::Video {
             fullscreen: true,
@@ -630,7 +627,7 @@ mod tests {
         );
         assert!(local
             .shortcut(
-                &Event::Key(true, "KeyW", 3),
+                &Event::Shortcut(crate::input::Shortcut::Fullscreen),
                 true,
                 &desktop,
                 |_| unreachable!()
@@ -640,9 +637,9 @@ mod tests {
         // A shortcut requests fullscreen; only its actual window event updates
         // the saved preference, exactly as in the previous controller.
         assert!(local.video.fullscreen);
-        assert!(local
+        assert!(!local
             .shortcut(
-                &Event::Key(false, "KeyW", 0),
+                &Event::Key(true, "KeyW", 7),
                 true,
                 &desktop,
                 |_| unreachable!()
@@ -659,10 +656,15 @@ mod tests {
         local.observed_fullscreen(false);
         assert!(!local.video.fullscreen);
         assert!(local
-            .shortcut(&Event::Key(true, "KeyR", 3), true, &desktop, |frame| {
-                sent.push(frame.to_vec());
-                Ok(())
-            })
+            .shortcut(
+                &Event::Shortcut(crate::input::Shortcut::ReleaseInput),
+                true,
+                &desktop,
+                |frame| {
+                    sent.push(frame.to_vec());
+                    Ok(())
+                }
+            )
             .unwrap());
         assert_eq!(sent, [crate::control::header(24, 0, 0, 0).to_vec()]);
         assert!(local.detached);
@@ -686,7 +688,7 @@ mod tests {
         );
         local
             .shortcut(
-                &Event::Key(true, "KeyQ", 3),
+                &Event::Shortcut(crate::input::Shortcut::Disconnect),
                 true,
                 &desktop,
                 |_| unreachable!(),
@@ -710,7 +712,7 @@ mod tests {
         desktop.effects.borrow_mut().clear();
         assert!(local
             .shortcut(
-                &Event::Key(true, "KeyR", 3),
+                &Event::Shortcut(crate::input::Shortcut::ReleaseInput),
                 true,
                 &desktop,
                 |_| anyhow::bail!("offline-send-failed")
@@ -739,7 +741,7 @@ mod tests {
         // Before connecting, unlocking stays local and never sends a packet.
         local
             .shortcut(
-                &Event::Key(true, "KeyR", 3),
+                &Event::Shortcut(crate::input::Shortcut::ReleaseInput),
                 false,
                 &desktop,
                 |_| unreachable!(),

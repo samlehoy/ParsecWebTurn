@@ -67,6 +67,7 @@ pub struct Window {
     keyboard_grab: Mutex<crate::keyboard_grab::State>,
     pressed_buttons: AtomicUsize,
     pressed_keys: Mutex<std::collections::BTreeSet<&'static str>>,
+    local_shortcuts: Mutex<crate::input::Shortcuts>,
     text_decoder: Mutex<crate::input::TextDecoder>,
     cursor_pending: Mutex<crate::cursor::Pending>,
     cursor_posted: AtomicBool,
@@ -79,6 +80,42 @@ pub struct Window {
 }
 
 impl Window {
+    unsafe fn route_shortcut(&self, message: &MSG) -> bool {
+        use crate::input::{Shortcut, ShortcutRoute};
+        let Some(key) =
+            crate::input_windows::key_message(message.message, message.wParam, message.lParam)
+        else {
+            return false;
+        };
+        // A posted hook event must not restore remote input after focus/menu loss.
+        if message.message == crate::input_windows::CAPTURED_KEY
+            && (!crate::keyboard_grab::current(message.wParam) || !self.input_allowed())
+        {
+            return true;
+        }
+        let action =
+            crate::input::shortcut(key.code, key.modifiers).filter(|action| match action {
+                Shortcut::Statistics => true,
+                Shortcut::Menu | Shortcut::SecureAttention => !self.settings_open(),
+                _ => !self.settings_open() && message.hwnd == self.handle(),
+            });
+        let route = self
+            .local_shortcuts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .route(key.code, key.down, key.repeated, action);
+        match route {
+            ShortcutRoute::Forward => return false,
+            ShortcutRoute::Consume => {}
+            ShortcutRoute::Activate(Shortcut::Menu) => self.native_toggle_overlay(),
+            ShortcutRoute::Activate(Shortcut::Statistics) => self.open_stats(),
+            ShortcutRoute::Activate(Shortcut::SecureAttention) => self.push(Event::NativeSession(
+                crate::native_core::session_model::Command::SecureAttention,
+            )),
+            ShortcutRoute::Activate(action) => self.push(Event::Shortcut(action)),
+        }
+        true
+    }
     unsafe fn open_about(&self) {
         self.info_pages
             .open(self.handle(), crate::updater::Mode::About);
@@ -154,6 +191,7 @@ impl Window {
             keyboard_grab: Default::default(),
             pressed_buttons: AtomicUsize::new(0),
             pressed_keys: Default::default(),
+            local_shortcuts: Default::default(),
             text_decoder: Default::default(),
             cursor_pending: Default::default(),
             cursor_posted: AtomicBool::new(false),
@@ -177,52 +215,18 @@ impl Window {
                     unsafe {
                         let mut msg: MSG = std::mem::zeroed();
 
-                        let mut native_shortcuts = std::collections::HashSet::new();
                         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
                             if ui.info_pages.dialog(&msg) {
                                 continue;
                             }
-                            {
-                                if msg.message == WM_ACTIVATEAPP && msg.wParam == 0 {
-                                    native_shortcuts.clear();
-                                }
-                                if matches!(msg.message, WM_KEYUP | WM_SYSKEYUP)
-                                    && native_shortcuts.remove(&msg.wParam)
-                                {
-                                    continue;
-                                }
-                                if matches!(msg.message, WM_KEYDOWN | WM_SYSKEYDOWN)
-                                    && !ui.settings_open()
-                                {
-                                    if let Some(action) = crate::native_core::session_ui::shortcut(
-                                        msg.wParam,
-                                        crate::input_windows::modifiers(),
-                                    ) {
-                                        if native_shortcuts.insert(msg.wParam) {
-                                            match action {
-                                                crate::native_core::session_ui::Shortcut::Menu => ui.native_toggle_overlay(),
-                                                crate::native_core::session_ui::Shortcut::SecureAttention => ui.events.push(Event::NativeSession(crate::native_core::session_model::Command::SecureAttention)),
-                                            }
-                                        }
-                                        continue;
-                                    }
-                                }
+                            if ui.route_shortcut(&msg) {
+                                continue;
                             }
 
                             if crate::native_core::session_ui::dialog(hwnd, &msg) {
                                 continue;
                             }
 
-                            if msg.message == WM_KEYDOWN
-                                && msg.wParam == b'S' as usize
-                                && GetKeyState(VK_CONTROL as i32) < 0
-                                && GetKeyState(VK_SHIFT as i32) < 0
-                            {
-                                if msg.lParam & (1 << 30) == 0 {
-                                    ui.open_stats();
-                                }
-                                continue;
-                            }
                             let page = ui.settings_page.load(Ordering::Acquire) as HWND;
                             if !page.is_null() && (msg.hwnd == page || IsChild(page, msg.hwnd) != 0)
                             {
@@ -1436,6 +1440,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 s.apply_input_capture();
             }
             WM_KILLFOCUS => {
+                s.local_shortcuts
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clear();
                 PostMessageW(hwnd, crate::native_core::session_ui::VISIBILITY, 0, 0);
                 s.has_focus.store(false, Ordering::Release);
                 #[cfg(feature = "bud")]
@@ -1885,6 +1893,71 @@ mod tests {
             assert!(received
                 .iter()
                 .any(|e| matches!(e, Event::Key(true, "Tab", 4))));
+            received.clear();
+            let old_capture_key = crate::keyboard_grab::test_immersive_chords(window.handle());
+            wait(|| {
+                received.extend(window.events.drain());
+                received
+                    .iter()
+                    .any(|e| matches!(e, Event::Key(false, "F12", 0)))
+            });
+            let keys: Vec<_> = received
+                .iter()
+                .filter_map(|event| {
+                    if let Event::Key(down, code, mods) = event {
+                        Some((*down, *code, *mods))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(
+                keys,
+                [
+                    (true, "AltLeft", 4),
+                    (true, "Enter", 4),
+                    (false, "Enter", 4),
+                    (false, "AltLeft", 0),
+                    (true, "ControlLeft", 2),
+                    (true, "ShiftRight", 3),
+                    (false, "ShiftRight", 2),
+                    (false, "ControlLeft", 0),
+                    (true, "ControlLeft", 2),
+                    (true, "ShiftLeft", 3),
+                    (true, "AltRight", 7),
+                    (true, "KeyW", 7),
+                    (false, "KeyW", 7),
+                    (false, "AltRight", 3),
+                    (false, "ShiftLeft", 2),
+                    (false, "ControlLeft", 0),
+                    (true, "MetaLeft", 8),
+                    (true, "KeyR", 8),
+                    (false, "MetaLeft", 0),
+                    (false, "KeyR", 0),
+                    (true, "F8", 0),
+                    (false, "F8", 0),
+                    (true, "F11", 0),
+                    (false, "F11", 0),
+                    (true, "ControlLeft", 2),
+                    (true, "Comma", 2),
+                    (false, "Comma", 2),
+                    (false, "ControlLeft", 0),
+                    (true, "F12", 0),
+                    (false, "F12", 0),
+                ]
+            );
+            assert_eq!(
+                received
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        Event::Shortcut(crate::input::Shortcut::Fullscreen)
+                    ))
+                    .count(),
+                1
+            );
+            assert!(window.pressed_keys.lock().unwrap().is_empty());
+            assert!(!window.settings_open());
             window.set_input_state(mode(true, true));
             wait(|| clipped() && keyboard());
             window.set_relative_mouse(true);
@@ -1893,6 +1966,40 @@ mod tests {
             wait(|| !relative() && clipped()); // Immersive Mouse survives raw unlock.
             window.set_input_state(mode(false, false));
             wait(|| !clipped() && !keyboard());
+            assert!(!crate::keyboard_grab::current(old_capture_key));
+            window.events.drain();
+            unsafe {
+                // A late hook packet from the previous capture must not become
+                // a new remote key after the input mode has already changed.
+                PostMessageW(
+                    window.handle(),
+                    crate::input_windows::CAPTURED_KEY,
+                    old_capture_key,
+                    0x58 << 16,
+                );
+                // FIFO completion marker after the stale event.
+                PostMessageW(window.handle(), WM_KEYDOWN, VK_F12 as usize, 0x58 << 16);
+                PostMessageW(
+                    window.handle(),
+                    WM_KEYUP,
+                    VK_F12 as usize,
+                    (0x58 << 16) | (1 << 31),
+                );
+            }
+            let mut after_capture = Vec::new();
+            wait(|| {
+                after_capture.extend(window.events.drain());
+                after_capture
+                    .iter()
+                    .any(|event| matches!(event, Event::Key(false, "F12", 0)))
+            });
+            assert_eq!(
+                after_capture
+                    .iter()
+                    .filter(|event| matches!(event, Event::Key(true, "F12", _)))
+                    .count(),
+                1
+            );
             // Native relative intent comes from host flags, not button state.
             unsafe {
                 SendMessageW(window.handle(), WM_LBUTTONDOWN, 1, (100 << 16) | 100);

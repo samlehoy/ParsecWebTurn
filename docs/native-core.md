@@ -389,3 +389,25 @@ live confirmation and must not be hidden with an invented camera-mode rule.
 
 Documented APIs: [GetIconInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-geticoninfo),
 [CreateIconIndirect](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-createiconindirect).
+
+### Immersive keyboard and local shortcuts
+
+Keyboard immersion uses the existing focus-scoped WH_KEYBOARD_LL hook for all
+supported physical keys, including side-specific modifiers. One posted Win32
+message path preserves modifier/chord/release order; normal and HID transports
+reuse the same native input events. No additional input worker or application
+queue is introduced, and video/audio workers are unchanged.
+
+Shared Rust shortcut policy reserves the documented exact client combinations.
+The native adapter consumes the local trigger's repeats and release and emits
+one typed controller action. It does not reinterpret a remotely held key as a
+local command on repeat. Extra Alt/Windows modifiers leave game combinations
+remote. F8/F11 and Ctrl+comma follow the remote path during keyboard immersion;
+local controls and ordinary Windows handling remain available after releasing
+input or opening menus. Capture generations reject stale posted keys after
+focus/capture changes. Detaching input clears host and cached input modifiers.
+
+Ctrl+Alt+Del remains a Windows secure sequence; Ctrl+Alt+End uses the existing
+host-service request. This does not add host patches or injected client input.
+Hook/API behavior follows Microsoft's documented
+[LowLevelKeyboardProc](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc).
