@@ -10,10 +10,10 @@ use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::*};
 
 fn output_format(chroma: u8, depth: u8) -> Result<(u32, DXGI_FORMAT)> {
     Ok(match (chroma, depth) {
-        (1, 8) => (MFX_FOURCC_NV12, DXGI_FORMAT_NV12),
-        (1, 10) => (MFX_FOURCC_P010, DXGI_FORMAT_P010),
-        (3, 8) => (MFX_FOURCC_AYUV, DXGI_FORMAT_AYUV),
-        (3, 10) => (MFX_FOURCC_Y410, DXGI_FORMAT_Y410),
+        (1, 8) => (MFX_FOURCC_NV12 as u32, DXGI_FORMAT_NV12),
+        (1, 10) => (MFX_FOURCC_P010 as u32, DXGI_FORMAT_P010),
+        (3, 8) => (MFX_FOURCC_AYUV as u32, DXGI_FORMAT_AYUV),
+        (3, 10) => (MFX_FOURCC_Y410 as u32, DXGI_FORMAT_Y410),
         _ => anyhow::bail!("unsupported Intel HEVC chroma/depth"),
     })
 }
@@ -283,10 +283,10 @@ mod tests {
     #[test]
     fn intel_native_output_preserves_depth_and_chroma() {
         for (chroma, depth, fourcc, dxgi) in [
-            (1, 8, MFX_FOURCC_NV12, DXGI_FORMAT_NV12),
-            (1, 10, MFX_FOURCC_P010, DXGI_FORMAT_P010),
-            (3, 8, MFX_FOURCC_AYUV, DXGI_FORMAT_AYUV),
-            (3, 10, MFX_FOURCC_Y410, DXGI_FORMAT_Y410),
+            (1, 8, MFX_FOURCC_NV12 as u32, DXGI_FORMAT_NV12),
+            (1, 10, MFX_FOURCC_P010 as u32, DXGI_FORMAT_P010),
+            (3, 8, MFX_FOURCC_AYUV as u32, DXGI_FORMAT_AYUV),
+            (3, 10, MFX_FOURCC_Y410 as u32, DXGI_FORMAT_Y410),
         ] {
             assert_eq!(output_format(chroma, depth).unwrap(), (fourcc, dxgi));
         }
