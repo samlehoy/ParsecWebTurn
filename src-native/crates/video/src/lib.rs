@@ -91,6 +91,19 @@ pub fn original_surface_vendor_allowed(vendor: u32) -> bool {
     matches!(vendor, 0x10de | 0x8086 | 0x1002)
 }
 
+/// Normal HEVC decoding policy; unsupported formats use the caller's MF recovery.
+pub fn normal_mode(vendor: u32, chroma: u32, depth: u32) -> Result<Mode> {
+    ensure!(
+        matches!((chroma, depth), (1 | 3, 8 | 10)),
+        "unsupported HEVC chroma/depth"
+    );
+    ensure!(
+        vendor != 0x1002 || chroma == 1,
+        "AMD HEVC 4:4:4 is unavailable"
+    );
+    preferred(vendor, true).context("no native HEVC backend for this GPU")
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Layout {
     pub left: u32,
@@ -100,16 +113,6 @@ pub struct Layout {
     pub full_range: bool,
 }
 impl Layout {
-    pub fn hevc(s: &hevc::sps::Sps) -> Result<Self> {
-        ensure!(
-            s.chroma_format_idc == 1
-                && !s.is_range_extended()
-                && s.bit_depth_luma_minus8 == 0
-                && s.bit_depth_chroma_minus8 == 0,
-            "unsupported HEVC color format"
-        );
-        Self::hevc_direct(s)
-    }
     pub fn hevc_amf(s: &hevc::sps::Sps, bit_depth: u8) -> Result<Self> {
         ensure!(
             s.chroma_format_idc == 1
@@ -126,8 +129,7 @@ impl Layout {
         ensure!(
             matches!(s.chroma_format_idc, 1 | 3)
                 && !s.separate_colour_plane
-                && (s.bit_depth_luma_minus8 == 0
-                    || (s.chroma_format_idc == 3 && s.bit_depth_luma_minus8 == 2))
+                && matches!(s.bit_depth_luma_minus8, 0 | 2)
                 && s.bit_depth_chroma_minus8 == s.bit_depth_luma_minus8,
             "unsupported HEVC color format"
         );
@@ -402,6 +404,26 @@ impl Decoder {
 mod tests {
     use super::*;
     #[test]
+    fn normal_hevc_routes_all_supported_formats_without_amf_opt_in() {
+        for depth in [8, 10] {
+            for chroma in [1, 3] {
+                assert_eq!(
+                    normal_mode(0x10de, chroma, depth).unwrap(),
+                    Mode::DirectD3d11
+                );
+                assert_eq!(normal_mode(0x8086, chroma, depth).unwrap(), Mode::IntelVpl);
+                if chroma == 1 {
+                    assert_eq!(normal_mode(0x1002, chroma, depth).unwrap(), Mode::AmdAmf);
+                } else {
+                    assert!(normal_mode(0x1002, chroma, depth).is_err());
+                }
+            }
+        }
+        for (vendor, chroma, depth) in [(0, 1, 8), (0x10de, 2, 8), (0x8086, 1, 12)] {
+            assert!(normal_mode(vendor, chroma, depth).is_err());
+        }
+    }
+    #[test]
     fn amf_size_probe_rejects_software_hevc_without_an_amf_runtime() {
         use windows::Win32::Graphics::{Direct3D::D3D_DRIVER_TYPE_WARP, Direct3D11::*};
         let mut device = None;
@@ -455,7 +477,7 @@ mod tests {
         }
         let bytes = include_bytes!("../fixtures/hevc-crop.sps");
         let sps = hevc::sps::parse(&bytes[5..]).unwrap();
-        let layout = Layout::hevc(&sps).unwrap();
+        let layout = Layout::hevc_amf(&sps, 8).unwrap();
         assert_eq!((sps.width, sps.height), (152, 152));
         assert_eq!((layout.width, layout.height), (150, 146));
         assert_eq!(
@@ -486,7 +508,7 @@ mod tests {
         sps.bit_depth_chroma_minus8 = 2;
         let layout = Layout::hevc_amf(&sps, 10).unwrap();
         assert_eq!((layout.width, layout.height), (150, 146));
-        assert!(Layout::hevc(&sps).is_err()); // Intel's existing 8-bit contract.
+        assert!(Layout::hevc_direct(&sps).is_ok());
         assert!(Layout::hevc_amf(&sps, 8).is_err());
         assert!(Layout::hevc_amf(&sps, 12).is_err());
         sps.bit_depth_chroma_minus8 = 0;

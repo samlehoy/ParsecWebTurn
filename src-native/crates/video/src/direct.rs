@@ -1,6 +1,6 @@
 //! GPU-only D3D11 decoder. Adapted from lowlat d3d11.rs at 5f8db568.
 //! MIT Copyright (c) 2026 Nguyen Duy; see ../LICENSE-lowlat.
-//! NV12/AYUV and 10-bit Y410 decoder surfaces, no split/export/staging/map.
+//! NV12/P010/AYUV/Y410 decoder surfaces, no split/export/staging/map.
 //! Range-extension mapping retained from the same pinned MIT upstream decoder.
 use core::{ffi::c_void, fmt};
 use lowlat_decode::hevc::sps::{DIAG_4X4, DIAG_8X8};
@@ -11,7 +11,7 @@ use lowlat_drivers::{
         d3d11::*,
         d3d11_guids::{
             D3D11_DECODER_PROFILE_HEVC_VLD_MAIN, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN_444,
-            D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10_444,
+            D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10_444,
         },
     },
     vcall,
@@ -154,8 +154,10 @@ fn bytes_of<T>(value: &T) -> &[u8] {
 }
 
 fn profile(full_chroma: bool, ten_bit: bool) -> GUID {
-    if ten_bit {
+    if ten_bit && full_chroma {
         D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10_444
+    } else if ten_bit {
+        D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10
     } else if full_chroma {
         D3D11_DECODER_PROFILE_HEVC_VLD_MAIN_444
     } else {
@@ -163,8 +165,10 @@ fn profile(full_chroma: bool, ten_bit: bool) -> GUID {
     }
 }
 fn surface_format(full_chroma: bool, ten_bit: bool) -> DXGI_FORMAT {
-    if ten_bit {
+    if ten_bit && full_chroma {
         DXGI_FORMAT_Y410
+    } else if ten_bit {
+        DXGI_FORMAT_P010
     } else if full_chroma {
         DXGI_FORMAT_AYUV
     } else {
@@ -483,7 +487,7 @@ impl<'a> Backend<'a> {
         let ten_bit = depth == 2;
         if !matches!(job.sps.chroma_format_idc, 1 | 3)
             || !matches!(depth, 0 | 2)
-            || (ten_bit && (!full_chroma || self.displayable))
+            || (self.displayable && (ten_bit || full_chroma))
             || job.sps.bit_depth_chroma_minus8 != depth
             || job.sps.separate_colour_plane
             || (!full_chroma && job.sps.is_range_extended())
@@ -1116,12 +1120,22 @@ mod presentation_ownership_tests {
         assert_eq!(sps.bit_depth_chroma_minus8, 2);
         let layout = crate::Layout::hevc_direct(&sps).unwrap();
         assert!(layout.width > 0 && layout.height > 0);
-        assert!(crate::Layout::hevc(&sps).is_err()); // AMF/NV12 path must reject it.
+        assert!(crate::Layout::hevc_amf(&sps, 10).is_err());
         assert_eq!(surface_format(true, true), DXGI_FORMAT_Y410);
         let guid = profile(true, true);
         assert_eq!(guid.Data1, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10_444.Data1);
         assert_eq!(surface_format(true, false), DXGI_FORMAT_AYUV);
         assert_eq!(surface_format(false, false), DXGI_FORMAT_NV12);
+        assert_eq!(surface_format(false, true), DXGI_FORMAT_P010);
+        assert_eq!(
+            profile(false, true).Data1,
+            D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10.Data1
+        );
+        let bytes = include_bytes!("../fixtures/hevc-crop.sps");
+        let mut main10 = hevc::sps::parse(&bytes[5..]).unwrap();
+        main10.bit_depth_luma_minus8 = 2;
+        main10.bit_depth_chroma_minus8 = 2;
+        assert!(crate::Layout::hevc_direct(&main10).is_ok());
     }
     struct Lease(Cell<bool>);
     impl SurfaceLease for Lease {

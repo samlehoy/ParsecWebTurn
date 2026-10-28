@@ -288,6 +288,7 @@ pub struct Frame {
 }
 
 pub struct Queue {
+    pub mf_420_fallback: bool,
     native_call: Option<(NativeOperation, Instant)>,
     pub native_stalled: bool,
     display_catch_up: DisplayCatchUp,
@@ -308,6 +309,7 @@ pub struct Queue {
 impl Default for Queue {
     fn default() -> Self {
         Self {
+            mf_420_fallback: false,
             native_call: None,
             native_stalled: false,
             display_catch_up: Default::default(),
@@ -524,6 +526,22 @@ impl Queue {
     pub fn recover(&mut self, now: Instant) -> bool {
         self.recover_for(now, "decoder_recovery")
     }
+    pub fn fallback_to_mf_420(&mut self, now: Instant, detail: &str) -> bool {
+        if self.mf_420_fallback {
+            return true;
+        }
+        self.mf_420_fallback = true;
+        self.report.decoder_fallback = Some(format!(
+            "Codec compatibility: requesting 4:2:0 and Media Foundation: {detail}"
+        ));
+        crate::event_log::record(
+            "WARN",
+            "video_chroma_fallback_requested",
+            serde_json::json!({"reason":"decoder_compatibility","requested_chroma":"4:4:4",
+                "fallback_chroma":"4:2:0","fallback_decoder":"Media Foundation","detail":detail}),
+        );
+        self.recover_for(now, "codec_compatibility_420_mf")
+    }
     fn recover_for(&mut self, now: Instant, reason: &'static str) -> bool {
         if self.stopped || self.report.failure_stage.is_some() {
             return false;
@@ -650,6 +668,31 @@ impl Queue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn chroma_fallback_is_sticky_bounded_and_requires_fresh_random_access() {
+        let now = Instant::now();
+        let mut q = Queue::default();
+        assert!(q.submit(&[1], true, false, 0));
+        assert!(q.fallback_to_mf_420(now, "unsupported output format"));
+        let generation = q.reset_generation;
+        assert!(q.mf_420_fallback && q.report.waiting_for_idr);
+        assert_eq!(q.report.queue_depth, 0);
+        assert!(q
+            .report
+            .decoder_fallback
+            .as_deref()
+            .unwrap()
+            .contains("unsupported output format"));
+        assert!(q.take_keyframe_request(now).is_some());
+        assert!(q.fallback_to_mf_420(now, "repeated old frame"));
+        assert_eq!(q.reset_generation, generation);
+        assert!(q
+            .take_keyframe_request(now + Duration::from_secs(1))
+            .is_none());
+        q.check_recovery(now + Duration::from_secs(6));
+        assert_eq!(q.report.failure_stage, Some("video-recovery-timeout"));
+        assert!(!Queue::default().mf_420_fallback);
+    }
 
     #[test]
     fn native_deadlines_cover_only_active_calls_and_never_claim_resource_release() {

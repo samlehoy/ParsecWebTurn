@@ -228,6 +228,7 @@ pub struct Telemetry {
     /// Set by the decoder's consumer when its feed asked for a keyframe; the
     /// loop sends the request on its next pass and clears it.
     pub request: AtomicBool,
+    pub fallback_420: AtomicBool,
     /// The declaration: what the application asked, and what went out after
     /// the mask; and the stream as decoded, the layout's code or zero.
     pub asked_flags: AtomicU32,
@@ -533,6 +534,10 @@ impl Driver {
             return Some(outcome);
         }
         if self.telemetry.request.swap(false, Ordering::AcqRel) {
+            if self.telemetry.fallback_420.load(Ordering::Acquire) {
+                self.init.flags &= !init::FLAG_COLOR444;
+                self.telemetry.declared_flags.store(self.init.flags, Ordering::Release);
+            }
             self.request_keyframe(endpoint.session());
         }
         if self.report_due_ms.is_some_and(|due| now_ms >= due) {
@@ -1322,6 +1327,7 @@ mod tests {
                 assert_eq!(flags & !0x1b, external & !0x1b);
             }
         }
+        assert_eq!(negotiated_encoder_flags(0x1b, 0x19), 0x19);
     }
     #[test]
     fn only_video_encode_reports_update_the_current_connections_timing() {

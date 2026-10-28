@@ -232,9 +232,9 @@ impl Media {
     }
 
     pub fn recover(&mut self, session: &mut Session) {
-        if let Some(generation) = self.video.take_keyframe_request() {
+        if let Some((generation, fallback_420)) = self.video.take_keyframe_request() {
             self.waiting_for_keyframe = true;
-            if !session.request_keyframe() {
+            if !session.request_keyframe_format(fallback_420) {
                 self.video.recovery_request_failed(generation);
             }
         }

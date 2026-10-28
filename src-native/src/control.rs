@@ -180,7 +180,7 @@ mod tests {
     use super::*;
     #[test]
     fn full_chroma_main10_request_is_preserved_on_refresh() {
-        let config = Config {
+        let mut config = Config {
             video_protocol: crate::video_stream::VideoProtocol {
                 version: 1,
                 message_size: 11,
@@ -194,6 +194,10 @@ mod tests {
         assert_eq!(config.video_flags(), 0x1b);
         let refresh = config.encoder_request(header(13, 0, 0, 1));
         assert_eq!(i32::from_be_bytes(refresh[4..8].try_into().unwrap()), 0x1b);
+        config.chroma_444 = false;
+        let refresh = config.encoder_request(header(13, 0, 0x1b, 1));
+        assert_eq!(i32::from_be_bytes(refresh[4..8].try_into().unwrap()), 0x19);
+        assert!(config.ten_bit && config.allow_hevc);
     }
     #[test]
     fn desktop_fullfps_settings_keep_the_pinned_userdata_envelope() {

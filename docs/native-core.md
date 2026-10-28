@@ -102,8 +102,7 @@ Windows Presentation API timing; no host changes or custom host messages are use
 - `crates/bud`: isolated BUD carrier, protocol and compressed-media handoff.
   Both transports use the same native video/audio workers and input handling.
 - `crates/video`: GPU decoder backends and original-surface presentation.
-  Normal H.264 and Main 10 4:2:0 use Media Foundation; 8-bit vendor HEVC uses
-  AMF/VPL/direct D3D11. Full-chroma uses the common direct D3D11 path.
+  H.264 uses Media Foundation. Normal HEVC uses NVIDIA direct D3D11, AMD AMF (4:2:0), or Intel VPL (4:2:0/4:4:4), at 8 or 10 bits. Media Foundation is the compatibility fallback.
 - `video_windows.rs`: decoder surfaces feed the existing D3D11 video processor
   directly, followed by DXGI presentation. No CPU pixel readback or intermediate
   decoded-frame export/copy is added. Original NV12 presentation uses Windows
@@ -170,9 +169,7 @@ It still needs live direct, TURN/UDP, TURN/TLS and TURN/TCP verification in this
 independent build. BUD-only HID and raw/multichannel audio stay BUD-only.
 
 Prefer 4:4:4 is available on NVIDIA and Intel client GPUs (experimental).
-Intel 8-bit and combined 10-bit 4:4:4 playback are not live-validated. Intel
-uses the same direct D3D11 AYUV/Y410 path as NVIDIA; the existing Intel VPL
-4:2:0 path is unchanged. No extra decoded-frame copy or dependency is added.
+Intel 8-bit and combined 10-bit 4:4:4 playback are not live-validated. Intel now uses VPL AYUV/Y410 output, while NVIDIA uses direct D3D11.
 It offers 8-bit HEVC after selected-GPU Main444/AYUV decoding and processor
 input checks. With 10-bit HEVC also enabled, it checks Main10 4:4:4/Y410 decode,
 Y410-to-RGB10 conversion and the existing Main/Main10 4:2:0 fallback rows. Existing pinned lowlat DXVA range-extension
@@ -331,20 +328,15 @@ streams and unchanged Intel/D3D11 size selection. Live older-AMF validation is
 still required; the implementation is our existing adapter, not an imported
 upstream decoder or dependency upgrade.
 
-### Optional AMF Main10
+### Default vendor HEVC policy
 
-Video settings offer an experimental, default-off AMD AMF Main10 decoder for
-HEVC 4:2:0 10-bit. It uses the separate documented Main10 component required by
-older runtimes, initialized with P010 and the SPS visible size. The actual SPS
-and output texture depth are checked; incompatible runtime/output falls back
-through existing Media Foundation recovery. No host-side change is needed.
+Normal HEVC defaults to direct D3D11 on NVIDIA, AMF on AMD (4:2:0 only), and VPL on Intel. All accept 8/10-bit streams; Intel VPL also accepts 4:4:4 when its runtime and GPU support it. VPL Query and actual texture validation reject format changes, CPU output and cross-device surfaces. New NVIDIA P010 and Intel extended-format operation still need live validation. No extra decoded-frame copy or conversion pass is added.
 
-Only initialization/component selection changes. Live P010 textures remain on
-the decoder's D3D11 device and feed the existing single RGB output conversion.
-No extra decoded-frame copy, CPU readback, decoder submission, thread or buffer
-is added. GPU/decoder load versus MF still requires live AMD A/B measurement;
-MF remains the default. The setting is available only with AMD, HEVC and 10-bit.
-NVIDIA/Intel routes, H.264 and original NV12 presentation are unchanged.
+The obsolete AMF Main10 preference/selector was removed; old JSON values are ignored. The existing Main10 component and visible-size initialization are retained. AMD 4:4:4 remains unavailable. Original-surface presentation remains 8-bit NV12 only.
+
+Failures attempt Media Foundation. For a 4:4:4 compatibility failure, both transports request fresh 4:2:0 with the original bit depth, then use MF for the rest of that connection. The saved preference is unchanged. The request is bounded by existing recovery limits/deadlines; a host refusing the new format fails explicitly. No silent 10-to-8-bit downgrade is performed.
+
+Logs distinguish video_decoder_selected, video_mf_fallback_attempted, video_chroma_fallback_requested and video_mf_fallback_unavailable. Settings are requests/preferences; Connection stats describes the actual stream and decoder.
 
 ### Settings mode selectors and AMF validation
 
@@ -358,7 +350,7 @@ No decoder/presentation/transport/input data path changes accompany this UI work
 
 The user live-confirmed AMF Main10 on Radeon 780M: HEVC Main10, 10-bit 4:2:0
 D3D11 output, RGB10 SDR and zero local dropped frames in the supplied snapshot.
-AMF-versus-MF performance remains unmeasured and AMF Main10 remains opt-in.
+AMF-versus-MF performance remains unmeasured; AMF Main10 is now the default AMD route.
 For the separate TCP QoS feasibility result and measurement limits, see
 [Windows TCP/TLS QoS](windows-tcp-qos.md).
 

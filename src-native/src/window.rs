@@ -319,13 +319,6 @@ impl Window {
             settings.ai_upscale_quality(vendor)
         })
     }
-    pub fn experimental_amf_main10(&self) -> bool {
-        self.connection_settings
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .is_some_and(|manager| manager.view().0.experimental_amf_main10)
-    }
     pub fn video_gpu(&self) -> Option<crate::connection_settings::GpuPreference> {
         self.connection_settings
             .lock()

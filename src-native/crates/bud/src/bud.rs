@@ -144,8 +144,8 @@ impl Session {
         })
     }
 
-    pub fn request_keyframe(&self) -> bool {
-        self.client.request_external_keyframe()
+    pub fn request_keyframe_format(&self, fallback_420: bool) -> bool {
+        self.client.request_external_keyframe_format(fallback_420)
     }
     pub fn hid_input_state(&self) -> [(bool, u32); 2] {
         use std::sync::atomic::Ordering::Acquire;

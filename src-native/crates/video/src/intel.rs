@@ -1,4 +1,4 @@
-//! Intel VPL HEVC backend. Original NV12 on the renderer device.
+//! Intel VPL HEVC backend. Original NV12/P010/AYUV/Y410 on the renderer device.
 //! No plane splitting, export, decoded-frame copy, readback or CPU fallback.
 use super::*;
 use lowlat_drivers::{
@@ -6,7 +6,17 @@ use lowlat_drivers::{
     ffi::vpl::*,
     vpl::{Decoded, Picture as Held, Runtime, Session, Vpl},
 };
-use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::DXGI_FORMAT_NV12};
+use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::*};
+
+fn output_format(chroma: u8, depth: u8) -> Result<(u32, DXGI_FORMAT)> {
+    Ok(match (chroma, depth) {
+        (1, 8) => (MFX_FOURCC_NV12, DXGI_FORMAT_NV12),
+        (1, 10) => (MFX_FOURCC_P010, DXGI_FORMAT_P010),
+        (3, 8) => (MFX_FOURCC_AYUV, DXGI_FORMAT_AYUV),
+        (3, 10) => (MFX_FOURCC_Y410, DXGI_FORMAT_Y410),
+        _ => anyhow::bail!("unsupported Intel HEVC chroma/depth"),
+    })
+}
 
 // Bound only renderer reads, never decode input or codec reference pictures.
 const MAX_RENDERER_READS: usize = 2;
@@ -37,6 +47,7 @@ struct State<'a> {
     size: (u32, u32),
     sets: Vec<u8>,
     initialized: bool,
+    output: Option<(u32, DXGI_FORMAT, u16, u16)>,
 }
 impl Drop for State<'_> {
     fn drop(&mut self) {
@@ -91,6 +102,7 @@ impl Backend {
                 size,
                 sets: Vec::new(),
                 initialized: false,
+                output: None,
             })
         })?;
         Ok(Self(cell))
@@ -125,7 +137,11 @@ impl Backend {
                         (sps.width, sps.height) == state.size,
                         "Intel HEVC geometry changed"
                     );
-                    state.layout = Some(Layout::hevc(&sps)?);
+                    let format = output_format(sps.chroma_format_idc as u8, sps.bit_depth_luma_minus8 + 8)?;
+                    let expected = (format.0, format.1, sps.chroma_format_idc as u16, u16::from(sps.bit_depth_luma_minus8) + 8);
+                    ensure!(state.output.is_none_or(|old| old == expected), "Intel HEVC format changed");
+                    state.output = Some(expected);
+                    state.layout = Some(Layout::hevc_direct(&sps)?);
                 }
             }
             if !state.initialized && !picture {
@@ -162,6 +178,12 @@ impl Backend {
                         .DecodedOrder = 1;
                     state.session.query(&mut param)?;
                     ensure!(param.AsyncDepth == 1, "Intel refused AsyncDepth=1");
+                    ensure!(param.IOPattern == MFX_IOPATTERN_OUT_VIDEO_MEMORY as u16, "Intel refused GPU output");
+                    let expected = state.output.context("Intel output format missing")?;
+                    let info = &param.__bindgen_anon_1.mfx.FrameInfo;
+                    ensure!(info.FourCC == expected.0 && info.ChromaFormat == expected.2
+                        && info.BitDepthLuma.max(8) == expected.3 && info.BitDepthChroma.max(8) == expected.3,
+                        "Intel runtime changed requested chroma/depth");
                     state.session.init(&mut param)?;
                 }
                 state.initialized = true;
@@ -189,10 +211,10 @@ impl Backend {
                             texture.GetDesc(&mut desc);
                         }
                         ensure!(
-                            desc.Format == DXGI_FORMAT_NV12
+                            desc.Format == state.output.context("Intel output format missing")?.1
                                 && desc.CPUAccessFlags == 0
                                 && desc.ArraySize == 1,
-                            "Intel output is not a single GPU NV12 texture"
+                            "Intel output is not the expected single GPU texture"
                         );
                         ensure!(
                             unsafe { texture.GetDevice()? }.as_raw() == device.device().cast(),
@@ -258,6 +280,19 @@ impl Backend {
 mod tests {
     use super::*;
     use std::{cell::Cell, rc::Rc};
+    #[test]
+    fn intel_native_output_preserves_depth_and_chroma() {
+        for (chroma, depth, fourcc, dxgi) in [
+            (1, 8, MFX_FOURCC_NV12, DXGI_FORMAT_NV12),
+            (1, 10, MFX_FOURCC_P010, DXGI_FORMAT_P010),
+            (3, 8, MFX_FOURCC_AYUV, DXGI_FORMAT_AYUV),
+            (3, 10, MFX_FOURCC_Y410, DXGI_FORMAT_Y410),
+        ] {
+            assert_eq!(output_format(chroma, depth).unwrap(), (fourcc, dxgi));
+        }
+        assert!(output_format(2, 8).is_err());
+        assert!(output_format(1, 12).is_err());
+    }
 
     struct Lease(Rc<Cell<usize>>);
     impl Drop for Lease {

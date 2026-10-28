@@ -1089,8 +1089,11 @@ fn worker(
                     }
                     state.video_output.clone()
                 };
-                if let (Some(video), Some(config)) = (video, &config) {
-                    if let Some(generation) = video.take_keyframe_request() {
+                if let (Some(video), Some(config)) = (video, &mut config) {
+                    if let Some((generation, fallback_420)) = video.take_keyframe_request() {
+                        if fallback_420 {
+                            config.chroma_444 = false;
+                        }
                         // A failed refresh disables video recovery, not audio or
                         // control. No change to SCTP reliability or ordering.
                         let channel = channels[0].clone();

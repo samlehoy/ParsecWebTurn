@@ -108,8 +108,7 @@ stereo Opus and Automatic timing with experimental options disabled.
   Driver/compositor copies and direct scanout are not independently verified.
 - **10-bit:** RGB10 output is SDR, not HDR. NVIDIA host encoding is confirmed;
   other host encoders may refuse it or send 8-bit. An initial encoder failure
-  asks you to disable 10-bit and reconnect. Optional AMF Main10 output is
-  live-validated on AMD Radeon 780M; Media Foundation remains its default.
+  asks you to disable 10-bit and reconnect. AMF Main10 output is live-validated on AMD Radeon 780M and is now the AMD default.
 - **4:4:4:** 8/10-bit playback is live-validated on NVIDIA RTX 3060. Intel support
   is capability-gated and **not live-validated**. AMD selection is disabled.
   H.264 stays 4:2:0; 4:4:4 does not combine with original-NV12 zero-copy.

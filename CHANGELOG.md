@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Standardize normal HEVC decoding: NVIDIA direct D3D11 including P010, AMD AMF 8/10-bit 4:2:0 by default, and Intel VPL NV12/P010/AYUV/Y410. Remove the AMF Main10 opt-in selector; AMD 4:4:4 remains disabled. Keep original-surface Zero copy limited to 8-bit NV12.
+- Log decoder selection and MF fallback attempts. A 4:4:4 decoder compatibility failure requests 4:2:0 on BUD/WebRTC, preserves the requested bit depth and saved preferences, and uses MF after the host changes format. Recovery remains bounded; unsupported host responses fail explicitly.
+- Explain in Video settings that format choices are requests and compatibility fallback may change the result; Connection stats shows the actual stream.
+
+
 - Limit immersive startup state queries to the required modifier, lock and
   layout-mapped client-shortcut keys, replacing 264 asynchronous queries with
   at most 17 per acquisition. Track other keys from foreground events and omit
@@ -142,6 +147,11 @@ User-facing changes are listed below. Native versions marked **dev** are develop
 builds, not published stable releases.
 
 ## Unreleased
+
+- Standardize normal HEVC decoding: NVIDIA direct D3D11 including P010, AMD AMF 8/10-bit 4:2:0 by default, and Intel VPL NV12/P010/AYUV/Y410. Remove the AMF Main10 opt-in selector; AMD 4:4:4 remains disabled. Keep original-surface Zero copy limited to 8-bit NV12.
+- Log decoder selection and MF fallback attempts. A 4:4:4 decoder compatibility failure requests 4:2:0 on BUD/WebRTC, preserves the requested bit depth and saved preferences, and uses MF after the host changes format. Recovery remains bounded; unsupported host responses fail explicitly.
+- Explain in Video settings that format choices are requests and compatibility fallback may change the result; Connection stats shows the actual stream.
+
 
 ## 0.9.4 - BUD relays, GPU video and HID input (2026-10-25)
 

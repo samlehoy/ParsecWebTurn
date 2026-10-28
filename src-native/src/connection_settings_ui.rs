@@ -61,8 +61,6 @@ const CLOUDFLARE: u8 = 2;
 const HELP: usize = 4200;
 const NETWORK_TAB: usize = 4201;
 const VIDEO_TAB: usize = 4121;
-#[cfg(feature = "vendor-video")]
-const AMF_MAIN10: usize = 4137;
 
 const CHROMA_444: usize = 4136;
 const EVENT_LOG: usize = 4123;
@@ -617,9 +615,6 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         row_label(hwnd, page, "Video presentation", hint, y, 0, 40);
         binary_choice(hwnd, page, ZERO_COPY, 532);
         check(hwnd, ZERO_COPY, s.experimental_zero_copy);
-        row_label(hwnd, page, "AMD 10-bit decoder", "Compare AMF Main10 with the default Media Foundation path.\nNormal GPU rendering; verified on AMD Radeon 780M.\nReconnect after changing.", 720, 0, 64);
-        binary_choice(hwnd, page, AMF_MAIN10, 720);
-        check(hwnd, AMF_MAIN10, s.experimental_amf_main10);
     }
     page.building_tab = Some(Tab::Network);
     row_label(
@@ -963,8 +958,6 @@ fn binary_choice_kind(id: usize) -> Option<BinaryChoice> {
         AUDIO_SURROUND => Some(BinaryChoice::Speakers),
         #[cfg(feature = "vendor-video")]
         ZERO_COPY => Some(BinaryChoice::Rendering),
-        #[cfg(feature = "vendor-video")]
-        AMF_MAIN10 => Some(BinaryChoice::AmfMain10),
         _ => None,
     }
 }
@@ -1134,10 +1127,6 @@ unsafe fn update_enabled(hwnd: HWND) {
             GetDlgItem(hwnd, ZERO_COPY as i32),
             i32::from(enabled.zero_copy),
         );
-        EnableWindow(
-            GetDlgItem(hwnd, AMF_MAIN10 as i32),
-            i32::from(enabled.amf_main10),
-        );
     }
     layout(hwnd);
 }
@@ -1161,7 +1150,6 @@ unsafe fn save(hwnd: HWND, page: &mut Page) {
     #[cfg(feature = "vendor-video")]
     {
         s.experimental_zero_copy = checked(hwnd, ZERO_COPY);
-        s.experimental_amf_main10 = checked(hwnd, AMF_MAIN10);
     }
     #[cfg(feature = "bud")]
     {

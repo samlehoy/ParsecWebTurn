@@ -545,11 +545,12 @@ impl Pipeline {
             wake.notify();
         }
     }
-    pub fn take_keyframe_request(&self) -> Option<u64> {
+    pub fn take_keyframe_request(&self) -> Option<(u64, bool)> {
         let mut q = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         check_native(&mut q, now);
-        q.take_keyframe_request(now).map(|_| q.reset_generation)
+        q.take_keyframe_request(now)
+            .map(|_| (q.reset_generation, q.mf_420_fallback))
     }
     pub fn recovery_request_failed(&self, generation: u64) {
         self.shared
@@ -637,7 +638,6 @@ fn run(
     let vsr_quality = window.ai_upscale_quality();
     #[cfg(feature = "vendor-video")]
     let zero_requested = window.experimental_zero_copy() && vsr_quality == 0;
-    let amf_main10_requested = window.experimental_amf_main10();
     #[cfg(not(feature = "vendor-video"))]
     let zero_requested = false;
     loop {
@@ -941,8 +941,22 @@ fn run(
             let hwnd = window
                 .ensure_video_surface()
                 .map_err(|_| unavailable("video-surface-create"))?;
+            if vendor_failed && hevc.is_some_and(|h| h.chroma == 3) {
+                let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+                q.finish_native_call(Instant::now());
+                if !q.mf_420_fallback {
+                    q.fallback_to_mf_420(
+                        Instant::now(),
+                        vendor_fallback
+                            .as_deref()
+                            .unwrap_or("vendor decoder unavailable"),
+                    );
+                }
+                q.recycle(frame.bytes);
+                continue;
+            }
             let setup_started = Instant::now();
-            let mut native = unsafe {
+            let created = unsafe {
                 Session::create(
                     HWND(hwnd as *mut _),
                     verify_synthetic_pixels,
@@ -954,11 +968,33 @@ fn run(
                         !vendor_failed && !verify_synthetic_pixels,
                         zero_requested && !zero_failed && frame.rotation == 0,
                         presentation_mode,
-                        amf_main10_requested,
                     ),
-                )?
+                )
+            };
+            let mut native = match created {
+                Ok(native) => native,
+                Err(error) if hevc.is_some_and(|h| h.chroma == 3) && !vendor_failed => {
+                    vendor_failed = true;
+                    vendor_fallback = Some(format!(
+                        "4:4:4 decoder compatibility failure: {}",
+                        error.stage
+                    ));
+                    let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+                    q.finish_native_call(Instant::now());
+                    q.recycle(frame.bytes);
+                    q.fallback_to_mf_420(Instant::now(), vendor_fallback.as_deref().unwrap());
+                    continue;
+                }
+                Err(error) => return Err(error),
             };
             native._release.0 = Some(shared.clone());
+            crate::event_log::record(
+                "INFO",
+                "video_decoder_selected",
+                serde_json::json!({"decoder":native.name(frame.codec),
+                    "fallback":native.fallback.as_ref().or(vendor_fallback.as_ref()),
+                    "surface_generation":surface_generation}),
+            );
             native.rotation = frame.rotation;
             if let Some(renderer) = &mut native.renderer {
                 renderer.rotation = frame.rotation;
@@ -1113,6 +1149,10 @@ fn run(
             }
             if error.stage == "video-zero-copy-process" {
                 zero_failed = true;
+                vendor_failed = true;
+                vendor_fallback = Some(
+                    "Using Media Foundation after original-surface presentation failure".into(),
+                );
                 zero_fallback = shared
                     .0
                     .lock()
@@ -1132,8 +1172,25 @@ fn run(
                     .clone();
             }
             let mut q = shared.0.lock().unwrap_or_else(|e| e.into_inner());
-            if q.reset_generation == generation && !q.recover(Instant::now()) {
-                return Err(error);
+            if q.reset_generation == generation {
+                let recovered = if vendor_failed
+                    && session
+                        .as_ref()
+                        .and_then(|s| s.hevc)
+                        .is_some_and(|h| h.chroma == 3)
+                {
+                    q.fallback_to_mf_420(
+                        Instant::now(),
+                        vendor_fallback
+                            .as_deref()
+                            .unwrap_or("vendor decoder failure"),
+                    )
+                } else {
+                    q.recover(Instant::now())
+                };
+                if !recovered {
+                    return Err(error);
+                }
             }
             continue;
         }
@@ -1449,9 +1506,9 @@ impl Session {
         codec: crate::video_stream::Codec,
         hevc: Option<crate::video_stream::HevcConfiguration>,
         surface_generation: u64,
-        policy: (bool, bool, PresentationMode, bool),
+        policy: (bool, bool, PresentationMode),
     ) -> Result<Self> {
-        let (_allow_vendor, _zero_copy, presentation_mode, _amf_main10) = policy;
+        let (_allow_vendor, _zero_copy, presentation_mode) = policy;
         let mut fallback = None;
         let zero_copy_status =
             _zero_copy.then(|| "Unavailable: select a supported GPU and enable HEVC".into());
@@ -1460,9 +1517,7 @@ impl Session {
         #[cfg(feature = "vendor-video")]
         if _allow_vendor
             && codec == crate::video_stream::Codec::Hevc
-            && hevc.is_some_and(|h| {
-                h.bit_depth == 8 || (h.bit_depth == 10 && (h.chroma == 3 || _amf_main10))
-            })
+            && hevc.is_some_and(|h| matches!(h.bit_depth, 8 | 10))
         {
             let candidate = (|| -> anyhow::Result<Option<Self>> {
                 let config = hevc.ok_or_else(|| anyhow::anyhow!("missing HEVC parameters"))?;
@@ -1477,26 +1532,14 @@ impl Session {
                     create_device(preferred_gpu).map_err(|e| anyhow::anyhow!("{}", e.stage))?;
                 let dxgi: IDXGIDevice = probe.cast()?;
                 let adapter = dxgi.GetAdapter()?.GetDesc()?;
-                // 4:2:0 Main10 is opt-in on AMD only. Other vendors retain MF.
-                if config.chroma == 1 && config.bit_depth == 10 {
-                    if !_amf_main10 || adapter.VendorId != 0x1002 {
-                        return Ok(None);
-                    }
-                    if _zero_copy {
-                        zero_copy_status = Some("10-bit uses normal GPU rendering".into());
-                    }
+                let mode = evoparseq_video::normal_mode(
+                    adapter.VendorId,
+                    config.chroma,
+                    config.bit_depth,
+                )?;
+                if _zero_copy && (config.chroma == 3 || config.bit_depth == 10) {
+                    zero_copy_status = Some("This format uses normal GPU rendering".into());
                 }
-                let mode = if config.chroma == 3 {
-                    if _zero_copy {
-                        zero_copy_status = Some("4:4:4 uses normal GPU rendering".into());
-                    }
-                    evoparseq_video::Mode::DirectD3d11
-                } else {
-                    let Some(mode) = evoparseq_video::preferred(adapter.VendorId, true) else {
-                        return Ok(None);
-                    };
-                    mode
-                };
                 let luid = (u64::from(adapter.AdapterLuid.HighPart as u32) << 32)
                     | u64::from(adapter.AdapterLuid.LowPart);
                 drop((probe_context, probe));
@@ -1528,7 +1571,10 @@ impl Session {
                                 _release: NativeRelease::default(),
                             }))
                         }
-                        Err(error) => zero_copy_status = Some(format!("Fallback: {error}")),
+                        Err(error) => {
+                            zero_copy_status = Some(format!("Fallback: {error}"));
+                            anyhow::bail!("original-surface presentation unavailable: {error:#}");
+                        }
                     }
                 }
                 let vendor = evoparseq_video::Decoder::open(
@@ -1564,11 +1610,19 @@ impl Session {
             match candidate {
                 Ok(Some(session)) => return Ok(session),
                 Ok(None) => {}
-                Err(error) => fallback = Some(format!("Using Media Foundation: {error}")),
+                Err(error) => fallback = Some(format!("Using Media Foundation: {error:#}")),
             }
         }
         if !_allow_vendor && !verify_synthetic_pixels {
             fallback = Some("Using Media Foundation after vendor decoder recovery".into());
+        }
+        if let Some(reason) = &fallback {
+            crate::event_log::record(
+                "WARN",
+                "video_mf_fallback_attempted",
+                serde_json::json!({"reason":reason,"bit_depth":hevc.map(|h|h.bit_depth),
+                    "chroma":hevc.map(|h|h.chroma),"surface_generation":surface_generation}),
+            );
         }
         let runtime = Runtime::start()?;
         let mut renderer = Renderer::create(hwnd, preferred_gpu, presentation_mode)?;
@@ -1653,6 +1707,12 @@ impl Session {
             if config.chroma != 1
                 || !matches!((config.profile, config.bit_depth), (1 | 2, 8) | (2, 10))
             {
+                crate::event_log::record(
+                    "ERROR",
+                    "video_mf_fallback_unavailable",
+                    serde_json::json!({"reason":"Media Foundation requires HEVC Main/Main10 4:2:0",
+                        "bit_depth":config.bit_depth,"chroma":config.chroma}),
+                );
                 return Err(unavailable("video-hevc-requires-main-or-main10-420"));
             }
             api(
