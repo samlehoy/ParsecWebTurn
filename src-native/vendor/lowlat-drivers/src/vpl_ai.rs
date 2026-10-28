@@ -41,9 +41,68 @@ fn operation<T>(name: &'static str, api: Option<(u16, u16)>, result: Result<T>) 
             operation: name,
             status,
             api,
+            support: None,
         },
         other => other,
     })
+}
+/// Query-only diagnosis after rejection. Never initializes or processes frames.
+/// No CPU-memory request, native-resource allocation or ordinary-scaler fallback.
+unsafe fn support_queries(query: VppQuery, session: mfxSession, base: mfxVideoParam) -> [i32; 4] {
+    unsafe {
+        let one = |mut param: mfxVideoParam, nv12: bool, ai: bool, double: bool| {
+            if nv12 {
+                let vpp = &mut param.__bindgen_anon_1.vpp;
+                for info in [&mut vpp.In, &mut vpp.Out] {
+                    info.FourCC = MFX_FOURCC_NV12 as u32;
+                    info.ChromaFormat = MFX_CHROMAFORMAT_YUV420 as u16;
+                }
+            }
+            if double {
+                let input = param
+                    .__bindgen_anon_1
+                    .vpp
+                    .In
+                    .__bindgen_anon_1
+                    .__bindgen_anon_1;
+                let Some(width) = input.CropW.checked_mul(2) else {
+                    return MFX_ERR_UNSUPPORTED;
+                };
+                let Some(height) = input.CropH.checked_mul(2) else {
+                    return MFX_ERR_UNSUPPORTED;
+                };
+                let Ok(mut out) = info((u32::from(width), u32::from(height))) else {
+                    return MFX_ERR_UNSUPPORTED;
+                };
+                out.FourCC = MFX_FOURCC_NV12 as u32;
+                out.ChromaFormat = MFX_CHROMAFORMAT_YUV420 as u16;
+                param.__bindgen_anon_1.vpp.Out = out;
+            }
+            let mut filter_in = filter();
+            let mut filter_out = filter();
+            let mut extensions = [&raw mut filter_in.header];
+            let mut outputs = [&raw mut filter_out.header];
+            param.NumExtParam = u16::from(ai);
+            param.ExtParam = if ai {
+                extensions.as_mut_ptr()
+            } else {
+                core::ptr::null_mut()
+            };
+            let mut result = param;
+            result.ExtParam = if ai {
+                outputs.as_mut_ptr()
+            } else {
+                core::ptr::null_mut()
+            };
+            query(session, &raw mut param, &raw mut result)
+        };
+        [
+            one(base, false, false, false),
+            one(base, true, false, false),
+            one(base, true, true, false),
+            one(base, true, true, true),
+        ]
+    }
 }
 fn filter() -> AiFilter {
     AiFilter {
@@ -284,11 +343,16 @@ impl Scaler {
             out.ExtParam = out_ext.as_mut_ptr();
             // Warnings (filter skipped, partial acceleration, altered parameters)
             // are rejection, never a claim that ordinary scaling is AI.
-            operation(
-                "MFXVideoVPP_Query (AI, BGRA8, GPU memory)",
-                api,
-                strict(query(raw, &raw mut param, &raw mut out)),
-            )?;
+            let requested = param;
+            let query_status = query(raw, &raw mut param, &raw mut out);
+            if query_status != 0 {
+                return Err(Error::Ai {
+                    operation: "MFXVideoVPP_Query (AI, BGRA8, GPU memory)",
+                    status: query_status,
+                    api,
+                    support: Some(support_queries(query, raw, requested)),
+                });
+            }
             if ai_out.mode != 1
                 || ai_out.header.BufferId != AI_FILTER
                 || out.IOPattern != param.IOPattern
@@ -420,6 +484,45 @@ impl Drop for Scaler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn query_only_matrix_distinguishes_plain_scaling_format_and_ratio() {
+        unsafe extern "C" fn query(
+            _session: mfxSession,
+            param: *mut mfxVideoParam,
+            _out: *mut mfxVideoParam,
+        ) -> mfxStatus {
+            unsafe {
+                let p = &*param;
+                if p.IOPattern
+                    != (MFX_IOPATTERN_IN_VIDEO_MEMORY | MFX_IOPATTERN_OUT_VIDEO_MEMORY) as u16
+                {
+                    return -999;
+                }
+                if p.NumExtParam == 0 {
+                    return if p.ExtParam.is_null() { 0 } else { -999 };
+                }
+                let vpp = p.__bindgen_anon_1.vpp;
+                let input = vpp.In.__bindgen_anon_1.__bindgen_anon_1;
+                let output = vpp.Out.__bindgen_anon_1.__bindgen_anon_1;
+                if vpp.In.FourCC == MFX_FOURCC_NV12 as u32 && output.CropW == input.CropW * 2 {
+                    0
+                } else {
+                    -3
+                }
+            }
+        }
+        let mut base: mfxVideoParam = zeroed();
+        base.IOPattern = (MFX_IOPATTERN_IN_VIDEO_MEMORY | MFX_IOPATTERN_OUT_VIDEO_MEMORY) as u16;
+        base.AsyncDepth = 1;
+        base.__bindgen_anon_1.vpp.In = info((1280, 800)).unwrap();
+        base.__bindgen_anon_1.vpp.Out = info((1920, 1200)).unwrap();
+        let result = unsafe { support_queries(query, core::ptr::null_mut(), base) };
+        assert_eq!(result, [0, 0, -3, 0]);
+        assert_eq!(
+            unsafe { base.__bindgen_anon_1.vpp.In.FourCC },
+            MFX_FOURCC_RGB4 as u32
+        );
+    }
     #[test]
     fn unsupported_diagnostics_distinguish_api_age_from_ai_configuration() {
         let old: Result<()> = operation(

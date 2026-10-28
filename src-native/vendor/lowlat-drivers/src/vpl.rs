@@ -125,6 +125,7 @@ pub enum Error {
         operation: &'static str,
         status: i32,
         api: Option<(u16, u16)>,
+        support: Option<[i32; 4]>,
     },
 }
 
@@ -141,6 +142,7 @@ impl fmt::Display for Error {
                 operation,
                 status,
                 api,
+                support,
             } => {
                 write!(f, "Intel AI {operation}: status {status}")?;
                 if *status == -3 {
@@ -148,6 +150,12 @@ impl fmt::Display for Error {
                 }
                 if let Some((major, minor)) = api {
                     write!(f, "; runtime API {major}.{minor}")?;
+                }
+                if let Some([bgra, nv12, ai_nv12, ai_2x]) = support {
+                    write!(
+                        f,
+                        "; capability queries: BGRA scaling={bgra}, NV12 scaling={nv12}, NV12 AI requested scale={ai_nv12}, NV12 AI 2x={ai_2x}"
+                    )?;
                 }
                 Ok(())
             }
