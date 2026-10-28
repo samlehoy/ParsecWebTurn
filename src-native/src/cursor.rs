@@ -2,6 +2,7 @@
 //! Guest image buffers are copied; all window cursor ownership stays on its UI thread.
 use crate::memory::GuestMemory;
 use anyhow::{bail, Context, Result};
+#[cfg(windows)]
 use windows_sys::Win32::{Graphics::Gdi::*, UI::WindowsAndMessaging::*};
 
 const MAX_SIDE: u32 = 256;
@@ -128,7 +129,9 @@ pub fn decode(memory: &GuestMemory, name: &str, args: &[wasmtime::Val]) -> Resul
     })
 }
 
+#[cfg(windows)]
 struct OwnedCursor(usize);
+#[cfg(windows)]
 impl Drop for OwnedCursor {
     fn drop(&mut self) {
         unsafe {
@@ -141,7 +144,9 @@ impl Drop for OwnedCursor {
         }
     }
 }
+#[cfg(windows)]
 struct Bitmap(HBITMAP);
+#[cfg(windows)]
 impl Drop for Bitmap {
     fn drop(&mut self) {
         unsafe {
@@ -150,6 +155,7 @@ impl Drop for Bitmap {
     }
 }
 
+#[cfg(windows)]
 fn create(frame: &Frame) -> Result<OwnedCursor> {
     // SAFETY: bounded, top-down 32bpp DIB; only owned initialized buffers are
     // copied. CreateIconIndirect copies the bitmaps, so both are released here.
@@ -214,11 +220,13 @@ fn create(frame: &Frame) -> Result<OwnedCursor> {
     }
 }
 
+#[cfg(windows)]
 pub struct State {
     custom: Option<OwnedCursor>,
     visible: bool,
     default: bool,
 }
+#[cfg(windows)]
 impl Default for State {
     fn default() -> Self {
         Self {
@@ -228,6 +236,7 @@ impl Default for State {
         }
     }
 }
+#[cfg(windows)]
 impl State {
     pub fn apply(&mut self, pending: Pending) {
         // Keep the selected old cursor alive until its replacement is ready.
@@ -270,7 +279,34 @@ impl State {
     }
 }
 
-#[cfg(test)]
+#[cfg(not(windows))]
+pub struct State {
+    visible: bool,
+    default: bool,
+}
+#[cfg(not(windows))]
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            default: false,
+        }
+    }
+}
+#[cfg(not(windows))]
+impl State {
+    pub fn apply(&mut self, pending: Pending) {
+        if let Some(visible) = pending.visible {
+            self.visible = visible;
+        }
+        if let Some(default) = pending.default {
+            self.default = default;
+        }
+    }
+    pub fn select(&self) {}
+}
+
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
     #[test]

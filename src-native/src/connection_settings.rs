@@ -393,7 +393,7 @@ impl Manager {
         self.resolve_settings(&settings).await
     }
     /// Explicit BUD adapter: freeze preferences and credentials together.
-    #[cfg(all(windows, feature = "bud"))]
+    #[cfg(all(any(windows, target_os = "macos"), feature = "bud"))]
     pub async fn resolve_bud(&self) -> Result<(Settings, Vec<RTCIceServer>)> {
         let (settings, error) = self.view();
         if error.is_some() {
@@ -407,7 +407,7 @@ impl Manager {
         Ok((settings, servers))
     }
 
-    #[cfg(all(windows, feature = "bud"))]
+    #[cfg(all(any(windows, target_os = "macos"), feature = "bud"))]
     pub async fn resolve_bud_relay(&self, settings: &Settings) -> Result<Vec<RTCIceServer>> {
         if settings.stun_only {
             bail!("TURN is disabled by STUN-only settings");
@@ -566,6 +566,7 @@ fn parse_cloudflare(raw: &[u8]) -> Result<Vec<RTCIceServer>> {
     Ok(result)
 }
 
+#[cfg(windows)]
 fn atomic_write(path: &std::path::Path, raw: &[u8]) -> Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -593,6 +594,35 @@ fn atomic_write(path: &std::path::Path, raw: &[u8]) -> Result<()> {
         {
             bail!("Cannot replace settings.json; existing settings were preserved");
         }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temporary);
+    }
+    result
+}
+
+#[cfg(not(windows))]
+fn atomic_write(path: &std::path::Path, raw: &[u8]) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut random = [0; 16];
+    getrandom::fill(&mut random)
+        .map_err(|_| anyhow::anyhow!("Cannot allocate settings transaction"))?;
+    let name: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let temporary = path.with_file_name(format!("settings-{name}.tmp"));
+    let result = (|| -> Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .context("Cannot write settings beside the executable; use --data-dir with a writable folder")?;
+        let mut perms = file.metadata()?.permissions();
+        perms.set_mode(0o600);
+        let _ = file.set_permissions(perms);
+        file.write_all(raw)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temporary, path)?;
         Ok(())
     })();
     if result.is_err() {

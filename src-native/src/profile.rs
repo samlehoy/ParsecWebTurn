@@ -1,4 +1,4 @@
-//! Bounded guest profile, protected for the current Windows user with DPAPI.
+//! Bounded guest profile, protected for the current user.
 //! Guest paths remain virtual; no guest-controlled string becomes a host path.
 use crate::secure_storage::protect;
 use anyhow::{bail, Context, Result};
@@ -7,11 +7,18 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{File, OpenOptions},
     io::{Read, Write},
-    os::windows::{ffi::OsStrExt, fs::OpenOptionsExt},
     path::PathBuf,
     sync::Arc,
 };
+
+#[cfg(windows)]
+use std::os::windows::{ffi::OsStrExt, fs::OpenOptionsExt};
+#[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::*;
+
+#[cfg(not(windows))]
+use std::os::fd::AsRawFd;
+
 const MAX_PROFILE: usize = 4 * 1024 * 1024;
 
 #[derive(Default, Serialize, Deserialize)]
@@ -28,16 +35,31 @@ pub struct Profile {
 impl Profile {
     #[cfg(not(feature = "diagnostics"))]
     pub fn user() -> Result<Arc<Self>> {
-        let root = std::env::var_os("LOCALAPPDATA")
-            .context("Windows local application data unavailable")?;
-        Self::open(
-            std::path::Path::new(&root)
-                .join("ParsecWebTurn")
-                .join("Native"),
-        )
+        #[cfg(windows)]
+        {
+            let root = std::env::var_os("LOCALAPPDATA")
+                .context("Windows local application data unavailable")?;
+            Self::open(
+                std::path::Path::new(&root)
+                    .join("ParsecWebTurn")
+                    .join("Native"),
+            )
+        }
+        #[cfg(not(windows))]
+        {
+            let home = std::env::var("HOME")
+                .map(PathBuf::from)
+                .context("Home directory unavailable")?;
+            Self::open(
+                home.join("Library/Application Support/ParsecWebTurn")
+                    .join("Native"),
+            )
+        }
     }
+
     pub(crate) fn open(directory: PathBuf) -> Result<Arc<Self>> {
         std::fs::create_dir_all(&directory).context("Cannot create native profile directory")?;
+        #[cfg(windows)]
         let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -46,16 +68,36 @@ impl Profile {
             .share_mode(0)
             .open(directory.join("profile.lock"))
             .context("Native profile is already in use or inaccessible")?;
+
+        #[cfg(not(windows))]
+        let lock = {
+            let file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(directory.join("profile.lock"))
+                .context("Native profile is inaccessible")?;
+            let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            if ret != 0 {
+                bail!("Native profile is already in use or inaccessible");
+            }
+            file
+        };
+
         Ok(Arc::new(Self {
             path: directory.join("profile.dpapi"),
             _lock: lock,
         }))
     }
+
     pub fn load(&self) -> Result<crate::filesystem::VirtualFs> {
         let file = match File::open(&self.path) {
             Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
-            Err(_) => bail!("Cannot read native profile"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(crate::filesystem::VirtualFs::default())
+            }
+            Err(e) => return Err(e).context("Cannot open native profile"),
         };
         let mut encrypted = Vec::new();
         file.take((MAX_PROFILE + 65537) as u64)
@@ -105,6 +147,7 @@ impl Profile {
         fs.directories.extend(data.directories);
         Ok(fs)
     }
+
     pub fn save(&self, fs: &crate::filesystem::VirtualFs) -> Result<()> {
         let data = Data {
             version: 1,
@@ -136,23 +179,40 @@ impl Profile {
                 .write(true)
                 .create_new(true)
                 .open(&temporary)?;
+            #[cfg(not(windows))]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = file.metadata()?.permissions();
+                perms.set_mode(0o600);
+                let _ = file.set_permissions(perms);
+            }
             file.write_all(&encrypted)?;
             file.sync_all()?;
             drop(file);
-            let source: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
-            let destination: Vec<u16> =
-                self.path.as_os_str().encode_wide().chain(Some(0)).collect();
-            // Same-directory replacement; no partially written snapshot is published.
-            if unsafe {
-                MoveFileExW(
-                    source.as_ptr(),
-                    destination.as_ptr(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-                )
-            } == 0
+
+            #[cfg(windows)]
             {
-                bail!("Cannot replace native profile");
+                let source: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
+                let destination: Vec<u16> =
+                    self.path.as_os_str().encode_wide().chain(Some(0)).collect();
+                // Same-directory replacement; no partially written snapshot is published.
+                if unsafe {
+                    MoveFileExW(
+                        source.as_ptr(),
+                        destination.as_ptr(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                    )
+                } == 0
+                {
+                    bail!("Cannot replace native profile");
+                }
             }
+
+            #[cfg(not(windows))]
+            {
+                std::fs::rename(&temporary, &self.path)?;
+            }
+
             Ok(())
         })();
         if result.is_err() {

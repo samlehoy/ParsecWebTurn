@@ -15,6 +15,11 @@ use std::{
     },
     time::Duration,
 };
+
+#[cfg(target_os = "macos")]
+use crate::video_macos as video_backend;
+#[cfg(windows)]
+use crate::video_windows as video_backend;
 pub(crate) const MAX_CHANNEL_MESSAGE: usize = 1024 * 1024;
 static ACTIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
 struct Permit;
@@ -198,9 +203,9 @@ struct Progress {
 }
 
 struct Completion {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     telemetry: Option<(Arc<crate::stats::Shared>, u64)>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     timing_active: bool,
     started_at: std::time::Instant,
     closing: bool,
@@ -215,26 +220,26 @@ struct Completion {
     media_ingress: crate::media_ingress::Ingress,
     video_stream: Arc<Mutex<crate::video_stream::Inspector>>,
     audio_stream: Option<crate::audio_stream::Pipeline>,
-    #[cfg(windows)]
-    video_output: Option<Arc<crate::video_windows::Pipeline>>,
+    #[cfg(any(windows, target_os = "macos"))]
+    video_output: Option<Arc<video_backend::Pipeline>>,
 }
 
 enum Delivery {
     Queued,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     Timing(Option<(Arc<crate::stats::Shared>, u64)>),
     Audio(Option<crate::audio_stream::Sender>),
     Video {
         inspector: Arc<Mutex<crate::video_stream::Inspector>>,
-        #[cfg(windows)]
-        pipeline: Option<Arc<crate::video_windows::Pipeline>>,
+        #[cfg(any(windows, target_os = "macos"))]
+        pipeline: Option<Arc<video_backend::Pipeline>>,
     },
 }
 impl Delivery {
     fn submit(self, bytes: &[u8]) -> Option<bool> {
         match self {
             Self::Queued => None,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             Self::Timing(link) => {
                 if let Some((bus, generation)) = link {
                     bus.host_timing.receive(generation, bytes);
@@ -244,18 +249,18 @@ impl Delivery {
             Self::Audio(audio) => Some(!audio.is_some_and(|sender| sender.submit(bytes))),
             Self::Video {
                 inspector,
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "macos"))]
                 pipeline,
             } => {
                 let info = inspector
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .receive(bytes);
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "macos"))]
                 if let (Some(pipeline), Some(info)) = (pipeline, info) {
                     return Some(!pipeline.submit(bytes, info));
                 }
-                #[cfg(not(windows))]
+                #[cfg(not(any(windows, target_os = "macos")))]
                 let _ = info;
                 Some(true)
             }
@@ -333,7 +338,7 @@ impl Completion {
             self.progress.channel_bytes_received[i].saturating_add(bytes.len() as u64);
         self.progress.channel_max_message_bytes[i] =
             self.progress.channel_max_message_bytes[i].max(bytes.len());
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if channel == 0 && self.discard_unavailable_media && crate::frame_timing::is_report(bytes) {
             return Some(Delivery::Timing(self.telemetry.clone()));
         }
@@ -341,7 +346,7 @@ impl Completion {
             if channel == 1 {
                 return Some(Delivery::Video {
                     inspector: self.video_stream.clone(),
-                    #[cfg(windows)]
+                    #[cfg(any(windows, target_os = "macos"))]
                     pipeline: self.video_output.clone(),
                 });
             }
@@ -535,9 +540,9 @@ impl Attempt {
             video_stream.configure(config.video_protocol.clone());
         }
         let completion = Arc::new(Mutex::new(Completion {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             telemetry: None,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             timing_active: false,
             started_at: std::time::Instant::now(),
             closing: false,
@@ -556,7 +561,7 @@ impl Attempt {
             discard_unavailable_media: config.is_some(),
             media_ingress: Default::default(),
             video_stream: Arc::new(Mutex::new(video_stream)),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             video_output: None,
             audio_stream: None,
         }));
@@ -695,7 +700,7 @@ impl Attempt {
         ingress
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub fn start_video(&self, window: Arc<crate::window::Window>) {
         {
             let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
@@ -707,7 +712,7 @@ impl Attempt {
         let audio = crate::audio_stream::Pipeline::start_with_budget(
             window.audio_buffer().map(|(_, max)| max),
         );
-        let video = Arc::new(crate::video_windows::Pipeline::start(window.clone()));
+        let video = Arc::new(video_backend::Pipeline::start(window.clone()));
         let mut state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
         if state.cancelled || state.closing || state.video_output.is_some() {
             drop(state);
@@ -913,18 +918,17 @@ fn worker(
     } = network;
     if let Some(config) = &mut config {
         // Capability work stays on this worker, outside the WASM/backend lock.
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             let gpu = connection_settings
                 .as_ref()
                 .and_then(|m| m.view().0.video_gpu);
-            config.allow_hevc =
-                config.allow_hevc && crate::video_windows::hevc_available(gpu.as_ref());
+            config.allow_hevc = config.allow_hevc && video_backend::hevc_available(gpu.as_ref());
             config.ten_bit = config.allow_hevc
                 && config.ten_bit
-                && crate::video_windows::hevc_ten_bit_available(gpu.as_ref());
+                && video_backend::hevc_ten_bit_available(gpu.as_ref());
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             config.allow_hevc = false;
         }
@@ -1809,9 +1813,9 @@ mod tests {
 
     fn empty_completion() -> Completion {
         Completion {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             telemetry: None,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             timing_active: false,
             started_at: std::time::Instant::now(),
             closing: false,
@@ -1824,7 +1828,7 @@ mod tests {
             discard_unavailable_media: false,
             media_ingress: Default::default(),
             video_stream: Default::default(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             video_output: None,
             audio_stream: None,
         }

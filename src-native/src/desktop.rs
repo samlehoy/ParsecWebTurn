@@ -117,12 +117,19 @@ pub fn dispatch(
         "web_set_title" => {
             m.string(int(0)? as u32, 1024)?;
             let title = crate::APP_TITLE.to_owned();
-            let wide: Vec<u16> = title.encode_utf16().chain([0]).collect();
-            unsafe {
-                windows_sys::Win32::UI::WindowsAndMessaging::SetWindowTextW(
-                    window.handle(),
-                    wide.as_ptr(),
-                );
+            #[cfg(windows)]
+            {
+                let wide: Vec<u16> = title.encode_utf16().chain([0]).collect();
+                unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::SetWindowTextW(
+                        window.handle(),
+                        wide.as_ptr(),
+                    );
+                }
+            }
+            #[cfg(target_os = "macos")]
+            {
+                window.set_title(&title);
             }
             caller.data_mut().title = Some(title);
         }

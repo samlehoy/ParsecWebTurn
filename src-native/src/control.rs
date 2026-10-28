@@ -40,7 +40,7 @@ impl Config {
     }
     /// Pinned private opcode, corroborated by lowlat's WebRTC client. Preserve
     /// the negotiated flags; the third argument requests an encoder refresh.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub fn keyframe_request(&self) -> Bytes {
         header(13, 0, self.video_flags() as i32, 1)
     }
@@ -109,7 +109,7 @@ fn cursor_payload(bytes: &[u8]) -> Result<(usize, usize)> {
 }
 
 /// A scheduling hint from validated host metadata, never from button state.
-#[cfg(all(windows, feature = "bud"))]
+#[cfg(all(any(windows, target_os = "macos"), feature = "bud"))]
 pub(crate) fn cursor_capture(bytes: &[u8]) -> Option<bool> {
     if bytes.get(12) != Some(&9) {
         return None;
@@ -449,7 +449,7 @@ mod tests {
         );
     }
 
-    #[cfg(all(windows, feature = "bud"))]
+    #[cfg(all(any(windows, target_os = "macos"), feature = "bud"))]
     #[test]
     fn cursor_wakeup_uses_validated_host_capture_flags_only() {
         let mut frame = vec![0; 34];

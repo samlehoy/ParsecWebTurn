@@ -94,7 +94,7 @@ pub struct ThreadRuntime {
     pub started: std::time::Instant,
     pub(crate) records: Mutex<Records>,
     pub watchdog_started: std::sync::atomic::AtomicBool,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub window: Option<Arc<crate::window::Window>>,
 }
 
@@ -134,7 +134,7 @@ impl ThreadRuntime {
             started: std::time::Instant::now(),
             records: Default::default(),
             watchdog_started: Default::default(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             window: None,
         }
     }
@@ -250,7 +250,7 @@ impl ThreadRuntime {
         // Abort other executing guest loops at an observable bridge boundary.
         // A process deadline remains necessary for blocking guest atomic waits.
         if failed {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             if let Some(window) = &self.window {
                 if window.live {
                     window.request_stop();

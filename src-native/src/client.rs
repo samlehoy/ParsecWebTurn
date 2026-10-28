@@ -1,5 +1,7 @@
 //! Normal single-executable entry point. Diagnostic CLI is a separate build feature.
 use crate::*;
+
+#[cfg(windows)]
 pub fn main() {
     let result = std::thread::Builder::new()
         .name("parsec-runtime".into())
@@ -28,6 +30,79 @@ pub fn main() {
         std::process::exit(1);
     }
 }
+
+#[cfg(target_os = "macos")]
+pub fn main() {
+    let mtm = objc2_foundation::MainThreadMarker::new().expect("Must run on main thread");
+    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Regular);
+
+    let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+    if let Err(e) = std::thread::Builder::new()
+        .name("parsec-runtime".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            let res = run();
+            let _ = done_tx.send(res);
+            // Wake the event loop below, which otherwise sleeps until the next UI event.
+            dispatch2::DispatchQueue::main().exec_async(|| {
+                let mtm = objc2_foundation::MainThreadMarker::new().expect("main queue");
+                let wake = objc2_app_kit::NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+                    objc2_app_kit::NSEventType::ApplicationDefined,
+                    objc2_foundation::NSPoint::ZERO,
+                    objc2_app_kit::NSEventModifierFlags(0),
+                    0.0,
+                    0,
+                    None,
+                    0,
+                    0,
+                    0,
+                );
+                if let Some(wake) = wake {
+                    objc2_app_kit::NSApplication::sharedApplication(mtm).postEvent_atStart(&wake, true);
+                }
+            });
+        })
+    {
+        eprintln!("ParsecWebTurn error: {e:?}");
+        std::process::exit(1);
+    }
+
+    app.finishLaunching();
+
+    let result = loop {
+        match done_rx.try_recv() {
+            Ok(result) => break result,
+            // The sender is dropped without a result only if run() panicked.
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                break Err(anyhow::anyhow!("Native runtime stopped unexpectedly"))
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+        objc2::rc::autoreleasepool(|_| {
+            // Main-queue blocks (window, settings, title updates) still run while this waits.
+            let timeout = objc2_foundation::NSDate::distantFuture();
+            let event = unsafe {
+                app.nextEventMatchingMask_untilDate_inMode_dequeue(
+                    objc2_app_kit::NSEventMask(u64::MAX),
+                    Some(&timeout),
+                    objc2_foundation::NSDefaultRunLoopMode,
+                    true,
+                )
+            };
+            if let Some(event) = event {
+                if !crate::window_macos::handle_cocoa_event(&event) {
+                    app.sendEvent(&event);
+                }
+            }
+        });
+    };
+
+    if let Err(e) = result {
+        eprintln!("ParsecWebTurn error: {e:?}");
+        std::process::exit(1);
+    }
+}
 fn run() -> Result<()> {
     let mut args: Vec<_> = std::env::args().skip(1).collect();
     let software_overlay = !args.iter().any(|arg| arg == "--d3d-overlay");
@@ -53,6 +128,8 @@ fn run() -> Result<()> {
         bail!("Unsupported argument");
     };
     let connection_settings = connection_settings::Manager::open(root.join("settings.json"));
+    #[cfg(target_os = "macos")]
+    crate::connection_settings_ui_macos::set_default_manager(connection_settings.clone());
     if event_log::initialize(
         root.join("client-events.jsonl"),
         connection_settings.view().0.event_logging,
@@ -60,6 +137,7 @@ fn run() -> Result<()> {
     .is_err()
     {
         let _ = event_log::initialize(root.join("client-events.jsonl"), false);
+        #[cfg(windows)]
         unsafe {
             windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
                 std::ptr::null_mut(),
@@ -84,6 +162,7 @@ fn run() -> Result<()> {
     window.install_connection_settings(connection_settings.clone());
     if std::env::var_os("PARSECWEBTURN_NO_UPDATE_CHECK").is_none() {
         window.updates.check(true);
+        #[cfg(windows)]
         unsafe {
             windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
                 window.handle(),
@@ -128,6 +207,9 @@ fn run() -> Result<()> {
             result
         }
     })();
+    if let Err(e) = &outcome {
+        eprintln!("Guest execution error: {e:?}");
+    }
     // Also notify the host when the user closes the application window.
     store
         .data()

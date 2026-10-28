@@ -8,6 +8,11 @@ use std::{
     time::Instant,
 };
 use webrtc::{peer_connection::RTCPeerConnection, stats::StatsReportType};
+
+#[cfg(target_os = "macos")]
+use crate::audio_macos as audio_backend;
+#[cfg(windows)]
+use crate::audio_windows as audio_backend;
 #[derive(Clone)]
 pub struct Sample {
     #[cfg(feature = "bud")]
@@ -30,8 +35,8 @@ pub struct Sample {
     pub audio_codec: Option<&'static str>,
     pub audio_layout: Option<crate::audio_layout::Layout>,
     pub audio_decoded_queue_ms: Option<f64>,
-    #[cfg(windows)]
-    pub audio_playback: Option<crate::audio_windows::Snapshot>,
+    #[cfg(any(windows, target_os = "macos"))]
+    pub audio_playback: Option<audio_backend::Snapshot>,
     pub video: Option<crate::video_output::Snapshot>,
     pub profile: Option<u8>,
     pub codec: Option<crate::video_stream::Codec>,
@@ -60,7 +65,7 @@ impl Default for Sample {
             audio_codec: None,
             audio_layout: None,
             audio_decoded_queue_ms: None,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             audio_playback: None,
             video: None,
             profile: None,
@@ -71,16 +76,16 @@ impl Default for Sample {
 }
 #[derive(Default)]
 pub struct Shared {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub host_timing: crate::frame_timing::Shared,
-    #[cfg(windows)]
-    audio: Mutex<Option<std::sync::Weak<crate::audio_windows::Playback>>>,
+    #[cfg(any(windows, target_os = "macos"))]
+    audio: Mutex<Option<std::sync::Weak<audio_backend::Playback>>>,
     pub visible: AtomicBool,
     latest: Mutex<(u64, Option<Sample>)>,
 }
 impl Shared {
-    #[cfg(windows)]
-    pub fn set_audio(&self, audio: std::sync::Weak<crate::audio_windows::Playback>) {
+    #[cfg(any(windows, target_os = "macos"))]
+    pub fn set_audio(&self, audio: std::sync::Weak<audio_backend::Playback>) {
         *self.audio.lock().unwrap_or_else(|e| e.into_inner()) = Some(audio);
     }
     pub fn requested(&self) -> bool {
@@ -89,7 +94,7 @@ impl Shared {
     pub fn begin(&self) -> u64 {
         let mut data = self.latest.lock().unwrap_or_else(|e| e.into_inner());
         data.0 += 1;
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         self.host_timing.begin(data.0);
         data.1 = Some(Sample {
             generation: data.0,
@@ -104,7 +109,7 @@ impl Shared {
         data.0
     }
     pub fn publish(&self, generation: u64, mut sample: Sample) {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             sample.audio_playback = self
                 .audio
@@ -117,7 +122,7 @@ impl Shared {
         let mut data = self.latest.lock().unwrap_or_else(|e| e.into_inner());
         if data.0 == generation {
             sample.generation = generation;
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             if crate::event_log::enabled()
                 && sample.audio_playback.as_ref().is_some_and(|audio| {
                     data.1
@@ -207,7 +212,7 @@ impl Shared {
             .clone()
     }
     pub fn finish(&self, generation: u64) {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         self.host_timing.end(generation);
         self.publish(
             generation,

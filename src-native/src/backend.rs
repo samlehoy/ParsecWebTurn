@@ -40,7 +40,7 @@ pub struct Backend {
     pub attempt_started: Option<std::time::Instant>,
     #[serde(skip)]
     pub native_attempt: Option<crate::attempt::Attempt>,
-    #[cfg(all(windows, feature = "bud"))]
+    #[cfg(all(any(windows, target_os = "macos"), feature = "bud"))]
     #[serde(skip)]
     pub bud_attempt: Option<crate::bud_attempt::Attempt>,
     #[serde(skip)]
@@ -258,7 +258,7 @@ impl Backend {
     }
 
     fn retain_attempt_diagnostic(&mut self) {
-        #[cfg(all(windows, feature = "bud"))]
+        #[cfg(all(any(windows, target_os = "macos"), feature = "bud"))]
         {
             self.bud_attempt.take();
         }
@@ -302,7 +302,7 @@ impl Backend {
     }
 
     fn pump(&mut self) -> Result<()> {
-        #[cfg(all(windows, feature = "bud"))]
+        #[cfg(all(any(windows, target_os = "macos"), feature = "bud"))]
         if self.bud_attempt.is_some() {
             if self
                 .bud_attempt

@@ -6,11 +6,24 @@ use anyhow::{bail, Context, Result};
 use glow::HasContext;
 use serde::Serialize;
 use std::{collections::BTreeMap, ffi::CString, sync::Arc};
+
+#[cfg(windows)]
 use windows_sys::Win32::{
     Foundation::FreeLibrary,
     Graphics::{Gdi::*, OpenGL::*},
     System::LibraryLoader::*,
 };
+
+#[cfg(target_os = "macos")]
+pub mod cgl {
+    #[link(name = "OpenGL", kind = "framework")]
+    extern "C" {
+        pub fn CGLSetCurrentContext(ctx: *mut std::ffi::c_void) -> i32;
+        pub fn CGLGetCurrentContext() -> *mut std::ffi::c_void;
+        pub fn CGLLockContext(ctx: *mut std::ffi::c_void) -> i32;
+        pub fn CGLUnlockContext(ctx: *mut std::ffi::c_void) -> i32;
+    }
+}
 
 #[derive(Clone, Default, Serialize)]
 pub struct GraphicsReport {
@@ -37,13 +50,22 @@ enum Object {
 pub struct Graphics {
     gl: glow::Context,
     overlay: crate::overlay::Capture,
+    #[cfg(windows)]
     dc: HDC,
+    #[cfg(windows)]
     context: HGLRC,
+    #[cfg(windows)]
     module: windows_sys::Win32::Foundation::HMODULE,
+    #[cfg(target_os = "macos")]
+    cgl_ctx: *mut std::ffi::c_void,
+    #[cfg(target_os = "macos")]
+    gl_lib: *mut std::ffi::c_void,
     window: Arc<Window>,
     objects: BTreeMap<u32, Object>,
     next: u32,
     report: GraphicsReport,
+    #[cfg(target_os = "macos")]
+    default_white_tex: glow::NativeTexture,
     unpack_alignment: usize,
     unpack_row_length: usize,
     // A current GL context must never be moved to another OS thread.
@@ -61,6 +83,7 @@ impl Drop for ContextActivity {
 }
 
 impl Graphics {
+    #[cfg(windows)]
     pub fn create(window: Arc<Window>) -> Result<Self> {
         window
             .active_contexts
@@ -204,6 +227,93 @@ impl Graphics {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    pub fn create(window: Arc<Window>) -> Result<Self> {
+        window
+            .active_contexts
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let activity = ContextActivity(window.clone());
+        if window.closing.load(std::sync::atomic::Ordering::Acquire) {
+            bail!("Native window is closing");
+        }
+        unsafe {
+            let ns_gl_ctx = &*(window.ns_gl_context as *const objc2_app_kit::NSOpenGLContext);
+            ns_gl_ctx.makeCurrentContext();
+            let cgl_ctx = cgl::CGLGetCurrentContext();
+
+            let gl_lib = libc::dlopen(
+                c"/System/Library/Frameworks/OpenGL.framework/OpenGL".as_ptr(),
+                libc::RTLD_LAZY,
+            );
+            if gl_lib.is_null() {
+                bail!("Loading macOS OpenGL framework failed");
+            }
+            let gl = glow::Context::from_loader_function(|name| {
+                let c_str = CString::new(name).unwrap();
+                libc::dlsym(gl_lib, c_str.as_ptr())
+            });
+            let report = GraphicsReport {
+                api: "macOS OpenGL (Matoya UI)".into(),
+                vendor: gl.get_parameter_string(glow::VENDOR),
+                renderer: gl.get_parameter_string(glow::RENDERER),
+                version: gl.get_parameter_string(glow::VERSION),
+                accelerated_pixel_format: true,
+                ..Default::default()
+            };
+            let vao = match gl.create_vertex_array() {
+                Ok(vao) => vao,
+                Err(error) => {
+                    objc2_app_kit::NSOpenGLContext::clearCurrentContext();
+                    libc::dlclose(gl_lib);
+                    bail!("GPU vertex array allocation failed: {error}");
+                }
+            };
+            gl.bind_vertex_array(Some(vao));
+            let default_white_tex = gl.create_texture().map_err(anyhow::Error::msg)?;
+            gl.bind_texture(glow::TEXTURE_2D, Some(default_white_tex));
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA8 as i32,
+                1,
+                1,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(&[255, 255, 255, 255])),
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::NEAREST as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAG_FILTER,
+                glow::NEAREST as i32,
+            );
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_BASE_LEVEL, 0);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAX_LEVEL, 0);
+            gl.bind_texture(glow::TEXTURE_2D, None);
+            *window.graphics.lock().unwrap_or_else(|e| e.into_inner()) = Some(report.clone());
+            Ok(Self {
+                gl,
+                overlay: Default::default(),
+                cgl_ctx,
+                gl_lib,
+                window,
+                objects: BTreeMap::new(),
+                next: 1,
+                report,
+                default_white_tex,
+                unpack_alignment: 4,
+                unpack_row_length: 0,
+                _thread: std::marker::PhantomData,
+                _activity: activity,
+            })
+        }
+    }
+
     fn insert(&mut self, obj: Object) -> Result<i32> {
         if self.objects.len() >= 4096 {
             bail!("GPU object limit exceeded");
@@ -242,77 +352,98 @@ impl Graphics {
     }
 
     pub fn present(&mut self) -> Result<()> {
-        self.overlay.publish(
-            &mut self
-                .window
-                .overlay
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()),
-        );
-        if self
-            .window
-            .software_overlay_enabled
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            let frame = self
-                .window
-                .overlay
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .frame
-                .clone();
-            self.window.publish_software_overlay(&frame);
-        }
-        // Explicit optional test artifact only: one readback, never the normal
-        // presentation path. Capture the rendered backbuffer before swapping.
-        #[cfg(any(test, feature = "diagnostics"))]
-        if self.report.frames_presented == 10 {
-            let capture = self
-                .window
-                .capture
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
-            if let Some(path) = capture {
-                let (w, h) = *self
-                    .window
-                    .dimensions
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                let mut pixels = vec![0; texture_size(w, h, glow::RGBA, glow::UNSIGNED_BYTE)?];
-                unsafe {
-                    self.gl.read_pixels(
-                        0,
-                        0,
-                        w,
-                        h,
-                        glow::RGBA,
-                        glow::UNSIGNED_BYTE,
-                        glow::PixelPackData::Slice(Some(&mut pixels)),
-                    );
-                }
-                let image = image::RgbaImage::from_raw(w as u32, h as u32, pixels)
-                    .context("Invalid GPU capture size")?;
-                image::imageops::flip_vertical(&image).save(path)?;
-            }
-        }
+        #[cfg(target_os = "macos")]
         unsafe {
-            self.gl.flush();
-            // The native settings child owns the visible client area. Keep the
-            // core/overlay running, but don't swap its background over GDI UI.
-            if !self.window.settings_open() {
-                if SwapBuffers(self.dc) == 0 {
-                    bail!("native SwapBuffers failed");
-                }
-                self.report.frames_presented += 1;
+            cgl::CGLLockContext(self.cgl_ctx);
+            if cgl::CGLGetCurrentContext() != self.cgl_ctx {
+                cgl::CGLSetCurrentContext(self.cgl_ctx);
             }
         }
-        *self
-            .window
-            .graphics
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(self.report.clone());
-        Ok(())
+        let res = (|| -> Result<()> {
+            self.overlay.publish(
+                &mut self
+                    .window
+                    .overlay
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()),
+            );
+            if self
+                .window
+                .software_overlay_enabled
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                let frame = self
+                    .window
+                    .overlay
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .frame
+                    .clone();
+                self.window.publish_software_overlay(&frame);
+            }
+            // Explicit optional test artifact only: one readback, never the normal
+            // presentation path. Capture the rendered backbuffer before swapping.
+            #[cfg(any(test, feature = "diagnostics"))]
+            if self.report.frames_presented == 10 {
+                let capture = self
+                    .window
+                    .capture
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                if let Some(path) = capture {
+                    let (w, h) = *self
+                        .window
+                        .dimensions
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    let mut pixels = vec![0; texture_size(w, h, glow::RGBA, glow::UNSIGNED_BYTE)?];
+                    unsafe {
+                        self.gl.read_pixels(
+                            0,
+                            0,
+                            w,
+                            h,
+                            glow::RGBA,
+                            glow::UNSIGNED_BYTE,
+                            glow::PixelPackData::Slice(Some(&mut pixels)),
+                        );
+                    }
+                    let image = image::RgbaImage::from_raw(w as u32, h as u32, pixels)
+                        .context("Invalid GPU capture size")?;
+                    image::imageops::flip_vertical(&image).save(path)?;
+                }
+            }
+            unsafe {
+                self.gl.flush();
+                // The native settings child owns the visible client area. Keep the
+                // core/overlay running, but don't swap its background over GDI UI.
+                if !self.window.settings_open() {
+                    #[cfg(windows)]
+                    if SwapBuffers(self.dc) == 0 {
+                        bail!("native SwapBuffers failed");
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        let ns_gl_ctx =
+                            &*(self.window.ns_gl_context as *const objc2_app_kit::NSOpenGLContext);
+                        ns_gl_ctx.flushBuffer();
+                    }
+                    self.report.frames_presented += 1;
+                }
+            }
+            *self
+                .window
+                .graphics
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(self.report.clone());
+            Ok(())
+        })();
+        #[cfg(target_os = "macos")]
+        unsafe {
+            cgl::CGLUnlockContext(self.cgl_ctx);
+        }
+        res
     }
 
     pub fn call(
@@ -321,7 +452,19 @@ impl Graphics {
         memory: &GuestMemory,
         args: &[wasmtime::Val],
     ) -> Result<Option<i32>> {
-        let result = self.gl_call(name, memory, args)?;
+        #[cfg(target_os = "macos")]
+        unsafe {
+            cgl::CGLLockContext(self.cgl_ctx);
+            if cgl::CGLGetCurrentContext() != self.cgl_ctx {
+                cgl::CGLSetCurrentContext(self.cgl_ctx);
+            }
+        }
+        let result = self.gl_call(name, memory, args);
+        #[cfg(target_os = "macos")]
+        unsafe {
+            cgl::CGLUnlockContext(self.cgl_ctx);
+        }
+        let result = result?;
         self.overlay.observe(name, memory, args, result);
         Ok(result)
     }
@@ -411,7 +554,15 @@ impl Graphics {
                 }
                 "glBindTexture" => {
                     let t = if u(1)? == 0 {
-                        None
+                        // macOS core profile: an unbound 2D sampler reads the 1x1 white texture.
+                        #[cfg(target_os = "macos")]
+                        {
+                            (u(0)? == glow::TEXTURE_2D).then_some(self.default_white_tex)
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            None
+                        }
                     } else if let Object::Texture(t) = self.object(u(1)?)? {
                         Some(t)
                     } else {
@@ -589,10 +740,60 @@ impl Graphics {
                     } else {
                         None
                     };
+                    // The macOS core profile lacks legacy ALPHA/LUMINANCE formats; emulate
+                    // them with RED/RG storage and swizzles. Windows uploads them as-is.
+                    let (actual_format, swizzle) = match format {
+                        _ if !cfg!(target_os = "macos") => (format, None),
+                        glow::ALPHA => (
+                            glow::RED,
+                            Some([glow::ZERO, glow::ZERO, glow::ZERO, glow::RED]),
+                        ),
+                        glow::LUMINANCE => (
+                            glow::RED,
+                            Some([glow::RED, glow::RED, glow::RED, glow::ONE]),
+                        ),
+                        glow::LUMINANCE_ALPHA => (
+                            glow::RG,
+                            Some([glow::RED, glow::RED, glow::RED, glow::GREEN]),
+                        ),
+                        _ => (format, None),
+                    };
                     let pixels = glow::PixelUnpackData::Slice(bytes.as_deref());
                     if name == "glTexImage2D" {
-                        self.gl
-                            .tex_image_2d(u(0)?, i(1)?, i(2)?, w, h, i(5)?, format, typ, pixels);
+                        let internal = match i(2)? as u32 {
+                            _ if !cfg!(target_os = "macos") => i(2)?,
+                            glow::RGBA => glow::RGBA8 as i32,
+                            glow::RGB => glow::RGB8 as i32,
+                            glow::ALPHA | glow::LUMINANCE => glow::R8 as i32,
+                            glow::LUMINANCE_ALPHA => glow::RG8 as i32,
+                            other => other as i32,
+                        };
+                        self.gl.tex_image_2d(
+                            u(0)?,
+                            i(1)?,
+                            internal,
+                            w,
+                            h,
+                            i(5)?,
+                            actual_format,
+                            typ,
+                            pixels,
+                        );
+                        if cfg!(target_os = "macos") {
+                            self.gl
+                                .tex_parameter_i32(u(0)?, glow::TEXTURE_BASE_LEVEL, 0);
+                            self.gl.tex_parameter_i32(u(0)?, glow::TEXTURE_MAX_LEVEL, 0);
+                        }
+                        if let Some([r, g, b, a]) = swizzle {
+                            self.gl
+                                .tex_parameter_i32(u(0)?, glow::TEXTURE_SWIZZLE_R, r as i32);
+                            self.gl
+                                .tex_parameter_i32(u(0)?, glow::TEXTURE_SWIZZLE_G, g as i32);
+                            self.gl
+                                .tex_parameter_i32(u(0)?, glow::TEXTURE_SWIZZLE_B, b as i32);
+                            self.gl
+                                .tex_parameter_i32(u(0)?, glow::TEXTURE_SWIZZLE_A, a as i32);
+                        }
                     } else {
                         self.gl.tex_sub_image_2d(
                             u(0)?,
@@ -601,7 +802,7 @@ impl Graphics {
                             i(3)?,
                             w,
                             h,
-                            format,
+                            actual_format,
                             typ,
                             pixels,
                         );
@@ -653,11 +854,22 @@ impl Graphics {
 impl Drop for Graphics {
     fn drop(&mut self) {
         unsafe {
+            #[cfg(target_os = "macos")]
+            self.gl.delete_texture(self.default_white_tex);
             self.gl.finish();
-            wglMakeCurrent(self.dc, std::ptr::null_mut());
-            wglDeleteContext(self.context);
-            ReleaseDC(self.window.handle(), self.dc);
-            FreeLibrary(self.module);
+            #[cfg(windows)]
+            {
+                wglMakeCurrent(self.dc, std::ptr::null_mut());
+                wglDeleteContext(self.context);
+                ReleaseDC(self.window.handle(), self.dc);
+                FreeLibrary(self.module);
+            }
+            #[cfg(target_os = "macos")]
+            {
+                cgl::CGLLockContext(self.cgl_ctx);
+                objc2_app_kit::NSOpenGLContext::clearCurrentContext();
+                cgl::CGLUnlockContext(self.cgl_ctx);
+            }
         }
         *self
             .window
@@ -674,10 +886,13 @@ fn bounded(value: i32, max: usize) -> Result<usize> {
     }
     Ok(value)
 }
+
+#[cfg(windows)]
 fn valid_proc(pointer: usize) -> bool {
     pointer > 3 && pointer != usize::MAX
 }
 
+#[cfg(windows)]
 unsafe fn wgl_extensions(dc: HDC) -> Option<String> {
     let pointer = if let Some(proc) =
         wglGetProcAddress(c"wglGetExtensionsStringARB".as_ptr().cast())

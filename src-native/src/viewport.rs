@@ -43,7 +43,7 @@ impl Viewport {
         ))
     }
     /// Host cursor -> client pixels, using the same letterbox as video/input.
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "macos", test))]
     pub fn unmap(self, x: i32, y: i32) -> Option<(i32, i32)> {
         let [l, t, r, b] = self.rect()?;
         let axis = |v: i32, size: u32, origin: i32, end: i32| {

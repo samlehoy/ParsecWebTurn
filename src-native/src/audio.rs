@@ -6,13 +6,18 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use wasmtime::{Caller, Val};
 
+#[cfg(target_os = "macos")]
+use crate::audio_macos as audio_backend;
+#[cfg(windows)]
+use crate::audio_windows as audio_backend;
+
 #[derive(Clone, Default, Serialize)]
 pub struct Output {
     pub create_requests: u64,
     pub destroy_requests: u64,
     pub output_available: bool,
-    #[cfg(windows)]
-    pub playback: Option<crate::audio_windows::Snapshot>,
+    #[cfg(any(windows, target_os = "macos"))]
+    pub playback: Option<audio_backend::Snapshot>,
     pub unavailable_reason: Option<&'static str>,
 }
 
@@ -37,7 +42,7 @@ pub fn dispatch(
         .first()
         .and_then(Val::i32)
         .context("audio pointer missing")? as u32;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if let Some(window) = caller.data().window.clone().filter(|w| w.online) {
         let memory = caller.data().memory.clone();
         match name {
@@ -57,7 +62,7 @@ pub fn dispatch(
                     && memory.u32(pointer.checked_add(4).context("audio format overflow")?)?
                         == 48_000
                 {
-                    crate::audio_windows::Playback::create(window.clone(), min, max).ok()
+                    audio_backend::Playback::create(window.clone(), min, max).ok()
                 } else {
                     None
                 };
@@ -155,7 +160,7 @@ pub fn dispatch(
                             .rejected(pointer, layout);
                         if output.layout != layout && !rejected {
                             let limits = output.snapshot();
-                            match crate::audio_windows::Playback::create_layout(
+                            match audio_backend::Playback::create_layout(
                                 window.clone(),
                                 limits.minimum_ms,
                                 limits.maximum_ms,

@@ -554,7 +554,7 @@ pub fn dispatch(
                 Some(socket) => socket.read(&memory, output, size, timeout(arg(args, 1)?))?,
                 None => 3,
             };
-            #[cfg(all(windows, feature = "bud"))]
+            #[cfg(all(any(windows, target_os = "macos"), feature = "bud"))]
             if code == 0 {
                 let text = memory.string(output, size)?;
                 let backend = caller
@@ -586,7 +586,7 @@ pub fn dispatch(
             out[0] = Val::I32(0);
             if let Some(socket) = network.socket(arg(args, 0)?) {
                 if let Ok(text) = memory.string(arg(args, 1)?, MAX_MESSAGE + 1) {
-                    #[cfg(all(windows, feature = "bud"))]
+                    #[cfg(all(any(windows, target_os = "macos"), feature = "bud"))]
                     let text = {
                         let backend = caller
                             .data()

@@ -1,6 +1,6 @@
-# Explicit target keeps static CRT flags off host-side procedural macros.
-[build]
-target = "x86_64-pc-windows-msvc"
-
+# No [build] target: macOS builds for its host. Windows builds must pass
+# --target x86_64-pc-windows-msvc (CI and scripts set CARGO_BUILD_TARGET) so the
+# static CRT flag stays off host-side procedural macros and build scripts, and
+# output lands in target/x86_64-pc-windows-msvc/ as packaging expects.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]

@@ -1,5 +1,7 @@
-//! Documented Windows screen power request, confined to the window UI thread.
+//! Documented screen power request, confined to the window UI thread.
 use serde::Serialize;
+
+#[cfg(windows)]
 use windows_sys::Win32::System::Power::{
     SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED,
 };
@@ -11,12 +13,26 @@ pub struct State {
     pub failed_requests: u64,
 }
 impl State {
+    #[cfg(windows)]
     pub fn update(&mut self, requested: bool, visible: bool) {
         self.update_with(requested, visible, |enable| unsafe {
             SetThreadExecutionState(ES_CONTINUOUS | if enable { ES_DISPLAY_REQUIRED } else { 0 })
                 != 0
         });
     }
+
+    #[cfg(target_os = "macos")]
+    pub fn update(&mut self, requested: bool, visible: bool) {
+        self.update_with(requested, visible, |enable| {
+            macos_set_display_sleep_disabled(enable)
+        });
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    pub fn update(&mut self, requested: bool, visible: bool) {
+        self.update_with(requested, visible, |_| true);
+    }
+
     fn update_with(&mut self, requested: bool, visible: bool, mut apply: impl FnMut(bool) -> bool) {
         self.requested = requested;
         let desired = requested && visible;
@@ -28,6 +44,55 @@ impl State {
         } else {
             self.failed_requests = self.failed_requests.saturating_add(1);
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_set_display_sleep_disabled(disable: bool) -> bool {
+    use core_foundation::base::TCFType;
+    use core_foundation::string::CFString;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[link(name = "IOKit", kind = "framework")]
+    extern "C" {
+        fn IOPMAssertionCreateWithName(
+            assertion_type: *const std::ffi::c_void,
+            assertion_level: u32,
+            assertion_name: *const std::ffi::c_void,
+            assertion_id: *mut u32,
+        ) -> i32;
+        fn IOPMAssertionRelease(assertion_id: u32) -> i32;
+    }
+
+    static ASSERTION_ID: AtomicU32 = AtomicU32::new(0);
+
+    let current = ASSERTION_ID.load(Ordering::SeqCst);
+    if disable && current == 0 {
+        let atype = CFString::new("PreventUserIdleDisplaySleep");
+        let aname = CFString::new("ParsecWebTurn Remote Session");
+        let mut id = 0u32;
+        let ret = unsafe {
+            IOPMAssertionCreateWithName(
+                atype.as_concrete_TypeRef() as *const _,
+                255, // kIOPMAssertionLevelOn
+                aname.as_concrete_TypeRef() as *const _,
+                &mut id,
+            )
+        };
+        if ret == 0 {
+            ASSERTION_ID.store(id, Ordering::SeqCst);
+            true
+        } else {
+            false
+        }
+    } else if !disable && current != 0 {
+        unsafe {
+            IOPMAssertionRelease(current);
+        }
+        ASSERTION_ID.store(0, Ordering::SeqCst);
+        true
+    } else {
+        true
     }
 }
 
@@ -71,6 +136,7 @@ mod tests {
             state.update(false, false);
             // A platform rejection is recorded, never converted to a WASM trap.
             assert!(!state.requested);
+            #[cfg(windows)]
             unsafe {
                 SetThreadExecutionState(ES_CONTINUOUS);
             }

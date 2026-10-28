@@ -41,6 +41,8 @@ jobs:
         run: bash src-native/tests/turn-integration/run.sh
   windows:
     runs-on: windows-latest
+    env:
+      CARGO_BUILD_TARGET: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

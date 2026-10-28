@@ -50,10 +50,10 @@ pub struct HostState {
     pub keys: BTreeMap<i32, String>,
     #[serde(skip)]
     pub key_codes: BTreeMap<String, i32>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[serde(skip)]
     pub window: Option<std::sync::Arc<crate::window::Window>>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[serde(skip)]
     pub graphics: Option<crate::graphics::Graphics>,
     pub event_loop: Option<(u32, u32)>,
@@ -91,9 +91,9 @@ impl HostState {
             filesystem_requests: Vec::new(),
             keys: BTreeMap::new(),
             key_codes: BTreeMap::new(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             window: None,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             graphics: None,
             event_loop: None,
         }
@@ -101,7 +101,7 @@ impl HostState {
 }
 
 pub fn implemented(module: &str, name: &str) -> bool {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if module == "env"
         && (crate::cursor::handles(name)
             || matches!(
@@ -232,7 +232,7 @@ pub fn dispatch(
     args: &[Val],
     results: &mut [Val],
 ) -> Result<()> {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if let Some(window) = caller.data().window.clone().filter(|window| window.live) {
         crate::lifecycle::renew_fuel(&mut caller, &window.stop)?;
     }
@@ -242,7 +242,7 @@ pub fn dispatch(
         *caller.data_mut().calls.entry(id.clone()).or_default() += 1;
         caller.data_mut().last_host_call = Some(id);
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if module == "env" && name == "web_set_kb_grab" {
         let enable = int(args, 0)? != 0;
         // Every immersive transition (including Mouse/Off) reaches this import.
@@ -260,7 +260,7 @@ pub fn dispatch(
         }
         return Ok(());
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if module == "env" && name == "web_set_pointer_lock" {
         if let Some(window) = &caller.data().window {
             if let Some(state) = caller
@@ -283,7 +283,7 @@ pub fn dispatch(
     {
         return Ok(());
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if module == "env" && name == "web_wake_lock" {
         let enable = int(args, 0)? != 0;
         if let Some(window) = &caller.data().window {
@@ -291,7 +291,7 @@ pub fn dispatch(
         }
         return Ok(());
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if module == "env" && name == "web_set_fullscreen" {
         let enable = int(args, 0)? != 0;
         crate::event_log::record(
@@ -304,7 +304,7 @@ pub fn dispatch(
         }
         return Ok(());
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if module == "env" && crate::cursor::handles(name) {
         // Invalid/unsupported images fall back to the system arrow, just as a
         // browser falls back when a CSS cursor image cannot be displayed.
@@ -315,7 +315,7 @@ pub fn dispatch(
         }
         return Ok(());
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if module == "env" && caller.data().window.is_some() && crate::desktop::handles(name) {
         let outcome = crate::desktop::dispatch(&mut caller, name, args, results);
         if outcome.is_err() && name != "web_run_and_yield" {
@@ -360,15 +360,15 @@ pub fn dispatch(
         }
         match name {
             "MTY_WaitPtr" => {
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "macos"))]
                 let window = caller.data().window.clone();
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "macos"))]
                 let stop = window.as_ref().map(|w| w.stop.as_ref());
-                #[cfg(not(windows))]
+                #[cfg(not(any(windows, target_os = "macos")))]
                 let stop = None;
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "macos"))]
                 let live = window.as_ref().is_some_and(|w| w.live);
-                #[cfg(not(windows))]
+                #[cfg(not(any(windows, target_os = "macos")))]
                 let live = false;
                 crate::wait::wait(
                     &m,
@@ -740,7 +740,7 @@ fn backend_call(
                         ptr(args, 5)?,
                         ptr(args, 6)?,
                     )?;
-                    #[cfg(all(windows, feature = "bud"))]
+                    #[cfg(all(any(windows, target_os = "macos"), feature = "bud"))]
                     if b.connection_settings
                         .as_ref()
                         .is_some_and(|m| m.view().0.bud)
@@ -806,7 +806,7 @@ fn backend_call(
                             b.connection_settings.clone(),
                         ) {
                             Ok(attempt) => {
-                                #[cfg(windows)]
+                                #[cfg(any(windows, target_os = "macos"))]
                                 if let Some(window) =
                                     caller.data().window.clone().filter(|w| w.online)
                                 {
@@ -891,7 +891,7 @@ fn backend_call(
                 }
                 "parsec_web_disconnect" => {
                     b.disconnect(int(args, 0)?, int(args, 1)?)?;
-                    #[cfg(windows)]
+                    #[cfg(any(windows, target_os = "macos"))]
                     if int(args, 0)? != 0 {
                         if let Some(window) = &caller.data().window {
                             window.end_session();
@@ -904,16 +904,16 @@ fn backend_call(
                         serde_json::from_str(&m.string(ptr(args, 0)?, 65536)?)?;
                     b.pump_native_events()?;
                     if b.status == Some(0) {
-                        #[cfg(windows)]
+                        #[cfg(any(windows, target_os = "macos"))]
                         let viewport = caller
                             .data()
                             .window
                             .as_ref()
                             .and_then(|w| w.presented_viewport());
-                        #[cfg(not(windows))]
+                        #[cfg(not(any(windows, target_os = "macos")))]
                         let viewport = None;
                         if let Some(frame) = b.prepare_input_with_viewport(&message, viewport)? {
-                            #[cfg(all(windows, feature = "bud"))]
+                            #[cfg(all(any(windows, target_os = "macos"), feature = "bud"))]
                             if let Some(attempt) = &b.bud_attempt {
                                 let normalized = if attempt.hid_mouse_enabled() {
                                     crate::hid_input::absolute_motion(&frame, viewport)?
@@ -942,7 +942,7 @@ fn backend_call(
                     let text = m.string(ptr(args, 1)?, 1024 * 1024)?;
                     b.pump_native_events()?;
                     if b.status == Some(0) {
-                        #[cfg(all(windows, feature = "bud"))]
+                        #[cfg(all(any(windows, target_os = "macos"), feature = "bud"))]
                         if let Some(attempt) = &b.bud_attempt {
                             if attempt
                                 .send(&crate::control::text(17, int(args, 0)?, &text)?)
@@ -995,7 +995,7 @@ fn backend_call(
                         // Consume only after a successful copy, so a bad guest
                         // buffer cannot silently discard an event.
                         m.c_string(ptr(args, 0)?, ptr(args, 1)? as usize, &json)?;
-                        #[cfg(windows)]
+                        #[cfg(any(windows, target_os = "macos"))]
                         if let Some(window) = &caller.data().window {
                             window.host_cursor_event(event);
                         }
@@ -1082,7 +1082,7 @@ fn backend_call(
                     if capacity > 1024 * 1024 {
                         bail!("audio poll capacity exceeds limit");
                     }
-                    #[cfg(all(windows, feature = "bud"))]
+                    #[cfg(all(any(windows, target_os = "macos"), feature = "bud"))]
                     if let Some(attempt) = &b.bud_attempt {
                         result(
                             results,

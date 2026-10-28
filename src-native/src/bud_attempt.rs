@@ -581,11 +581,16 @@ fn run(
         return Ok(());
     }
     // Probe before the lifecycle lock: a slow driver must not stall Cancel.
+    #[cfg(target_os = "macos")]
+    use crate::video_macos as video_platform;
+    #[cfg(windows)]
+    use crate::video_windows as video_platform;
+
     let hevc_available =
-        settings.prefer_hevc && crate::video_windows::hevc_available(window.video_gpu().as_ref());
+        settings.prefer_hevc && video_platform::hevc_available(window.video_gpu().as_ref());
     let ten_bit = hevc_available
         && settings.experimental_ten_bit
-        && crate::video_windows::hevc_ten_bit_available(window.video_gpu().as_ref());
+        && video_platform::hevc_ten_bit_available(window.video_gpu().as_ref());
     crate::event_log::record(
         "INFO",
         "video_capabilities_declared",

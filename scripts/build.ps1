@@ -1,5 +1,7 @@
 param()
 $ErrorActionPreference = 'Stop'
+# Keeps crt-static off proc macros and output where package-native.ps1 expects it.
+$env:CARGO_BUILD_TARGET = 'x86_64-pc-windows-msvc'
 $taskRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $taskRoot
 try {

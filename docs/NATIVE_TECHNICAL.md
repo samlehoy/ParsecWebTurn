@@ -109,6 +109,7 @@ and CMake (for the bundled Opus reference decoder), then run from the repository
 
 ```powershell
 ./src-native/fetch-core.ps1
+$env:CARGO_BUILD_TARGET = 'x86_64-pc-windows-msvc'
 cargo test --locked --manifest-path src-native/Cargo.toml
 cargo test --locked --manifest-path src-native/Cargo.toml --features diagnostics
 cargo build --locked --release --manifest-path src-native/Cargo.toml

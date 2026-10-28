@@ -27,8 +27,18 @@ pub(crate) fn session(
     Ok(session)
 }
 
+#[cfg(target_os = "macos")]
+use crate::video_macos as video_platform;
+#[cfg(windows)]
+use crate::video_windows as video_platform;
+
+#[cfg(target_os = "macos")]
+use crate::audio_macos as audio_platform;
+#[cfg(windows)]
+use crate::audio_windows as audio_platform;
+
 pub struct Media {
-    video: crate::video_windows::Pipeline,
+    video: video_platform::Pipeline,
     audio: Arc<crate::audio_stream::Pipeline>,
     audio_sender: crate::audio_stream::Sender,
     inspector: crate::video_stream::Inspector,
@@ -58,7 +68,7 @@ impl Media {
         surround: bool,
     ) -> Result<(Self, Session)> {
         let layout = if surround {
-            crate::audio_windows::device_layout().unwrap_or(crate::audio_layout::Layout::STEREO)
+            audio_platform::device_layout().unwrap_or(crate::audio_layout::Layout::STEREO)
         } else {
             crate::audio_layout::Layout::STEREO
         };
@@ -70,7 +80,7 @@ impl Media {
         let audio_sender = audio
             .sender()
             .ok_or_else(|| anyhow::anyhow!("native audio sender unavailable"))?;
-        let video = crate::video_windows::Pipeline::start_bud(window);
+        let video = video_platform::Pipeline::start_bud(window);
         let mut inspector = crate::video_stream::Inspector::default();
         inspector.enable_hevc(hevc_available);
         Ok((

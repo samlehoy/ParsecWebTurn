@@ -26,7 +26,10 @@ pub struct VirtualFs {
     pub handles: BTreeMap<u32, Handle>,
     pub directories: BTreeSet<String>,
     next: u32,
-    #[cfg(all(windows, any(test, not(feature = "diagnostics"))))]
+    #[cfg(all(
+        any(windows, target_os = "macos"),
+        any(test, not(feature = "diagnostics"))
+    ))]
     pub profile: Option<std::sync::Arc<crate::profile::Profile>>,
 }
 
@@ -37,7 +40,10 @@ impl Default for VirtualFs {
             handles: BTreeMap::new(),
             directories: BTreeSet::from(["/".into()]),
             next: 64,
-            #[cfg(all(windows, any(test, not(feature = "diagnostics"))))]
+            #[cfg(all(
+                any(windows, target_os = "macos"),
+                any(test, not(feature = "diagnostics"))
+            ))]
             profile: None,
         }
     }
@@ -45,7 +51,10 @@ impl Default for VirtualFs {
 
 impl VirtualFs {
     pub fn flush(&self) -> anyhow::Result<()> {
-        #[cfg(all(windows, any(test, not(feature = "diagnostics"))))]
+        #[cfg(all(
+            any(windows, target_os = "macos"),
+            any(test, not(feature = "diagnostics"))
+        ))]
         if let Some(profile) = &self.profile {
             if let Err(error) = profile.save(self) {
                 crate::event_log::record(

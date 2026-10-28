@@ -7,6 +7,7 @@ publish = false
 
 # Independent crate: neither Tauri nor WebView2 is linked.
 [features]
+# vendor-video only links its decoder on Windows; macOS ignores it.
 default = ["vendor-video", "bud"]
 vendor-video = ["dep:parsec-gpu-video"]
 bud = ["dep:parsec-native-bud"]
@@ -50,8 +51,10 @@ lto = "thin"
 codegen-units = 1
 opt-level = "s"
 
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 parsec-native-bud = { path = "crates/bud", optional = true }
+
+[target.'cfg(windows)'.dependencies]
 windows = { version = "=0.62.2", features = ["Wdk_Graphics_Direct3D", "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D10", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Media_MediaFoundation", "Win32_Media_Audio", "Win32_System_Threading", "Win32_System_Performance", "Win32_System_ProcessStatus", "Win32_Security", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_Variant"] }
 windows-sys = { version = "0.61", features = [ "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Graphics_OpenGL", "Win32_System_Power", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_UI_Shell"] }
 
@@ -63,6 +66,7 @@ turn = { path = "vendor/turn-0.11.0" }
 
 [patch."https://github.com/nomi-san/lowlat"]
 lowlat-core = { path = "crates/bud/vendor/lowlat-core" }
+lowlat-common = { path = "crates/bud/vendor/lowlat-common" }
 
 [build-dependencies]
 wasmtime = { version = "38", default-features = false, features = ["std", "runtime", "cranelift", "threads"] }
@@ -71,3 +75,18 @@ sha2 = "0.10"
 [target.'cfg(windows)'.dependencies.parsec-gpu-video]
 path = "crates/video"
 optional = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ring = "0.17"
+dispatch2 = "0.3"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["std", "NSString", "NSArray", "NSData", "NSProcessInfo", "NSRunLoop", "NSThread", "NSDate"] }
+objc2-app-kit = { version = "0.3", features = ["std", "NSApplication", "NSWindow", "NSView", "NSResponder", "NSEvent", "NSMenu", "NSMenuItem", "NSColor", "NSImage", "NSCursor", "NSPasteboard", "NSAlert", "NSWorkspace", "NSAppearance", "NSOpenGL", "NSOpenGLView", "NSGraphicsContext", "NSTabView", "NSTabViewItem", "NSButton", "NSTextField", "NSControl", "NSPopUpButton", "NSSecureTextField", "NSFont"] }
+objc2-metal = { version = "0.3", features = ["std"] }
+objc2-quartz-core = { version = "0.3", features = ["std", "CAMetalLayer", "CALayer"] }
+objc2-core-video = { version = "0.3", features = ["std", "CVMetalTextureCache", "CVMetalTexture", "CVPixelBuffer", "CVImageBuffer", "CVBuffer", "CVReturn"] }
+objc2-video-toolbox = { version = "0.3", features = ["std", "VTDecompressionSession"] }
+core-foundation = "0.10"
+core-graphics = "0.24"
+coreaudio-sys = "0.2"
+libc = "0.2"

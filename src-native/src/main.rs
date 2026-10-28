@@ -4,9 +4,9 @@
 )]
 #![warn(unused_crate_dependencies)]
 mod attempt;
-#[cfg(all(windows, feature = "bud"))]
+#[cfg(all(any(windows, target_os = "macos"), feature = "bud"))]
 mod bud_attempt;
-#[cfg(all(windows, feature = "bud"))]
+#[cfg(all(any(windows, target_os = "macos"), feature = "bud"))]
 pub mod bud_media;
 const APP_TITLE: &str = "ParsecWebTurn";
 const PARSEC_CORE_VERSION: &str = "150-104a";
@@ -14,6 +14,8 @@ const PARSEC_CORE_VERSION: &str = "150-104a";
 mod attempt_probe;
 mod audio;
 mod audio_layout;
+#[cfg(target_os = "macos")]
+mod audio_macos;
 mod audio_stream;
 #[cfg(windows)]
 mod audio_windows;
@@ -22,43 +24,46 @@ mod audit_probe;
 mod backend;
 mod buffers;
 mod connection_settings;
+#[cfg(windows)]
 mod connection_settings_ui;
+#[cfg(target_os = "macos")]
+mod connection_settings_ui_macos;
 mod control;
-#[cfg(any(windows, feature = "diagnostics"))]
+#[cfg(any(windows, target_os = "macos", feature = "diagnostics"))]
 mod core_config;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod core_hotkeys;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod core_input;
-#[cfg(any(windows, feature = "diagnostics"))]
+#[cfg(any(windows, target_os = "macos", feature = "diagnostics"))]
 mod core_runtime;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod core_version;
 #[cfg(test)]
 mod crypto_policy_tests;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod cursor;
 #[cfg(test)]
 mod data_only_policy_tests;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod desktop;
 mod event_log;
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 mod event_queue;
 #[cfg(any(test, feature = "diagnostics"))]
 mod execution_diagnostics;
 mod filesystem;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod frame_timing;
 #[cfg(windows)]
 mod fullscreen;
 #[cfg(windows)]
 mod gpu_windows;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod graphics;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod gui_visibility;
-#[cfg(all(windows, feature = "bud"))]
+#[cfg(all(any(windows, target_os = "macos"), feature = "bud"))]
 mod hid_input;
 mod host;
 mod http;
@@ -74,17 +79,18 @@ mod media_scheduling;
 mod memory;
 mod network_audit;
 mod network_policy;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod overlay;
 #[cfg(windows)]
 mod overlay_software;
 #[cfg(windows)]
 mod overlay_windows;
-#[cfg(windows)]
 mod performance;
 #[cfg(all(test, windows))]
 mod persistence_tests;
 mod platform;
+#[cfg(target_os = "macos")]
+mod platform_macos;
 #[cfg(any(test, feature = "diagnostics"))]
 mod platform_probe;
 #[cfg(windows)]
@@ -94,7 +100,7 @@ mod secure_storage;
 #[cfg(any(test, feature = "diagnostics"))]
 mod session_probe;
 mod signaling;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod stats;
 #[cfg(windows)]
 mod stats_ui;
@@ -108,25 +114,37 @@ mod transport;
 mod transport_diagnostic_errors;
 #[cfg(any(test, feature = "diagnostics"))]
 mod transport_diagnostics;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod updater;
 #[cfg(windows)]
 mod updater_ui;
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 mod video_color;
+#[cfg(target_os = "macos")]
+mod video_macos;
 mod video_output;
 mod video_stream;
 #[cfg(windows)]
 mod video_windows;
 mod viewport;
 mod wait;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod wake_lock;
 mod websocket;
 #[cfg(any(test, feature = "diagnostics"))]
 mod websocket_probe;
 #[cfg(windows)]
 mod window;
+mod window_event;
+#[cfg(target_os = "macos")]
+mod window_macos;
+#[cfg(target_os = "macos")]
+use window_macos as window;
+#[cfg(target_os = "macos")]
+use {
+    core_graphics as _, objc2_core_video as _, objc2_metal as _, objc2_quartz_core as _,
+    objc2_video_toolbox as _,
+};
 
 use anyhow::{bail, Context, Result};
 use host::HostState;
@@ -148,29 +166,32 @@ use {
 const PINNED_SHA256: &str = "d663dd96df477c65479fb93eb88756c7fcafff581cc93be563625cd195a4b4a6";
 #[cfg(feature = "diagnostics")]
 include!("diagnostic_entry.rs");
-#[cfg(all(windows, not(feature = "diagnostics")))]
+#[cfg(all(any(windows, target_os = "macos"), not(feature = "diagnostics")))]
 mod client;
-#[cfg(all(windows, any(test, not(feature = "diagnostics"))))]
+#[cfg(all(
+    any(windows, target_os = "macos"),
+    any(test, not(feature = "diagnostics"))
+))]
 mod profile;
 fn main() {
     #[cfg(feature = "diagnostics")]
     diagnostic_main();
-    #[cfg(all(windows, not(feature = "diagnostics")))]
+    #[cfg(all(any(windows, target_os = "macos"), not(feature = "diagnostics")))]
     client::main();
 }
 #[cfg(any(test, feature = "diagnostics"))]
 fn instantiate(engine: &Engine, module: &Module) -> Result<(Store<HostState>, Instance)> {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         instantiate_mode(engine, module, None)
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         instantiate_base_with_window(engine, module)
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn instantiate_mode(
     engine: &Engine,
     module: &Module,
@@ -182,7 +203,7 @@ fn instantiate_mode(
 fn instantiate_base_with_window(
     engine: &Engine,
     module: &Module,
-    #[cfg(windows)] window: Option<Arc<window::Window>>,
+    #[cfg(any(windows, target_os = "macos"))] window: Option<Arc<window::Window>>,
 ) -> Result<(Store<HostState>, Instance)> {
     let ty = module
         .imports()
@@ -196,7 +217,7 @@ fn instantiate_base_with_window(
     }
     let memory = SharedMemory::new(engine, ty)?;
     let runtime = threads::ThreadRuntime::new(engine.clone(), module.clone(), GuestMemory(memory));
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let runtime = {
         let mut runtime = threads::ThreadRuntime { window, ..runtime };
         #[cfg(any(test, feature = "diagnostics"))]
@@ -213,9 +234,13 @@ fn instantiate_base_with_window(
                 runtime.audit = Arc::new(network_audit::Audit::with_destination_origins());
             }
             let owner = runtime.window.as_ref().unwrap().handle() as usize;
-            runtime.platform = Arc::new(platform::Services::new(Box::new(
-                platform_windows::NativeDesktop(owner),
-            )));
+            #[cfg(windows)]
+            let desktop: Box<dyn platform::Desktop> =
+                Box::new(platform_windows::NativeDesktop(owner));
+            #[cfg(target_os = "macos")]
+            let desktop: Box<dyn platform::Desktop> =
+                Box::new(platform_macos::NativeDesktop::new(owner));
+            runtime.platform = Arc::new(platform::Services::new(desktop));
             runtime.http = Arc::new(http::Network::account(runtime.audit.clone()));
             runtime.websocket = Arc::new(websocket::Network::account(runtime.audit.clone()));
         }
@@ -238,16 +263,16 @@ fn instantiate_with_runtime(
     host.websocket = runtime.websocket.clone();
     host.platform = runtime.platform.clone();
     host.started = runtime.started;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         host.window = runtime.window.clone();
     }
     let mut store = Store::new(engine, host);
     store.set_fuel(50_000_000)?;
     store.set_epoch_deadline(1);
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let live_window = runtime.window.as_ref().filter(|window| window.live);
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if let Some(window) = live_window {
         lifecycle::configure_store(&mut store, window.stop.clone());
         if !runtime.watchdog_started.swap(true, Ordering::AcqRel) {
@@ -263,16 +288,16 @@ fn instantiate_with_runtime(
     }
     // Engine watchdog also bounds guest code that spends no fuel between epochs.
     let watchdog = engine.clone();
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let seconds = runtime
         .window
         .as_ref()
         .map_or(5, |window| window.run_seconds + 4);
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let seconds = 5;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let bounded = live_window.is_none();
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let bounded = true;
     if bounded && !runtime.watchdog_started.swap(true, Ordering::AcqRel) {
         std::thread::spawn(move || {
