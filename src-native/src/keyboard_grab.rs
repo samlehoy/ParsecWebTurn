@@ -45,8 +45,10 @@ impl State {
                 }
             }
             MODIFIER_KEYS.store(keys, Ordering::Relaxed);
-            for key in &CAPTURED {
-                key.store(false, Ordering::Relaxed);
+            // Snapshot once when acquiring capture, outside the callback.
+            // A held game's key must remain a repeat if immersion starts mid-hold.
+            for (vk, key) in CAPTURED.iter().enumerate() {
+                key.store(GetAsyncKeyState(vk as i32) < 0, Ordering::Relaxed);
             }
             let hook = SetWindowsHookExW(
                 WH_KEYBOARD_LL,
@@ -58,6 +60,12 @@ impl State {
                 self.hook = hook as usize;
                 GENERATION.fetch_add(1, Ordering::Relaxed);
                 TARGET.store(hwnd as usize, Ordering::Release);
+            } else {
+                crate::event_log::record(
+                    "WARN",
+                    "immersive_keyboard_capture_failed",
+                    serde_json::json!({"win32_error": GetLastError()}),
+                );
             }
         }
     }
@@ -143,7 +151,15 @@ pub(crate) fn test_immersive_chords(hwnd: HWND) -> WPARAM {
     unsafe {
         assert_eq!(TARGET.load(Ordering::Acquire), hwnd as usize);
         MODIFIER_KEYS.store(0, Ordering::Relaxed);
+        // Simulate a W that was already physically held when capture began.
+        CAPTURED[b'W' as usize].store(true, Ordering::Relaxed);
         for (vk, scan, down, flags) in [
+            (VK_LCONTROL, 0x1d, true, 0),
+            (VK_LSHIFT, 0x2a, true, 0),
+            (b'W' as u16, 0x11, true, 0),
+            (b'W' as u16, 0x11, false, 0),
+            (VK_LSHIFT, 0x2a, false, 0),
+            (VK_LCONTROL, 0x1d, false, 0),
             (VK_LMENU, 0x38, true, 0),
             (VK_RETURN, 0x1c, true, LLKHF_ALTDOWN),
             (VK_RETURN, 0x1c, false, LLKHF_ALTDOWN),

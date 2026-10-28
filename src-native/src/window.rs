@@ -1914,6 +1914,12 @@ mod tests {
             assert_eq!(
                 keys,
                 [
+                    (true, "ControlLeft", 2),
+                    (true, "ShiftLeft", 3),
+                    (true, "KeyW", 3),
+                    (false, "KeyW", 3),
+                    (false, "ShiftLeft", 2),
+                    (false, "ControlLeft", 0),
                     (true, "AltLeft", 4),
                     (true, "Enter", 4),
                     (false, "Enter", 4),
