@@ -1529,63 +1529,6 @@ unsafe extern "system" fn video_surface_proc(
 mod tests {
     use super::*;
     #[test]
-    fn simultaneous_mouse_buttons_keep_capture_until_the_last_release() {
-        for (first_down, second_down, first_up, second_up, first, second) in [
-            (
-                WM_LBUTTONDOWN,
-                WM_RBUTTONDOWN,
-                WM_LBUTTONUP,
-                WM_RBUTTONUP,
-                0,
-                2,
-            ),
-            (
-                WM_RBUTTONDOWN,
-                WM_LBUTTONDOWN,
-                WM_RBUTTONUP,
-                WM_LBUTTONUP,
-                2,
-                0,
-            ),
-        ] {
-            let window = Window::create_native().unwrap();
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-                let hwnd = window.handle();
-                window.events.drain();
-                SendMessageW(hwnd, first_down, 0, (120 << 16) | 120);
-                SendMessageW(hwnd, second_down, 3, (120 << 16) | 120);
-                assert_eq!(window.pressed_buttons.load(Ordering::Acquire), 5);
-                SendMessageW(hwnd, first_up, 0, (120 << 16) | 120);
-                assert_eq!(window.pressed_buttons.load(Ordering::Acquire), 1 << second);
-                SendMessageW(hwnd, second_up, 0, (120 << 16) | 120);
-                assert_eq!(window.pressed_buttons.load(Ordering::Acquire), 0);
-                let edges: Vec<_> = window
-                    .events
-                    .drain()
-                    .into_iter()
-                    .filter_map(|e| {
-                        if let Event::Button(down, button, ..) = e {
-                            Some((down, button))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                assert_eq!(
-                    edges,
-                    [
-                        (true, first),
-                        (true, second),
-                        (false, first),
-                        (false, second)
-                    ]
-                );
-            }));
-            window.close();
-            result.unwrap();
-        }
-    }
-    #[test]
     fn native_input_boundary_keeps_signed_axes_text_and_focus_release_order() {
         struct Close(Arc<Window>);
         impl Drop for Close {
@@ -1822,6 +1765,48 @@ mod tests {
                 SetForegroundWindow(window.handle());
             }
             wait(|| unsafe { GetForegroundWindow() == window.handle() });
+            // Capture is foreground-owned. Exercise chords in this isolated
+            // fixture, not among UI tests whose window teardown can steal focus.
+            for (first_down, second_down, first_up, second_up, first, second) in [
+                (
+                    WM_LBUTTONDOWN,
+                    WM_RBUTTONDOWN,
+                    WM_LBUTTONUP,
+                    WM_RBUTTONUP,
+                    0,
+                    2,
+                ),
+                (
+                    WM_RBUTTONDOWN,
+                    WM_LBUTTONDOWN,
+                    WM_RBUTTONUP,
+                    WM_LBUTTONUP,
+                    2,
+                    0,
+                ),
+            ] {
+                window.events.drain();
+                unsafe {
+                    SendMessageW(window.handle(), first_down, 0, (120 << 16) | 120);
+                    assert_eq!(
+                        window.pressed_buttons.load(Ordering::Acquire),
+                        1 << first,
+                        "first press: {:?}",
+                        window.events.drain()
+                    );
+                    SendMessageW(window.handle(), second_down, 3, (120 << 16) | 120);
+                    assert_eq!(
+                        window.pressed_buttons.load(Ordering::Acquire),
+                        5,
+                        "second press: {:?}",
+                        window.events.drain()
+                    );
+                    SendMessageW(window.handle(), first_up, 0, (120 << 16) | 120);
+                    assert_eq!(window.pressed_buttons.load(Ordering::Acquire), 1 << second);
+                    SendMessageW(window.handle(), second_up, 0, (120 << 16) | 120);
+                    assert_eq!(window.pressed_buttons.load(Ordering::Acquire), 0);
+                }
+            }
             let mode = |mouse, keyboard| crate::input_state::State {
                 mode: crate::input_state::Mode { mouse, keyboard },
                 ..Default::default()
