@@ -186,7 +186,11 @@ impl Scaler {
     ) -> Result<Self> {
         unsafe {
             if runtime.runtime() != Runtime::Current || device.is_null() {
-                return Err(Error::Status(MFX_ERR_UNSUPPORTED));
+                return operation(
+                    "current GPU VPL runtime and native device required",
+                    None,
+                    Err(Error::Status(MFX_ERR_UNSUPPORTED)),
+                );
             }
             let query: VppQuery = symbol(&runtime._library, c"MFXVideoVPP_Query")?;
             let init_vpp: VppInit = symbol(&runtime._library, c"MFXVideoVPP_Init")?;
