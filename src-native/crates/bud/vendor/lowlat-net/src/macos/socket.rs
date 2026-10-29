@@ -58,7 +58,9 @@ impl Socket {
         let _ = self.set_int(libc::IPPROTO_IPV6, libc::IPV6_RECVPKTINFO, 1);
         let _ = self.set_int(libc::IPPROTO_IPV6, libc::IPV6_TCLASS, DSCP_EF);
 
-        let _ = self.set_int(libc::IPPROTO_IP, libc::IP_DONTFRAG, 1);
+        // Do not fragment, as on Linux. `IP_DONTFRAG` is refused on this
+        // socket; `IPV6_DONTFRAG` covers v4-mapped sends as well.
+        self.set_int(libc::IPPROTO_IPV6, libc::IPV6_DONTFRAG, 1)?;
 
         self.set_ttl(DEFAULT_TTL)?;
         self.set_nonblocking()?;
@@ -135,14 +137,14 @@ impl Socket {
         from_storage(&storage).ok_or_else(|| io::Error::other("unrecognised local address"))
     }
 
+    /// `IP_TTL` is refused on this socket; the v6 hop limit carries to
+    /// v4-mapped sends.
     pub fn set_ttl(&self, ttl: u8) -> io::Result<()> {
-        let _ = self.set_int(libc::IPPROTO_IP, libc::IP_TTL, i32::from(ttl));
         self.set_int(libc::IPPROTO_IPV6, libc::IPV6_UNICAST_HOPS, i32::from(ttl))
     }
 
     pub fn ttl(&self) -> io::Result<u8> {
-        let value = self.get_int(libc::IPPROTO_IPV6, libc::IPV6_UNICAST_HOPS)
-            .or_else(|_| self.get_int(libc::IPPROTO_IP, libc::IP_TTL))?;
+        let value = self.get_int(libc::IPPROTO_IPV6, libc::IPV6_UNICAST_HOPS)?;
         u8::try_from(value).map_err(|_| io::Error::other("ttl outside the byte range"))
     }
 
@@ -510,6 +512,17 @@ mod tests {
             let port = Socket::bound(0).expect("bind").local_addr().expect("addr").port();
             assert!(!ports.contains(&port), "took {port}, which is held for IPv4");
         }
+    }
+
+    /// A v4 datagram past the loopback MTU (16384) is refused rather than
+    /// fragmented, so a path probe cannot read pieces as success.
+    #[test]
+    fn an_oversized_v4_send_is_refused() {
+        let sender = Socket::bound(0).expect("sender");
+        let receiver = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("receiver");
+        let to = receiver.local_addr().expect("addr");
+        let error = sender.send_to(&[0u8; 20_000], to).expect_err("fragmented");
+        assert_eq!(error.raw_os_error(), Some(libc::EMSGSIZE));
     }
 
     /// v4 sends leave marked EF, pinned or not. The socket's own `IP_TOS` is

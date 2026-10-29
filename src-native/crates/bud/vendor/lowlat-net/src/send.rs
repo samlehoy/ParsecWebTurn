@@ -103,7 +103,9 @@ impl Batch {
             to: None,
             ttl: Ttl::Default,
             from: None,
-            offload: true,
+            // macOS has no segmentation offload; starting off there saves a
+            // refused call and its warning on the first burst.
+            offload: cfg!(not(target_os = "macos")),
             refused: 0,
             sent_bytes: 0,
         }

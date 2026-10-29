@@ -70,7 +70,8 @@ wake, `getifaddrs` interface discovery, plain `sendmsg` without segmentation
 offload, and the nonblocking TCP carrier for turn-stream. The dual-stack socket
 refuses the IPv4-level options, so each IPv4 send carries `IP_TOS` as a control
 message and a pinned IPv4 source rides `IP_PKTINFO`; IPv6 sends keep the
-socket's `IPV6_TCLASS`. Receives use one `recvmsg` per datagram and report the
+socket's `IPV6_TCLASS`; `IPV6_DONTFRAG` and `IPV6_UNICAST_HOPS` cover both
+families, and offload starts off. Receives use one `recvmsg` per datagram and report the
 arrival address from `IPV6_PKTINFO`. The batched `recvmsg_x` is not in the
 public SDK and is not used. macOS lets a dual-stack bind share a port another
 socket holds for `0.0.0.0`, which then keeps the IPv4 datagrams, so the bind
