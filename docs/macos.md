@@ -51,12 +51,24 @@ mode and makes no zero-copy claim beyond those facts.
 
 ## Controls
 
-The stream window forwards physical keys by USB usage, like Windows. The shared
-Ctrl+Shift shortcuts work unchanged (M stream settings, S stats, W fullscreen,
-R release input, Q disconnect; Ctrl+Alt+End sends Ctrl+Alt+Del). The **Session**
-menu offers the same actions. Command-key chords that match a menu item (Quit,
-Settings, the Edit menu) stay local; other Command chords reach the host as the
-Meta key.
+The stream window forwards physical keys by USB usage, like Windows. Session
+shortcuts follow the official Parsec macOS defaults
+([Configure Hotkeys](https://support.parsec.app/hc/en-us/articles/32381778420372-Configure-Hotkeys)):
+
+| Shortcut | Action |
+| --- | --- |
+| ⌘⇧M | Stream settings (Parsec: Menu) |
+| ⌘⇧S | Connection stats (Parsec uses it for Add Screen, which this client lacks) |
+| ⌘⇧W | Toggle fullscreen (Parsec: Window Mode) |
+| ⌘⌥Z | Release / recapture input (Parsec: Detach Input) |
+| ⌘⌥\`, ⌘W or ⌘Q | Disconnect |
+| ⌃⌥⌫ | Send Ctrl+Alt+Del |
+
+These chords stay local, so ⌘Q in the stream window disconnects rather than
+quitting; ⌘Q elsewhere quits. The **Session** menu offers the same actions.
+Other Command chords that match a menu item (Settings, the Edit menu) stay
+local; the rest reach the host as the Meta key. Parsec's Chat, Switch Display,
+Immersive Mode and hosting hotkeys have no counterpart in this client.
 
 ## Limits
 

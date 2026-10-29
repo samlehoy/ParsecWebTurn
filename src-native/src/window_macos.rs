@@ -296,10 +296,11 @@ impl Window {
     }
 
     /// Acquire or release relative capture from the current focus/video state.
+    /// HID mouse keeps relative capture too, like Windows: the USB adapter
+    /// switches report mode on RelativeMode instead of receiving absolute moves.
     fn apply_capture(&self) {
-        let enabled = self.relative_requested.load(Ordering::Acquire)
-            && self.native_input_allowed()
-            && !self.hid_mouse_active();
+        let enabled =
+            self.relative_requested.load(Ordering::Acquire) && self.native_input_allowed();
         if self.relative_mouse.swap(enabled, Ordering::AcqRel) == enabled {
             return;
         }
@@ -309,14 +310,6 @@ impl Window {
         self.select_cursor();
         // Report the actual capture state to the input consumer.
         self.events.push(Event::RelativeMode(enabled));
-    }
-    #[cfg(feature = "bud")]
-    fn hid_mouse_active(&self) -> bool {
-        self.hid_mouse_active.load(Ordering::Acquire)
-    }
-    #[cfg(not(feature = "bud"))]
-    fn hid_mouse_active(&self) -> bool {
-        false
     }
 
     pub fn clipboard_allowed(&self) -> bool {
@@ -344,7 +337,6 @@ impl Window {
         self.hid_keyboard_active.store(keyboard, Ordering::Release);
         drop(generation);
         if mouse_changed {
-            self.apply_capture();
             // Seed a new USB adapter with the current capture state.
             self.events.push(Event::RelativeMode(
                 self.relative_mouse.load(Ordering::Acquire),
@@ -660,7 +652,15 @@ pub fn handle_event(event: &NSEvent, mtm: MainThreadMarker) -> bool {
         NSEventType::KeyDown | NSEventType::KeyUp => {
             let down = event.r#type() == NSEventType::KeyDown;
             let flags = event.modifierFlags();
-            // Command menu equivalents (Quit, Settings, ...) stay local; other
+            let mods = modifiers(flags);
+            let code = key_code(event.keyCode());
+            // Session shortcuts win over menu equivalents, so Command+Q
+            // disconnects like Parsec instead of quitting the app.
+            if code.is_some_and(|code| window.shortcut(code, down, down && event.isARepeat(), mods))
+            {
+                return true;
+            }
+            // Command menu equivalents (Settings, Edit, ...) stay local; other
             // Command chords reach the host.
             if down
                 && flags.contains(NSEventModifierFlags::Command)
@@ -670,12 +670,8 @@ pub fn handle_event(event: &NSEvent, mtm: MainThreadMarker) -> bool {
             {
                 return true;
             }
-            if let Some(code) = key_code(event.keyCode()) {
-                let mods = modifiers(flags);
-                let repeated = down && event.isARepeat();
-                if !window.shortcut(code, down, repeated, mods) {
-                    window.events.push(Event::Key(down, code, mods));
-                }
+            if let Some(code) = code {
+                window.events.push(Event::Key(down, code, mods));
             }
             return true;
         }
@@ -854,11 +850,11 @@ mod tests {
             modifiers(NSEventModifierFlags::Option | NSEventModifierFlags::Command),
             12
         );
-        // Ctrl+Shift chords keep the shared local shortcut contract on macOS.
+        // Command+Option chords use the Parsec macOS shortcut mask.
         assert_eq!(
             crate::input::shortcut(
-                "KeyQ",
-                modifiers(NSEventModifierFlags::Shift | NSEventModifierFlags::Control)
+                "Backquote",
+                modifiers(NSEventModifierFlags::Command | NSEventModifierFlags::Option)
             ),
             Some(crate::input::Shortcut::Disconnect)
         );
