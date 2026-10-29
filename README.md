@@ -157,6 +157,16 @@ from its edge to the TURN client. Usage above the shared allowance is currently
 **$0.05/GB**; check [current pricing](https://developers.cloudflare.com/realtime/sfu/platform/pricing/)
 and the [TURN billing FAQ](https://developers.cloudflare.com/realtime/turn/faq/).
 
+## Video rendering modes
+
+![Animated comparison of normal GPU rendering, Zero copy and optional AI upscaling.](assets/evoparseq-rendering-modes.gif)
+
+Start with **Normal GPU rendering** for compatibility. **Zero copy** skips a
+separate picture-conversion pass on supported systems; **AI upscaling** can
+improve enlarged video but uses more GPU resources and may add latency.
+The animation illustrates processing order, not measured speed. Check
+**Connection stats** for the mode actually in use.
+
 ## Experimental features and limits
 
 **Vendor HEVC, zero-copy, 10-bit HEVC, 4:4:4, display timing, USB HID and
