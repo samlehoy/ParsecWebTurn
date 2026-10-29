@@ -167,6 +167,30 @@ from its edge to the TURN client. Usage above the shared allowance is currently
 **$0.05/GB**; check [current pricing](https://developers.cloudflare.com/realtime/sfu/platform/pricing/)
 and the [TURN billing FAQ](https://developers.cloudflare.com/realtime/turn/faq/).
 
+## Optional AI upscaling
+
+The Video tab offers one **AI upscaling (experimental)** selector: NVIDIA RTX
+VSR has Off/Low/Medium/High/Ultra; Intel VPL AI has Off/On. Other GPUs disable the
+control. Each vendor's saved preference is retained.
+
+Both paths upscale on the GPU in normal DXGI mode. They add GPU processing,
+resources and an output copy, may increase latency, and are **not Zero copy**.
+Unsupported configurations retain ordinary rendering. No CPU pixel readback
+or generated frames are introduced.
+
+- **NVIDIA:** RTX Video SDK 1.1.0; RTX 3060 playback is live-confirmed.
+  The runtime is outside the EXE. On first launch with an NVIDIA GPU, setup asks
+  permission before downloading the pinned official NVIDIA payload. Archive
+  and DLL hashes are checked; verified caches are reused. The DLL lives under
+  `%LOCALAPPDATA%/EvoParseq/vsr/1.1.0`, without admin rights. Declining leaves
+  normal video available; enabling VSR later can authorize setup on next launch.
+  SDK-enabled packages include NVIDIA's license; no CUDA toolkit is required.
+- **Intel:** documented VPL 2.17 API with the installed Intel driver runtime,
+  without a bundled/downloaded DLL or model. **Hardware operation is unverified.**
+  Strict checks require the AI filter and same-device D3D11 surfaces; rejected
+  runtime/configuration details remain in event logs. Currently limited to
+  8-bit SDR upscaling; 10-bit, 4:4:4 and Zero copy keep their existing paths.
+
 ## Experimental features and limits
 
 **Vendor HEVC, zero-copy, 10-bit HEVC, 4:4:4, display timing, USB HID and
@@ -234,27 +258,3 @@ Our code uses the [MIT license](LICENSE). Applicable Parsec service terms and
 third-party licenses still apply. Development did not use Parsec's proprietary
 source code, and EvoParseq does not patch the official host or client. Parsec and
 Unity names and marks belong to their owners; no affiliation is implied.
-
-### Optional AI upscaling
-
-The Video tab offers one **AI upscaling (experimental)** selector: NVIDIA RTX
-VSR has Off/Low/Medium/High/Ultra; Intel VPL AI has Off/On. Other GPUs disable the
-control. Each vendor's saved preference is retained.
-
-Both paths upscale on the GPU in normal DXGI mode. They add GPU processing,
-resources and an output copy, may increase latency, and are **not Zero copy**.
-Unsupported configurations retain ordinary rendering. No CPU pixel readback
-or generated frames are introduced.
-
-- **NVIDIA:** RTX Video SDK 1.1.0; RTX 3060 playback is live-confirmed.
-  The runtime is outside the EXE. On first launch with an NVIDIA GPU, setup asks
-  permission before downloading the pinned official NVIDIA payload. Archive
-  and DLL hashes are checked; verified caches are reused. The DLL lives under
-  `%LOCALAPPDATA%/EvoParseq/vsr/1.1.0`, without admin rights. Declining leaves
-  normal video available; enabling VSR later can authorize setup on next launch.
-  SDK-enabled packages include NVIDIA's license; no CUDA toolkit is required.
-- **Intel:** documented VPL 2.17 API with the installed Intel driver runtime,
-  without a bundled/downloaded DLL or model. **Hardware operation is unverified.**
-  Strict checks require the AI filter and same-device D3D11 surfaces; rejected
-  runtime/configuration details remain in event logs. Currently limited to
-  8-bit SDR upscaling; 10-bit, 4:4:4 and Zero copy keep their existing paths.
