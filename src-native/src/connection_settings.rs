@@ -381,7 +381,7 @@ fn unprotect(value: &str) -> Result<String> {
         .decode(value)
         .context("Invalid saved credential encoding")?;
     String::from_utf8(crate::secure_storage::protect(&bytes, false)?)
-        .context("Cannot read saved credential for this Windows user")
+        .context("Cannot read saved credential for this user account")
 }
 fn protect(value: &str) -> Result<String> {
     Ok(STANDARD.encode(crate::secure_storage::protect(value.as_bytes(), true)?))
