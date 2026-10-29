@@ -262,6 +262,12 @@ impl Builder<'_> {
         ));
         self.view.addSubview(&label);
     }
+    /// A captioned explanation row without a control.
+    fn hint(&mut self, caption: &str, text: &str) {
+        self.caption(caption, 52.0);
+        let note = NSTextField::wrappingLabelWithString(&string(text), self.mtm);
+        self.place(&note, LABEL, WIDTH - LABEL - 56.0, 52.0);
+    }
     fn popup(&mut self, text: &str, labels: &[&str]) -> Retained<NSPopUpButton> {
         self.caption(text, 26.0);
         let popup = NSPopUpButton::initWithFrame_pullsDown(self.mtm.alloc(), NSRect::ZERO, false);
@@ -397,6 +403,20 @@ fn build(mtm: MainThreadMarker, manager: Arc<Manager>) {
     let mut b = Builder::new(mtm, &actions, Tab::Input.notice());
     #[cfg(feature = "bud")]
     let input = b.popup("Input mode", &InputMode::LABELS);
+    #[cfg(feature = "bud")]
+    for (caption, text) in [
+        ("", crate::settings_model::INPUT_MODE_HINT),
+        (
+            "HID requirements",
+            crate::settings_model::HID_REQUIREMENTS_HINT,
+        ),
+        (
+            "Compatibility",
+            crate::settings_model::HID_COMPATIBILITY_HINT,
+        ),
+    ] {
+        b.hint(caption, text);
+    }
     let input_tab = b.item("Input");
 
     let tabs = NSTabView::initWithFrame(
