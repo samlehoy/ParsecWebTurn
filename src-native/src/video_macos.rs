@@ -177,6 +177,9 @@ struct Converter {
     parameters: [Option<Vec<u8>>; 3],
     format: Option<Cf>,
     sample: Vec<u8>,
+    /// New parameter sets replaced a running format; the layer must be
+    /// flushed before the next key picture.
+    reconfigured: bool,
 }
 
 impl Converter {
@@ -201,7 +204,7 @@ impl Converter {
         }
         if changed {
             if let Some(format) = self.create_format(codec)? {
-                self.format = Some(format);
+                self.reconfigured |= self.format.replace(format).is_some();
             }
         }
         let Some(format) = &self.format else {
@@ -435,6 +438,17 @@ impl Pipeline {
             q.report.waiting_for_idr = false;
             if q.report.recovering {
                 q.recovered();
+            }
+            if std::mem::take(&mut state.converter.reconfigured) {
+                // The host changed the encoded format (e.g. a fullscreen app
+                // lost focus). Start a new sequence at this key picture, as
+                // Windows rebuilds its decoder; flush keeps the last image.
+                let _: () = unsafe { msg_send![layer, flush] };
+                crate::event_log::record(
+                    "INFO",
+                    "video_format_changed",
+                    serde_json::json!({"width":q.report.width,"height":q.report.height}),
+                );
             }
         }
         let _: () =
@@ -687,6 +701,22 @@ mod tests {
         assert_ne!(status, LAYER_FAILED, "{error:?}");
         let _: () = unsafe { msg_send![&*layer, flush] };
         let _: () = unsafe { msg_send![&*layer, flushAndRemoveImage] };
+    }
+
+    #[test]
+    fn only_replaced_parameter_sets_request_a_flush() {
+        let units = hevc_units();
+        let mut converter = Converter::default();
+        for unit in &units {
+            converter.convert(unit, Codec::Hevc).unwrap();
+        }
+        assert!(!converter.reconfigured, "the first format is not a change");
+        converter.convert(&units[0], Codec::Hevc).unwrap();
+        assert!(!converter.reconfigured, "repeated parameter sets");
+        let sps = include_bytes!("../crates/video/fixtures/hevc-crop.sps");
+        converter.convert(sps, Codec::Hevc).unwrap();
+        assert!(converter.reconfigured);
+        assert_ne!(converter.dimensions(), Some((1280, 720)));
     }
 
     #[test]
