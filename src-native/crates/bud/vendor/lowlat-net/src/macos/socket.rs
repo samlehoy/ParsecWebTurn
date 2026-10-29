@@ -65,7 +65,31 @@ impl Socket {
         Ok(())
     }
 
+    /// Bind `[::]` at `port`, or at a kernel-chosen one for 0, with the IPv4
+    /// side of that port free.
+    ///
+    /// macOS lets a dual-stack bind share a port another socket holds for
+    /// `0.0.0.0`, and that socket then keeps every v4 datagram. So an IPv4
+    /// socket takes the port first: it is refused where the port is held for
+    /// IPv4, and while it holds the port nobody else can take that side. Once
+    /// the dual-stack socket is bound, a v4 bind to the port is refused, so
+    /// closing the guard leaves no gap.
     fn bind(&self, port: u16) -> io::Result<()> {
+        // A kernel-chosen v4 port can still be held for IPv6 alone; choose
+        // again rather than fail an open that asked for any port.
+        let attempts = if port == 0 { 8 } else { 1 };
+        let mut last = None;
+        for _ in 0..attempts {
+            let (_guard, chosen) = hold_v4(port)?;
+            match self.bind_v6(chosen) {
+                Ok(()) => return Ok(()),
+                Err(error) => last = Some(error),
+            }
+        }
+        Err(last.unwrap_or_else(|| io::ErrorKind::AddrInUse.into()))
+    }
+
+    fn bind_v6(&self, port: u16) -> io::Result<()> {
         let addr = libc::sockaddr_in6 {
             sin6_len: mem::size_of::<libc::sockaddr_in6>() as u8,
             sin6_family: family_v6(),
@@ -289,6 +313,29 @@ impl Socket {
     }
 }
 
+/// An IPv4 socket bound at `0.0.0.0:port`, and the port it got.
+fn hold_v4(port: u16) -> io::Result<(OwnedFd, u16)> {
+    let raw = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+    if raw < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    let mut addr: libc::sockaddr_in = unsafe { mem::zeroed() };
+    addr.sin_len = mem::size_of::<libc::sockaddr_in>() as u8;
+    addr.sin_family = libc::AF_INET as libc::sa_family_t;
+    addr.sin_port = port.to_be();
+    let mut len = socklen(mem::size_of::<libc::sockaddr_in>());
+    let rc = unsafe { libc::bind(raw, core::ptr::addr_of!(addr).cast(), len) };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let rc = unsafe { libc::getsockname(raw, core::ptr::addr_of_mut!(addr).cast(), &mut len) };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((fd, u16::from_be(addr.sin_port)))
+}
+
 pub(super) fn to_storage(addr: SocketAddr) -> (libc::sockaddr_in6, libc::socklen_t) {
     let (ip, port) = match addr {
         SocketAddr::V4(v4) => (v4.ip().to_ipv6_mapped(), v4.port()),
@@ -442,6 +489,26 @@ mod tests {
             assert!(!cmsg.is_null(), "no TOS reported");
             assert_eq!(((*cmsg).cmsg_level, (*cmsg).cmsg_type), (libc::IPPROTO_IP, libc::IP_RECVTOS));
             *libc::CMSG_DATA(cmsg)
+        }
+    }
+
+    /// A kernel-chosen port is never one another socket holds for IPv4.
+    /// A plain dual-stack bind picks blind across both families: with 200 of
+    /// 16384 ephemeral ports held, 500 binds share one about six times, so
+    /// this fails all but about 0.2 % of runs without the guard. The 200 stay
+    /// under the 256-descriptor default.
+    #[test]
+    fn a_chosen_port_is_never_held_for_ipv4() {
+        let held: Vec<_> = (0..200)
+            .map(|_| std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).expect("hold"))
+            .collect();
+        let ports: std::collections::HashSet<u16> = held
+            .iter()
+            .map(|socket| socket.local_addr().expect("addr").port())
+            .collect();
+        for _ in 0..500 {
+            let port = Socket::bound(0).expect("bind").local_addr().expect("addr").port();
+            assert!(!ports.contains(&port), "took {port}, which is held for IPv4");
         }
     }
 

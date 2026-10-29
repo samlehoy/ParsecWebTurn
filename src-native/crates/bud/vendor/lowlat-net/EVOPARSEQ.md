@@ -72,7 +72,9 @@ refuses the IPv4-level options, so each IPv4 send carries `IP_TOS` as a control
 message and a pinned IPv4 source rides `IP_PKTINFO`; IPv6 sends keep the
 socket's `IPV6_TCLASS`. Receives use one `recvmsg` per datagram and report the
 arrival address from `IPV6_PKTINFO`. The batched `recvmsg_x` is not in the
-public SDK and is not used. TCP/TLS QoS marking is
+public SDK and is not used. macOS lets a dual-stack bind share a port another
+socket holds for `0.0.0.0`, which then keeps the IPv4 datagrams, so the bind
+first holds the port with an IPv4 socket and closes it once `[::]` is bound. TCP/TLS QoS marking is
 not applied on macOS; the shared guard reports it as not applied. The module set
 and public API are unchanged; `lib.rs`, `addrs.rs` and `socket.rs` only extend
 their platform conditions. The crate's unit tests still use Linux/Windows
