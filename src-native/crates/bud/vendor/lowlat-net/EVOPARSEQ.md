@@ -61,3 +61,15 @@ The 2026-10-26 dependency refresh raises the webpki-roots minimum to 1.0.10
 (RUSTSEC-2026-0381). Application and BUD lockfiles also select rustls-webpki
 0.103.16 (RUSTSEC-2026-0382) and Tokio 1.53.3 (RUSTSEC-2026-0386).
 Rustls remains 0.23.46 with the same providers and certificate policy.
+
+## macOS backend
+
+`src/macos` adds a macOS system layer beside `src/linux` and `src/windows`:
+IPv4/IPv6 UDP sockets with DSCP EF, a `poll(2)` wait with a non-blocking pipe
+wake, `getifaddrs` interface discovery, plain `sendmsg` without segmentation
+offload, and the nonblocking TCP carrier for turn-stream. TCP/TLS QoS marking is
+not applied on macOS; the shared guard reports it as not applied. The module set
+and public API are unchanged; `lib.rs`, `addrs.rs` and `socket.rs` only extend
+their platform conditions. The crate's unit tests still use Linux/Windows
+helpers and are not yet built for macOS.
+

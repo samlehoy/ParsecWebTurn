@@ -1,5 +1,7 @@
 //! Documented Security framework Keychain item holding a random per-user key.
 //! Like DPAPI, protected values do not decrypt for another user or machine.
+// Tests use a fixed key and never reach the user's Keychain.
+#![cfg_attr(test, allow(dead_code))]
 use anyhow::{bail, Context, Result};
 use objc2::{rc::Retained, runtime::AnyObject};
 use objc2_foundation::{NSData, NSDictionary, NSNumber, NSString};
@@ -26,8 +28,7 @@ fn query(extra: &[(&NSString, &AnyObject)]) -> Retained<NSDictionary<NSString, A
     let service = NSString::from_str(SERVICE);
     let account = NSString::from_str(ACCOUNT);
     let mut keys: Vec<&NSString> = unsafe { vec![kSecClass, kSecAttrService, kSecAttrAccount] };
-    let mut values: Vec<&AnyObject> =
-        vec![unsafe { kSecClassGenericPassword }, &service, &account];
+    let mut values: Vec<&AnyObject> = vec![unsafe { kSecClassGenericPassword }, &service, &account];
     for (key, value) in extra {
         keys.push(key);
         values.push(value);

@@ -7,8 +7,7 @@ use super::sign_in::{Completion, SignIn};
 use crate::window_macos::on_main;
 use anyhow::Result;
 use objc2::{
-    define_class, msg_send, rc::Retained, runtime::NSObject, sel, MainThreadMarker,
-    MainThreadOnly,
+    define_class, msg_send, rc::Retained, runtime::NSObject, sel, MainThreadMarker, MainThreadOnly,
 };
 use objc2_app_kit::{
     NSAlert, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton,
@@ -68,6 +67,12 @@ define_class!(
             QUIT.store(true, Ordering::Release);
             if let Some(window) = crate::window_macos::active() {
                 window.request_stop();
+            }
+        }
+        #[unsafe(method(streamSettings:))]
+        fn stream_settings(&self, _sender: &NSObject) {
+            if let Some(window) = crate::window_macos::active() {
+                window.open_stream_settings();
             }
         }
         #[unsafe(method(stats:))]
@@ -173,7 +178,12 @@ fn actions(mtm: MainThreadMarker) -> Retained<Actions> {
     })
 }
 
-fn item(mtm: MainThreadMarker, title: &str, action: Option<objc2::runtime::Sel>, key: &str) -> Retained<NSMenuItem> {
+fn item(
+    mtm: MainThreadMarker,
+    title: &str,
+    action: Option<objc2::runtime::Sel>,
+    key: &str,
+) -> Retained<NSMenuItem> {
     let item = unsafe {
         NSMenuItem::initWithTitle_action_keyEquivalent(
             mtm.alloc(),
@@ -182,15 +192,28 @@ fn item(mtm: MainThreadMarker, title: &str, action: Option<objc2::runtime::Sel>,
             &NSString::from_str(key),
         )
     };
-    if action.is_some_and(|a| a.name().to_bytes().ends_with(b":") && !STANDARD.contains(&a.name().to_bytes())) {
+    if action.is_some_and(|a| {
+        a.name().to_bytes().ends_with(b":") && !STANDARD.contains(&a.name().to_bytes())
+    }) {
         unsafe { item.setTarget(Some(&actions(mtm))) };
     }
     item
 }
 // Responder-chain actions handled by AppKit text fields and windows.
-const STANDARD: [&[u8]; 6] = [b"cut:", b"copy:", b"paste:", b"selectAll:", b"undo:", b"performMiniaturize:"];
+const STANDARD: [&[u8]; 6] = [
+    b"cut:",
+    b"copy:",
+    b"paste:",
+    b"selectAll:",
+    b"undo:",
+    b"performMiniaturize:",
+];
 
-fn menu(mtm: MainThreadMarker, title: &str, items: Vec<Retained<NSMenuItem>>) -> Retained<NSMenuItem> {
+fn menu(
+    mtm: MainThreadMarker,
+    title: &str,
+    items: Vec<Retained<NSMenuItem>>,
+) -> Retained<NSMenuItem> {
     let menu = NSMenu::initWithTitle(mtm.alloc(), &NSString::from_str(title));
     for item in items {
         menu.addItem(&item);
@@ -230,12 +253,43 @@ fn install_menu(mtm: MainThreadMarker, app: &NSApplication) {
         mtm,
         "Session",
         vec![
-            item(mtm, "Connection Stats (Ctrl+Shift+S)", Some(sel!(stats:)), ""),
-            item(mtm, "Toggle Fullscreen (Ctrl+Shift+W)", Some(sel!(fullscreen:)), ""),
-            item(mtm, "Release Input (Ctrl+Shift+R)", Some(sel!(release:)), ""),
-            item(mtm, "Send Ctrl+Alt+Del (Ctrl+Alt+End)", Some(sel!(attention:)), ""),
+            item(
+                mtm,
+                "Stream Settings… (Ctrl+Shift+M)",
+                Some(sel!(streamSettings:)),
+                "",
+            ),
+            item(
+                mtm,
+                "Connection Stats (Ctrl+Shift+S)",
+                Some(sel!(stats:)),
+                "",
+            ),
+            item(
+                mtm,
+                "Toggle Fullscreen (Ctrl+Shift+W)",
+                Some(sel!(fullscreen:)),
+                "",
+            ),
+            item(
+                mtm,
+                "Release Input (Ctrl+Shift+R)",
+                Some(sel!(release:)),
+                "",
+            ),
+            item(
+                mtm,
+                "Send Ctrl+Alt+Del (Ctrl+Alt+End)",
+                Some(sel!(attention:)),
+                "",
+            ),
             separator(),
-            item(mtm, "Disconnect (Ctrl+Shift+Q)", Some(sel!(disconnect:)), ""),
+            item(
+                mtm,
+                "Disconnect (Ctrl+Shift+Q)",
+                Some(sel!(disconnect:)),
+                "",
+            ),
         ],
     ));
     bar.addItem(&menu(
@@ -322,7 +376,12 @@ fn field(mtm: MainThreadMarker, text: &str, rect: NSRect) -> Retained<NSTextFiel
     field.setFrame(rect);
     field
 }
-fn button(mtm: MainThreadMarker, title: &str, action: objc2::runtime::Sel, rect: NSRect) -> Retained<NSButton> {
+fn button(
+    mtm: MainThreadMarker,
+    title: &str,
+    action: objc2::runtime::Sel,
+    rect: NSRect,
+) -> Retained<NSButton> {
     let button = unsafe {
         NSButton::buttonWithTitle_target_action(
             &NSString::from_str(title),
@@ -340,7 +399,9 @@ fn create_launcher(mtm: MainThreadMarker, email: &str, peer: &str, remember: boo
         NSWindow::initWithContentRect_styleMask_backing_defer(
             mtm.alloc(),
             NSRect::new(NSPoint::ZERO, NSSize::new(WIDTH, HEIGHT)),
-            NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable,
+            NSWindowStyleMask::Titled
+                | NSWindowStyleMask::Closable
+                | NSWindowStyleMask::Miniaturizable,
             NSBackingStoreType::Buffered,
             false,
         )
@@ -355,10 +416,18 @@ fn create_launcher(mtm: MainThreadMarker, email: &str, peer: &str, remember: boo
         "Native core  /  Your computers, your connection",
         frame(32.0, 64.0, 520.0, 20.0),
     );
-    let settings = button(mtm, "Settings", sel!(settings:), frame(460.0, 28.0, 108.0, 30.0));
+    let settings = button(
+        mtm,
+        "Settings",
+        sel!(settings:),
+        frame(460.0, 28.0, 108.0, 30.0),
+    );
     let mut login_controls: Vec<Retained<NSView>> = Vec::new();
     let mut fields = Vec::new();
-    for (i, text) in ["Email", "Password", "Two-factor code (optional)"].iter().enumerate() {
+    for (i, text) in ["Email", "Password", "Two-factor code (optional)"]
+        .iter()
+        .enumerate()
+    {
         let top = 112.0 + i as f64 * 44.0;
         let caption = label(mtm, text, frame(32.0, top + 3.0, 200.0, 20.0));
         let rect = frame(240.0, top, 328.0, 24.0);
@@ -382,21 +451,44 @@ fn create_launcher(mtm: MainThreadMarker, email: &str, peer: &str, remember: boo
     };
     remember_box.setFrame(frame(240.0, 244.0, 328.0, 22.0));
     remember_box.setState(isize::from(remember));
-    let sign_in = button(mtm, "Sign in", sel!(login:), frame(428.0, 280.0, 140.0, 32.0));
+    let sign_in = button(
+        mtm,
+        "Sign in",
+        sel!(login:),
+        frame(428.0, 280.0, 140.0, 32.0),
+    );
     sign_in.setKeyEquivalent(&NSString::from_str("\r"));
-    login_controls.push(Retained::into_super(Retained::into_super(remember_box.clone())));
+    login_controls.push(Retained::into_super(Retained::into_super(
+        remember_box.clone(),
+    )));
     login_controls.push(Retained::into_super(Retained::into_super(sign_in.clone())));
 
-    let hosts = NSPopUpButton::initWithFrame_pullsDown(mtm.alloc(), frame(32.0, 112.0, 536.0, 28.0), false);
+    let hosts =
+        NSPopUpButton::initWithFrame_pullsDown(mtm.alloc(), frame(32.0, 112.0, 536.0, 28.0), false);
     unsafe {
         hosts.setTarget(Some(&actions(mtm)));
         hosts.setAction(Some(sel!(hostSelected:)));
     }
     let peer_caption = label(mtm, "Host peer ID", frame(32.0, 163.0, 150.0, 20.0));
     let peer_field = field(mtm, peer, frame(190.0, 160.0, 378.0, 24.0));
-    let refresh = button(mtm, "Refresh", sel!(refresh:), frame(32.0, 210.0, 120.0, 32.0));
-    let logout = button(mtm, "Sign out", sel!(logout:), frame(160.0, 210.0, 120.0, 32.0));
-    let connect = button(mtm, "Connect", sel!(connect:), frame(428.0, 210.0, 140.0, 32.0));
+    let refresh = button(
+        mtm,
+        "Refresh",
+        sel!(refresh:),
+        frame(32.0, 210.0, 120.0, 32.0),
+    );
+    let logout = button(
+        mtm,
+        "Sign out",
+        sel!(logout:),
+        frame(160.0, 210.0, 120.0, 32.0),
+    );
+    let connect = button(
+        mtm,
+        "Connect",
+        sel!(connect:),
+        frame(428.0, 210.0, 140.0, 32.0),
+    );
     let picker_controls: Vec<Retained<NSView>> = vec![
         Retained::into_super(Retained::into_super(Retained::into_super(hosts.clone()))),
         Retained::into_super(Retained::into_super(peer_caption)),
@@ -502,7 +594,11 @@ pub fn choose(
     let first_status = notice
         .unwrap_or("Use your Parsec account. Passwords and two-factor codes are never saved.")
         .to_owned();
-    let (email, peer, remember) = (profile.email.clone(), profile.last_peer.clone(), sign_in.remember_login);
+    let (email, peer, remember) = (
+        profile.email.clone(),
+        profile.last_peer.clone(),
+        sign_in.remember_login,
+    );
     on_main(move |mtm| create_launcher(mtm, &email, &peer, remember, &first_status));
     view(&sign_in, &picker);
     let mut next_refresh = Instant::now() + Duration::from_millis(picker::AUTO_REFRESH_MS.into());
@@ -511,7 +607,12 @@ pub fn choose(
     }
     let mut result = None;
     while !QUIT.load(Ordering::Acquire) && result.is_none() {
-        let open = on_main(|_| LAUNCHER.with_borrow(|l| l.as_ref().is_some_and(|l| l.window.isVisible() || l.window.isMiniaturized())));
+        let open = on_main(|_| {
+            LAUNCHER.with_borrow(|l| {
+                l.as_ref()
+                    .is_some_and(|l| l.window.isVisible() || l.window.isMiniaturized())
+            })
+        });
         if !open {
             break;
         }
@@ -542,7 +643,10 @@ pub fn choose(
                     Command::Connect(text) => match picker::connection_peer(&text) {
                         Ok(peer) => {
                             if let Some(session) = sign_in.session.take() {
-                                if manager.update_native(|p| p.last_peer = peer.clone()).is_err() {
+                                if manager
+                                    .update_native(|p| p.last_peer = peer.clone())
+                                    .is_err()
+                                {
                                     message("Could not save the selected computer. Your connection can still continue.");
                                 }
                                 result = Some(Selection { session, peer });
@@ -578,7 +682,11 @@ pub fn choose(
                     }
                 }
                 Completion::Login(Err(_)) => {
-                    crate::event_log::record("ERROR", "native_account_login_failed", serde_json::json!({}));
+                    crate::event_log::record(
+                        "ERROR",
+                        "native_account_login_failed",
+                        serde_json::json!({}),
+                    );
                     status(sign_in.message());
                 }
                 Completion::Logout | Completion::Disconnected => status(sign_in.message()),
@@ -699,7 +807,9 @@ pub fn open_stats(bus: Arc<crate::stats::Shared>) {
                 NSWindow::initWithContentRect_styleMask_backing_defer(
                     mtm.alloc(),
                     rect,
-                    NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable,
+                    NSWindowStyleMask::Titled
+                        | NSWindowStyleMask::Closable
+                        | NSWindowStyleMask::Resizable,
                     NSBackingStoreType::Buffered,
                     false,
                 )
@@ -740,7 +850,14 @@ pub fn open_stats(bus: Arc<crate::stats::Shared>) {
                     let timing = bus.host_timing.snapshot(sample.generation);
                     let mut text = String::new();
                     for tab in crate::stats_view::Tab::ALL {
-                        let p = crate::stats_view::Presentation::new(sample, &values, (None, None, None), None, &timing).select(tab);
+                        let p = crate::stats_view::Presentation::new(
+                            sample,
+                            &values,
+                            (None, None, None),
+                            None,
+                            &timing,
+                        )
+                        .select(tab);
                         if tab == crate::stats_view::Tab::Overview {
                             text.push_str(&format!("{}\n\n", p.status));
                             for (label, value) in &p.cards {

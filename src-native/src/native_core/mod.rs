@@ -20,6 +20,9 @@ mod session_platform;
 mod session_platform;
 #[cfg(windows)]
 pub(crate) mod session_ui;
+#[cfg(target_os = "macos")]
+#[path = "session_ui_macos.rs"]
+mod session_ui;
 mod session_video;
 mod sign_in;
 mod signaling;
@@ -31,6 +34,14 @@ pub(crate) mod ui;
 pub(crate) mod ui;
 
 use anyhow::{Context, Result};
+
+#[cfg(target_os = "macos")]
+pub(crate) fn open_stream_settings(
+    window: std::sync::Arc<crate::window::Window>,
+    manager: std::sync::Arc<crate::connection_settings::Manager>,
+) {
+    session_ui::open(window, manager);
+}
 
 #[cfg(target_os = "macos")]
 pub fn main() {
@@ -67,10 +78,9 @@ fn run() -> Result<()> {
     }
     let root = if args.is_empty() && cfg!(target_os = "macos") {
         // An app bundle may be signed or translocated read-only.
-        let root = std::path::PathBuf::from(
-            std::env::var_os("HOME").context("Home folder unavailable")?,
-        )
-        .join("Library/Application Support/EvoParseq");
+        let root =
+            std::path::PathBuf::from(std::env::var_os("HOME").context("Home folder unavailable")?)
+                .join("Library/Application Support/EvoParseq");
         std::fs::create_dir_all(&root)?;
         root
     } else if args.is_empty() {

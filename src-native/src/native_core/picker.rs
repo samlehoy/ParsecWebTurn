@@ -36,13 +36,14 @@ struct Request {
 /// A changed list needs one view update; an identical reply needs none.
 pub struct ListChange {
     pub selected: Option<usize>,
+    // List scrolling exists only in the Windows list box.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub top: usize,
     pub peer: Option<String>,
 }
 pub struct ListPosition {
     pub selected: Option<usize>,
     pub last_peer: String,
-    #[cfg_attr(not(windows), allow(dead_code))]
     pub top: usize,
 }
 

@@ -30,6 +30,7 @@ impl Platform {
 impl Drop for Platform {
     fn drop(&mut self) {
         // Same teardown order as Windows, including setup failures.
+        super::session_ui::close();
         self.window.end_session();
         self.window.request_stop();
         self.window.close();
@@ -43,13 +44,10 @@ impl View for Platform {
         self.window.native_display_size()
     }
     fn notify(&self, notification: Notification) {
-        // The menu bar has no host-settings panel yet; keep results in the log.
-        if let Notification::Status(status) = notification {
-            crate::event_log::record(
-                "INFO",
-                "native_session_status",
-                serde_json::json!({"status":status.text()}),
-            );
+        match notification {
+            Notification::Status(status) => super::session_ui::status(status),
+            Notification::DisplaysChanged => super::session_ui::displays(false),
+            Notification::DisplaySelected => super::session_ui::displays(true),
         }
     }
 }

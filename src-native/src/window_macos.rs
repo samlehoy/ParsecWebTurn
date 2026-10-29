@@ -81,7 +81,7 @@ pub(crate) fn on_main<R: Send>(f: impl FnOnce(MainThreadMarker) -> R + Send) -> 
         }
     }
 }
-fn post(f: impl FnOnce(MainThreadMarker) + Send + 'static) {
+pub(crate) fn post(f: impl FnOnce(MainThreadMarker) + Send + 'static) {
     dispatch2::DispatchQueue::main()
         .exec_async(move || f(MainThreadMarker::new().expect("main dispatch queue")));
 }
@@ -346,8 +346,9 @@ impl Window {
         if mouse_changed {
             self.apply_capture();
             // Seed a new USB adapter with the current capture state.
-            self.events
-                .push(Event::RelativeMode(self.relative_mouse.load(Ordering::Acquire)));
+            self.events.push(Event::RelativeMode(
+                self.relative_mouse.load(Ordering::Acquire),
+            ));
         }
         self.sync_hid_acquired();
     }
@@ -385,7 +386,12 @@ impl Window {
         self.select_cursor();
     }
     fn select_cursor(&self) {
-        let pending = std::mem::take(&mut *self.cursor_pending.lock().unwrap_or_else(|e| e.into_inner()));
+        let pending = std::mem::take(
+            &mut *self
+                .cursor_pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
         let hidden = self.relative_mouse.load(Ordering::Acquire);
         let window = self.ns_window;
         post(move |mtm| {
@@ -434,13 +440,20 @@ impl Window {
         }
     }
     fn apply_wake_lock(&self, mtm: MainThreadMarker) {
-        let visible = !self.ns_window(mtm).isMiniaturized() && !self.closing.load(Ordering::Acquire);
+        let visible =
+            !self.ns_window(mtm).isMiniaturized() && !self.closing.load(Ordering::Acquire);
         self.wake_lock
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .update(self.wake_requested.load(Ordering::Acquire), visible);
     }
 
+    pub fn open_stream_settings(&self) {
+        let window = active().filter(|w| std::ptr::eq(&**w, self));
+        if let (Some(window), Some(manager)) = (window, self.manager()) {
+            crate::native_core::open_stream_settings(window, manager);
+        }
+    }
     pub fn open_stats(&self) {
         crate::native_core::ui::open_stats(self.stats.clone());
     }
@@ -513,8 +526,7 @@ impl Window {
         match route {
             ShortcutRoute::Forward => return false,
             ShortcutRoute::Consume => {}
-            // The menu bar holds the session controls on macOS.
-            ShortcutRoute::Activate(Shortcut::Menu) => {}
+            ShortcutRoute::Activate(Shortcut::Menu) => self.open_stream_settings(),
             ShortcutRoute::Activate(Shortcut::Statistics) => self.open_stats(),
             ShortcutRoute::Activate(Shortcut::SecureAttention) => self.events.push(
                 Event::NativeSession(crate::native_core::session_model::Command::SecureAttention),
@@ -544,7 +556,8 @@ impl Window {
 impl Drop for Window {
     fn drop(&mut self) {
         let (window, layer) = (self.ns_window, self.video_layer);
-        let wake_lock = std::mem::take(&mut *self.wake_lock.lock().unwrap_or_else(|e| e.into_inner()));
+        let wake_lock =
+            std::mem::take(&mut *self.wake_lock.lock().unwrap_or_else(|e| e.into_inner()));
         post(move |_| unsafe {
             let mut wake_lock = wake_lock;
             wake_lock.update(false, false);
@@ -843,7 +856,10 @@ mod tests {
         );
         // Ctrl+Shift chords keep the shared local shortcut contract on macOS.
         assert_eq!(
-            crate::input::shortcut("KeyQ", modifiers(NSEventModifierFlags::Shift | NSEventModifierFlags::Control)),
+            crate::input::shortcut(
+                "KeyQ",
+                modifiers(NSEventModifierFlags::Shift | NSEventModifierFlags::Control)
+            ),
             Some(crate::input::Shortcut::Disconnect)
         );
     }

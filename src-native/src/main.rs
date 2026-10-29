@@ -9,6 +9,8 @@ mod attempt;
 #[cfg(windows)]
 mod audio_endpoint_windows;
 mod audio_layout;
+#[cfg(target_os = "macos")]
+mod audio_macos;
 #[cfg(any(windows, test))]
 mod audio_recovery;
 mod audio_stream;
@@ -23,6 +25,8 @@ mod bud_media;
 mod connection_settings;
 #[cfg(windows)]
 mod connection_settings_ui;
+#[cfg(target_os = "macos")]
+mod connection_settings_ui_macos;
 mod control;
 #[cfg(test)]
 mod crypto_policy_tests;
@@ -57,6 +61,8 @@ mod nvidia_vsr;
 #[cfg(windows)]
 mod performance;
 mod platform;
+#[cfg(target_os = "macos")]
+mod platform_macos;
 #[cfg(windows)]
 mod platform_windows;
 mod secure_storage;
@@ -71,12 +77,14 @@ mod stats_ui;
 #[cfg(any(windows, target_os = "macos"))]
 mod stats_view;
 mod transport;
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 mod updater;
 #[cfg(windows)]
 mod updater_ui;
 #[cfg(any(windows, test))]
 mod video_color;
+#[cfg(target_os = "macos")]
+mod video_macos;
 mod video_output;
 mod video_stream;
 #[cfg(windows)]
@@ -91,20 +99,12 @@ mod wake_lock;
 #[cfg(windows)]
 mod window;
 #[cfg(target_os = "macos")]
-mod audio_macos;
-#[cfg(target_os = "macos")]
-mod connection_settings_ui_macos;
-#[cfg(target_os = "macos")]
-mod platform_macos;
-#[cfg(target_os = "macos")]
-mod video_macos;
-#[cfg(target_os = "macos")]
 mod window_macos;
 // Each platform's media and window backends behind one static name.
-#[cfg(windows)]
-use {audio_windows as audio_platform, video_windows as video_platform};
 #[cfg(target_os = "macos")]
 use {audio_macos as audio_platform, video_macos as video_platform, window_macos as window};
+#[cfg(windows)]
+use {audio_windows as audio_platform, video_windows as video_platform};
 fn main() {
     #[cfg(any(windows, target_os = "macos"))]
     native_core::main();

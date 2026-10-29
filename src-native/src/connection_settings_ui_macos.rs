@@ -2,7 +2,9 @@
 //! from the shared settings model; this adapter only maps controls.
 use crate::connection_settings::Manager;
 use crate::settings_model::{BinaryChoice, Form, InputMode, RouteMode, Tab, VideoFormat};
-use objc2::{define_class, msg_send, rc::Retained, runtime::NSObject, sel, MainThreadMarker, MainThreadOnly};
+use objc2::{
+    define_class, msg_send, rc::Retained, runtime::NSObject, sel, MainThreadMarker, MainThreadOnly,
+};
 use objc2_app_kit::{
     NSBackingStoreType, NSButton, NSPopUpButton, NSScrollView, NSSecureTextField, NSTabView,
     NSTabViewItem, NSTextField, NSTextView, NSView, NSWindow, NSWindowStyleMask,
@@ -155,8 +157,10 @@ impl Page {
         );
         self.provider
             .selectItemAtIndex(isize::from(self.form.cloudflare()));
-        self.stun.setString(&string(&self.form.stun_urls.replace("\r\n", "\n")));
-        self.turn.setString(&string(&self.form.turn_urls.replace("\r\n", "\n")));
+        self.stun
+            .setString(&string(&self.form.stun_urls.replace("\r\n", "\n")));
+        self.turn
+            .setString(&string(&self.form.turn_urls.replace("\r\n", "\n")));
         self.username.setStringValue(&string(&s.custom_username));
         self.key_id.setStringValue(&string(&s.turn_key_id));
         self.ttl.setStringValue(&string(&self.form.ttl));
@@ -164,7 +168,7 @@ impl Page {
         set(&self.event_log, s.event_logging);
         let format = VideoFormat::current(&s);
         self.video.selectItemAtIndex(
-            VIDEO_FORMATS.iter().position(|f| *f == format).unwrap_or(1) as isize,
+            VIDEO_FORMATS.iter().position(|f| *f == format).unwrap_or(1) as isize
         );
         self.audio_buffer
             .selectItemAtIndex(isize::from(s.custom_audio_buffer));
@@ -172,7 +176,8 @@ impl Page {
         self.audio_max.setStringValue(&string(&self.form.audio_max));
         #[cfg(feature = "bud")]
         {
-            self.audio_codec.selectItemAtIndex(isize::from(s.allow_raw_audio));
+            self.audio_codec
+                .selectItemAtIndex(isize::from(s.allow_raw_audio));
             self.speakers
                 .selectItemAtIndex(isize::from(s.experimental_surround_audio));
             self.input.selectItemAtIndex(
@@ -249,7 +254,10 @@ impl Builder<'_> {
     fn caption(&mut self, text: &str, height: f64) {
         let label = NSTextField::labelWithString(&string(text), self.mtm);
         label.setFrame(NSRect::new(
-            NSPoint::new(16.0, PAGE_HEIGHT - self.top - height + (height - 18.0).min(4.0)),
+            NSPoint::new(
+                16.0,
+                PAGE_HEIGHT - self.top - height + (height - 18.0).min(4.0),
+            ),
             NSSize::new(LABEL - 24.0, 18.0),
         ));
         self.view.addSubview(&label);
@@ -315,7 +323,9 @@ impl Builder<'_> {
 pub fn open(manager: Arc<Manager>) {
     crate::window_macos::on_main(move |mtm| {
         let existing = PAGE.with_borrow(|page| {
-            page.as_ref().map(|page| page.window.makeKeyAndOrderFront(None)).is_some()
+            page.as_ref()
+                .map(|page| page.window.makeKeyAndOrderFront(None))
+                .is_some()
         });
         if existing {
             return;
@@ -332,7 +342,9 @@ fn build(mtm: MainThreadMarker, manager: Arc<Manager>) {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             mtm.alloc(),
             NSRect::new(NSPoint::ZERO, NSSize::new(WIDTH, height)),
-            NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable,
+            NSWindowStyleMask::Titled
+                | NSWindowStyleMask::Closable
+                | NSWindowStyleMask::Miniaturizable,
             NSBackingStoreType::Buffered,
             false,
         )
@@ -362,7 +374,8 @@ fn build(mtm: MainThreadMarker, manager: Arc<Manager>) {
     let mut b = Builder::new(mtm, &actions, Tab::Video.notice());
     let video = b.popup(
         "Video format",
-        &VIDEO_FORMATS.map(|f| VideoFormat::LABELS[VideoFormat::ALL.iter().position(|a| *a == f).unwrap()]),
+        &VIDEO_FORMATS
+            .map(|f| VideoFormat::LABELS[VideoFormat::ALL.iter().position(|a| *a == f).unwrap()]),
     );
     let note = NSTextField::wrappingLabelWithString(
         &string("VideoToolbox decodes and Core Animation presents video. HEVC needs a compatible host encoder. Rendering, GPU, chroma and AI upscaling options are Windows-only."),
@@ -388,7 +401,10 @@ fn build(mtm: MainThreadMarker, manager: Arc<Manager>) {
 
     let tabs = NSTabView::initWithFrame(
         mtm.alloc(),
-        NSRect::new(NSPoint::new(12.0, 76.0), NSSize::new(WIDTH - 24.0, PAGE_HEIGHT + 44.0)),
+        NSRect::new(
+            NSPoint::new(12.0, 76.0),
+            NSSize::new(WIDTH - 24.0, PAGE_HEIGHT + 44.0),
+        ),
     );
     for item in [network, video_tab, audio, input_tab] {
         tabs.addTabViewItem(&item);
@@ -398,11 +414,22 @@ fn build(mtm: MainThreadMarker, manager: Arc<Manager>) {
         &string("Saved in settings.json. Secrets are protected by your macOS Keychain."),
         mtm,
     );
-    feedback.setFrame(NSRect::new(NSPoint::new(24.0, 14.0), NSSize::new(WIDTH - 300.0, 52.0)));
+    feedback.setFrame(NSRect::new(
+        NSPoint::new(24.0, 14.0),
+        NSSize::new(WIDTH - 300.0, 52.0),
+    ));
     content.addSubview(&feedback);
-    for (title, action, x) in [("Close", sel!(close:), WIDTH - 260.0), ("Save settings", sel!(save:), WIDTH - 140.0)] {
+    for (title, action, x) in [
+        ("Close", sel!(close:), WIDTH - 260.0),
+        ("Save settings", sel!(save:), WIDTH - 140.0),
+    ] {
         let button = unsafe {
-            NSButton::buttonWithTitle_target_action(&string(title), Some(&actions), Some(action), mtm)
+            NSButton::buttonWithTitle_target_action(
+                &string(title),
+                Some(&actions),
+                Some(action),
+                mtm,
+            )
         };
         button.setFrame(NSRect::new(NSPoint::new(x, 24.0), NSSize::new(116.0, 32.0)));
         content.addSubview(&button);

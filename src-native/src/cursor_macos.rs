@@ -60,11 +60,17 @@ fn create(frame: &Frame, scale: f64) -> Option<Retained<NSCursor>> {
         return None;
     }
     unsafe { std::ptr::copy_nonoverlapping(frame.rgba.as_ptr(), pixels, frame.rgba.len()) };
-    let points = NSSize::new(f64::from(frame.width) / scale, f64::from(frame.height) / scale);
+    let points = NSSize::new(
+        f64::from(frame.width) / scale,
+        f64::from(frame.height) / scale,
+    );
     rep.setSize(points);
     let image = NSImage::initWithSize(NSImage::alloc(), points);
     image.addRepresentation(&rep);
-    let hotspot = NSPoint::new(f64::from(frame.hot_x) / scale, f64::from(frame.hot_y) / scale);
+    let hotspot = NSPoint::new(
+        f64::from(frame.hot_x) / scale,
+        f64::from(frame.hot_y) / scale,
+    );
     Some(NSCursor::initWithImage_hotSpot(
         NSCursor::alloc(),
         &image,

@@ -352,7 +352,10 @@ fn fill(s: &mut State, out: &mut [i16], frames: usize) {
     }
     let mut written = 0;
     if s.primed {
-        for (slot, sample) in out[..wanted].iter_mut().zip(s.pcm.drain(..wanted.min(s.pcm.len()))) {
+        for (slot, sample) in out[..wanted]
+            .iter_mut()
+            .zip(s.pcm.drain(..wanted.min(s.pcm.len())))
+        {
             *slot = sample;
             written += 1;
         }
