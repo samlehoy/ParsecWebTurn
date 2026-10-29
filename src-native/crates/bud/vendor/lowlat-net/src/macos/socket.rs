@@ -52,10 +52,10 @@ impl Socket {
         self.set_int(libc::SOL_SOCKET, libc::SO_RCVBUF, WANT_RCVBUF)?;
         self.set_int(libc::SOL_SOCKET, libc::SO_SNDBUF, WANT_SNDBUF)?;
 
+        // Reports v4 arrivals too, as `::ffff:a.b.c.d`. The v4-level options
+        // (`IP_RECVDSTADDR`, `IP_TOS`) are refused on this socket, so v4
+        // sends carry their traffic class per datagram; see `send_msg`.
         let _ = self.set_int(libc::IPPROTO_IPV6, libc::IPV6_RECVPKTINFO, 1);
-        let _ = self.set_int(libc::IPPROTO_IP, libc::IP_RECVDSTADDR, 1);
-
-        let _ = self.set_int(libc::IPPROTO_IP, libc::IP_TOS, DSCP_EF);
         let _ = self.set_int(libc::IPPROTO_IPV6, libc::IPV6_TCLASS, DSCP_EF);
 
         let _ = self.set_int(libc::IPPROTO_IP, libc::IP_DONTFRAG, 1);
@@ -172,17 +172,66 @@ impl Socket {
     }
 
     pub fn send_to(&self, datagram: &[u8], to: SocketAddr) -> io::Result<usize> {
-        let (addr, len) = to_storage(to);
-        let sent = unsafe {
-            libc::sendto(
-                self.fd.as_raw_fd(),
-                datagram.as_ptr().cast(),
-                datagram.len(),
-                0,
-                core::ptr::addr_of!(addr).cast(),
-                len,
-            )
+        self.send_msg(datagram, to, None)
+    }
+
+    /// One datagram to `to`, claiming `source` when one is pinned.
+    ///
+    /// A v4-mapped destination takes the kernel's v4 path, which ignores the
+    /// socket's `IPV6_TCLASS` and reads only `IPPROTO_IP` control messages, so
+    /// a v4 send carries `IP_TOS` itself and a v4 source rides `IP_PKTINFO`.
+    /// A v6 destination keeps the socket's traffic class.
+    pub(super) fn send_msg(
+        &self,
+        datagram: &[u8],
+        to: SocketAddr,
+        source: Option<IpAddr>,
+    ) -> io::Result<usize> {
+        let (addr, addr_len) = to_storage(to);
+        let mark = to.is_ipv4();
+
+        let mut control = Control([0u8; CONTROL_LEN]);
+        let mut iov = libc::iovec {
+            iov_base: datagram.as_ptr().cast_mut().cast(),
+            iov_len: datagram.len(),
         };
+        let mut msg: libc::msghdr = unsafe { mem::zeroed() };
+        msg.msg_name = core::ptr::addr_of!(addr).cast_mut().cast();
+        msg.msg_namelen = addr_len;
+        msg.msg_iov = core::ptr::addr_of_mut!(iov);
+        msg.msg_iovlen = 1;
+        let mut control_len = 0;
+        if mark {
+            control_len += unsafe { libc::CMSG_SPACE(TOS_FIELD) };
+        }
+        if let Some(source) = source {
+            control_len += unsafe { libc::CMSG_SPACE(source_field(source)) };
+        }
+        if control_len > 0 {
+            msg.msg_control = control.0.as_mut_ptr().cast();
+            msg.msg_controllen = control_len;
+        }
+
+        // SAFETY: the control buffer is aligned and msg_controllen reserves
+        // CMSG_SPACE for exactly the messages written below.
+        unsafe {
+            let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
+            if mark {
+                (*cmsg).cmsg_level = libc::IPPROTO_IP;
+                (*cmsg).cmsg_type = libc::IP_TOS;
+                (*cmsg).cmsg_len = libc::CMSG_LEN(TOS_FIELD);
+                core::ptr::write_unaligned(libc::CMSG_DATA(cmsg).cast::<libc::c_int>(), DSCP_EF);
+                cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
+            }
+            if let Some(source) = source {
+                if cmsg.is_null() {
+                    return Err(io::Error::other("no room for the source"));
+                }
+                write_source(cmsg, source);
+            }
+        }
+
+        let sent = unsafe { libc::sendmsg(self.fd.as_raw_fd(), &msg, 0) };
         if sent < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -282,5 +331,157 @@ pub(super) fn from_storage(storage: &libc::sockaddr_storage) -> Option<SocketAdd
             ))
         }
         _ => None,
+    }
+}
+
+/// Room for one datagram's control messages: the traffic class beside a v6
+/// packet information is 16 plus 32 bytes of aligned space.
+pub(super) const CONTROL_LEN: usize = 64;
+
+/// Control message storage, aligned as the kernel requires.
+#[repr(align(8))]
+#[derive(Clone, Copy)]
+pub(super) struct Control(pub(super) [u8; CONTROL_LEN]);
+
+const TOS_FIELD: u32 = 4;
+const _: () = assert!(TOS_FIELD as usize == mem::size_of::<libc::c_int>());
+const V4_SOURCE_FIELD: u32 = 12;
+const _: () = assert!(V4_SOURCE_FIELD as usize == mem::size_of::<libc::in_pktinfo>());
+const V6_SOURCE_FIELD: u32 = 20;
+const _: () = assert!(V6_SOURCE_FIELD as usize == mem::size_of::<libc::in6_pktinfo>());
+
+fn source_field(source: IpAddr) -> u32 {
+    match source {
+        IpAddr::V4(_) => V4_SOURCE_FIELD,
+        IpAddr::V6(_) => V6_SOURCE_FIELD,
+    }
+}
+
+/// Fill one control message with the source address.
+///
+/// The v4 source goes into `ipi_spec_dst` at `IPPROTO_IP`: a v4-mapped
+/// destination takes the v4 path, which ignores `IPV6_PKTINFO` and leaves
+/// from the kernel's own choice. Interface indexes stay zero so routing still
+/// picks the interface; only the address is claimed.
+///
+/// # Safety
+///
+/// `cmsg` must point into a control buffer with `CMSG_SPACE` room for the
+/// structure the source's family selects.
+unsafe fn write_source(cmsg: *mut libc::cmsghdr, source: IpAddr) {
+    match source {
+        IpAddr::V4(v4) => unsafe {
+            (*cmsg).cmsg_level = libc::IPPROTO_IP;
+            (*cmsg).cmsg_type = libc::IP_PKTINFO;
+            (*cmsg).cmsg_len = libc::CMSG_LEN(V4_SOURCE_FIELD);
+            let mut info = mem::zeroed::<libc::in_pktinfo>();
+            info.ipi_spec_dst.s_addr = u32::from(v4).to_be();
+            core::ptr::write_unaligned(libc::CMSG_DATA(cmsg).cast::<libc::in_pktinfo>(), info);
+        },
+        IpAddr::V6(v6) => unsafe {
+            (*cmsg).cmsg_level = libc::IPPROTO_IPV6;
+            (*cmsg).cmsg_type = libc::IPV6_PKTINFO;
+            (*cmsg).cmsg_len = libc::CMSG_LEN(V6_SOURCE_FIELD);
+            let mut info = mem::zeroed::<libc::in6_pktinfo>();
+            info.ipi6_addr.s6_addr = v6.octets();
+            core::ptr::write_unaligned(libc::CMSG_DATA(cmsg).cast::<libc::in6_pktinfo>(), info);
+        },
+    }
+}
+
+/// The local address a datagram arrived at, from its `IPV6_PKTINFO`. A v4
+/// arrival is reported v4-mapped there and returned as v4.
+pub(super) fn local_of(msg: &libc::msghdr) -> Option<IpAddr> {
+    // SAFETY: the control pointer and length name storage the caller owns,
+    // sized by the kernel to what it wrote; the reads are unaligned-tolerant.
+    unsafe {
+        let mut cmsg = libc::CMSG_FIRSTHDR(msg);
+        while !cmsg.is_null() {
+            if (*cmsg).cmsg_level == libc::IPPROTO_IPV6 && (*cmsg).cmsg_type == libc::IPV6_PKTINFO {
+                let info =
+                    core::ptr::read_unaligned(libc::CMSG_DATA(cmsg).cast::<libc::in6_pktinfo>());
+                let ip = Ipv6Addr::from(info.ipi6_addr.s6_addr);
+                return Some(match ip.to_ipv4_mapped() {
+                    Some(v4) => IpAddr::V4(v4),
+                    None => IpAddr::V6(ip),
+                });
+            }
+            cmsg = libc::CMSG_NXTHDR(msg, cmsg);
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The TOS byte a v4 datagram arrived with, read by a plain `AF_INET`
+    /// socket, which is what a v4 peer is.
+    fn arrived_tos(receiver: &OwnedFd) -> u8 {
+        let mut ready = libc::pollfd {
+            fd: receiver.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(unsafe { libc::poll(&raw mut ready, 1, 1000) }, 1, "nothing arrived");
+        let mut buf = [0u8; 64];
+        let mut control = Control([0u8; CONTROL_LEN]);
+        let mut iov = libc::iovec {
+            iov_base: buf.as_mut_ptr().cast(),
+            iov_len: buf.len(),
+        };
+        let mut msg: libc::msghdr = unsafe { mem::zeroed() };
+        msg.msg_iov = &raw mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control.0.as_mut_ptr().cast();
+        msg.msg_controllen = socklen(CONTROL_LEN);
+        assert!(unsafe { libc::recvmsg(receiver.as_raw_fd(), &mut msg, 0) } > 0);
+        unsafe {
+            let cmsg = libc::CMSG_FIRSTHDR(&msg);
+            assert!(!cmsg.is_null(), "no TOS reported");
+            assert_eq!(((*cmsg).cmsg_level, (*cmsg).cmsg_type), (libc::IPPROTO_IP, libc::IP_RECVTOS));
+            *libc::CMSG_DATA(cmsg)
+        }
+    }
+
+    /// v4 sends leave marked EF, pinned or not. The socket's own `IP_TOS` is
+    /// refused here and its `IPV6_TCLASS` reaches v6 sends only, so without
+    /// the per-datagram mark these arrive at 0.
+    #[test]
+    fn a_v4_send_leaves_marked() {
+        let raw = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+        assert!(raw >= 0);
+        let receiver = unsafe { OwnedFd::from_raw_fd(raw) };
+        let on: libc::c_int = 1;
+        let rc = unsafe {
+            libc::setsockopt(
+                raw,
+                libc::IPPROTO_IP,
+                libc::IP_RECVTOS,
+                (&raw const on).cast(),
+                socklen(mem::size_of::<libc::c_int>()),
+            )
+        };
+        assert_eq!(rc, 0);
+        let mut addr: libc::sockaddr_in = unsafe { mem::zeroed() };
+        addr.sin_len = mem::size_of::<libc::sockaddr_in>() as u8;
+        addr.sin_family = libc::AF_INET as libc::sa_family_t;
+        addr.sin_addr.s_addr = u32::from(Ipv4Addr::LOCALHOST).to_be();
+        let rc = unsafe {
+            libc::bind(raw, (&raw const addr).cast(), socklen(mem::size_of::<libc::sockaddr_in>()))
+        };
+        assert_eq!(rc, 0);
+        let mut len = socklen(mem::size_of::<libc::sockaddr_in>());
+        assert_eq!(unsafe { libc::getsockname(raw, (&raw mut addr).cast(), &mut len) }, 0);
+        let to = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), u16::from_be(addr.sin_port));
+
+        let sender = Socket::bound(0).expect("sender");
+        sender.send_to(b"free", to).expect("send");
+        assert_eq!(arrived_tos(&receiver), DSCP_EF as u8, "an unpinned v4 send left unmarked");
+        sender
+            .send_msg(b"pin", to, Some(IpAddr::V4(Ipv4Addr::LOCALHOST)))
+            .expect("send");
+        assert_eq!(arrived_tos(&receiver), DSCP_EF as u8, "a pinned v4 send left unmarked");
     }
 }

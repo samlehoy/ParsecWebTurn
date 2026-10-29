@@ -67,7 +67,12 @@ Rustls remains 0.23.46 with the same providers and certificate policy.
 `src/macos` adds a macOS system layer beside `src/linux` and `src/windows`:
 IPv4/IPv6 UDP sockets with DSCP EF, a `poll(2)` wait with a non-blocking pipe
 wake, `getifaddrs` interface discovery, plain `sendmsg` without segmentation
-offload, and the nonblocking TCP carrier for turn-stream. TCP/TLS QoS marking is
+offload, and the nonblocking TCP carrier for turn-stream. The dual-stack socket
+refuses the IPv4-level options, so each IPv4 send carries `IP_TOS` as a control
+message and a pinned IPv4 source rides `IP_PKTINFO`; IPv6 sends keep the
+socket's `IPV6_TCLASS`. Receives use one `recvmsg` per datagram and report the
+arrival address from `IPV6_PKTINFO`. The batched `recvmsg_x` is not in the
+public SDK and is not used. TCP/TLS QoS marking is
 not applied on macOS; the shared guard reports it as not applied. The module set
 and public API are unchanged; `lib.rs`, `addrs.rs` and `socket.rs` only extend
 their platform conditions. The crate's unit tests still use Linux/Windows

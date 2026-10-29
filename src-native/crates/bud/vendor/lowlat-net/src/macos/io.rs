@@ -4,7 +4,7 @@ use core::net::{IpAddr, SocketAddr};
 use std::io;
 use std::mem;
 
-use super::socket::{Socket, from_storage, socklen};
+use super::socket::{CONTROL_LEN, Control, Socket, from_storage, local_of, socklen};
 use super::wake::Wake;
 use crate::shell::{MIN_WAIT_MS, Ready};
 use crate::socket::{RECV_BATCH, RECV_SLOT};
@@ -88,6 +88,7 @@ struct Batch {
     slots: Box<[[u8; RECV_SLOT]]>,
     names: Box<[libc::sockaddr_storage]>,
     lengths: Box<[usize]>,
+    locals: Box<[Option<IpAddr>]>,
     filled: usize,
 }
 
@@ -97,10 +98,12 @@ impl Batch {
         let names =
             vec![unsafe { mem::zeroed::<libc::sockaddr_storage>() }; RECV_BATCH].into_boxed_slice();
         let lengths = vec![0usize; RECV_BATCH].into_boxed_slice();
+        let locals = vec![None; RECV_BATCH].into_boxed_slice();
         Self {
             slots,
             names,
             lengths,
+            locals,
             filled: 0,
         }
     }
@@ -111,17 +114,21 @@ impl Batch {
         while count < RECV_BATCH {
             let slot = &mut self.slots[count];
             let name = &mut self.names[count];
-            let mut name_len = socklen(mem::size_of::<libc::sockaddr_storage>());
-            let rc = unsafe {
-                libc::recvfrom(
-                    socket.raw(),
-                    slot.as_mut_ptr().cast(),
-                    slot.len(),
-                    0,
-                    core::ptr::addr_of_mut!(*name).cast(),
-                    &mut name_len,
-                )
+            let mut control = Control([0u8; CONTROL_LEN]);
+            let mut iov = libc::iovec {
+                iov_base: slot.as_mut_ptr().cast(),
+                iov_len: slot.len(),
             };
+            let mut msg: libc::msghdr = unsafe { mem::zeroed() };
+            msg.msg_name = core::ptr::addr_of_mut!(*name).cast();
+            msg.msg_namelen = socklen(mem::size_of::<libc::sockaddr_storage>());
+            msg.msg_iov = core::ptr::addr_of_mut!(iov);
+            msg.msg_iovlen = 1;
+            msg.msg_control = control.0.as_mut_ptr().cast();
+            msg.msg_controllen = socklen(CONTROL_LEN);
+            // ponytail: one recvmsg per datagram. The batched recvmsg_x is not
+            // in the public SDK; measure on a busy LAN before reaching further.
+            let rc = unsafe { libc::recvmsg(socket.raw(), &mut msg, 0) };
             if rc < 0 {
                 let err = io::Error::last_os_error();
                 if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::Interrupted {
@@ -133,6 +140,7 @@ impl Batch {
                 return Err(err);
             }
             self.lengths[count] = rc as usize;
+            self.locals[count] = local_of(&msg);
             count += 1;
         }
         self.filled = count;
@@ -144,7 +152,7 @@ impl Batch {
             let len = *self.lengths.get(index)?;
             let bytes = self.slots.get(index)?.get(..len)?;
             let from = from_storage(self.names.get(index)?)?;
-            Some((from, None, bytes))
+            Some((from, *self.locals.get(index)?, bytes))
         })
     }
 }

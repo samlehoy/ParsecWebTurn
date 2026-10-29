@@ -388,7 +388,7 @@ mod tests {
     /// word, and refuses the unspecified address instead, which Linux takes
     /// as this host.
     fn refused() -> SocketAddr {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let ip = core::net::Ipv4Addr::BROADCAST;
         #[cfg(windows)]
         let ip = core::net::Ipv4Addr::UNSPECIFIED;
@@ -469,7 +469,7 @@ mod tests {
                 IpAddr::V4(core::net::Ipv4Addr::new(127, 0, 0, 7)),
             )
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             (
                 IpAddr::V4(core::net::Ipv4Addr::LOCALHOST),
@@ -518,7 +518,7 @@ mod tests {
         // Here: a source the host does not hold is refused, so the claim was
         // read and checked -- an ignored one would have left from the
         // default and arrived.
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             let unheld = IpAddr::V4(core::net::Ipv4Addr::new(127, 0, 0, 7));
             push_pinned(
