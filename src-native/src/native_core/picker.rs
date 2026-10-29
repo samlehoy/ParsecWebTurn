@@ -14,6 +14,7 @@ impl Refresh {
     pub fn quiet(self) -> bool {
         self == Self::Background
     }
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn poll_ms(self) -> u32 {
         if self.quiet() {
             500
@@ -41,6 +42,7 @@ pub struct ListChange {
 pub struct ListPosition {
     pub selected: Option<usize>,
     pub last_peer: String,
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub top: usize,
 }
 

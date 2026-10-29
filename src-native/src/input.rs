@@ -67,8 +67,10 @@ impl Shortcuts {
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Default)]
 pub struct TextDecoder(Option<u16>);
+#[cfg_attr(not(windows), allow(dead_code))]
 impl TextDecoder {
     pub fn push(&mut self, unit: u16) -> Option<char> {
         if (0xD800..=0xDBFF).contains(&unit) {
