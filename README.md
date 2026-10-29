@@ -48,6 +48,16 @@ Host permissions, encoders and graphics drivers determine the actual stream.
 **Connection stats shows the received depth/chroma and application RGB output**;
 a selected preference alone does not prove that the host accepted it.
 
+## Video rendering modes
+
+![Animated comparison of normal GPU rendering, Zero copy and optional AI upscaling.](assets/evoparseq-rendering-modes.gif)
+
+Start with **Normal GPU rendering** for compatibility. **Zero copy** skips a
+separate picture-conversion pass on supported systems; **AI upscaling** can
+improve enlarged video but uses more GPU resources and may add latency.
+The animation illustrates processing order, not measured speed. Check
+**Connection stats** for the mode actually in use.
+
 ## Download and run
 
 1. Download `EvoParseq-v0.9.5-dev.2-win64.zip` from the
@@ -156,16 +166,6 @@ direct traffic does not consume TURN allowance. Cloudflare meters traffic sent
 from its edge to the TURN client. Usage above the shared allowance is currently
 **$0.05/GB**; check [current pricing](https://developers.cloudflare.com/realtime/sfu/platform/pricing/)
 and the [TURN billing FAQ](https://developers.cloudflare.com/realtime/turn/faq/).
-
-## Video rendering modes
-
-![Animated comparison of normal GPU rendering, Zero copy and optional AI upscaling.](assets/evoparseq-rendering-modes.gif)
-
-Start with **Normal GPU rendering** for compatibility. **Zero copy** skips a
-separate picture-conversion pass on supported systems; **AI upscaling** can
-improve enlarged video but uses more GPU resources and may add latency.
-The animation illustrates processing order, not measured speed. Check
-**Connection stats** for the mode actually in use.
 
 ## Experimental features and limits
 
