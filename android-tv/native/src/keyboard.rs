@@ -153,11 +153,11 @@ pub fn usage(scan: i32, code: i32) -> Option<i32> {
 }
 pub fn modifiers(meta: i32) -> i32 {
     i32::from(meta & 1 != 0)
-        | i32::from(meta & 0x1000 != 0) * 2
-        | i32::from(meta & 2 != 0) * 4
-        | i32::from(meta & 0x10000 != 0) * 8
-        | i32::from(meta & 0x100000 != 0) * 16
-        | i32::from(meta & 0x200000 != 0) * 32
+        | (i32::from(meta & 0x1000 != 0) * 2)
+        | (i32::from(meta & 2 != 0) * 4)
+        | (i32::from(meta & 0x10000 != 0) * 8)
+        | (i32::from(meta & 0x100000 != 0) * 16)
+        | (i32::from(meta & 0x200000 != 0) * 32)
 }
 #[cfg(test)]
 mod tests {
