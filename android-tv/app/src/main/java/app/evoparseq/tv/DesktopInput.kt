@@ -24,14 +24,18 @@ internal class DesktopInput(private val activity: Activity) {
     private var height = 0
     var pointer by mutableLongStateOf(0)
         private set
-    var mouseMode by mutableStateOf(false)
+    private var remoteMouseState by mutableStateOf(false)
+    var mouseMode: Boolean
+        get() = remoteMouseState
         set(value) {
-            field = value
+            remoteMouseState = value
             NativeCore.desktopViewport(width,height)
             NativeCore.remoteMouseMode(value, ViewConfiguration.getLongPressTimeout())
         }
-    var captureMouse by mutableStateOf(true)
-        set(value) { field=value; updateCapture() }
+    private var captureMouseState by mutableStateOf(true)
+    var captureMouse: Boolean
+        get() = captureMouseState
+        set(value) { captureMouseState=value; updateCapture() }
     var enabled = false
         set(value) { field=value; updateCapture() }
     init {
