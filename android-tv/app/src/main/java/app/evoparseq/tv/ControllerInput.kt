@@ -97,11 +97,12 @@ internal class ControllerInput(context: Context) : InputManager.InputDeviceListe
         vibrating.values.forEach { runCatching { it.cancel() } }
         vibrating.clear()
     }
-    override fun onInputDeviceAdded(id: Int) = Unit // First face button claims the shared slot.
+    override fun onInputDeviceAdded(id: Int) { desktop.devicesChanged() } // Face button still claims the controller slot.
     override fun onInputDeviceChanged(id: Int) { onInputDeviceRemoved(id) }
     @Suppress("DEPRECATION")
     override fun onInputDeviceRemoved(id: Int) {
         desktop.deviceRemoved(id)
+        desktop.devicesChanged()
         vibrating.remove(id)?.let { runCatching { it.cancel() } }
         mappings.remove(id)
         NativeCore.controllerRemoved(id)

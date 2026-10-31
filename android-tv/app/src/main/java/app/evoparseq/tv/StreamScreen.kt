@@ -19,7 +19,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
@@ -43,14 +43,14 @@ internal fun StreamScreen(model: TvModel, host: Host, close: () -> Unit) {
     val video = status?.optJSONObject("video")
     val width = video?.optInt("width") ?: 0
     val height = video?.optInt("height") ?: 0
-    val exit = { model.stopStream(); close() }
+    val exit: (String) -> Unit = { reason -> model.stopStream(reason); close() }
     var visible by remember { mutableStateOf(true) }
     var interaction by remember { mutableStateOf(0) }
     var consumeCenterUp by remember { mutableStateOf(false) }
     val root = remember { FocusRequester() }
     val error = status?.optString("error").orEmpty()
     val streaming = status?.optString("state") == "Streaming"
-    BackHandler { if (!visible) { visible = true; interaction++ } else exit() }
+    BackHandler { if (!visible) { visible = true; interaction++ } else exit("Stream closed with Back.") }
     LaunchedEffect(visible, streaming, error, activity.controllerWindowFocused) {
         controllers.enabled = !visible && streaming && error.isEmpty() && activity.controllerWindowFocused
     }
@@ -71,11 +71,11 @@ internal fun StreamScreen(model: TvModel, host: Host, close: () -> Unit) {
             .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
                 .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE).build())
             .setOnAudioFocusChangeListener { change ->
-                if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) model.stopStream()
+                if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) model.stopStream("Android audio focus was lost.")
             }.build()
         val granted = audio.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         focusGranted = granted
-        onDispose { controllers.enabled = false; desktop.mouseMode = false; model.stopStream(); if (granted) audio.abandonAudioFocusRequest(request) }
+        onDispose { controllers.enabled = false; desktop.mouseMode = false; model.stopStream("Streaming screen was closed."); if (granted) audio.abandonAudioFocusRequest(request) }
     }
     BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)
         .onGloballyPositioned { coordinates -> val p=coordinates.positionInWindow(); desktop.viewport(p.x,p.y,coordinates.size.width,coordinates.size.height) }
@@ -99,7 +99,7 @@ internal fun StreamScreen(model: TvModel, host: Host, close: () -> Unit) {
         val videoSize = if (maxWidth / maxHeight > ratio)
             Modifier.height(maxHeight).width(maxHeight * ratio)
         else Modifier.width(maxWidth).height(maxWidth / ratio)
-        AndroidView(modifier = videoSize.align(Alignment.Center), factory = { ctx ->
+        key(host.peer) { AndroidView(modifier = videoSize.align(Alignment.Center), factory = { ctx ->
             SurfaceView(ctx).also { surface ->
                 // MediaCodec owns buffer geometry. Only the View's layout
                 // follows the visible aspect ratio; do not resize its producer
@@ -115,27 +115,39 @@ internal fun StreamScreen(model: TvModel, host: Host, close: () -> Unit) {
                             model.startStream(holder.surface, host, w, h)
                         }
                     }
-                    override fun surfaceDestroyed(holder: SurfaceHolder) { model.stopStream() }
+                    override fun surfaceDestroyed(holder: SurfaceHolder) { model.stopStream("Android destroyed the video Surface.") }
                 })
             }
-        })
-        // Read cursor state during drawing: pointer motion must not recompose
-        // stream controls or the AndroidView/codec Surface.
-        if (!visible) Canvas(Modifier.fillMaxSize()) {
-            val packed=desktop.pointer
-            if ((packed and (1L shl 32))==0L) return@Canvas
-            val x=size.width*(packed and 65535L).toFloat()/65535f
-            val y=size.height*((packed ushr 16) and 65535L).toFloat()/65535f
-            translate(x,y) {
-                val arrow=Path().apply {moveTo(0f,0f);lineTo(0f,24.dp.toPx());lineTo(6.dp.toPx(),18.dp.toPx());lineTo(12.dp.toPx(),28.dp.toPx());lineTo(16.dp.toPx(),26.dp.toPx());lineTo(10.dp.toPx(),16.dp.toPx());lineTo(19.dp.toPx(),16.dp.toPx());close()}
-                drawPath(arrow,Color.White);drawPath(arrow,Color.Black,style=Stroke(1.5.dp.toPx()))
+        }) }
+        // Keep a fixed, small cursor node. Visibility/position update only this
+        // layer; never insert/remove a full-screen draw node beside the Surface.
+        val cursorWidth = minOf(20.dp, maxWidth / 40)
+        val cursorHeight = cursorWidth * 1.4f
+        val parentWidth = constraints.maxWidth.toFloat()
+        val parentHeight = constraints.maxHeight.toFloat()
+        Canvas(Modifier.size(cursorWidth, cursorHeight).graphicsLayer {
+            val packed = desktop.pointer
+            alpha = if (!visible && (packed and (1L shl 32)) != 0L) 1f else 0f
+            translationX = (parentWidth * (packed and 65535L).toFloat() / 65535f)
+                .coerceIn(0f, (parentWidth - size.width).coerceAtLeast(0f))
+            translationY = (parentHeight * ((packed ushr 16) and 65535L).toFloat() / 65535f)
+                .coerceIn(0f, (parentHeight - size.height).coerceAtLeast(0f))
+        }) {
+            val sx = size.width / 20f
+            val sy = size.height / 28f
+            val arrow = Path().apply {
+                moveTo(0f,0f);lineTo(0f,24f*sy);lineTo(6f*sx,18f*sy)
+                lineTo(12f*sx,28f*sy);lineTo(16f*sx,26f*sy)
+                lineTo(10f*sx,16f*sy);lineTo(19f*sx,16f*sy);close()
             }
+            drawPath(arrow,Color.White)
+            drawPath(arrow,Color.Black,style=Stroke(1.dp.toPx()))
         }
         if (visible) Column(Modifier.align(Alignment.TopStart).padding(24.dp)
             .background(Color(0xE6171D26)).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Button(onClick = { visible = false }, modifier = Modifier.focusRequester(first)) { Text("Hide overlay") }
-                Button(onClick = { exit() }) { Text("Disconnect") }
+                Button(onClick = { exit("Disconnected from stream controls.") }) { Text("Disconnect") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Button(onClick={desktop.mouseMode=!desktop.mouseMode},enabled=streaming) {Text("Remote mouse: " + if(desktop.mouseMode) "On" else "Off")}

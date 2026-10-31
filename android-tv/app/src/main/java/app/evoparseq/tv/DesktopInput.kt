@@ -41,9 +41,13 @@ internal class DesktopInput(private val activity: Activity) {
     init {
         activity.window.decorView.setOnCapturedPointerListener { _, event -> motion(event,true) }
     }
+    private fun hasMouse(): Boolean = InputDevice.getDeviceIds().any { id ->
+        InputDevice.getDevice(id)?.let { !it.isVirtual && (it.supportsSource(InputDevice.SOURCE_MOUSE) || it.supportsSource(InputDevice.SOURCE_MOUSE_RELATIVE)) } == true
+    }
+    fun devicesChanged() = updateCapture()
     private fun updateCapture() {
         val view=activity.window.decorView
-        if (enabled && captureMouse) view.post { if (enabled && captureMouse && view.hasWindowFocus()) view.requestPointerCapture() }
+        if (enabled && captureMouse && hasMouse()) view.post { if (enabled && captureMouse && hasMouse() && view.hasWindowFocus()) view.requestPointerCapture() }
         else if (view.hasPointerCapture()) view.releasePointerCapture()
     }
     fun viewport(x:Float,y:Float,w:Int,h:Int) {

@@ -36,6 +36,7 @@ internal class TvModel(application: Application) : AndroidViewModel(application)
         private set
     private var setupGeneration = 0
     private var streamGeneration = 0
+    private var streamStopRecorded = false
     private val preferences = application.getSharedPreferences("tv-requests", Context.MODE_PRIVATE)
     private val worker = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
@@ -198,6 +199,8 @@ internal class TvModel(application: Application) : AndroidViewModel(application)
     fun startStream(surface: android.view.Surface, host: Host, width: Int, height: Int) {
         val current = settings?.getJSONObject("settings")?.toString() ?: return
         val generation = ++streamGeneration
+        streamStopRecorded = false
+        message = ""
         streamStatus = JSONObject().put("state", "Connecting…")
         worker.execute {
             val reply = runCatching {
@@ -227,7 +230,12 @@ internal class TvModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun stopStream() {
+    fun stopStream(reason: String = "Stream closed.") {
+        if (!streamStopRecorded && streamStatus != null) {
+            streamStopRecorded = true
+            message = reason
+            android.util.Log.i("EvoParseq", "Stream stop requested: $reason")
+        }
         ++streamGeneration
         // Serialized after any pending JNI start: a destroyed Surface cannot
         // leave a late session alive. This stop only signals, never joins UI.

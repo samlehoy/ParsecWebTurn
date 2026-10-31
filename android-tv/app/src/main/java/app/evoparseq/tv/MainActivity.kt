@@ -68,7 +68,7 @@ class MainActivity : ComponentActivity() {
             TvTheme { TvApp(model) }
         }
     }
-    override fun onStop() { controllerInput.enabled = false; model.closeLocalSetup(); model.stopStream(); super.onStop() }
+    override fun onStop() { controllerInput.enabled = false; model.closeLocalSetup(); model.stopStream("Android stopped the streaming activity."); super.onStop() }
 }
 
 @Composable
