@@ -143,6 +143,11 @@ mod pointing {
             self.enabled = enabled;
             self.owner = if enabled { owner } else { None };
         }
+        pub fn remove(&mut self, device: i32) {
+            if self.owner == Some(device) {
+                self.owner = None;
+            }
+        }
         pub fn accepts(&self, device: i32, directional_source: bool) -> bool {
             self.enabled && (self.owner == Some(device) || directional_source)
         }
@@ -579,6 +584,10 @@ mod tests {
         assert!(!source.accepts(2, false)); // The adapter identifies a separate gamepad.
         assert!(!source.accepts(3, false)); // A separate keyboard keeps its arrows.
         assert!(source.accepts(4, true)); // Another remote / composite directional device.
+        source.remove(2);
+        assert!(source.accepts(1, false));
+        source.remove(1);
+        assert!(!source.accepts(1, false)); // Reused OS device ID is not the old remote.
         source.configure(false, Some(1));
         assert!(!source.accepts(1, true));
         source.configure(true, None);

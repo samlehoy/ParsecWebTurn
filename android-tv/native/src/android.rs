@@ -405,6 +405,10 @@ pub extern "system" fn Java_app_evoparseq_tv_NativeCore_controllerRemoved(
     _object: JObject,
     id: i32,
 ) {
+    REMOTE_MOUSE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(id);
     crate::stream::controller_event(crate::gamepad::Event::Remove(id));
 }
 #[no_mangle]
