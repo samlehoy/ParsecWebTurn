@@ -76,6 +76,8 @@ internal fun StreamScreen(model: TvModel, host: Host, close: () -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)
         .onGloballyPositioned { coordinates -> val p=coordinates.positionInWindow(); desktop.viewport(p.x,p.y,coordinates.size.width,coordinates.size.height) }
         .focusRequester(root).onPreviewKeyEvent { event ->
+            if (visible) desktop.observeNavigation(event.nativeKeyEvent)
+            if (desktop.remoteKey(event.nativeKeyEvent)) return@onPreviewKeyEvent true
             if (controllers.key(event.nativeKeyEvent)) return@onPreviewKeyEvent true
             when(desktop.key(event.nativeKeyEvent)) {
                 1 -> return@onPreviewKeyEvent true

@@ -130,6 +130,23 @@ mod pointing {
     use super::*;
     use anyhow::Result;
     use std::time::{Duration, Instant};
+    /// Explicit UI selection has priority over broad device capability flags.
+    /// Other standard remotes remain usable; their adapter must distinguish
+    /// directional sources from a separate gamepad or physical keyboard.
+    #[derive(Default)]
+    pub struct RemoteSource {
+        enabled: bool,
+        owner: Option<i32>,
+    }
+    impl RemoteSource {
+        pub fn configure(&mut self, enabled: bool, owner: Option<i32>) {
+            self.enabled = enabled;
+            self.owner = if enabled { owner } else { None };
+        }
+        pub fn accepts(&self, device: i32, directional_source: bool) -> bool {
+            self.enabled && (self.owner == Some(device) || directional_source)
+        }
+    }
     #[derive(Clone, Copy, Debug)]
     pub struct Pointer {
         pub x: f64,
@@ -530,7 +547,7 @@ mod pointing {
     }
 }
 #[cfg(any(target_os = "android", test))]
-pub use pointing::{Engine, Event, Pointer};
+pub use pointing::{Engine, Event, Pointer, RemoteSource};
 
 #[cfg(test)]
 mod tests {
@@ -550,6 +567,58 @@ mod tests {
             key,
             down,
             cancel: false,
+        }
+    }
+    #[test]
+    fn remote_owner_routes_navigation_independently_of_event_source() {
+        let mut source = RemoteSource::default();
+        assert!(!source.accepts(1, true));
+        source.configure(true, Some(1));
+        assert!(source.accepts(1, true));
+        assert!(source.accepts(1, false)); // Same remote reports an arrow as keyboard input.
+        assert!(!source.accepts(2, false)); // The adapter identifies a separate gamepad.
+        assert!(!source.accepts(3, false)); // A separate keyboard keeps its arrows.
+        assert!(source.accepts(4, true)); // Another remote / composite directional device.
+        source.configure(false, Some(1));
+        assert!(!source.accepts(1, true));
+        source.configure(true, None);
+        assert!(!source.accepts(3, false));
+        assert!(source.accepts(-1, true)); // Android virtual TV remote.
+        assert!(!source.accepts(2, false));
+    }
+    #[test]
+    fn each_remote_direction_moves_until_released() {
+        for (key, dx, dy) in [(0, 0, -1), (1, 0, 1), (2, -1, 0), (3, 1, 0)] {
+            let mut engine = setup();
+            let now = Instant::now();
+            let mut frames = Vec::new();
+            let mut send = |frame: &[u8]| {
+                frames.push(frame.to_vec());
+                Ok(())
+            };
+            engine.event(self::key(key, true), now, &mut send).unwrap();
+            engine
+                .tick(now + Duration::from_millis(20), &mut send)
+                .unwrap();
+            engine
+                .event(
+                    self::key(key, false),
+                    now + Duration::from_millis(30),
+                    &mut send,
+                )
+                .unwrap();
+            let stopped = engine.pointer();
+            engine
+                .tick(now + Duration::from_millis(80), &mut send)
+                .unwrap();
+            assert_eq!(stopped, engine.pointer());
+            assert!(!engine.ticking());
+            let last = frames.last().unwrap();
+            assert_eq!(last[12], 3);
+            let x = i32::from_be_bytes(last[4..8].try_into().unwrap());
+            let y = i32::from_be_bytes(last[8..12].try_into().unwrap());
+            assert_eq!((x - 960).signum(), dx);
+            assert_eq!((y - 540).signum(), dy);
         }
     }
     #[test]

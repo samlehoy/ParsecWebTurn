@@ -18,6 +18,7 @@ internal class DesktopInput(private val activity: Activity) {
     private val posted = AtomicBoolean(false)
     private val usedDevices = mutableSetOf<Int>()
     private var closed = false
+    private var navigationDevice = -1
     private var left = 0f
     private var top = 0f
     private var width = 0
@@ -30,7 +31,7 @@ internal class DesktopInput(private val activity: Activity) {
         set(value) {
             remoteMouseState = value
             NativeCore.desktopViewport(width,height)
-            NativeCore.remoteMouseMode(value, ViewConfiguration.getLongPressTimeout())
+            NativeCore.remoteMouseMode(value, ViewConfiguration.getLongPressTimeout(), navigationDevice)
         }
     private var captureMouseState by mutableStateOf(true)
     var captureMouse: Boolean
@@ -56,6 +57,27 @@ internal class DesktopInput(private val activity: Activity) {
         NativeCore.desktopViewport(w,h)
         renderPointer()
     }
+    private fun navigationKey(code: Int): Boolean =
+        code in KeyEvent.KEYCODE_DPAD_UP..KeyEvent.KEYCODE_DPAD_CENTER ||
+            code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_NUMPAD_ENTER
+    fun observeNavigation(event: KeyEvent) {
+        if (event.action == KeyEvent.ACTION_DOWN && !event.isCanceled &&
+            (navigationKey(event.keyCode) || event.keyCode == KeyEvent.KEYCODE_BUTTON_A))
+            navigationDevice = event.deviceId
+    }
+    /** This remote's navigation gets first refusal; other devices keep their roles. */
+    fun remoteKey(event: KeyEvent): Boolean {
+        if (!enabled || !mouseMode || !navigationKey(event.keyCode) ||
+            (event.action != KeyEvent.ACTION_DOWN && event.action != KeyEvent.ACTION_UP)) return false
+        val directionalSource = event.isFromSource(InputDevice.SOURCE_DPAD) &&
+            !event.isFromSource(InputDevice.SOURCE_GAMEPAD) &&
+            !event.isFromSource(InputDevice.SOURCE_JOYSTICK) &&
+            event.device?.keyboardType != InputDevice.KEYBOARD_TYPE_ALPHABETIC
+        val accepted = NativeCore.remoteMouseKey(event.keyCode,event.action==KeyEvent.ACTION_DOWN,
+            event.isCanceled,event.deviceId,directionalSource)
+        if (accepted) usedDevices.add(event.deviceId)
+        return accepted
+    }
     /** 0 = local UI, 1 = consumed remotely, 2 = release/show local controls. */
     fun key(event:KeyEvent):Int {
         if (!enabled || (event.action!=KeyEvent.ACTION_DOWN && event.action!=KeyEvent.ACTION_UP)) return 0
@@ -66,8 +88,7 @@ internal class DesktopInput(private val activity: Activity) {
             return NativeCore.desktopKey(event.scanCode,event.keyCode,event.metaState,
                 event.action==KeyEvent.ACTION_DOWN,event.isCanceled,event.repeatCount)
         }
-        if (event.keyCode==KeyEvent.KEYCODE_BACK || event.keyCode==KeyEvent.KEYCODE_HOME) return 0
-        return if (NativeCore.remoteMouseKey(event.keyCode,event.action==KeyEvent.ACTION_DOWN,event.isCanceled)) 1 else 0
+        return 0
     }
     fun motion(event:MotionEvent,captured:Boolean=false):Boolean {
         if (!enabled || (!event.isFromSource(InputDevice.SOURCE_MOUSE) && !event.isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE))) return false
@@ -81,6 +102,7 @@ internal class DesktopInput(private val activity: Activity) {
         return true
     }
     fun deviceRemoved(id:Int) {
+        if (navigationDevice == id) navigationDevice = -1
         if (usedDevices.remove(id)) NativeCore.desktopRelease()
     }
     private fun renderPointer() {

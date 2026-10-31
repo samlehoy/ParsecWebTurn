@@ -434,15 +434,20 @@ pub extern "system" fn Java_app_evoparseq_tv_NativeCore_controllerAxes(
     );
 }
 
-static REMOTE_MOUSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static REMOTE_MOUSE: std::sync::LazyLock<std::sync::Mutex<crate::desktop_input::RemoteSource>> =
+    std::sync::LazyLock::new(Default::default);
 #[no_mangle]
 pub extern "system" fn Java_app_evoparseq_tv_NativeCore_remoteMouseMode(
     _env: JNIEnv,
     _o: JObject,
     on: jni::sys::jboolean,
     long_ms: i32,
+    device: i32,
 ) {
-    REMOTE_MOUSE.store(on != 0, std::sync::atomic::Ordering::Release);
+    REMOTE_MOUSE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .configure(on != 0, (device >= 0).then_some(device));
     crate::stream::input_event(crate::desktop_input::Event::RemoteMode(
         on != 0,
         long_ms.max(0) as u32,
@@ -455,9 +460,14 @@ pub extern "system" fn Java_app_evoparseq_tv_NativeCore_remoteMouseKey(
     code: i32,
     down: jni::sys::jboolean,
     cancel: jni::sys::jboolean,
+    device: i32,
+    directional_source: jni::sys::jboolean,
 ) -> jni::sys::jboolean {
     if !crate::gamepad_android::ACTIVE.load(std::sync::atomic::Ordering::Acquire)
-        || !REMOTE_MOUSE.load(std::sync::atomic::Ordering::Acquire)
+        || !REMOTE_MOUSE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .accepts(device, directional_source != 0)
     {
         return 0;
     }

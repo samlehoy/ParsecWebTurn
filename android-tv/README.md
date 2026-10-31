@@ -131,7 +131,10 @@ are not evidence of live controller compatibility.
 The stream controls can enable remote mouse navigation: D-pad moves, a short OK
 clicks left, two short OK presses double-click, holding OK clicks right, and
 holding OK while pressing D-pad drags with the left button. Back/Menu opens local
-controls; Home remains Android-owned. Some remotes cannot report simultaneous
+controls; Home remains Android-owned. The remote that enabled mouse navigation
+has priority; other standard D-pad remotes also work. A separate gamepad keeps
+its own directional controls.
+Some remotes cannot report simultaneous
 OK and direction presses; dragging requires a remote that supports that chord.
 
 Physical USB/Bluetooth keyboards and mice use normal Parsec input, on BUD and
