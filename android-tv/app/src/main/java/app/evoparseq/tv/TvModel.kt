@@ -47,6 +47,7 @@ internal class TvModel(application: Application) : AndroidViewModel(application)
     private val networkVault = SessionVault(application, "network")
     init {
         request {
+            val previousCrash = recentAppFailure(application)
             val saved = preferences.getString("requests", "") ?: ""
             val reply = JSONObject(NativeCore.settings(saved, "", 0))
             var restored = false
@@ -75,7 +76,7 @@ internal class TvModel(application: Application) : AndroidViewModel(application)
                 feedback = "Saved relay settings could not be restored. Configure the relay again."
             }
             val restoredNetwork = network
-            return@request { if (reply.optBoolean("ok")) settings = reply; signedIn = restored; networkSummary = restoredNetwork; message = feedback }
+            return@request { if (reply.optBoolean("ok")) settings = reply; signedIn = restored; networkSummary = restoredNetwork; message = feedback; if(previousCrash != null) lastStreamStopReason = previousCrash }
         }
     }
 
@@ -228,6 +229,13 @@ internal class TvModel(application: Application) : AndroidViewModel(application)
                     if (!status.optBoolean("ended")) main.postDelayed({ pollStream(generation) }, 500)
                 }
             }
+        }
+    }
+
+    fun activityRecreated() {
+        if (streamStatus != null) {
+            lastStreamStopReason = "Android recreated the streaming Activity. Reconnect to start a new Surface."
+            android.util.Log.i("EvoParseq", lastStreamStopReason)
         }
     }
 

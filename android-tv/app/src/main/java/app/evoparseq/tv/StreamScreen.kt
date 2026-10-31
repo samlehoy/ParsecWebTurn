@@ -7,7 +7,6 @@ import android.media.AudioManager
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
@@ -17,9 +16,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
@@ -99,7 +95,7 @@ internal fun StreamScreen(model: TvModel, host: Host, close: () -> Unit) {
         val videoSize = if (maxWidth / maxHeight > ratio)
             Modifier.height(maxHeight).width(maxHeight * ratio)
         else Modifier.width(maxWidth).height(maxWidth / ratio)
-        key(host.peer) { AndroidView(modifier = videoSize.align(Alignment.Center), factory = { ctx ->
+        AndroidView(modifier = videoSize.align(Alignment.Center), factory = { ctx ->
             SurfaceView(ctx).also { surface ->
                 // MediaCodec owns buffer geometry. Only the View's layout
                 // follows the visible aspect ratio; do not resize its producer
@@ -118,31 +114,7 @@ internal fun StreamScreen(model: TvModel, host: Host, close: () -> Unit) {
                     override fun surfaceDestroyed(holder: SurfaceHolder) { model.stopStream("Android destroyed the video Surface.") }
                 })
             }
-        }) }
-        // Keep a fixed, small cursor node. Visibility/position update only this
-        // layer; never insert/remove a full-screen draw node beside the Surface.
-        val cursorWidth = minOf(20.dp, maxWidth / 40)
-        val cursorHeight = cursorWidth * 1.4f
-        val parentWidth = constraints.maxWidth.toFloat()
-        val parentHeight = constraints.maxHeight.toFloat()
-        Canvas(Modifier.size(cursorWidth, cursorHeight).graphicsLayer {
-            val packed = desktop.pointer
-            alpha = if (!visible && (packed and (1L shl 32)) != 0L) 1f else 0f
-            translationX = (parentWidth * (packed and 65535L).toFloat() / 65535f)
-                .coerceIn(0f, (parentWidth - size.width).coerceAtLeast(0f))
-            translationY = (parentHeight * ((packed ushr 16) and 65535L).toFloat() / 65535f)
-                .coerceIn(0f, (parentHeight - size.height).coerceAtLeast(0f))
-        }) {
-            val sx = size.width / 20f
-            val sy = size.height / 28f
-            val arrow = Path().apply {
-                moveTo(0f,0f);lineTo(0f,24f*sy);lineTo(6f*sx,18f*sy)
-                lineTo(12f*sx,28f*sy);lineTo(16f*sx,26f*sy)
-                lineTo(10f*sx,16f*sy);lineTo(19f*sx,16f*sy);close()
-            }
-            drawPath(arrow,Color.White)
-            drawPath(arrow,Color.Black,style=Stroke(1.dp.toPx()))
-        }
+        })
         if (visible) Column(Modifier.align(Alignment.TopStart).padding(24.dp)
             .background(Color(0xE6171D26)).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {

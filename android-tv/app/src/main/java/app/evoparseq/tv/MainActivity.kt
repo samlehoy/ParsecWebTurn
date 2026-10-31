@@ -64,6 +64,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         controllerInput = ControllerInput(this)
+        if (savedInstanceState != null) model.activityRecreated()
         setContent {
             TvTheme { TvApp(model) }
         }

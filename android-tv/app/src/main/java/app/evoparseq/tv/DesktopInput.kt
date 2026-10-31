@@ -22,8 +22,8 @@ internal class DesktopInput(private val activity: Activity) {
     private var top = 0f
     private var width = 0
     private var height = 0
-    var pointer by mutableLongStateOf(0)
-        private set
+    private var renderedPointer = 0L
+    private val cursor = RemoteCursor(activity.window.decorView)
     private var remoteMouseState by mutableStateOf(false)
     var mouseMode: Boolean
         get() = remoteMouseState
@@ -37,7 +37,7 @@ internal class DesktopInput(private val activity: Activity) {
         get() = captureMouseState
         set(value) { captureMouseState=value; updateCapture() }
     var enabled = false
-        set(value) { field=value; updateCapture() }
+        set(value) { field=value; updateCapture(); renderPointer() }
     init {
         activity.window.decorView.setOnCapturedPointerListener { _, event -> motion(event,true) }
     }
@@ -54,6 +54,7 @@ internal class DesktopInput(private val activity: Activity) {
         if (left==x && top==y && width==w && height==h) return
         left=x;top=y;width=w;height=h
         NativeCore.desktopViewport(w,h)
+        renderPointer()
     }
     /** 0 = local UI, 1 = consumed remotely, 2 = release/show local controls. */
     fun key(event:KeyEvent):Int {
@@ -82,20 +83,24 @@ internal class DesktopInput(private val activity: Activity) {
     fun deviceRemoved(id:Int) {
         if (usedDevices.remove(id)) NativeCore.desktopRelease()
     }
+    private fun renderPointer() {
+        cursor.update(if(enabled && !closed) renderedPointer else 0L, left, top, width, height)
+    }
     /** Native cursor scalars only. At most one pending UI update, never a frame buffer. */
     fun pointerChanged(value:Long) {
         latest.set(value)
         if (posted.compareAndSet(false,true)) main.post {
-            if (!closed) pointer=latest.get()
+            if (!closed) { renderedPointer=latest.get(); renderPointer() }
             posted.set(false)
-            if (!closed && latest.get()!=pointer) pointerChanged(latest.get())
+            if (!closed && latest.get()!=renderedPointer) pointerChanged(latest.get())
         }
     }
     fun close() {
         enabled=false
         mouseMode=false
         closed=true
-        pointer=0
+        renderedPointer=0
+        cursor.close()
         activity.window.decorView.setOnCapturedPointerListener(null)
     }
 }
