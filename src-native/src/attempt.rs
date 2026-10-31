@@ -109,12 +109,14 @@ struct Progress {
     channel_messages_received: [u64; 3],
     channel_bytes_received: [u64; 3],
     channel_max_message_bytes: [usize; 3],
+    #[cfg(any(target_os = "android", test))]
     empty_channel_messages: [u64; 3],
     #[cfg(any(target_os = "android", test))]
     rtt_ms: Option<f64>,
     #[cfg(any(target_os = "android", test))]
     route: Option<&'static str>,
     failure_channel: Option<u16>,
+    #[cfg(any(target_os = "android", test))]
     read_error: Option<&'static str>,
     failure_elapsed_ms: Option<u64>,
     last_send_elapsed_ms: Option<u64>,
@@ -268,7 +270,10 @@ impl Completion {
         }
         self.progress.failed = true;
         if self.progress.failure_stage.is_none() {
-            self.progress.transport_states_at_failure = self.progress.transport_states.clone();
+            #[cfg(any(target_os = "android", test))]
+            {
+                self.progress.transport_states_at_failure = self.progress.transport_states.clone();
+            }
             self.progress.failure_stage = Some(stage);
             self.progress.failure_channel = Some(channel);
             self.progress.failure_elapsed_ms = Some(self.elapsed_ms());
@@ -295,8 +300,11 @@ impl Completion {
         self.progress.channel_max_message_bytes[i] =
             self.progress.channel_max_message_bytes[i].max(bytes.len());
         if bytes.is_empty() {
-            self.progress.empty_channel_messages[i] =
-                self.progress.empty_channel_messages[i].saturating_add(1);
+            #[cfg(any(target_os = "android", test))]
+            {
+                self.progress.empty_channel_messages[i] =
+                    self.progress.empty_channel_messages[i].saturating_add(1);
+            }
             if self.discard_unavailable_media {
                 return Some(Delivery::EmptyMessage);
             }
@@ -400,10 +408,11 @@ async fn read_channel(
                     delivery => delivery,
                 }
             }
-            Err(error) => {
+            Err(_error) => {
                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+                #[cfg(any(target_os = "android", test))]
                 if !state.cancelled && !state.closing && state.progress.failure_stage.is_none() {
-                    state.progress.read_error = Some(classify_channel_read_error(&error));
+                    state.progress.read_error = Some(classify_channel_read_error(&_error));
                 }
                 state.fail_channel(FailureStage::DataChannelRead, id);
                 None
@@ -441,6 +450,7 @@ pub(crate) async fn read_data_message(
 
 // Fixed categories only: library error strings can contain remote text or
 // addresses. Do not serialize those strings or private connection credentials.
+#[cfg(any(target_os = "android", test))]
 fn classify_channel_read_error(error: &webrtc::data::Error) -> &'static str {
     use webrtc::{data::Error as D, sctp::Error as S};
     match error {

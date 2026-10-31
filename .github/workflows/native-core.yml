@@ -34,6 +34,7 @@ jobs:
           $nativeTree = cargo tree --locked --manifest-path src-native/Cargo.toml --target x86_64-pc-windows-msvc --edges normal,build,dev --prefix none
           if ($LASTEXITCODE -ne 0) { throw 'Native dependency audit failed' }
           if ($nativeTree | Select-String '^(wasmtime|cranelift|glow|lowlat-(sdk|host|daemon|capture|encode))') { throw 'Unexpected legacy/host dependency in native runtime build' }
+          if ($nativeTree | Select-String '^(jni|jni-sys|ndk|ndk-sys|rtrb|evoparseq-tv) v') { throw 'Android adapter dependency leaked into Windows build' }
           if ($nativeTree | Select-String '^(bincode |crypto-bigint v0\.5\.)') { throw 'Unused state exporter/browser certificate dependency returned' }
           # The upstream Opus buildscript does not track CMake toolchain changes.
           # Do not reuse /MD objects restored from an older dependency cache.

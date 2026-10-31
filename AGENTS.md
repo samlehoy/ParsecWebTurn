@@ -31,7 +31,7 @@ The user requires continuing the incremental separation established on the nativ
 
 - Maximize common Rust source with Windows. Do not reimplement authentication, discovery, protocol, validation, session policy or diagnostics in Kotlin. Reuse the existing Rust models before adding a target adapter; move OS-free rules to shared modules where needed.
 - Kotlin/Compose for TV is a thin TV presentation and Android API adapter only. Keep UI/request boundaries outside the video hot path. MediaCodec/Surface, platform audio/input, Android lifecycle and Keystore are legitimate target-specific operations.
-- Follow Google Android TV / Google TV design and D-pad navigation, including usable 2FA/IME and settings focus restoration; no Xiaomi-specific skin. First live target: Xiaomi TV Box S (3rd Gen) EU on Android 14. Controller session input is a separate later milestone.
+- Follow Google Android TV / Google TV design and D-pad navigation, including usable 2FA/IME and settings focus restoration; no Xiaomi-specific skin. First live target: Xiaomi TV Box S (3rd Gen) EU on Android 14. Controller state and protocol are shared Rust; keep Android event/vibration and Windows XInput access in their respective adapters.
 - Decoder Surface output must not be advertised as verified zero copy or direct scanout. Preserve the strict project definition and distinguish documented app behavior from unverified driver/compositor work.
 
 - Android TV relay provisioning is strictly local-network-only, including future

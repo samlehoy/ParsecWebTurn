@@ -7,7 +7,7 @@ D-pad navigation, two-factor sign-in and shared Rust account/session logic.
 ## Streaming preview
 
 - Connect to an unmodified official Parsec host using **WebRTC direct/STUN**
-  (default) or **BUD direct UDP** (new, awaiting live Android validation).
+  (default) or **BUD direct UDP**.
   Configure Cloudflare or custom STUN/TURN in Network settings. WebRTC uses its
   existing ICE selection; BUD tries direct UDP and configured TURN carriers in
   UDP/TLS/TCP order (or TURN only when forced). Neither transport silently falls
@@ -78,7 +78,7 @@ included in status/log output. Network settings take effect on the next stream.
 Closing setup, leaving the app, starting a stream, or the five-minute deadline
 stops the server. No port forwarding, public binding or remote setup is provided.
 
-This new pairing and relay integration still needs live device validation.
+Local setup and BUD streaming have been live-tested by the user.
 HTTPS, origin/Host checks, bounds, wrong-code rejection and pending approval have
 isolated tests; they do not replace real browser/TV and TURN tests.
 
@@ -146,5 +146,6 @@ This does not enable the Windows BUD HID passthrough mode.
 
 Mouse gestures, keyboard encoding and bounded input handoff are shared Rust;
 Android only translates OS events/capture and draws a small cursor overlay.
-The MediaCodec-to-Surface video path is unchanged. Live TV input validation is
-still required, especially relative camera control and focus transitions.
+The MediaCodec-to-Surface video path is unchanged. Remote D-pad mouse navigation,
+clicks and long-press right click have been live-tested. Continue device-specific
+checks for physical input, relative camera control and focus transitions.

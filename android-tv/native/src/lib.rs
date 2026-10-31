@@ -1,4 +1,5 @@
-//! TV platform adapters reuse the Windows client's account and WebRTC source.
+//! TV platform adapters reuse the Windows client's account and transport sources.
+#![warn(unused_crate_dependencies)]
 #[path = "../../../src-native/src/native_core/account.rs"]
 pub mod account;
 #[path = "../../../src-native/src/native_core/signaling.rs"]
