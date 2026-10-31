@@ -6,10 +6,12 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
@@ -20,6 +22,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.focusRequester
@@ -34,6 +38,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
@@ -230,6 +235,7 @@ private fun TvSettings(model: TvModel, first: FocusRequester, back: () -> Unit) 
     var restoreKey by remember { mutableStateOf("") }
     val rowFocus = remember { FocusRequester() }
     val optionFocus = remember { FocusRequester() }
+    val steadyScale = ButtonDefaults.scale(focusedScale = 1f)
     val rows = model.settings?.getJSONArray("rows")
     val values = if (rows == null) emptyList() else (0 until rows.length()).map { rows.getJSONObject(it) }
     val choice = values.find { it.getString("key") == choosing }
@@ -240,33 +246,50 @@ private fun TvSettings(model: TvModel, first: FocusRequester, back: () -> Unit) 
         if (!model.busy && choosing != null) optionFocus.requestFocus()
         else if (!model.busy && restoreKey.isNotEmpty()) rowFocus.requestFocus()
     }
-    Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(28.dp)) {
-        Column(Modifier.width(180.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Button(onClick = back, modifier = Modifier.focusRequester(first).fillMaxWidth()) { Text("Back") }
+    Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(32.dp)) {
+        Column(Modifier.width(160.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(onClick = back, scale = steadyScale,
+                modifier = Modifier.focusRequester(first).fillMaxWidth()) { Text("Back") }
             Text("SETTINGS", style = MaterialTheme.typography.titleMedium, color = Color(0xFF71BCFF))
             listOf("Network", "Video", "Device").forEach { name ->
+                val active = category == name
                 Button(onClick = {
                     category = name; choosing = null; restoreKey = ""
                     if (name == "Device") model.inspectDecoders()
-                }, modifier = Modifier.fillMaxWidth()) {
-                    Text((if (category == name) "> " else "") + name)
+                }, scale = steadyScale,
+                    modifier = Modifier.fillMaxWidth().semantics { this.selected = active }) {
+                    Box(Modifier.width(3.dp).height(18.dp)
+                        .background(if(active) Color(0xFF71BCFF) else Color.Transparent, RoundedCornerShape(2.dp)))
+                    Spacer(Modifier.width(10.dp))
+                    Text(name)
                 }
             }
         }
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        // Focus decoration and scrolling remain inside the content pane.
+        Box(Modifier.weight(1f).fillMaxHeight().clipToBounds()) {
             if (category == "Device") {
-                Text("Device capabilities", style = MaterialTheme.typography.headlineSmall)
-                Text(model.inventory.ifEmpty { "Reading decoder capabilities…" },
-                    style = MaterialTheme.typography.bodyLarge)
-            } else {
+                val blocks = remember(model.inventory) {
+                    model.inventory.ifEmpty { "Reading decoder capabilities…" }
+                        .split("\n\n").filter { it.isNotBlank() }
+                }
+                LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(start=8.dp,end=8.dp,top=8.dp,bottom=24.dp)) {
+                    item { Text("Device capabilities", style = MaterialTheme.typography.headlineSmall) }
+                    itemsIndexed(blocks) { _, block -> CapabilityBlock(block) }
+                }
+            } else Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Text(choice?.getString("label") ?: category, style = MaterialTheme.typography.headlineSmall)
-                Text("Requests apply to your next connection. The host chooses the actual video format.", color = Color(0xFFA8BED7))
-                if (model.settings == null) Button(onClick = model::readSettings, enabled = !model.busy) { Text("Reload settings") }
+                Text("Requests apply to your next connection. The host chooses the actual video format.",
+                    color = Color(0xFFA8BED7), fontSize=14.sp, lineHeight=20.sp)
+                if (model.settings == null) Button(onClick = model::readSettings,
+                    scale = steadyScale, enabled = !model.busy) { Text("Reload settings") }
                 if (choice == null) {
                     values.filter { it.optString("group") == category }.forEach { row ->
                         val key = row.getString("key")
                         val choices = row.getJSONArray("choices")
                         Button(onClick = { restoreKey = key; choosing = key }, enabled = !model.busy,
+                            scale = steadyScale,
                             modifier = Modifier.fillMaxWidth().then(if (key == restoreKey) Modifier.focusRequester(rowFocus) else Modifier)) {
                             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text(row.getString("label"), style = MaterialTheme.typography.labelMedium)
@@ -278,8 +301,10 @@ private fun TvSettings(model: TvModel, first: FocusRequester, back: () -> Unit) 
                         Spacer(Modifier.height(8.dp))
                         Text("STUN / TURN relay", style = MaterialTheme.typography.titleLarge)
                         Text("Provider: ${model.networkSummary.optString("provider", "direct")} | Force relay: ${model.networkSummary.optBoolean("force_relay")}")
-                        Button(onClick = model::openLocalSetup, enabled = !model.busy, modifier = Modifier.fillMaxWidth()) { Text("Set up from phone or computer") }
-                        Button(onClick = model::resetNetwork, enabled = !model.busy, modifier = Modifier.fillMaxWidth()) { Text("Remove saved relay settings") }
+                        Button(onClick = model::openLocalSetup, enabled = !model.busy, scale = steadyScale,
+                            modifier = Modifier.fillMaxWidth()) { Text("Set up from phone or computer") }
+                        Button(onClick = model::resetNetwork, enabled = !model.busy, scale = steadyScale,
+                            modifier = Modifier.fillMaxWidth()) { Text("Remove saved relay settings") }
                         Text("Local HTTPS pairing only. Credentials are encrypted on this TV.", color = Color(0xFFA8BED7))
                     } else {
                         Text("Dynamic FPS reduces traffic for still images. Fixed FPS requests continuous frames; it does not duplicate frames on the TV.", color = Color(0xFFA8BED7))
@@ -288,13 +313,32 @@ private fun TvSettings(model: TvModel, first: FocusRequester, back: () -> Unit) 
                     val choices = choice.getJSONArray("choices")
                     val selected = choice.getInt("selected")
                     repeat(choices.length()) { index ->
+                        val chosen = index == selected
                         Button(onClick = { model.selectSetting(choice.getString("key"), index); choosing = null }, enabled = !model.busy,
-                            modifier = Modifier.fillMaxWidth().then(if (index == selected) Modifier.focusRequester(optionFocus) else Modifier)) {
-                            Text((if (index == selected) "> " else "") + choices.getString(index))
+                            scale = steadyScale,
+                            modifier = Modifier.fillMaxWidth().semantics { this.selected = chosen }
+                                .then(if (chosen) Modifier.focusRequester(optionFocus) else Modifier)) {
+                            Box(Modifier.size(16.dp).border(1.dp,LocalContentColor.current,CircleShape),
+                                contentAlignment=Alignment.Center) {
+                                if(chosen) Box(Modifier.size(8.dp).background(LocalContentColor.current,CircleShape))
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Text(choices.getString(index))
                         }
                     }
                 }
             }
         }
+    }
+}
+
+/** Read-only focus targets let D-pad navigation scroll every capability paragraph. */
+@Composable
+private fun CapabilityBlock(text: String) {
+    var focused by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth().onFocusChanged { focused=it.isFocused }.focusable()
+        .border(1.dp,if(focused) Color(0xFF71BCFF) else Color.Transparent,RoundedCornerShape(8.dp))
+        .background(Color(0xFF202936),RoundedCornerShape(8.dp)).padding(12.dp)) {
+        Text(text,fontSize=14.sp,lineHeight=20.sp)
     }
 }

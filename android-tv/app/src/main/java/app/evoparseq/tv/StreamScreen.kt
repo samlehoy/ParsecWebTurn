@@ -9,6 +9,9 @@ import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -22,8 +25,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import kotlinx.coroutines.delay
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.tv.material3.Button
+import androidx.tv.material3.ButtonDefaults
 import androidx.tv.material3.Text
 
 /** SurfaceView is the codec's producer endpoint, never a Bitmap/TextureView. */
@@ -117,30 +123,49 @@ internal fun StreamScreen(model: TvModel, host: Host, close: () -> Unit) {
                 })
             }
         })
-        if (visible) Column(Modifier.align(Alignment.TopStart).padding(24.dp)
-            .background(Color(0xE6171D26)).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Button(onClick = { visible = false }, modifier = Modifier.focusRequester(first)) { Text("Hide overlay") }
-                Button(onClick = { exit("Disconnected from stream controls.") }) { Text("Disconnect") }
+        if (visible) Column(Modifier.align(Alignment.TopStart).padding(16.dp)
+            .widthIn(max=400.dp).heightIn(max=(maxHeight-32.dp).coerceAtLeast(0.dp))
+            .background(Color(0xE6171D26),RoundedCornerShape(12.dp))
+            .verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            val compactScale = ButtonDefaults.scale(focusedScale=1f)
+            val compactPadding = PaddingValues(horizontal=12.dp,vertical=6.dp)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick = { visible = false }, scale=compactScale,contentPadding=compactPadding,
+                    modifier = Modifier.focusRequester(first)) { Text("Hide overlay",fontSize=14.sp) }
+                Button(onClick = { exit("Disconnected from stream controls.") },scale=compactScale,
+                    contentPadding=compactPadding) { Text("Disconnect",fontSize=14.sp) }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Button(onClick={desktop.mouseMode=!desktop.mouseMode},enabled=streaming) {Text("Remote mouse: " + if(desktop.mouseMode) "On" else "Off")}
-                Button(onClick={desktop.captureMouse=!desktop.captureMouse}) {Text("Mouse capture: " + if(desktop.captureMouse) "On" else "Off")}
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick={desktop.mouseMode=!desktop.mouseMode},enabled=streaming,
+                    scale=compactScale,contentPadding=compactPadding) {
+                    Text("Remote mouse: " + if(desktop.mouseMode) "On" else "Off",fontSize=14.sp)
+                }
+                Button(onClick={desktop.captureMouse=!desktop.captureMouse},scale=compactScale,
+                    contentPadding=compactPadding) {
+                    Text("Mouse capture: " + if(desktop.captureMouse) "On" else "Off",fontSize=14.sp)
+                }
             }
-            if(desktop.mouseMode) Text("D-pad: move | OK: left click | hold OK: right click | OK + D-pad: drag",color=Color(0xFFA8BED7))
-            Text("Back: controls | Keyboard: Ctrl+Shift+M releases input and opens controls",color=Color(0xFFA8BED7))
-            Text(if (error.isNotEmpty()) error else "${host.name} | ${status?.optString("state") ?: "Connecting..."}", color = Color.White)
+            Text(if (error.isNotEmpty()) error else "${host.name} | ${status?.optString("state") ?: "Connecting..."}",
+                color = Color.White,fontSize=14.sp,lineHeight=18.sp)
             val metrics = status?.optJSONObject("overlay")
-            Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                Text(metrics?.optString("fps") ?: "N/A FPS", color = Color(0xFF71BCFF))
-                Text("RTT ${metrics?.optString("rtt") ?: "N/A ms"}", color = Color.White)
-                Text("RX ${metrics?.optString("bitrate") ?: "N/A Mbit/s"}", color = Color.White)
+            Row(Modifier.fillMaxWidth(),horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(metrics?.optString("fps") ?: "N/A FPS",modifier=Modifier.weight(1f),
+                    color=Color(0xFF71BCFF),fontSize=13.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
+                Text("RTT ${metrics?.optString("rtt") ?: "N/A ms"}",modifier=Modifier.weight(1f),
+                    color=Color.White,fontSize=13.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
+                Text("RX ${metrics?.optString("bitrate") ?: "N/A Mbit/s"}",modifier=Modifier.weight(1f),
+                    color=Color.White,fontSize=13.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
             }
-            if (metrics != null) Text(metrics.optString("format"), color = Color(0xFFA8BED7))
+            if (metrics != null) Text(metrics.optString("format"),color=Color(0xFFA8BED7),fontSize=12.sp,lineHeight=16.sp)
             val network = status?.optJSONObject("network")
-            Text("${network?.optString("transport", "WebRTC") ?: "Connecting"} | ${network?.optString("route", "Unverified") ?: "Unverified"}", color = Color(0xFFA8BED7))
-            if (focusGranted == false) Text("Android did not grant audio focus", color = Color(0xFFFFB4AB))
-            Text("Hides after 5 seconds. Press Back or Menu for controls; OK also works when remote mouse is off.", color = Color(0xFFA8BED7))
+            Text("${network?.optString("transport", "WebRTC") ?: "Connecting"} | ${network?.optString("route", "Unverified") ?: "Unverified"}",
+                color=Color(0xFFA8BED7),fontSize=12.sp,lineHeight=16.sp)
+            if(desktop.mouseMode) Text("D-pad: move · OK: click · Hold OK: right click\nOK + D-pad: drag",
+                color=Color(0xFFA8BED7),fontSize=12.sp,lineHeight=16.sp)
+            if (focusGranted == false) Text("Android did not grant audio focus",color=Color(0xFFFFB4AB),fontSize=12.sp)
+            Text("Back: controls · Auto-hide: 5 s\nKeyboard: Ctrl+Shift+M releases input",
+                color=Color(0xFFA8BED7),fontSize=12.sp,lineHeight=16.sp)
         }
     }
 }

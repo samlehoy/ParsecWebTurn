@@ -23,15 +23,15 @@ internal class RemoteCursor(private val decor: View) : AutoCloseable {
             arrow.setVisible(false, false)
             return
         }
-        // Explicit bounds cap the cursor at 2.5% of the shorter viewport edge.
-        val w = minOf(20f * decor.resources.displayMetrics.density, minOf(width,height) / 40f)
+        // A compact arrow; position denotes its hotspot, not its bounding rectangle.
+        val w = minOf(12f * decor.resources.displayMetrics.density, minOf(width,height) / 64f)
             .roundToInt().coerceAtLeast(1)
         val h = (w * 1.4f).roundToInt().coerceAtLeast(1)
         decor.getLocationInWindow(location)
         val x = (left - location[0] + width * (packed and 65535L).toFloat() / 65535f)
-            .roundToInt().coerceIn(0, (decor.width-w).coerceAtLeast(0))
+            .roundToInt().coerceIn(0, (decor.width-1).coerceAtLeast(0))
         val y = (top - location[1] + height * ((packed ushr 16) and 65535L).toFloat() / 65535f)
-            .roundToInt().coerceIn(0, (decor.height-h).coerceAtLeast(0))
+            .roundToInt().coerceIn(0, (decor.height-1).coerceAtLeast(0))
         arrow.setBounds(x,y,x+w,y+h)
         arrow.setVisible(true, false)
         arrow.invalidateSelf()
