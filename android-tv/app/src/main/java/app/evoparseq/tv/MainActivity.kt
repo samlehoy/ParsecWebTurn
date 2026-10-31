@@ -122,7 +122,8 @@ private fun TvApp(model: TvModel) {
                         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp),
                         contentPadding = PaddingValues(8.dp)) {
                             items(model.hosts, key = { it.peer }) { host ->
-                                Card(onClick = { selected = host }, modifier = Modifier.fillMaxWidth()) {
+                                Card(onClick = { selected = host }, scale = CardDefaults.scale(focusedScale = 1f),
+                                    modifier = Modifier.fillMaxWidth()) {
                                     Column(Modifier.padding(20.dp)) {
                                         Text(host.name, style = MaterialTheme.typography.titleLarge)
                                         Text("Connect · view and audio", color = LocalContentColor.current.copy(alpha = 0.8f))
