@@ -553,6 +553,26 @@ mod tests {
         }
     }
     #[test]
+    fn viewport_and_focus_gate_remote_motion_timer() {
+        let mut e = setup();
+        let n = Instant::now();
+        e.event(Event::Viewport(1024, 768), n, |_| Ok(())).unwrap();
+        assert!(!e.ticking());
+        e.event(key(3, true), n, |_| Ok(())).unwrap();
+        assert!(e.ticking());
+        e.tick(n + Duration::from_millis(20), |_| Ok(())).unwrap();
+        let position = e.pointer();
+        assert_ne!(position, 0);
+        let y = (position >> 16) & 65535;
+        assert!((32000..33500).contains(&y));
+        e.event(Event::Focus(false), n + Duration::from_millis(30), |_| {
+            Ok(())
+        })
+        .unwrap();
+        assert!(!e.ticking());
+        assert_eq!(e.pointer(), 0);
+    }
+    #[test]
     fn short_double_and_long_ok_never_mix_mouse_buttons() {
         let mut e = setup();
         let n = Instant::now();
