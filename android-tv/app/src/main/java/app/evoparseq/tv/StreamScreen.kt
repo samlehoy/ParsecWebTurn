@@ -119,8 +119,11 @@ internal fun StreamScreen(model: TvModel, host: Host, close: () -> Unit) {
                 })
             }
         })
-        val packed=desktop.pointer
-        if (!visible && (packed and (1L shl 32))!=0L) Canvas(Modifier.fillMaxSize()) {
+        // Read cursor state during drawing: pointer motion must not recompose
+        // stream controls or the AndroidView/codec Surface.
+        if (!visible) Canvas(Modifier.fillMaxSize()) {
+            val packed=desktop.pointer
+            if ((packed and (1L shl 32))==0L) return@Canvas
             val x=size.width*(packed and 65535L).toFloat()/65535f
             val y=size.height*((packed ushr 16) and 65535L).toFloat()/65535f
             translate(x,y) {
