@@ -133,8 +133,10 @@ private fun TvApp(model: TvModel) {
         }
         // One footer, always two lines high. Progress and feedback replace the
         // preview caption instead of adding rows and shrinking the form/IME area.
+        val streamNotice = model.signedIn && !settingsOpen && model.lastStreamStopReason.isNotEmpty()
         val feedback = when {
             model.busy -> "Working…"
+            streamNotice -> model.lastStreamStopReason
             model.message.isNotEmpty() -> model.message
             else -> "Android TV streaming preview · press a controller face button to join"
         }
@@ -144,7 +146,7 @@ private fun TvApp(model: TvModel) {
             fontSize = 16.sp, lineHeight = 20.sp,
             color = when {
                 model.busy -> Color(0xFFA8BED7)
-                model.message.isNotEmpty() -> Color(0xFFFFC6A0)
+                streamNotice || model.message.isNotEmpty() -> Color(0xFFFFC6A0)
                 else -> Color(0xFF9CACC0)
             })
     }

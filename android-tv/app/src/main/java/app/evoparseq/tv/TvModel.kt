@@ -36,7 +36,8 @@ internal class TvModel(application: Application) : AndroidViewModel(application)
         private set
     private var setupGeneration = 0
     private var streamGeneration = 0
-    private var streamStopRecorded = false
+    var lastStreamStopReason by mutableStateOf("")
+        private set
     private val preferences = application.getSharedPreferences("tv-requests", Context.MODE_PRIVATE)
     private val worker = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
@@ -199,7 +200,7 @@ internal class TvModel(application: Application) : AndroidViewModel(application)
     fun startStream(surface: android.view.Surface, host: Host, width: Int, height: Int) {
         val current = settings?.getJSONObject("settings")?.toString() ?: return
         val generation = ++streamGeneration
-        streamStopRecorded = false
+        lastStreamStopReason = ""
         message = ""
         streamStatus = JSONObject().put("state", "Connecting…")
         worker.execute {
@@ -231,8 +232,8 @@ internal class TvModel(application: Application) : AndroidViewModel(application)
     }
 
     fun stopStream(reason: String = "Stream closed.") {
-        if (!streamStopRecorded && streamStatus != null) {
-            streamStopRecorded = true
+        if (lastStreamStopReason.isEmpty() && streamStatus != null) {
+            lastStreamStopReason = reason
             message = reason
             android.util.Log.i("EvoParseq", "Stream stop requested: $reason")
         }
