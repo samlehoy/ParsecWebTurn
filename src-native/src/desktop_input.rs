@@ -397,15 +397,7 @@ mod pointing {
                         send(&header(2, p.wheel.0, p.wheel.1, 0))?;
                     }
                 }
-                Event::RemoteKey { key, down, cancel } if self.mode => {
-                    if cancel {
-                        self.directions = 0;
-                        self.center = None;
-                        self.drag = false;
-                        self.right = false;
-                        self.mouse_buttons(0, send)?;
-                        return Ok(());
-                    }
+                Event::RemoteKey { key, down, .. } if self.mode => {
                     if key < 4 {
                         if down {
                             if self.directions == 0 {

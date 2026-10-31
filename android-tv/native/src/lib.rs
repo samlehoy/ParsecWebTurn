@@ -69,6 +69,7 @@ mod gamepad_android;
 pub mod desktop_input;
 #[path = "../../../src-native/src/input.rs"]
 pub mod input;
+#[cfg(any(target_os = "android", test))]
 #[path = "../../../src-native/src/input_handoff.rs"]
 pub mod input_handoff;
 pub mod keyboard;
