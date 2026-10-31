@@ -125,3 +125,23 @@ gamepad driver and guest permission.
 Test both transports, button chords, sticks/triggers, unplug/reconnect, focus
 loss, local menu isolation and device-supported rumble. Synthetic tests/builds
 are not evidence of live controller compatibility.
+
+## Desktop input preview
+
+The stream controls can enable remote mouse navigation: D-pad moves, a short OK
+clicks left, two short OK presses double-click, holding OK clicks right, and
+holding OK while pressing D-pad drags with the left button. Back/Menu opens local
+controls; Home remains Android-owned. Some remotes cannot report simultaneous
+OK and direction presses; dragging requires a remote that supports that chord.
+
+Physical USB/Bluetooth keyboards and mice use normal Parsec input, on BUD and
+WebRTC. Mouse capture is enabled by default while the overlay is hidden, and
+can be disabled in the overlay. Ctrl+Shift+M releases input and opens controls.
+Focus loss and device removal release held input. Physical keyboard scan codes
+preserve key positions; matching host/client keyboard layouts are recommended.
+This does not enable the Windows BUD HID passthrough mode.
+
+Mouse gestures, keyboard encoding and bounded input handoff are shared Rust;
+Android only translates OS events/capture and draws a small cursor overlay.
+The MediaCodec-to-Surface video path is unchanged. Live TV input validation is
+still required, especially relative camera control and focus transitions.

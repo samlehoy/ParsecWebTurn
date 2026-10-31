@@ -433,3 +433,139 @@ pub extern "system" fn Java_app_evoparseq_tv_NativeCore_controllerAxes(
         [fx, fy, frx, fry, flt, frt],
     );
 }
+
+static REMOTE_MOUSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[no_mangle]
+pub extern "system" fn Java_app_evoparseq_tv_NativeCore_remoteMouseMode(
+    _env: JNIEnv,
+    _o: JObject,
+    on: jni::sys::jboolean,
+    long_ms: i32,
+) {
+    REMOTE_MOUSE.store(on != 0, std::sync::atomic::Ordering::Release);
+    crate::stream::input_event(crate::desktop_input::Event::RemoteMode(
+        on != 0,
+        long_ms.max(0) as u32,
+    ));
+}
+#[no_mangle]
+pub extern "system" fn Java_app_evoparseq_tv_NativeCore_remoteMouseKey(
+    _env: JNIEnv,
+    _o: JObject,
+    code: i32,
+    down: jni::sys::jboolean,
+    cancel: jni::sys::jboolean,
+) -> jni::sys::jboolean {
+    if !crate::gamepad_android::ACTIVE.load(std::sync::atomic::Ordering::Acquire)
+        || !REMOTE_MOUSE.load(std::sync::atomic::Ordering::Acquire)
+    {
+        return 0;
+    }
+    let key = match code {
+        19 => 0,
+        20 => 1,
+        21 => 2,
+        22 => 3,
+        23 | 66 | 160 => 4,
+        _ => return 0,
+    };
+    crate::stream::input_event(crate::desktop_input::Event::RemoteKey {
+        key,
+        down: down != 0,
+        cancel: cancel != 0,
+    });
+    1
+}
+#[no_mangle]
+pub extern "system" fn Java_app_evoparseq_tv_NativeCore_desktopKey(
+    _env: JNIEnv,
+    _o: JObject,
+    scan: i32,
+    code: i32,
+    meta: i32,
+    down: jni::sys::jboolean,
+    cancel: jni::sys::jboolean,
+    repeat: i32,
+) -> i32 {
+    if !crate::gamepad_android::ACTIVE.load(std::sync::atomic::Ordering::Acquire) {
+        return 0;
+    }
+    if cancel != 0 {
+        crate::stream::input_event(crate::desktop_input::Event::Release);
+        return 1;
+    }
+    let Some(usage) = crate::keyboard::usage(scan, code) else {
+        return 0;
+    };
+    let mods = crate::keyboard::modifiers(meta);
+    let shortcut = match usage {
+        16 => Some("KeyM"),
+        18 => Some("KeyO"),
+        21 => Some("KeyR"),
+        _ => None,
+    }
+    .and_then(|k| crate::input::shortcut(k, mods));
+    if down != 0
+        && matches!(
+            shortcut,
+            Some(crate::input::Shortcut::Menu | crate::input::Shortcut::ReleaseInput)
+        )
+    {
+        if repeat != 0 {
+            return 1;
+        }
+        crate::stream::input_event(crate::desktop_input::Event::Release);
+        return 2;
+    }
+    crate::stream::input_event(crate::desktop_input::Event::Key {
+        usage,
+        mods,
+        down: down != 0,
+    });
+    1
+}
+#[no_mangle]
+pub extern "system" fn Java_app_evoparseq_tv_NativeCore_desktopViewport(
+    _env: JNIEnv,
+    _o: JObject,
+    w: i32,
+    h: i32,
+) {
+    crate::stream::input_event(crate::desktop_input::Event::Viewport(
+        w.max(0) as u32,
+        h.max(0) as u32,
+    ));
+}
+#[no_mangle]
+pub extern "system" fn Java_app_evoparseq_tv_NativeCore_desktopRelease(_env: JNIEnv, _o: JObject) {
+    crate::stream::input_event(crate::desktop_input::Event::Release);
+}
+#[no_mangle]
+pub extern "system" fn Java_app_evoparseq_tv_NativeCore_desktopPointer(
+    _env: JNIEnv,
+    _o: JObject,
+    x: f64,
+    y: f64,
+    relative: jni::sys::jboolean,
+    moved: jni::sys::jboolean,
+    w: i32,
+    h: i32,
+    buttons: i32,
+    wx: i32,
+    wy: i32,
+) {
+    if !crate::gamepad_android::ACTIVE.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    crate::stream::input_event(crate::desktop_input::Event::Pointer(
+        crate::desktop_input::Pointer {
+            x,
+            y,
+            relative: relative != 0,
+            moved: moved != 0,
+            viewport: (w.max(0) as u32, h.max(0) as u32),
+            buttons: buttons as u32,
+            wheel: (wx, wy),
+        },
+    ));
+}

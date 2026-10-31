@@ -50,7 +50,9 @@ class MainActivity : ComponentActivity() {
         private set
     internal lateinit var controllerInput: ControllerInput
     override fun dispatchGenericMotionEvent(event: android.view.MotionEvent): Boolean =
-        (if (::controllerInput.isInitialized) controllerInput.motion(event) else false) || super.dispatchGenericMotionEvent(event)
+        (if (::controllerInput.isInitialized) controllerInput.motion(event) else false) || (if (::controllerInput.isInitialized) controllerInput.desktop.motion(event) else false) || super.dispatchGenericMotionEvent(event)
+    override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean =
+        (if (::controllerInput.isInitialized) controllerInput.desktop.motion(event) else false) || super.dispatchTouchEvent(event)
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         controllerWindowFocused = hasFocus

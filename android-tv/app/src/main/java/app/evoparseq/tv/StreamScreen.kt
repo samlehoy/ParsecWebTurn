@@ -7,6 +7,7 @@ import android.media.AudioManager
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
@@ -16,6 +17,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import kotlinx.coroutines.delay
@@ -30,6 +36,7 @@ internal fun StreamScreen(model: TvModel, host: Host, close: () -> Unit) {
     val context = LocalContext.current
     val activity = context as MainActivity
     val controllers = activity.controllerInput
+    val desktop = controllers.desktop
     val first = remember { FocusRequester() }
     var focusGranted by remember { mutableStateOf<Boolean?>(null) }
     val status = model.streamStatus
@@ -68,11 +75,16 @@ internal fun StreamScreen(model: TvModel, host: Host, close: () -> Unit) {
             }.build()
         val granted = audio.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         focusGranted = granted
-        onDispose { controllers.enabled = false; model.stopStream(); if (granted) audio.abandonAudioFocusRequest(request) }
+        onDispose { controllers.enabled = false; desktop.mouseMode = false; model.stopStream(); if (granted) audio.abandonAudioFocusRequest(request) }
     }
     BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)
+        .onGloballyPositioned { coordinates -> val p=coordinates.positionInWindow(); desktop.viewport(p.x,p.y,coordinates.size.width,coordinates.size.height) }
         .focusRequester(root).onPreviewKeyEvent { event ->
             if (controllers.key(event.nativeKeyEvent)) return@onPreviewKeyEvent true
+            when(desktop.key(event.nativeKeyEvent)) {
+                1 -> return@onPreviewKeyEvent true
+                2 -> { visible=true; interaction++; return@onPreviewKeyEvent true }
+            }
             val key = event.nativeKeyEvent
             val center = key.keyCode == android.view.KeyEvent.KEYCODE_DPAD_CENTER || key.keyCode == android.view.KeyEvent.KEYCODE_ENTER
             when {
@@ -107,12 +119,27 @@ internal fun StreamScreen(model: TvModel, host: Host, close: () -> Unit) {
                 })
             }
         })
+        val packed=desktop.pointer
+        if (!visible && (packed and (1L shl 32))!=0L) Canvas(Modifier.fillMaxSize()) {
+            val x=size.width*(packed and 65535L).toFloat()/65535f
+            val y=size.height*((packed ushr 16) and 65535L).toFloat()/65535f
+            translate(x,y) {
+                val arrow=Path().apply {moveTo(0f,0f);lineTo(0f,24.dp.toPx());lineTo(6.dp.toPx(),18.dp.toPx());lineTo(12.dp.toPx(),28.dp.toPx());lineTo(16.dp.toPx(),26.dp.toPx());lineTo(10.dp.toPx(),16.dp.toPx());lineTo(19.dp.toPx(),16.dp.toPx());close()}
+                drawPath(arrow,Color.White);drawPath(arrow,Color.Black,style=Stroke(1.5.dp.toPx()))
+            }
+        }
         if (visible) Column(Modifier.align(Alignment.TopStart).padding(24.dp)
             .background(Color(0xE6171D26)).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Button(onClick = { visible = false }, modifier = Modifier.focusRequester(first)) { Text("Hide overlay") }
                 Button(onClick = { exit() }) { Text("Disconnect") }
             }
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Button(onClick={desktop.mouseMode=!desktop.mouseMode},enabled=streaming) {Text("Remote mouse: " + if(desktop.mouseMode) "On" else "Off")}
+                Button(onClick={desktop.captureMouse=!desktop.captureMouse}) {Text("Mouse capture: " + if(desktop.captureMouse) "On" else "Off")}
+            }
+            if(desktop.mouseMode) Text("D-pad: move | OK: left click | hold OK: right click | OK + D-pad: drag",color=Color(0xFFA8BED7))
+            Text("Back: controls | Keyboard: Ctrl+Shift+M releases input and opens controls",color=Color(0xFFA8BED7))
             Text(if (error.isNotEmpty()) error else "${host.name} | ${status?.optString("state") ?: "Connecting..."}", color = Color.White)
             val metrics = status?.optJSONObject("overlay")
             Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
@@ -124,7 +151,7 @@ internal fun StreamScreen(model: TvModel, host: Host, close: () -> Unit) {
             val network = status?.optJSONObject("network")
             Text("${network?.optString("transport", "WebRTC") ?: "Connecting"} | ${network?.optString("route", "Unverified") ?: "Unverified"}", color = Color(0xFFA8BED7))
             if (focusGranted == false) Text("Android did not grant audio focus", color = Color(0xFFFFB4AB))
-            Text("Hides after 5 seconds. Press OK, Menu or Back to show controls.", color = Color(0xFFA8BED7))
+            Text("Hides after 5 seconds. Press Back or Menu for controls; OK also works when remote mouse is off.", color = Color(0xFFA8BED7))
         }
     }
 }

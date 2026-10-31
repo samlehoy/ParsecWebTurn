@@ -26,5 +26,11 @@ internal object NativeCore {
     external fun controllerRemoved(id: Int)
     external fun controllerAxes(id: Int, x: Float, y: Float, rx: Float, ry: Float, lt: Float, rt: Float,
         hx: Float, hy: Float, fx: Float, fy: Float, frx: Float, fry: Float, flt: Float, frt: Float)
+    external fun remoteMouseMode(enabled: Boolean, longMs: Int)
+    external fun remoteMouseKey(code: Int, down: Boolean, cancelled: Boolean): Boolean
+    external fun desktopKey(scan: Int, code: Int, meta: Int, down: Boolean, cancelled: Boolean, repeat: Int): Int
+    external fun desktopPointer(x: Double,y: Double,relative: Boolean,moved: Boolean,w: Int,h: Int,buttons: Int,wx: Int,wy: Int)
+    external fun desktopViewport(w: Int,h: Int)
+    external fun desktopRelease()
     external fun setOverlayVisible(visible: Boolean)
 }

@@ -22,7 +22,7 @@ struct Running {
     stop: Arc<AtomicBool>,
     thread: thread::Thread,
     status: Arc<Mutex<Value>>,
-    controllers: Arc<crate::gamepad::Inbox>,
+    controllers: Arc<crate::input_handoff::Inbox>,
 }
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
 struct Request {
@@ -32,7 +32,7 @@ struct Request {
     window: NativeWindow,
     choices: Choices,
     size: (u32, u32),
-    controllers: Arc<crate::gamepad::Inbox>,
+    controllers: Arc<crate::input_handoff::Inbox>,
 }
 
 pub fn start(
@@ -67,7 +67,7 @@ pub fn start(
     }
     let stop = Arc::new(AtomicBool::new(false));
     let status = Arc::new(Mutex::new(json!({"state":"Connecting…","ended":false})));
-    let controllers = Arc::new(crate::gamepad::Inbox::default());
+    let controllers = Arc::new(crate::input_handoff::Inbox::default());
     let worker_controllers = controllers.clone();
     let worker_stop = stop.clone();
     let worker_status = status.clone();
@@ -106,12 +106,15 @@ pub fn start(
     });
     Ok(())
 }
-pub fn controller_event(event: crate::gamepad::Event) {
+pub fn input_event(event: impl Into<crate::input_handoff::Event>) {
     let slot = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(r) = slot.as_ref().filter(|r| !r.stop.load(Ordering::Acquire)) {
         r.controllers.push(event);
         r.thread.unpark();
     }
+}
+pub fn controller_event(event: crate::gamepad::Event) {
+    input_event(event);
 }
 pub fn active() -> bool {
     RUNNING
@@ -215,6 +218,8 @@ fn run(request: Request, stop: &AtomicBool, status: &Mutex<Value>) -> Result<()>
         .context("Audio pipeline unavailable")?;
     let audio = audio_android::Output::open(receiver.clone())?;
     let mut pads = crate::gamepad::Manager::default();
+    let mut desktop = crate::desktop_input::Engine::default();
+    let mut last_pointer = 0u64;
     let mut motors = crate::gamepad_android::Output::default();
     let mut controller_batch = std::collections::VecDeque::new();
     let mut configured = false;
@@ -257,6 +262,14 @@ fn run(request: Request, stop: &AtomicBool, status: &Mutex<Value>) -> Result<()>
             match crate::control::decode(&frame)? {
                 crate::control::Message::Rumble { pad, low, high } => {
                     pads.feedback(pad, low, high, &mut motors)
+                }
+                crate::control::Message::Buffer { event, .. } if event["type"] == 1 => {
+                    desktop.host_cursor(
+                        event["cursor"]["relative"].as_bool().unwrap_or(false),
+                        event["cursor"]["hidden"].as_bool().unwrap_or(false),
+                        event["cursor"]["positionX"].as_i64().unwrap_or(-1) as i32,
+                        event["cursor"]["positionY"].as_i64().unwrap_or(-1) as i32,
+                    );
                 }
                 crate::control::Message::Status(code) if code != 0 => {
                     anyhow::bail!("The host ended the stream (status {code}). Check the host encoder and requested video format.");
@@ -329,16 +342,35 @@ fn run(request: Request, stop: &AtomicBool, status: &Mutex<Value>) -> Result<()>
                 return Err(error);
             }
             for event in controller_batch.drain(..) {
-                pads.event(event, &mut motors, |f| {
+                let mut send = |f: &[u8]| {
                     connection
                         .attempt
                         .send_binary(0, bytes::Bytes::copy_from_slice(f))
-                })?;
+                };
+                match event {
+                    crate::input_handoff::Event::Controller(e) => {
+                        pads.event(e, &mut motors, &mut send)?
+                    }
+                    crate::input_handoff::Event::Desktop(e) => {
+                        desktop.event(e, Instant::now(), &mut send)?
+                    }
+                }
+            }
+            desktop.tick(Instant::now(), |f| {
+                connection
+                    .attempt
+                    .send_binary(0, bytes::Bytes::copy_from_slice(f))
+            })?;
+            let pointer = desktop.pointer();
+            if pointer != last_pointer {
+                motors.pointer(pointer);
+                last_pointer = pointer;
             }
         }
         audio.check()?;
         if update.elapsed() >= Duration::from_millis(500) {
             let snapshot = connection.video.snapshot();
+            desktop.geometry((snapshot.width, snapshot.height));
             let mut network = connection.attempt.network_diagnostics();
             let bytes = network["received_bytes"]
                 .as_array()
@@ -375,8 +407,22 @@ fn run(request: Request, stop: &AtomicBool, status: &Mutex<Value>) -> Result<()>
             );
             update = Instant::now();
         }
-        thread::park_timeout(Duration::from_millis(25));
+        thread::park_timeout(Duration::from_millis(if desktop.ticking() {
+            16
+        } else {
+            25
+        }));
     }
+    let _ = desktop.event(
+        crate::desktop_input::Event::Focus(false),
+        Instant::now(),
+        |f| {
+            connection
+                .attempt
+                .send_binary(0, bytes::Bytes::copy_from_slice(f))
+        },
+    );
+    motors.pointer(0);
     let _ = pads.disconnect(&mut motors, |f| {
         connection
             .attempt

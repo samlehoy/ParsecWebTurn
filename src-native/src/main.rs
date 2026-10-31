@@ -105,3 +105,7 @@ fn main() {
 mod gamepad;
 #[cfg(windows)]
 mod gamepad_windows;
+
+mod desktop_input;
+#[cfg(test)]
+mod input_handoff;

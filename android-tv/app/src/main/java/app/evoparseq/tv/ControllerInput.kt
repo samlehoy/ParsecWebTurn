@@ -11,6 +11,7 @@ import android.view.MotionEvent
 
 /** OS events and device-local vibration only; state, slots and wire encoding are Rust. */
 internal class ControllerInput(context: Context) : InputManager.InputDeviceListener {
+    val desktop = DesktopInput(context as android.app.Activity)
     private val input = context.getSystemService(Context.INPUT_SERVICE) as InputManager
     private val main = Handler(Looper.getMainLooper())
     private val mappings = mutableMapOf<Int, Mapping>()
@@ -20,6 +21,7 @@ internal class ControllerInput(context: Context) : InputManager.InputDeviceListe
         set(value) {
             if (field == value) return
             field = value
+            desktop.enabled = value
             NativeCore.controllerFocus(value)
             if (!value) stopMotors()
         }
@@ -69,6 +71,8 @@ internal class ControllerInput(context: Context) : InputManager.InputDeviceListe
         return true
     }
     @androidx.annotation.Keep
+    fun pointerChanged(value:Long) {desktop.pointerChanged(value)}
+    @androidx.annotation.Keep
     @Suppress("DEPRECATION")
     fun rumble(id: Int, low: Int, high: Int) {
         main.post {
@@ -97,12 +101,14 @@ internal class ControllerInput(context: Context) : InputManager.InputDeviceListe
     override fun onInputDeviceChanged(id: Int) { onInputDeviceRemoved(id) }
     @Suppress("DEPRECATION")
     override fun onInputDeviceRemoved(id: Int) {
+        desktop.deviceRemoved(id)
         vibrating.remove(id)?.let { runCatching { it.cancel() } }
         mappings.remove(id)
         NativeCore.controllerRemoved(id)
     }
     fun close() {
         enabled = false
+        desktop.close()
         stopMotors()
         closed = true
         input.unregisterInputDeviceListener(this)

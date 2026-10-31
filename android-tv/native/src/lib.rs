@@ -64,3 +64,13 @@ mod turn_configuration;
 pub mod gamepad;
 #[cfg(target_os = "android")]
 mod gamepad_android;
+
+#[path = "../../../src-native/src/desktop_input.rs"]
+pub mod desktop_input;
+#[path = "../../../src-native/src/input.rs"]
+pub mod input;
+#[path = "../../../src-native/src/input_handoff.rs"]
+pub mod input_handoff;
+pub mod keyboard;
+#[path = "../../../src-native/src/viewport.rs"]
+pub mod viewport;

@@ -210,7 +210,6 @@ impl Manager {
 #[cfg(any(target_os = "android", test))]
 mod events {
     use super::*;
-    use std::{collections::VecDeque, sync::Mutex};
     #[derive(Clone, Copy, Debug)]
     pub enum Event {
         Button(i32, u16, bool),
@@ -218,43 +217,6 @@ mod events {
         Axes(i32, State, u16),
         Remove(i32),
         Focus(bool),
-    }
-    #[derive(Default)]
-    pub struct Inbox(Mutex<(VecDeque<Event>, bool)>);
-    impl Inbox {
-        pub fn push(&self, event: Event) {
-            let mut q = self.0.lock().unwrap_or_else(|e| e.into_inner());
-            if q.1 {
-                return;
-            }
-            if let (Some(Event::Axes(id, old, hat)), Event::Axes(next, state, nhat)) =
-                (q.0.back_mut(), event)
-            {
-                if *id == next
-                    && *hat == nhat
-                    && (old.lt == 0) == (state.lt == 0)
-                    && (old.rt == 0) == (state.rt == 0)
-                {
-                    *old = state;
-                    return;
-                }
-            }
-            if q.0.len() == 128 {
-                q.0.clear();
-                q.1 = true;
-            } else {
-                q.0.push_back(event);
-            }
-        }
-        pub fn take(&self, into: &mut VecDeque<Event>) -> Result<()> {
-            let mut q = self.0.lock().unwrap_or_else(|e| e.into_inner());
-            anyhow::ensure!(
-                !q.1,
-                "Controller input queue overloaded; reconnect to release input safely"
-            );
-            std::mem::swap(&mut q.0, into);
-            Ok(())
-        }
     }
     impl Manager {
         pub fn event(
@@ -308,7 +270,7 @@ mod events {
     }
 }
 #[cfg(any(target_os = "android", test))]
-pub use events::{Event, Inbox};
+pub use events::Event;
 
 #[cfg(any(windows, test))]
 pub mod polling {
@@ -378,6 +340,7 @@ pub mod polling {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input_handoff::Inbox;
     #[derive(Default)]
     struct Output(Vec<(i32, u8, u8)>);
     impl Motors for Output {

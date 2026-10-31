@@ -29,6 +29,7 @@ pub fn bind(env: &JNIEnv, object: JObject) -> jni::errors::Result<()> {
 pub fn focus(active: bool) {
     ACTIVE.store(active, Ordering::Release);
     crate::stream::controller_event(Event::Focus(active));
+    crate::stream::input_event(crate::desktop_input::Event::Focus(active));
 }
 pub fn button(id: i32, code: i32, down: bool) -> bool {
     if !ACTIVE.load(Ordering::Acquire) {
@@ -92,10 +93,32 @@ pub struct Output {
 }
 impl Default for Output {
     fn default() -> Self {
+        let callback = CALLBACK.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(c) = &callback {
+            let _ = c.vm.attach_current_thread_permanently();
+        }
         Self {
-            callback: CALLBACK.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            callback,
             active: [None; gamepad::PADS],
         }
+    }
+}
+impl Output {
+    fn invoke(&self, name: &str, signature: &str, args: &[JValue<'_, '_>]) {
+        if let Some(c) = &self.callback {
+            if let Ok(mut env) = c.vm.attach_current_thread() {
+                let result: jni::errors::Result<()> = env.with_local_frame(8, |env| {
+                    env.call_method(c.object.as_obj(), name, signature, args)
+                        .map(|_| ())
+                });
+                if result.is_err() {
+                    let _ = env.exception_clear();
+                }
+            }
+        }
+    }
+    pub fn pointer(&self, packed: u64) {
+        self.invoke("pointerChanged", "(J)V", &[JValue::Long(packed as i64)]);
     }
 }
 impl Motors for Output {
@@ -111,29 +134,20 @@ impl Motors for Output {
                 Some(id)
             };
         }
-        if let Some(c) = &self.callback {
-            if let Ok(mut env) = c.vm.attach_current_thread() {
-                if env
-                    .call_method(
-                        c.object.as_obj(),
-                        "rumble",
-                        "(III)V",
-                        &[
-                            JValue::Int(id),
-                            JValue::Int(low.into()),
-                            JValue::Int(high.into()),
-                        ],
-                    )
-                    .is_err()
-                {
-                    let _ = env.exception_clear();
-                }
-            }
-        }
+        self.invoke(
+            "rumble",
+            "(III)V",
+            &[
+                JValue::Int(id),
+                JValue::Int(low.into()),
+                JValue::Int(high.into()),
+            ],
+        );
     }
 }
 impl Drop for Output {
     fn drop(&mut self) {
+        self.pointer(0);
         for id in self.active.into_iter().flatten() {
             self.rumble(id, 0, 0);
         }
