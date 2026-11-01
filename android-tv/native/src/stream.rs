@@ -386,7 +386,7 @@ fn run(request: Request, stop: &AtomicBool, status: &Mutex<Value>) -> Result<()>
                     / update.elapsed().as_secs_f64(),
             );
             previous_submitted = snapshot.submitted;
-            let overlay = crate::overlay::metrics(
+            let mut overlay = crate::overlay::metrics(
                 fps,
                 network["rtt_ms"].as_f64(),
                 received_mbps,
@@ -395,6 +395,9 @@ fn run(request: Request, stop: &AtomicBool, status: &Mutex<Value>) -> Result<()>
                 snapshot.height,
                 snapshot.depth,
             );
+
+            overlay["frame_rate_hint"] =
+                crate::overlay::frame_rate_hint(&host_config.observed()).into();
 
             *status.lock().unwrap_or_else(|e| e.into_inner()) = json!({"state":if snapshot.submitted>0 {"Streaming"} else {"Connecting…"},"ended":false,"video":snapshot,"settings_confirmed":settings_confirmed,
                 "audio":receiver.snapshot(),"audio_output":audio.snapshot(),"network":network,"overlay":overlay});

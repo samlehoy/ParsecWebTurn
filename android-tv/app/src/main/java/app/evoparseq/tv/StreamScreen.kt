@@ -41,7 +41,9 @@ internal fun StreamScreen(model: TvModel, host: Host, close: () -> Unit) {
     val desktop = controllers.desktop
     val first = remember { FocusRequester() }
     var focusGranted by remember { mutableStateOf<Boolean?>(null) }
+    val timing = remember { SurfaceTiming() }
     val status = model.streamStatus
+    val frameRateHint = status?.optJSONObject("overlay")?.optDouble("frame_rate_hint", 0.0)?.toFloat() ?: 0f
     val video = status?.optJSONObject("video")
     val width = video?.optInt("width") ?: 0
     val height = video?.optInt("height") ?: 0
@@ -119,10 +121,13 @@ internal fun StreamScreen(model: TvModel, host: Host, close: () -> Unit) {
                             model.startStream(holder.surface, host, w, h)
                         }
                     }
-                    override fun surfaceDestroyed(holder: SurfaceHolder) { model.stopStream("Android destroyed the video Surface.") }
+                    override fun surfaceDestroyed(holder: SurfaceHolder) {
+                        timing.detached()
+                        model.stopStream("Android destroyed the video Surface.")
+                    }
                 })
             }
-        })
+        }, update = { view -> timing.apply(view.holder.surface, frameRateHint) })
         if (visible) Column(Modifier.align(Alignment.TopStart).padding(16.dp)
             .widthIn(max=400.dp).heightIn(max=(maxHeight-32.dp).coerceAtLeast(0.dp))
             .background(Color(0xE6171D26),RoundedCornerShape(12.dp))
@@ -158,6 +163,9 @@ internal fun StreamScreen(model: TvModel, host: Host, close: () -> Unit) {
                     color=Color.White,fontSize=13.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
             }
             if (metrics != null) Text(metrics.optString("format"),color=Color(0xFFA8BED7),fontSize=12.sp,lineHeight=16.sp)
+            val displayHz = activity.window.decorView.display?.refreshRate
+            Text("Display ${displayHz?.let { String.format(java.util.Locale.ROOT, "%.2f", it) } ?: "N/A"} Hz · Catch-up skips ${video?.optLong("skipped", 0) ?: 0}",
+                color=Color(0xFFA8BED7),fontSize=12.sp,lineHeight=16.sp)
             val network = status?.optJSONObject("network")
             Text("${network?.optString("transport", "WebRTC") ?: "Connecting"} | ${network?.optString("route", "Unverified") ?: "Unverified"}",
                 color=Color(0xFFA8BED7),fontSize=12.sp,lineHeight=16.sp)

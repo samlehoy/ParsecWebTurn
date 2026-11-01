@@ -56,6 +56,14 @@ skips compressed reference pictures. Empty WebRTC messages remain distinct from
 stream EOF, as required by RFC 8831. Test both transports, audio, reconnect and
 remembered sign-in on the actual device; builds alone do not validate hardware.
 
+For fixed-FPS sessions, the video Surface receives Android's documented frame-rate
+hint using the host-reported configured rate, not sampled FPS or the requested
+preset. Dynamic/unknown cadence clears the hint. Only seamless mode changes are
+allowed; there is no new frame scheduler, buffering, copy or forced HDMI mode.
+The overlay exposes Android's reported display Hz and decoded-output catch-up
+skip count to help distinguish cadence mismatch from catch-up. This is not a
+measurement of physical scanout; smoother motion requires live validation.
+
 ## Local relay setup
 
 Open **Settings > Network > Set up from phone or computer**. The TV and browser
