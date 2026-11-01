@@ -164,7 +164,7 @@ internal fun StreamScreen(model: TvModel, host: Host, close: () -> Unit) {
             }
             if (metrics != null) Text(metrics.optString("format"),color=Color(0xFFA8BED7),fontSize=12.sp,lineHeight=16.sp)
             val displayHz = activity.window.decorView.display?.refreshRate
-            Text("Display ${displayHz?.let { String.format(java.util.Locale.ROOT, "%.2f", it) } ?: "N/A"} Hz · Catch-up skips ${video?.optLong("skipped", 0) ?: 0}",
+            Text("Display ${displayHz?.let { String.format(java.util.Locale.ROOT, "%.2f", it) } ?: "N/A"} Hz | Catch-up skips ${video?.optLong("skipped", 0) ?: 0}",
                 color=Color(0xFFA8BED7),fontSize=12.sp,lineHeight=16.sp)
             val network = status?.optJSONObject("network")
             Text("${network?.optString("transport", "WebRTC") ?: "Connecting"} | ${network?.optString("route", "Unverified") ?: "Unverified"}",
