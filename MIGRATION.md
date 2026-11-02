@@ -39,8 +39,15 @@ existing ParsecWebTurn updater to recognize the transition. For example, clients
 on stable 0.9.4 require a stable version greater than 0.9.4. A development CI
 artifact or prerelease is not offered by that stable updater.
 
-The `dev` branch now develops EvoParseq. Version 0.9.5-dev.2 is a prerelease,
-so the stable ParsecWebTurn updater does not offer it automatically. Download
-the EvoParseq or transition package manually to try it. The `main` branch and
-stable v0.9.4 remain ParsecWebTurn. A future stable EvoParseq release can use
-the existing repository/update channel for the transition described above.
+## Stable v0.9.5 and repository rename
+
+The repository is now **vampywiz17/EvoParseq**. Main contains stable EvoParseq
+v0.9.5; dev continues Windows and Android TV development.
+
+Older ParsecWebTurn and EvoParseq previews validate download URLs against the old
+repository name. GitHub's repository redirect does not update that compiled-in
+allowlist, so their update check can reject the renamed repository's assets.
+For this transition, download the stable ZIP directly from
+[the release page](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.5).
+The transition ZIP preserves existing shortcuts; it cannot change an old updater
+before that executable is replaced. EvoParseq v0.9.5 checks the new repository.

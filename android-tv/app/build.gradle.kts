@@ -11,8 +11,8 @@ android {
         applicationId = "app.evoparseq.tv"
         minSdk = 29
         targetSdk = 36
-        versionCode = 23
-        versionName = "0.2.0-stream-preview.20"
+        versionCode = 24
+        versionName = "0.9.6-dev.1"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
     buildFeatures { compose = true }

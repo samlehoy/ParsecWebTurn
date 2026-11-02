@@ -1,6 +1,6 @@
 # EvoParseq for Android TV
 
-Development branch: `codex/android-tv`. First live device: Xiaomi TV Box S
+Development branch: `dev` (0.9.6-dev.1). First live device: Xiaomi TV Box S
 (3rd Gen) EU, Android 14 (32-bit ARM userspace). Google TV / Android TV interface,
 D-pad navigation, two-factor sign-in and shared Rust account/session logic.
 
@@ -43,9 +43,10 @@ D-pad navigation, two-factor sign-in and shared Rust account/session logic.
 
 Live video is confirmed on the Xiaomi box for H.264 and HEVC 8-bit, and HEVC
 Main10 with NVIDIA encoding. The AMD host test returned 8-bit. The user found
-30 Mbps stable and treats approximately 30-35 Mbps as this setup's practical
-ceiling; sustained 50 Mbps caused growing delay and video-channel closure on
-Ethernet and Wi-Fi. This is not a proven universal decoder/hardware limit.
+BUD at 50 Mbps stable in the later build, while sustained WebRTC 50 Mbps still
+caused growing delay and video-channel closure on Ethernet and Wi-Fi. WebRTC
+around 30 Mbps was stable. The earlier proposed universal 30-35 Mbps hardware
+ceiling was not supported once the two transports were compared.
 A later apparent audio regression was traced to the box's own audio output;
 it was not established as a client regression.
 
@@ -62,7 +63,8 @@ preset. Dynamic/unknown cadence clears the hint. Only seamless mode changes are
 allowed; there is no new frame scheduler, buffering, copy or forced HDMI mode.
 The overlay exposes Android's reported display Hz and decoded-output catch-up
 skip count to help distinguish cadence mismatch from catch-up. This is not a
-measurement of physical scanout; smoother motion requires live validation.
+measurement of physical scanout; the user reported smoother lateral motion
+after this change, without a quantified latency measurement.
 
 ## Local relay setup
 

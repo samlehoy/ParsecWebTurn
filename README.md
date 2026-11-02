@@ -2,13 +2,7 @@
   <img src="assets/evoparseq-wordmark.svg" width="360" alt="EvoParseq">
 </p>
 
-> **Android TV development branch:** native WebRTC view/audio preview with shared
-> Rust account, protocol and video-request models, hardware MediaCodec Surface video
-> and AAudio. Controller forwarding, BUD and configurable TURN are not connected yet.
-> See [Android TV status and build](android-tv/README.md) for limits and validation.
-> The Windows features below describe the existing client retained on this branch.
-
-<p align="center"><strong>An independent Windows Parsec client with a native Rust core.</strong></p>
+<p align="center"><strong>An independent Parsec client with a shared native Rust core.</strong></p>
 
 EvoParseq connects to existing, **unmodified Parsec hosts**. Native Rust handles
 sign-in, computer discovery, signaling, transport, GPU video, audio and input.
@@ -18,10 +12,36 @@ requires no browser, WebView or helper executable.
 **This is an independent community project, not affiliated with or endorsed by
 Parsec, Unity or lowlat.** A Parsec account and a compatible host are required.
 
-The **`dev` branch now contains EvoParseq**. The current preview is
-[**v0.9.5-dev.2**](https://github.com/vampywiz17/ParsecWebTurn/releases/tag/v0.9.5-dev.2).
-The `main` branch and stable **ParsecWebTurn v0.9.4** remain available separately.
-This prerelease does not replace the stable release in the updater.
+**This is the development branch (0.9.6-dev.1): Windows plus an Android TV preview.**
+The stable Windows client is [**EvoParseq v0.9.5**](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.5)
+on `main`. This branch adds controller support on Windows and Android TV;
+these additions are not included in the stable Windows release.
+
+## Android TV preview
+
+- Google TV / Android TV interface with D-pad navigation, 2FA, grouped settings
+  and encrypted remembered sign-in using Android Keystore.
+- Shared Rust account, session, WebRTC/BUD, controller and input models; Android
+  adapters provide MediaCodec Surface video, AAudio and OS input/lifecycle.
+- Direct or STUN/TURN connections, Force TURN and temporary **local-only HTTPS**
+  relay setup from a phone/computer, with fingerprint verification and TV approval.
+- H.264 and HEVC 8/10-bit 4:2:0, fixed/adaptive FPS, hidden-by-default session
+  controls after five idle seconds, plus FPS/RTT/bitrate/codec/route information.
+- Standard gamepads; optional remote D-pad mouse, short/long OK clicks and
+  supported OK + direction dragging. Physical mouse/keyboard use normal input
+  with optional capture. Windows HID passthrough is not an Android feature.
+
+Live-tested on Xiaomi TV Box S (3rd Gen), Android 14, including BUD at 50 Mbit/s,
+NVIDIA-encoded Main10, remote mouse and a GameSir controller. WebRTC at sustained
+50 Mbit/s still closed its video channel in this setup; around 30 Mbit/s was
+stable. This is a transport-specific observation, **not a universal hardware limit**.
+MediaCodec submits frames to Surface without CPU pixel readback; physical scanout
+and internal driver/compositor copies are not verified.
+
+Use successful [dev Android CI artifacts](https://github.com/vampywiz17/EvoParseq/actions/workflows/android-tv.yml?query=branch%3Adev)
+for previews; the stable Windows ZIP is not an Android package.
+[Android TV setup, build and limits](android-tv/README.md).
+The Windows features below remain available on this branch.
 
 ## Features
 
@@ -40,6 +60,10 @@ This prerelease does not replace the stable release in the updater.
 - **Audio:** stereo Opus, configurable buffering, BUD raw PCM and experimental
   multichannel output. Automatically reopen the Windows audio output after
   transient device errors or default-device changes, retiring stale audio.
+- **Controllers (development):** shared Rust gamepad state/protocol for up to
+  four controllers, Windows XInput and Android gamepad events. Wired Windows
+  and GameSir Android forwarding are live-tested; device-specific rumble and
+  disconnect behavior need broader validation.
 - **Input:** two-way Unicode text clipboard; normal mouse/keyboard forwarding;
   experimental BUD USB HID mouse and keyboard, including relative camera input.
 - **Diagnostics:** route, RTT, traffic, FPS, actual decoder/format, audio queues,
@@ -71,12 +95,12 @@ improve enlarged video but uses more GPU resources and may add latency.
 The animation illustrates processing order, not measured speed. Check
 **Connection stats** for the mode actually in use.
 
-## Download and run
+## Windows download and run
 
-1. Download `EvoParseq-v0.9.5-dev.2-win64.zip` from the
-   [preview release](https://github.com/vampywiz17/ParsecWebTurn/releases/tag/v0.9.5-dev.2).
-   Development artifacts are also available from successful
-   [dev CI runs](https://github.com/vampywiz17/ParsecWebTurn/actions/workflows/native-core.yml?query=branch%3Adev).
+1. Download `EvoParseq-v0.9.5-win64.zip` from the
+   [stable release](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.5).
+   For this branch's Windows preview (including controllers), use artifacts from successful
+   [dev CI runs](https://github.com/vampywiz17/EvoParseq/actions/workflows/native-core.yml?query=branch%3Adev).
 2. Extract to a writable folder and run **EvoParseq.exe**. Settings and optional
    encrypted sessions are stored beside it in `settings.json`.
 3. Sign in with the host owner's account, choose a computer and connect.
@@ -84,8 +108,8 @@ The animation illustrates processing order, not measured speed. Check
    after changing transport or connection capabilities; session video requests
    can be applied while connected.
 
-**Client GPU requirement: Direct3D feature level 11.0 or newer**, with compatible
-D3D11 video-support drivers, on Windows x64. The DirectX version shown on
+**Windows 11 x64 and a GPU with Direct3D feature level 11.0 or newer are required**,
+with compatible D3D11 video-support drivers. The DirectX version shown on
 dxdiag's System tab is the installed runtime version; check **Feature Levels**
 on its Display tab for the GPU's capabilities. DirectX 10.x hardware, such as
 the GeForce 210, is unsupported. Support below feature level 11.0 is not planned,
@@ -97,7 +121,9 @@ rights. The stock host must already be configured for hosting.
 
 **Upgrading from ParsecWebTurn:** keep `settings.json` under the same Windows
 account and sign in again. The old web-core login is not imported. A legacy-named
-transition ZIP supports existing executable shortcuts. See [migration](MIGRATION.md).
+transition ZIP supports existing executable shortcuts. After the repository rename,
+older updaters may reject the new download URL; use the release page for this
+one-time manual upgrade. See [migration](MIGRATION.md).
 Help > Check for updates offers newer **stable** EvoParseq packages; prerelease
 installation is manual.
 
@@ -213,13 +239,16 @@ stereo Opus and Automatic timing with experimental options disabled.
 - **Video:** live decoded frames remain on the GPU. Normal rendering uses the
   conversion/output pass; zero-copy presents original 8-bit NV12 or capability-checked 10-bit P010 surfaces.
   HEVC 10-bit 4:2:0 Zero copy is live-confirmed by the maintainer on tested AMD
-  and NVIDIA systems. Current Intel HEVC paths remain untested live.
+  and NVIDIA systems. Intel HEVC, including 8/10-bit 4:4:4 normal rendering,
+  has also been live-tested on the maintainer's UHD 770 setup; this does not
+  establish support on every Intel GPU or driver.
   Driver/compositor copies and direct scanout are not independently verified.
 - **10-bit:** RGB10 output is SDR, not HDR. NVIDIA host encoding is confirmed;
   other host encoders may refuse it or send 8-bit. An initial encoder failure
   asks you to disable 10-bit and reconnect. AMF Main10 output is live-validated on AMD Radeon 780M and is now the AMD default.
-- **4:4:4:** 8/10-bit playback is live-validated on NVIDIA RTX 3060. Intel support
-  is capability-gated and **not live-validated**. AMD selection is disabled.
+- **4:4:4:** 8/10-bit playback is live-validated on NVIDIA RTX 3060. Intel UHD 770 8/10-bit playback is also live-confirmed. Support remains
+  capability-gated; a measured UHD 770 driver-query exception is logged.
+  AMD selection is disabled.
   H.264 stays 4:2:0; 4:4:4 does not combine with original-surface zero-copy.
   Compatible host encoding, account permissions and service terms still apply.
 - **HID:** requires BUD and the stock host's USB/Yubikey passthrough plus its
@@ -234,8 +263,7 @@ stereo Opus and Automatic timing with experimental options disabled.
   latency. Adaptive catch-up, QoS benefit and physical audio-device recovery
   still require broader live testing; no measured latency gain is claimed.
 
-Gamepads, microphone/camera forwarding, HDR and multi-monitor HID mapping are
-not implemented. See the [changelog](CHANGELOG.md) for shipped changes.
+Microphone/camera forwarding, HDR and multi-monitor HID mapping are not implemented. See the [changelog](CHANGELOG.md) for shipped changes.
 
 ## Troubleshooting and development
 

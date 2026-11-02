@@ -3,7 +3,7 @@ name: EvoParseq native client
 on:
   workflow_dispatch:
   push:
-    branches: [dev]
+    branches: [main, dev]
 
 permissions:
   contents: read
