@@ -3204,6 +3204,9 @@ pub(crate) fn display_extents(width: u32, height: u32, rotation: u8) -> (u32, u3
 }
 
 #[cfg(test)]
+mod y410_probe;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
