@@ -3,7 +3,7 @@ name: EvoParseq native client
 on:
   workflow_dispatch:
   push:
-    branches: [dev]
+    branches: [main, dev]
 
 permissions:
   contents: read
@@ -82,30 +82,6 @@ jobs:
         with:
           name: EvoParseq-win64
           path: dist/native-core/*
-          if-no-files-found: error
-      - name: Package opt-in synthetic Y410 diagnostic
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $messages = cargo test --locked --manifest-path src-native/Cargo.toml --no-run --message-format=json
-          if ($LASTEXITCODE -ne 0) { throw 'Diagnostic test executable build failed' }
-          $probe = @($messages | ForEach-Object {
-            if ($_.StartsWith('{')) {
-              $item = $_ | ConvertFrom-Json
-              if ($item.reason -eq 'compiler-artifact' -and $item.profile.test -and $item.target.name -eq 'evoparseq' -and $item.executable) { $item.executable }
-            }
-          })
-          if ($probe.Count -ne 1) { throw 'Expected one native test executable' }
-          New-Item -ItemType Directory -Path dist/y410-probe -Force | Out-Null
-          Copy-Item -LiteralPath $probe[0] -Destination dist/y410-probe/EvoParseq-Y410-Probe.exe
-          Copy-Item -LiteralPath scripts/Start-Y410-Probe.cmd -Destination dist/y410-probe/
-          Copy-Item -LiteralPath docs/y410-probe.md -Destination dist/y410-probe/README.md
-          git rev-parse HEAD | Set-Content -LiteralPath dist/y410-probe/SOURCE.txt -Encoding ascii
-          Get-FileHash -Algorithm SHA256 dist/y410-probe/EvoParseq-Y410-Probe.exe | Format-List | Out-String | Set-Content -LiteralPath dist/y410-probe/SHA256.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: EvoParseq-Y410-diagnostic
-          path: dist/y410-probe/*
           if-no-files-found: error
       - name: Verify migration ZIP contents
         shell: pwsh

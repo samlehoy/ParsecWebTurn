@@ -7,7 +7,7 @@ body:
     id: existing-issues
     attributes:
       label: Before reporting
-      description: Search [open and closed issues](https://github.com/vampywiz17/ParsecWebTurn/issues?q=is%3Aissue) first.
+      description: Search [open and closed issues](https://github.com/vampywiz17/EvoParseq/issues?q=is%3Aissue) first.
       options:
         - label: I checked that this bug has not already been reported.
           required: true

@@ -12,10 +12,9 @@ requires no browser, WebView or helper executable.
 **This is an independent community project, not affiliated with or endorsed by
 Parsec, Unity or lowlat.** A Parsec account and a compatible host are required.
 
-The **`dev` branch now contains EvoParseq**. The current preview is
-[**v0.9.5-dev.2**](https://github.com/vampywiz17/ParsecWebTurn/releases/tag/v0.9.5-dev.2).
-The `main` branch and stable **ParsecWebTurn v0.9.4** remain available separately.
-This prerelease does not replace the stable release in the updater.
+The stable release is [**EvoParseq v0.9.5**](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.5).
+`main` contains the stable Windows client; `dev` carries ongoing Windows and
+Android TV development. Android TV previews are not part of this Windows release.
 
 ## Features
 
@@ -67,10 +66,10 @@ The animation illustrates processing order, not measured speed. Check
 
 ## Download and run
 
-1. Download `EvoParseq-v0.9.5-dev.2-win64.zip` from the
-   [preview release](https://github.com/vampywiz17/ParsecWebTurn/releases/tag/v0.9.5-dev.2).
+1. Download `EvoParseq-v0.9.5-win64.zip` from the
+   [stable release](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.5).
    Development artifacts are also available from successful
-   [dev CI runs](https://github.com/vampywiz17/ParsecWebTurn/actions/workflows/native-core.yml?query=branch%3Adev).
+   [dev CI runs](https://github.com/vampywiz17/EvoParseq/actions/workflows/native-core.yml?query=branch%3Adev).
 2. Extract to a writable folder and run **EvoParseq.exe**. Settings and optional
    encrypted sessions are stored beside it in `settings.json`.
 3. Sign in with the host owner's account, choose a computer and connect.
@@ -78,8 +77,8 @@ The animation illustrates processing order, not measured speed. Check
    after changing transport or connection capabilities; session video requests
    can be applied while connected.
 
-**Client GPU requirement: Direct3D feature level 11.0 or newer**, with compatible
-D3D11 video-support drivers, on Windows x64. The DirectX version shown on
+**Windows 11 x64 and a GPU with Direct3D feature level 11.0 or newer are required**,
+with compatible D3D11 video-support drivers. The DirectX version shown on
 dxdiag's System tab is the installed runtime version; check **Feature Levels**
 on its Display tab for the GPU's capabilities. DirectX 10.x hardware, such as
 the GeForce 210, is unsupported. Support below feature level 11.0 is not planned,
@@ -91,7 +90,9 @@ rights. The stock host must already be configured for hosting.
 
 **Upgrading from ParsecWebTurn:** keep `settings.json` under the same Windows
 account and sign in again. The old web-core login is not imported. A legacy-named
-transition ZIP supports existing executable shortcuts. See [migration](MIGRATION.md).
+transition ZIP supports existing executable shortcuts. After the repository rename,
+older updaters may reject the new download URL; use the release page for this
+one-time manual upgrade. See [migration](MIGRATION.md).
 Help > Check for updates offers newer **stable** EvoParseq packages; prerelease
 installation is manual.
 
@@ -207,13 +208,16 @@ stereo Opus and Automatic timing with experimental options disabled.
 - **Video:** live decoded frames remain on the GPU. Normal rendering uses the
   conversion/output pass; zero-copy presents original 8-bit NV12 or capability-checked 10-bit P010 surfaces.
   HEVC 10-bit 4:2:0 Zero copy is live-confirmed by the maintainer on tested AMD
-  and NVIDIA systems. Current Intel HEVC paths remain untested live.
+  and NVIDIA systems. Intel HEVC, including 8/10-bit 4:4:4 normal rendering,
+  has also been live-tested on the maintainer's UHD 770 setup; this does not
+  establish support on every Intel GPU or driver.
   Driver/compositor copies and direct scanout are not independently verified.
 - **10-bit:** RGB10 output is SDR, not HDR. NVIDIA host encoding is confirmed;
   other host encoders may refuse it or send 8-bit. An initial encoder failure
   asks you to disable 10-bit and reconnect. AMF Main10 output is live-validated on AMD Radeon 780M and is now the AMD default.
-- **4:4:4:** 8/10-bit playback is live-validated on NVIDIA RTX 3060. Intel support
-  is capability-gated and **not live-validated**. AMD selection is disabled.
+- **4:4:4:** 8/10-bit playback is live-validated on NVIDIA RTX 3060. Intel UHD 770 8/10-bit playback is also live-confirmed. Support remains
+  capability-gated; a measured UHD 770 driver-query exception is logged.
+  AMD selection is disabled.
   H.264 stays 4:2:0; 4:4:4 does not combine with original-surface zero-copy.
   Compatible host encoding, account permissions and service terms still apply.
 - **HID:** requires BUD and the stock host's USB/Yubikey passthrough plus its
