@@ -273,6 +273,7 @@ pub fn hevc_444_available(
             }
             if ten_bit
                 && !supports_rgb10(
+                    &device,
                     &processor,
                     crate::video_color::processor_color(Some(1), Some(1)),
                     format,
@@ -2372,26 +2373,75 @@ fn rgb10_output_rejected(error: &Failure) -> bool {
     )
 }
 
+// UHD 770 (0xA780) returned S_OK/false for Y410 -> RGB10 despite correct
+// synthetic full/limited BT.709 output (1024/877 gray levels, per-pixel chroma).
+// Keep this exception limited to the measured adapter and color spaces. Do not
+// extend it to failed API calls, other input formats or unvalidated hardware.
+fn measured_y410_query_exception(vendor: u32, device: u32, input: DXGI_FORMAT, color: u32) -> bool {
+    vendor == 0x8086
+        && device == 0xA780
+        && input == DXGI_FORMAT_Y410
+        && matches!(
+            rgb10_input_color(color),
+            DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709 | DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709
+        )
+}
+
 unsafe fn supports_rgb10(
+    device: &ID3D11Device,
     enumeration: &ID3D11VideoProcessorEnumerator,
     color: u32,
     input: DXGI_FORMAT,
 ) -> bool {
-    let output = enumeration
-        .CheckVideoProcessorFormat(DXGI_FORMAT_R10G10B10A2_UNORM)
-        .is_ok_and(|flags| flags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT.0 as u32 != 0);
-    output
-        && enumeration
-            .cast::<ID3D11VideoProcessorEnumerator1>()
-            .is_ok_and(|e| {
-                e.CheckVideoProcessorFormatConversion(
-                    input,
-                    rgb10_input_color(color),
-                    DXGI_FORMAT_R10G10B10A2_UNORM,
-                    DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
-                )
-                .is_ok_and(|supported| supported.as_bool())
-            })
+    let supports = |format, flag| {
+        enumeration
+            .CheckVideoProcessorFormat(format)
+            .is_ok_and(|flags| flags & flag != 0)
+    };
+    if !supports(input, D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT.0 as u32)
+        || !supports(
+            DXGI_FORMAT_R10G10B10A2_UNORM,
+            D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT.0 as u32,
+        )
+    {
+        return false;
+    }
+    let Ok(enumeration) = enumeration.cast::<ID3D11VideoProcessorEnumerator1>() else {
+        return false;
+    };
+    match enumeration.CheckVideoProcessorFormatConversion(
+        input,
+        rgb10_input_color(color),
+        DXGI_FORMAT_R10G10B10A2_UNORM,
+        DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+    ) {
+        Ok(supported) if supported.as_bool() => true,
+        Ok(_) => {
+            let adapter = device
+                .cast::<IDXGIDevice>()
+                .and_then(|d| d.GetAdapter())
+                .and_then(|a| a.GetDesc());
+            let Ok(adapter) = adapter else { return false };
+            if !measured_y410_query_exception(adapter.VendorId, adapter.DeviceId, input, color) {
+                return false;
+            }
+            // Called only during capability/processor setup, never per frame.
+            // Actual input/output view creation, Blt and existing fallback still
+            // decide whether the live decoder/rendering path can run.
+            crate::event_log::record(
+                "INFO",
+                "video_rgb10_conversion_query_exception",
+                serde_json::json!({
+                    "vendor_id":adapter.VendorId,"device_id":adapter.DeviceId,
+                    "input_format":"Y410","output_format":"R10G10B10A2_UNORM",
+                    "input_color_space":rgb10_input_color(color).0,
+                    "query_supported":false,"reason":"measured-intel-uhd770-y410-conversion"
+                }),
+            );
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 impl Drop for Renderer {
@@ -2843,7 +2893,7 @@ impl Renderer {
             if td.Format == DXGI_FORMAT_Y410
                 || (td.Format == DXGI_FORMAT_P010 && self.ten_bit_fallback.is_none())
             {
-                if supports_rgb10(&enumeration, color, td.Format) {
+                if supports_rgb10(&self.device, &enumeration, color, td.Format) {
                     self.ten_bit_attempted = true;
                     output_format = DXGI_FORMAT_R10G10B10A2_UNORM;
                 } else {
@@ -3341,6 +3391,37 @@ mod tests {
             "video-output-colorspace"
         )));
     }
+    #[test]
+    fn measured_y410_exception_does_not_relax_other_adapters_formats_or_matrices() {
+        for nominal in [1, 2] {
+            let color = crate::video_color::processor_color(Some(1), Some(nominal));
+            assert!(measured_y410_query_exception(
+                0x8086,
+                0xA780,
+                DXGI_FORMAT_Y410,
+                color
+            ));
+            for (vendor, device, format) in [
+                (0x10DE, 0xA780, DXGI_FORMAT_Y410),
+                (0x1002, 0xA780, DXGI_FORMAT_Y410),
+                (0x8086, 0xFFFF, DXGI_FORMAT_Y410),
+                (0x8086, 0xA780, DXGI_FORMAT_P010),
+                (0x8086, 0xA780, DXGI_FORMAT_NV12),
+                (0x8086, 0xA780, DXGI_FORMAT_AYUV),
+            ] {
+                assert!(!measured_y410_query_exception(
+                    vendor, device, format, color
+                ));
+            }
+            assert!(!measured_y410_query_exception(
+                0x8086,
+                0xA780,
+                DXGI_FORMAT_Y410,
+                crate::video_color::processor_color(Some(2), Some(nominal)),
+            ));
+        }
+    }
+
     #[test]
     fn rgb10_conversion_query_preserves_matrix_and_nominal_range() {
         for (matrix, nominal, expected) in [
