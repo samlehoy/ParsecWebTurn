@@ -13,6 +13,8 @@ requires no browser, WebView or helper executable.
 Parsec, Unity or lowlat.** A Parsec account and a compatible host are required.
 
 **This is the development branch (0.9.6-dev.1): Windows plus an Android TV preview.**
+Download [**v0.9.6-dev.1**](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.6-dev.1)
+for Windows ZIPs and the Android TV APK. This prerelease is installed manually.
 The stable Windows client is [**EvoParseq v0.9.5**](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.5)
 on `main`. This branch adds controller support on Windows and Android TV;
 these additions are not included in the stable Windows release.
@@ -38,7 +40,8 @@ stable. This is a transport-specific observation, **not a universal hardware lim
 MediaCodec submits frames to Surface without CPU pixel readback; physical scanout
 and internal driver/compositor copies are not verified.
 
-Use successful [dev Android CI artifacts](https://github.com/vampywiz17/EvoParseq/actions/workflows/android-tv.yml?query=branch%3Adev)
+Use the [preview release](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.6-dev.1)
+or successful [dev Android CI artifacts](https://github.com/vampywiz17/EvoParseq/actions/workflows/android-tv.yml?query=branch%3Adev)
 for previews; the stable Windows ZIP is not an Android package.
 [Android TV setup, build and limits](android-tv/README.md).
 The Windows features below remain available on this branch.
