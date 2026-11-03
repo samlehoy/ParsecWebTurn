@@ -38,6 +38,8 @@ const TIMING_HINT: i32 = 4614;
 const MUTE: usize = 4615;
 const VOLUME: usize = 4616;
 const VOLUME_LABEL: i32 = 4617;
+// CommCtrl.h aliases TBM_GETPOS to WM_USER; windows-sys omits this alias.
+const TBM_GETPOS: u32 = WM_USER;
 const DISPLAYS: u32 = WM_APP + 28;
 const DISPLAY_TIMING_CHANGED: u32 = WM_APP + 29;
 const PANEL_HEIGHT: i32 = 1000;

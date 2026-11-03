@@ -37,19 +37,27 @@ impl Output {
     }
 
     pub fn set_percent(&self, percent: u32) {
-        let _ = self
-            .0
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                Some((value & MUTED) | percent.min(100))
-            });
+        let percent = percent.min(100);
+        let mut value = self.0.load(Ordering::Relaxed);
+        loop {
+            match self.0.compare_exchange_weak(
+                value,
+                (value & MUTED) | percent,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(current) => value = current,
+            }
+        }
     }
 
     pub fn set_muted(&self, muted: bool) {
-        let _ = self
-            .0
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                Some((value & !MUTED) | if muted { MUTED } else { 0 })
-            });
+        if muted {
+            self.0.fetch_or(MUTED, Ordering::Relaxed);
+        } else {
+            self.0.fetch_and(!MUTED, Ordering::Relaxed);
+        }
     }
 }
 
