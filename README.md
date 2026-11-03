@@ -63,6 +63,9 @@ The Windows features below remain available on this branch.
 - **Audio:** stereo Opus, configurable buffering, BUD raw PCM and experimental
   multichannel output. Automatically reopen the Windows audio output after
   transient device errors or default-device changes, retiring stale audio.
+  On Windows, the Session overlay offers immediate local mute and 0–100% volume
+  control for either transport, without changing the host's volume. Mute preserves
+  the chosen level; these controls reset when the client is restarted.
 - **Controllers (development):** shared Rust gamepad state/protocol for up to
   four controllers, Windows XInput and Android gamepad events. Wired Windows
   and GameSir Android forwarding are live-tested; device-specific rumble and

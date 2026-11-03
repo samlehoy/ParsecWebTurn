@@ -15,6 +15,7 @@ use windows_sys::Win32::{
 pub use crate::native_core::session_model::Event;
 
 pub struct Window {
+    pub(crate) audio_output: crate::audio_output::Output,
     pub(crate) native_panel: AtomicUsize,
 
     pub(crate) native_session_button: AtomicUsize,
@@ -140,6 +141,7 @@ impl Window {
 
     fn create_mode(online: bool) -> Result<Arc<Self>> {
         let state = Arc::new(Self {
+            audio_output: Default::default(),
             stats: Default::default(),
 
             native_panel: AtomicUsize::new(0),

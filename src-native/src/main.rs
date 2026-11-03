@@ -9,6 +9,8 @@ mod attempt;
 #[cfg(windows)]
 mod audio_endpoint_windows;
 mod audio_layout;
+#[cfg(windows)]
+mod audio_output;
 mod audio_recovery;
 mod audio_stream;
 #[cfg(windows)]

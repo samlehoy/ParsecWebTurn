@@ -35,9 +35,12 @@ const DISPLAY: usize = 4611;
 const REFRESH_DISPLAYS: usize = 4612;
 const DISPLAY_HINT: i32 = 4613;
 const TIMING_HINT: i32 = 4614;
+const MUTE: usize = 4615;
+const VOLUME: usize = 4616;
+const VOLUME_LABEL: i32 = 4617;
 const DISPLAYS: u32 = WM_APP + 28;
 const DISPLAY_TIMING_CHANGED: u32 = WM_APP + 29;
-const PANEL_HEIGHT: i32 = 920;
+const PANEL_HEIGHT: i32 = 1000;
 pub const RESULT: u32 = WM_APP + 26;
 pub const VISIBILITY: u32 = WM_APP + 27;
 impl Status {
@@ -439,6 +442,12 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             }
             WM_COMMAND => {
                 match wp & 0xffff {
+                    MUTE => {
+                        (&*p.window).audio_output.set_muted(
+                            SendMessageW(GetDlgItem(hwnd, MUTE as i32), BM_GETCHECK, 0, 0)
+                                == BST_CHECKED as isize,
+                        );
+                    }
                     22 if (wp >> 16) == CBN_SELCHANGE as usize => {
                         update_timing_hint(hwnd, p);
                     }
@@ -514,6 +523,15 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     }
                     _ => {}
                 }
+                return 0;
+            }
+            WM_HSCROLL if lp == GetDlgItem(hwnd, VOLUME as i32) as isize => {
+                let percent = SendMessageW(lp as HWND, TBM_GETPOS, 0, 0) as u32;
+                (&*p.window).audio_output.set_percent(percent);
+                SetWindowTextW(
+                    GetDlgItem(hwnd, VOLUME_LABEL),
+                    wide(&format!("Volume: {percent}%")).as_ptr(),
+                );
                 return 0;
             }
             WM_NCDESTROY => {
@@ -853,6 +871,43 @@ pub unsafe fn toggle(
         usize::from(window.native_fullscreen()),
         0,
     );
+    let level = window.audio_output.level();
+    let mute = control(
+        hwnd,
+        p,
+        "BUTTON",
+        "Mute audio",
+        MUTE,
+        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+        [24, 554, 160, 30],
+    );
+    SendMessageW(mute, BM_SETCHECK, usize::from(level.muted), 0);
+    control(
+        hwnd,
+        p,
+        "STATIC",
+        &format!("Volume: {}%", level.percent),
+        VOLUME_LABEL as usize,
+        0,
+        [194, 558, 198, 26],
+    );
+    let common = INITCOMMONCONTROLSEX {
+        dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+        dwICC: ICC_BAR_CLASSES,
+    };
+    InitCommonControlsEx(&common);
+    let volume = control(
+        hwnd,
+        p,
+        "msctls_trackbar32",
+        "",
+        VOLUME,
+        WS_TABSTOP | TBS_HORZ,
+        [24, 590, 368, 32],
+    );
+    SendMessageW(volume, TBM_SETRANGE, 0, 100 << 16);
+    SendMessageW(volume, TBM_SETPAGESIZE, 0, 10);
+    SendMessageW(volume, TBM_SETPOS, 1, level.percent as isize);
     control(
         hwnd,
         p,
@@ -860,7 +915,7 @@ pub unsafe fn toggle(
         "",
         TIMING_HINT as usize,
         0,
-        [24, 554, 370, 146],
+        [24, 634, 370, 146],
     );
     update_display_cache(hwnd, p, true);
     control(
@@ -870,15 +925,15 @@ pub unsafe fn toggle(
         "",
         STATUS as usize,
         0,
-        [24, 710, 370, 40],
+        [24, 790, 370, 40],
     );
     for (id, label, x, y, w) in [
-        (SETTINGS, "Settings", 24, 758, 178),
-        (APPLY, "Apply", 214, 758, 178),
-        (DISCONNECT, "Disconnect", 24, 808, 178),
-        (CLOSE, "Close", 214, 808, 178),
-        (HIDE_BUTTON, "Hide button", 24, 858, 178),
-        (SECURE_ATTENTION, "Send Ctrl+Alt+Del", 214, 858, 178),
+        (SETTINGS, "Settings", 24, 838, 178),
+        (APPLY, "Apply", 214, 838, 178),
+        (DISCONNECT, "Disconnect", 24, 888, 178),
+        (CLOSE, "Close", 214, 888, 178),
+        (HIDE_BUTTON, "Hide button", 24, 938, 178),
+        (SECURE_ATTENTION, "Send Ctrl+Alt+Del", 214, 938, 178),
     ] {
         control(
             hwnd,
@@ -1092,6 +1147,24 @@ mod tests {
         };
         unsafe {
             assert_eq!(GetWindow(panel, GW_OWNER), window.handle());
+            let slider = GetDlgItem(panel, VOLUME as i32);
+            assert!(!slider.is_null(), "Volume slider must be available");
+            SendMessageW(slider, TBM_SETPOS, 1, 40);
+            SendMessageW(
+                panel,
+                WM_HSCROLL,
+                TB_THUMBPOSITION as usize,
+                slider as isize,
+            );
+            assert_eq!(window.audio_output.level().percent, 40);
+            assert_eq!(text(GetDlgItem(panel, VOLUME_LABEL)), "Volume: 40%");
+            let mute = GetDlgItem(panel, MUTE as i32);
+            SendMessageW(mute, BM_SETCHECK, BST_CHECKED as usize, 0);
+            SendMessageW(panel, WM_COMMAND, MUTE, mute as isize);
+            assert_eq!(window.audio_output.level().gain(), 0.0);
+            SendMessageW(mute, BM_SETCHECK, BST_UNCHECKED as usize, 0);
+            SendMessageW(panel, WM_COMMAND, MUTE, mute as isize);
+            assert_eq!(window.audio_output.level().gain(), 0.4);
             assert_ne!(
                 IsWindowVisible(button),
                 0,
