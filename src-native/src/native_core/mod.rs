@@ -3,6 +3,10 @@
 mod account;
 #[cfg(windows)]
 mod controls;
+#[cfg(any(windows, test))]
+mod display_timing;
+#[cfg(windows)]
+mod display_windows;
 pub(crate) mod host_displays;
 mod host_video;
 mod input;

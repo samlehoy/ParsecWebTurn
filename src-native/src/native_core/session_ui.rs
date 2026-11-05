@@ -34,8 +34,15 @@ const METRICS: i32 = 4609;
 const DISPLAY: usize = 4611;
 const REFRESH_DISPLAYS: usize = 4612;
 const DISPLAY_HINT: i32 = 4613;
+const TIMING_HINT: i32 = 4614;
+const MUTE: usize = 4615;
+const VOLUME: usize = 4616;
+const VOLUME_LABEL: i32 = 4617;
+// CommCtrl.h aliases TBM_GETPOS to WM_USER; windows-sys omits this alias.
+const TBM_GETPOS: u32 = WM_USER;
 const DISPLAYS: u32 = WM_APP + 28;
-const PANEL_HEIGHT: i32 = 764;
+const DISPLAY_TIMING_CHANGED: u32 = WM_APP + 29;
+const PANEL_HEIGHT: i32 = 1000;
 pub const RESULT: u32 = WM_APP + 26;
 pub const VISIBILITY: u32 = WM_APP + 27;
 impl Status {
@@ -78,6 +85,9 @@ struct Panel {
     bg: HBRUSH,
     field: HBRUSH,
     rates: crate::stats::Rates,
+    display: super::display_timing::Display,
+    monitor: HMONITOR,
+    measured_fps: Option<f64>,
 }
 impl Drop for Panel {
     fn drop(&mut self) {
@@ -94,22 +104,22 @@ impl Drop for Panel {
 unsafe fn text(hwnd: HWND) -> String {
     controls::text(hwnd, 256)
 }
+unsafe fn selected_field(p: &Panel, i: usize) -> String {
+    let index = SendMessageW(p.controls[i], CB_GETCURSEL, 0, 0);
+    if index == CB_ERR as isize
+        || SendMessageW(p.controls[i], CB_GETITEMDATA, index as usize, 0) == 1
+    {
+        p.initial_fields[i].clone()
+    } else {
+        text(p.controls[i])
+    }
+}
 unsafe fn collect(p: &Panel) -> Result<Video> {
     let select = |i: usize| SendMessageW(p.controls[i], CB_GETCURSEL, 0, 0);
-    let field = |i: usize| {
-        let index = select(i);
-        if index == CB_ERR as isize
-            || SendMessageW(p.controls[i], CB_GETITEMDATA, index as usize, 0) == 1
-        {
-            p.initial_fields[i].clone()
-        } else {
-            text(p.controls[i])
-        }
-    };
     PanelFields {
-        resolution: &field(0),
-        bandwidth: &field(1),
-        fps: &field(2),
+        resolution: &selected_field(p, 0),
+        bandwidth: &selected_field(p, 1),
+        fps: &selected_field(p, 2),
         constant_fps: select(3) == 1,
         rotated: select(4) == 1,
         immersive: match select(5) {
@@ -228,10 +238,58 @@ unsafe fn update_metrics(hwnd: HWND, panel: &mut Panel) {
         .as_ref()
         .map(|s| panel.rates.update(s))
         .unwrap_or_default();
+    panel.measured_fps = values.fps;
     SetWindowTextW(
         GetDlgItem(hwnd, METRICS),
         wide(&metrics(sample.as_ref(), &values)).as_ptr(),
     );
+    update_timing_hint(hwnd, panel);
+}
+unsafe fn update_timing_hint(hwnd: HWND, panel: &Panel) {
+    let window = &*panel.window;
+    let host = *window
+        .session
+        .host_video
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let requested = selected_field(panel, 2).parse().unwrap_or(60);
+    let message = panel.display.advice(
+        requested,
+        host.fps,
+        panel.measured_fps,
+        window.presentation_mode() == crate::connection_settings::PresentationMode::Vrr,
+    );
+    SetWindowTextW(GetDlgItem(hwnd, TIMING_HINT), wide(&message).as_ptr());
+}
+unsafe fn update_display_cache(hwnd: HWND, panel: &mut Panel, force: bool) {
+    if GetDlgItem(hwnd, TIMING_HINT).is_null() {
+        return;
+    }
+    let window = &*panel.window;
+    let monitor = MonitorFromWindow(window.handle(), MONITOR_DEFAULTTONEAREST);
+    if !force && monitor == panel.monitor {
+        return;
+    }
+    panel.monitor = monitor;
+    panel.display = super::display_windows::query(window.handle());
+    crate::event_log::record(
+        "INFO",
+        "client_display_timing",
+        serde_json::json!({
+            "configured_refresh_hz":panel.display.hz,
+            "supported_rates_at_current_resolution":panel.display.supported_hz,
+            "vrr_activation_verified":false,"automatic_changes":false
+        }),
+    );
+    update_timing_hint(hwnd, panel);
+}
+pub fn display_changed(window: &crate::window::Window) {
+    unsafe {
+        let hwnd = panel(window);
+        if !hwnd.is_null() {
+            PostMessageW(hwnd, DISPLAY_TIMING_CHANGED, 0, 0);
+        }
+    }
 }
 unsafe fn draw_metrics(lp: LPARAM, p: &Panel) -> bool {
     if lp == 0 {
@@ -285,6 +343,13 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
     if !pointer.is_null() {
         let p = &mut *pointer;
         match msg {
+            WM_WINDOWPOSCHANGED => {
+                update_display_cache(hwnd, p, false);
+            }
+            DISPLAY_TIMING_CHANGED => {
+                update_display_cache(hwnd, p, true);
+                return 0;
+            }
             WM_TIMER if wp == 1 => {
                 if IsWindowVisible(hwnd) != 0 {
                     update_metrics(hwnd, p);
@@ -374,10 +439,20 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 );
                 update_displays(hwnd, p);
                 SetWindowTextW(GetDlgItem(hwnd, STATUS), wide(status.text()).as_ptr());
+                update_timing_hint(hwnd, p);
                 return 0;
             }
             WM_COMMAND => {
                 match wp & 0xffff {
+                    MUTE => {
+                        (&*p.window).audio_output.set_muted(
+                            SendMessageW(GetDlgItem(hwnd, MUTE as i32), BM_GETCHECK, 0, 0)
+                                == BST_CHECKED as isize,
+                        );
+                    }
+                    22 if (wp >> 16) == CBN_SELCHANGE as usize => {
+                        update_timing_hint(hwnd, p);
+                    }
                     DISPLAY if (wp >> 16) == CBN_SELCHANGE as usize => {
                         let window = &*p.window;
                         let displays = window
@@ -450,6 +525,15 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     }
                     _ => {}
                 }
+                return 0;
+            }
+            WM_HSCROLL if lp == GetDlgItem(hwnd, VOLUME as i32) as isize => {
+                let percent = SendMessageW(lp as HWND, TBM_GETPOS, 0, 0) as u32;
+                (&*p.window).audio_output.set_percent(percent);
+                SetWindowTextW(
+                    GetDlgItem(hwnd, VOLUME_LABEL),
+                    wide(&format!("Volume: {percent}%")).as_ptr(),
+                );
                 return 0;
             }
             WM_NCDESTROY => {
@@ -638,6 +722,9 @@ pub unsafe fn toggle(
         bg: CreateSolidBrush(BG),
         field: CreateSolidBrush(FIELD),
         rates: Default::default(),
+        display: Default::default(),
+        monitor: null_mut(),
+        measured_fps: None,
     });
     let name = wide("EvoParseq.NativeCore.SessionPanel");
     let instance = GetModuleHandleW(null());
@@ -678,7 +765,7 @@ pub unsafe fn toggle(
         "STATIC",
         "Decode CPU N/A | Encode N/A\nRTT N/A | RX N/A | FPS N/A",
         METRICS as usize,
-        SS_OWNERDRAW as u32,
+        SS_OWNERDRAW,
         [24, 66, 370, 82],
     );
     control(
@@ -786,6 +873,53 @@ pub unsafe fn toggle(
         usize::from(window.native_fullscreen()),
         0,
     );
+    let level = window.audio_output.level();
+    let mute = control(
+        hwnd,
+        p,
+        "BUTTON",
+        "Mute audio",
+        MUTE,
+        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+        [24, 554, 160, 30],
+    );
+    SendMessageW(mute, BM_SETCHECK, usize::from(level.muted), 0);
+    control(
+        hwnd,
+        p,
+        "STATIC",
+        &format!("Volume: {}%", level.percent),
+        VOLUME_LABEL as usize,
+        0,
+        [194, 558, 198, 26],
+    );
+    let common = INITCOMMONCONTROLSEX {
+        dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+        dwICC: ICC_BAR_CLASSES,
+    };
+    InitCommonControlsEx(&common);
+    let volume = control(
+        hwnd,
+        p,
+        "msctls_trackbar32",
+        "",
+        VOLUME,
+        WS_TABSTOP | TBS_HORZ,
+        [24, 590, 368, 32],
+    );
+    SendMessageW(volume, TBM_SETRANGE, 0, 100 << 16);
+    SendMessageW(volume, TBM_SETPAGESIZE, 0, 10);
+    SendMessageW(volume, TBM_SETPOS, 1, level.percent as isize);
+    control(
+        hwnd,
+        p,
+        "STATIC",
+        "",
+        TIMING_HINT as usize,
+        0,
+        [24, 634, 370, 146],
+    );
+    update_display_cache(hwnd, p, true);
     control(
         hwnd,
         p,
@@ -793,15 +927,15 @@ pub unsafe fn toggle(
         "",
         STATUS as usize,
         0,
-        [24, 554, 370, 40],
+        [24, 790, 370, 40],
     );
     for (id, label, x, y, w) in [
-        (SETTINGS, "Settings", 24, 602, 178),
-        (APPLY, "Apply", 214, 602, 178),
-        (DISCONNECT, "Disconnect", 24, 652, 178),
-        (CLOSE, "Close", 214, 652, 178),
-        (HIDE_BUTTON, "Hide button", 24, 702, 178),
-        (SECURE_ATTENTION, "Send Ctrl+Alt+Del", 214, 702, 178),
+        (SETTINGS, "Settings", 24, 838, 178),
+        (APPLY, "Apply", 214, 838, 178),
+        (DISCONNECT, "Disconnect", 24, 888, 178),
+        (CLOSE, "Close", 214, 888, 178),
+        (HIDE_BUTTON, "Hide button", 24, 938, 178),
+        (SECURE_ATTENTION, "Send Ctrl+Alt+Del", 214, 938, 178),
     ] {
         control(
             hwnd,
@@ -1015,6 +1149,24 @@ mod tests {
         };
         unsafe {
             assert_eq!(GetWindow(panel, GW_OWNER), window.handle());
+            let slider = GetDlgItem(panel, VOLUME as i32);
+            assert!(!slider.is_null(), "Volume slider must be available");
+            SendMessageW(slider, TBM_SETPOS, 1, 40);
+            SendMessageW(
+                panel,
+                WM_HSCROLL,
+                TB_THUMBPOSITION as usize,
+                slider as isize,
+            );
+            assert_eq!(window.audio_output.level().percent, 40);
+            assert_eq!(text(GetDlgItem(panel, VOLUME_LABEL)), "Volume: 40%");
+            let mute = GetDlgItem(panel, MUTE as i32);
+            SendMessageW(mute, BM_SETCHECK, BST_CHECKED as usize, 0);
+            SendMessageW(panel, WM_COMMAND, MUTE, mute as isize);
+            assert_eq!(window.audio_output.level().gain(), 0.0);
+            SendMessageW(mute, BM_SETCHECK, BST_UNCHECKED as usize, 0);
+            SendMessageW(panel, WM_COMMAND, MUTE, mute as isize);
+            assert_eq!(window.audio_output.level().gain(), 0.4);
             assert_ne!(
                 IsWindowVisible(button),
                 0,
@@ -1188,6 +1340,27 @@ mod tests {
         events.clear();
         window.events.take_batch(&mut events);
         assert!(events.iter().any(|e|matches!(e,crate::window::Event::NativeSession(Command::Apply(v)) if v.resolution==Resolution::Host && v.immersive==0 && v.fps==Some(90) && v.bandwidth_mbps==Some(35))));
+        unsafe {
+            select_text(panel, 22, "120");
+            SendMessageW(panel, WM_COMMAND, 22 | ((CBN_SELCHANGE as usize) << 16), 0);
+            assert!(text(GetDlgItem(panel, TIMING_HINT)).contains("Request: 120 FPS"));
+            assert_eq!(
+                collect(&*(GetWindowLongPtrW(panel, GWLP_USERDATA) as *const Panel))
+                    .unwrap()
+                    .fps,
+                Some(120)
+            );
+            let mut hint = RECT::default();
+            let mut status = RECT::default();
+            let mut apply = RECT::default();
+            GetWindowRect(GetDlgItem(panel, TIMING_HINT), &mut hint);
+            GetWindowRect(GetDlgItem(panel, STATUS), &mut status);
+            GetWindowRect(GetDlgItem(panel, APPLY as i32), &mut apply);
+            assert!(
+                hint.bottom <= status.top && status.bottom <= apply.top,
+                "Timing advice must not overlap status or session actions"
+            );
+        }
         for (selected, mode) in [(0, 0), (1, 3), (2, 2), (3, 1)] {
             unsafe {
                 select_text(panel, 20, "1280 x 720");

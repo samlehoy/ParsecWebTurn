@@ -7,7 +7,7 @@ body:
     id: existing-answers
     attributes:
       label: Before asking
-      description: Check the [README](https://github.com/vampywiz17/ParsecWebTurn#readme) and [existing issues](https://github.com/vampywiz17/ParsecWebTurn/issues?q=is%3Aissue) for an answer.
+      description: Check the [README](https://github.com/vampywiz17/EvoParseq#readme) and [existing issues](https://github.com/vampywiz17/EvoParseq/issues?q=is%3Aissue) for an answer.
       options:
         - label: I looked for an existing answer.
           required: true

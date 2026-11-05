@@ -112,8 +112,14 @@ impl Batch {
         self.filled = 0;
         let mut count = 0;
         while count < RECV_BATCH {
-            let slot = &mut self.slots[count];
-            let name = &mut self.names[count];
+            let (Some(slot), Some(name), Some(length), Some(local)) = (
+                self.slots.get_mut(count),
+                self.names.get_mut(count),
+                self.lengths.get_mut(count),
+                self.locals.get_mut(count),
+            ) else {
+                break;
+            };
             let mut control = Control([0u8; CONTROL_LEN]);
             let mut iov = libc::iovec {
                 iov_base: slot.as_mut_ptr().cast(),
@@ -139,8 +145,8 @@ impl Batch {
                 }
                 return Err(err);
             }
-            self.lengths[count] = rc as usize;
-            self.locals[count] = local_of(&msg);
+            *length = rc as usize;
+            *local = local_of(&msg);
             count += 1;
         }
         self.filled = count;

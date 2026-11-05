@@ -1,28 +1,270 @@
 # EvoParseq changelog
 
-## Unreleased
+## v0.9.6-dev.1 — Android TV preview and shared controller support (2026-11-02)
 
-- Extend experimental original-surface Zero copy to HEVC Main10 4:2:0 P010. Check optional P010 displayable support at setup; decode directly into displayable P010 DPB textures and retain existing presentation leases. No application pixel copy, RGB target, processor/shader pass or new per-frame format probe is added. Unsupported setup/runtime falls back to normal Media Foundation rendering without a silent 8-bit downgrade.
-- Report original P010 presentation and actual decoded 10-bit depth without claiming final compositor/scanout output depth. HEVC 10-bit 4:2:0 Zero copy is now live-confirmed on tested AMD and NVIDIA systems; Intel HEVC paths under the current decoder policy still require live testing.
+This development preview builds on the latest stable release, **EvoParseq
+v0.9.5**, adding an Android TV client and shared controller/input infrastructure.
+The changes below cover implemented additions since that stable release;
+Windows video features already shipped in v0.9.5 are not repeated.
 
+**This is a development preview. EvoParseq v0.9.5 remains the stable Windows release.**
 
-- Standardize normal HEVC decoding: NVIDIA direct D3D11 including P010, AMD AMF 8/10-bit 4:2:0 by default, and Intel VPL NV12/P010/AYUV/Y410. Remove the AMF Main10 opt-in selector; AMD 4:4:4 remains disabled. Keep original-surface Zero copy limited to 4:2:0 NV12/P010.
-- Log decoder selection and MF fallback attempts. A 4:4:4 decoder compatibility failure requests 4:2:0 on BUD/WebRTC, preserves the requested bit depth and saved preferences, and uses MF after the host changes format. Recovery remains bounded; unsupported host responses fail explicitly.
-- Explain in Video settings that format choices are requests and compatibility fallback may change the result; Connection stats shows the actual stream.
+## What's new and improved
 
+- **Android TV interface:** add a Google TV / Android TV-style computer picker,
+  remote-friendly sign-in and two-factor-code entry, grouped Network/Video/Device
+  settings and clear focus indicators. Keep device capabilities inside Settings,
+  prevent focused cards/options from overlapping adjacent content and retain
+  readable text and a circular launcher icon.
+- **Shared Rust core:** reuse authentication, discovery, signaling, transport,
+  session preferences, validation and input/controller state across Windows and
+  Android. Kotlin/Compose handles TV presentation and Android APIs; MediaCodec,
+  AAudio, input/lifecycle and Keystore remain explicit platform adapters. Windows
+  builds exclude Android adapter dependencies and retain the existing GPU path.
+- **Android video and audio:** decode H.264 and HEVC 8/10-bit 4:2:0 through
+  hardware MediaCodec directly to a Surface, with shared codec initialization,
+  bounded queues and keyframe recovery. Decoded pixels are not copied through
+  JNI or read back to CPU memory. Stereo 48 kHz audio uses the shared Rust Opus
+  decoder and AAudio pull output, with bounded audio storage.
+- **BUD and WebRTC on TV:** connect to the unmodified official host directly or
+  through configured STUN/TURN. Reuse explicit transport selection, Cloudflare
+  and custom relay credentials, Force TURN and the existing BUD UDP/TLS/TCP
+  carrier order. Preserve ordinary BUD input validation while adding shared
+  application-control routing. No silent transport switch or host patch is added.
+- **Secure remembered TV sign-in:** retain only the session token, encrypted
+  using AES-256-GCM with a non-exportable Android Keystore key, in private
+  no-backup storage. Passwords and 2FA codes are not saved. Sign out clears
+  local credentials and requests server-side revocation; expired sessions
+  require signing in again.
+- **Local relay setup from a phone or computer:** open an opt-in, expiring HTTPS
+  page on the TV's private LAN to enter Cloudflare/custom TURN or STUN settings.
+  Authenticate the displayed certificate fingerprint, enter the pairing code
+  and explicitly approve the pending settings on the TV. Force TURN is included.
+  Preserve origin/Host checks, bounded submissions and Keystore-protected relay
+  secrets. No external provisioning website or public setup endpoint is used.
+- **Shared controller forwarding:** one Rust state/protocol pipeline supports
+  up to four standard controllers on BUD and WebRTC. Windows uses native XInput;
+  Android translates standard gamepad/joystick events. Forward buttons, D-pad,
+  sticks and analog triggers, preserve host controller presence across local
+  menus while releasing held state, and handle removal/disconnect explicitly.
+  Device-supported vibration uses the platform adapter. Wired Windows and
+  GameSir Android controller forwarding have been live-tested.
+- **TV remote mouse and physical input:** optionally use D-pad to move, short
+  OK for left click, two short presses for double-click, hold OK for right click,
+  and OK plus direction for dragging on compatible remotes. Keep separate
+  gamepad controls intact. USB/Bluetooth keyboards and mice use normal Parsec
+  input with optional mouse capture; Ctrl+Shift+M releases input and opens local
+  controls. Share gesture/encoding/handoff rules in Rust. Correct cursor size,
+  hotspot/edge mapping and focus ownership without rebuilding the video Surface
+  when the cursor or controls change.
+- **Compact, dismissible TV controls:** show actual codec/depth, Surface
+  submission FPS, selected-pair RTT, incoming bitrate and direct/relay routing
+  when available. Auto-hide after five idle seconds, retain manual Hide and
+  Disconnect, and restore controls through Back/Menu. Settings support fixed or
+  dynamic FPS. Hint Surface cadence from the host-confirmed fixed rate, clearing
+  the hint for dynamic/unknown cadence; do not force HDMI modes, add a frame
+  scheduler or introduce a decoded-frame copy. Show display Hz and catch-up skips.
+- **Recovery and maintenance:** retain meaningful stop/error reasons after
+  returning to the computer picker, handle Surface/lifecycle and input-device
+  transitions, and keep empty WebRTC messages distinct from channel EOF.
+  Remove retired diagnostic overlays/probes while retaining bounded recovery and
+  useful diagnostics. Add common Rust, ARMv7/ARM64, Clippy and Android lint/build
+  checks alongside the existing Windows regressions.
 
-- Limit immersive startup state queries to the required modifier, lock and
-  layout-mapped client-shortcut keys, replacing 264 asynchronous queries with
-  at most 17 per acquisition. Track other keys from foreground events and omit
-  redundant local-shortcut modifier queries on repeats, releases and ordinary
-  keys. This is input-scope cleanup, not a verified antivirus-detection fix.
+## Compatibility and validation
 
-- Keep immersive keyboard events on one ordered, focus-scoped hook path for
-  normal and HID input, including sided modifiers and ordinary game shortcuts.
-  Unify client shortcut recognition, require exact modifier combinations, and
-  consume local trigger repeats/releases without also forwarding them. Retain
-  the release-input shortcut and local menus; reject stale captured messages
-  after capture ends and clear cached remote modifiers when detaching input.
+**Android TV is an experimental preview**, not a Play Store or production-signed
+release. The APK includes ARMv7 and ARM64 libraries and requires Android 10
+(API 29) or newer. The first live-tested device is **Xiaomi TV Box S (3rd Gen)
+EU on Android 14**, using a 32-bit ARM userspace. Other devices/codecs/controllers
+need their own live validation.
+
+H.264, HEVC 8-bit and NVIDIA-host HEVC Main10 are live-confirmed on this box.
+The tested AMD host returned 8-bit. BUD at 50 Mbit/s was stable in the tested
+setup; sustained WebRTC 50 Mbit/s still caused delay/video-channel closure on
+Ethernet and Wi-Fi, while about 30 Mbit/s was stable. This is not a proven
+universal hardware bitrate ceiling. Surface timing felt smoother in live use;
+no quantified latency improvement or physical scanout result is claimed.
+
+Controller forwarding is live-confirmed in the tested Windows wired and
+Android GameSir configurations. DirectInput-only Windows pads, advanced Sony
+features and all-device rumble compatibility are not provided. Home/Guide stays
+OS-owned. The official host needs its normal controller driver and permissions.
+Physical Android input/capture and device/focus edge cases need broader testing;
+Android does not implement the Windows BUD USB HID mode. Some remotes cannot
+report simultaneous OK and direction presses required for dragging.
+
+MediaCodec-to-Surface output is not a claim of verified driver/compositor
+zero copy. Android does not advertise HDR, 4:4:4 or AI upscaling; 10-bit is SDR.
+Existing Windows experimental video/HID/QoS limits remain as documented for
+v0.9.5. This release does not change the stable main branch or host configuration.
+EvoParseq remains independent of Parsec/Unity and lowlat.
+
+## Updating
+
+**Windows:** close the client and extract **EvoParseq-v0.9.6-dev.1-win64.zip**.
+Keep `settings.json` under the same Windows account. The legacy-named
+**ParsecWebTurn-v0.9.6-dev.1-win64.zip** contains the identical executable for
+existing shortcuts. ZIPs exclude settings.json and the optional NVIDIA runtime.
+Protected credentials cannot be transferred between machines/accounts.
+
+**Android TV:** sideload **EvoParseq-TV-v0.9.6-dev.1.apk**. No root or extra helper
+is required. This is a debug-signed CI preview; its signing certificate can
+change between builds. If Android rejects an update signature, uninstall the
+older preview first. Uninstalling removes local settings and remembered sign-in.
+
+For phone/computer relay setup, verify the local certificate's SHA-256
+fingerprint against the TV before entering secrets, then approve settings on
+TV. See the Android TV README for setup and controller instructions.
+
+This is a **prerelease**, installed manually; it does not replace v0.9.5 as the
+stable updater's latest release. The repository rename can require a one-time
+manual upgrade from older ParsecWebTurn/EvoParseq previews. See MIGRATION.md.
+
+## v0.9.5 — Native Rust core, GPU video and input improvements (2026-11-02)
+
+This stable Windows release replaces the ParsecWebTurn client runtime with
+**EvoParseq**, an independent native Rust client for existing, unmodified Parsec
+hosts. The changes below cover the implemented changes since the latest stable
+release, **ParsecWebTurn v0.9.4**, following live NVIDIA, AMD and Intel testing.
+The repository is now **vampywiz17/EvoParseq**.
+
+## What's new and improved
+
+- **Native Rust core:** account sign-in, optional two-factor authentication,
+  computer discovery, authenticated signaling and owner-session control run
+  directly in Rust. No proprietary Parsec WebAssembly core, browser or WebView
+  is bundled or executed. Remembered sessions use Windows CurrentUser encryption;
+  passwords and two-factor codes are not saved. Computer discovery refreshes
+  quietly in the background. Friend/invitation authorization is not implemented.
+- **Native WebRTC and BUD:** retain direct connections, custom TURN over
+  UDP/TLS/TCP, Cloudflare credentials, Force TURN and STUN-only routing while
+  replacing WASM-dependent session orchestration. Transport selection is explicit;
+  a BUD failure never silently switches to WebRTC. Shared account/session policy
+  is separated from platform adapters without adding a media-processing layer.
+- **EvoParseq interface and session controls:** native About/update pages,
+  consistent dark windows, a draggable icon and a compact performance summary.
+  Use dropdowns for resolution, bandwidth, FPS, constant/adaptive FPS, orientation,
+  fullscreen and immersive input. Apply host requests with asynchronous
+  confirmation; keep startup black and correct overlay/stats window ordering.
+  Hidden controls can be restored by shortcut.
+- **Host display selection:** switch the current stream between host-listed
+  physical or virtual displays and release stale resolution overrides when
+  changing output. HID mouse mode restricts the session to the primary display,
+  disables display switching and pauses forwarding until that selection is
+  reported. Some host virtual displays can still delay a switch.
+- **Unified HEVC decoder policy:** normal HEVC uses direct D3D11 on NVIDIA,
+  AMF on AMD and VPL on Intel. Supported NVIDIA/Intel paths cover 8/10-bit
+  4:2:0 and 4:4:4; AMD offers 8/10-bit 4:2:0. H.264 remains Media Foundation
+  8-bit 4:2:0. Decoder errors retain bounded, logged MF recovery. If a 4:4:4
+  compatibility failure requires it, request 4:2:0 and use MF after the host
+  changes format, preserving bit depth and saved preferences.
+- **Intel HEVC validation:** 8/10-bit 4:4:4 normal rendering is live-confirmed
+  on the tested UHD 770. A narrowly scoped, logged exception handles this
+  adapter's false-negative Y410-to-RGB10 conversion query while preserving
+  input/output format checks and runtime failure handling. No extra live-frame
+  copy, CPU readback or per-frame test is introduced.
+- **AMD HEVC compatibility:** initialize cropped AMF streams using visible
+  dimensions on older runtimes, select the Main10 component where required and
+  check coded dimensions once against the selected GPU before initialization.
+  AMF Main10 is now the AMD default and live-confirmed on Radeon 780M, retaining
+  original P010 output and the existing GPU conversion pass.
+- **10-bit output and original-surface presentation:** normal rendering can
+  produce RGB10 SDR through the existing conversion pass. Zero copy now supports
+  original 4:2:0 P010 Main10 surfaces as well as 8-bit NV12 when compatible
+  displayable surfaces are available. Main10 Zero copy is live-confirmed on
+  tested AMD and NVIDIA systems. Unsupported original-surface setup/runtime
+  falls back to normal rendering; 4:4:4 uses normal GPU rendering.
+- **Format changes and recovery:** rebuild HEVC GPU sessions after actual
+  format changes, preserve parameter-set dependency order and retire stale codec
+  state across host encoder rebuilds. Supervise decoder/device setup, processing,
+  presentation and teardown without freeing driver-owned resources prematurely
+  or accumulating replacement workers. Unrecoverable native timeouts require
+  restarting the app. Host Main10 encoder refusal asks users to disable 10-bit
+  rather than silently reopening an 8-bit session.
+- **Presentation and display cadence:** extend reference-safe burst catch-up
+  to WebRTC, using bounded recent queue history to skip obsolete presentation
+  work while decoding dependencies in order. Add optional DXGI VRR with bounded
+  fallback. Session advice distinguishes configured client Hz, requested and
+  host-reported FPS, and measured decoded FPS; refresh suggestions never change
+  the client's display mode automatically.
+- **Input reliability and immersive shortcuts:** preserve simultaneous mouse
+  holds, independent releases and camera transitions. Coalesce adjacent absolute
+  moves and accumulate relative motion without crossing button/wheel/focus
+  boundaries; reserve capacity for other input and fail safely on overflow.
+  Forward supported immersive keyboard chords through one ordered, focus-scoped
+  path in normal and HID modes, keeping exact client shortcuts local. Limit
+  startup state queries to required keys and preserve focus-loss releases.
+- **Clipboard, cursor and audio recovery:** retry failed clipboard writes with
+  bounded retries of only the newest text, respecting permissions and local
+  changes. Match remote cursor canvases to the client's Windows cursor size.
+  Reopen audio after transient endpoint errors or default-output changes, retire
+  stale queued audio and preserve decoder state and buffer preferences.
+- **Clearer settings and diagnostics:** group related choices into selectors
+  and state explicitly that video settings are host requests, not guarantees.
+  Organize Connection stats into Overview, Network, Video, Audio and Timings
+  tabs. Add recent two-second timing averages, expire stale values and separate
+  decoded FPS from presentation-submission FPS. BUD audio timing no longer
+  overwrites video encode timing. Stats report the actual stream/output format.
+- **Optional GPU AI upscaling:** one experimental GPU-dependent selector offers
+  NVIDIA RTX VSR quality levels or Intel VPL AI. Upscaling is off by default,
+  stays GPU-resident and retains normal rendering on unsupported configurations.
+  RTX 3060 playback is live-confirmed; Intel AI remains hardware-unverified.
+  With explicit consent, the pinned official NVIDIA runtime is downloaded,
+  archive/DLL SHA-256 checked and cached under
+  `%LOCALAPPDATA%/EvoParseq/vsr/1.1.0`, outside the EXE and without admin rights.
+  Intel uses its installed driver runtime and downloads no model or DLL.
+- **Optional TURN socket QoS:** experimental Windows AudioVideo marking for
+  outgoing BUD/WebRTC TCP/TLS TURN sockets is off by default. Rejection is
+  nonfatal. It does not prioritize incoming traffic or alter relay-server policy.
+- **Maintenance and security:** update the existing WebRTC DTLS NIST-curve
+  dependencies without replacing the WebRTC engine. Refresh transport/TLS
+  dependencies, remove unused browser-certificate and binary state-export chains,
+  and retain protocol/certificate checks. Add PR Clippy, dependency-policy and
+  workflow checks. Remove retired probes and legacy adapters; retain licenses
+  and third-party notices. README includes animated relay/rendering guides.
+
+## Compatibility and validation
+
+**Windows 11 x64 and Direct3D feature level 11.0 or newer are required**, with
+compatible video drivers. H.264, stereo Opus and Automatic presentation remain
+the conservative defaults. Host settings are requests: check **Connection stats**
+for the codec, depth, chroma and output actually received.
+
+**Vendor HEVC, Zero copy, 10-bit HEVC, HEVC 4:4:4, display timing/VRR, AI
+upscaling, USB HID, QoS and multichannel audio remain experimental options.**
+Successful tests do not guarantee every GPU/driver combination. Intel AI and
+live multichannel playback remain unverified; no universal latency gain is claimed.
+
+10-bit output is **SDR, not HDR**. Normal GPU conversion is not Zero copy.
+Original-surface presentation does not prove driver/compositor copies are absent
+or direct scanout is active. AI upscaling adds GPU work/resources and an output
+copy, may increase latency and cannot be combined with Zero copy. VRR requires
+compatible display/driver settings; application support does not prove panel
+activation. Existing host permissions, HID driver/primary-display requirements
+and raw-audio permissions remain applicable.
+
+**Android TV previews and controller forwarding on that development line are
+not included in this stable Windows release.** Development continues on dev.
+EvoParseq is independent of Parsec/Unity and lowlat; applicable service terms
+and third-party licenses still apply.
+
+## Requirements and upgrading
+
+Close the client and extract **EvoParseq-v0.9.5-win64.zip**, keeping your
+`settings.json` under the same Windows account. Native remembered sessions and
+compatible settings are retained; protected credentials are not portable between
+machines/accounts. ParsecWebTurn web-core sign-in is not imported: sign in again,
+including 2FA if enabled.
+
+**ParsecWebTurn-v0.9.5-win64.zip** contains the identical executable under the
+legacy name for existing shortcuts. Both ZIPs exclude settings.json and the
+optional NVIDIA runtime. Run only one client at a time.
+
+After the repository rename, older updaters may reject the new asset URL because
+they validate against the old repository name. Use this release page for the
+one-time manual upgrade. EvoParseq v0.9.5 checks the new repository. No WASM-core
+version check or download remains. See README and MIGRATION.md.
 
 ## v0.9.5-dev.2 — AI upscaling, diagnostics and input fixes (2026-10-28)
 

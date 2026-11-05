@@ -7,8 +7,8 @@ use std::{
     time::Duration,
 };
 
-const API: &str = "https://api.github.com/repos/vampywiz17/ParsecWebTurn/releases/latest";
-pub const REPOSITORY: &str = "https://github.com/vampywiz17/ParsecWebTurn";
+const API: &str = "https://api.github.com/repos/vampywiz17/EvoParseq/releases/latest";
+pub const REPOSITORY: &str = "https://github.com/vampywiz17/EvoParseq";
 const MAX_METADATA: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

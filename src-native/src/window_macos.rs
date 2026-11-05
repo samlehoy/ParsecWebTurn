@@ -279,8 +279,7 @@ impl Window {
     }
 
     pub fn set_host_cursor(&self, x: i32, y: i32, relative: bool, hidden: bool) {
-        // Same rule as Windows: a hidden host cursor also requests relative input.
-        let relative = relative || hidden;
+        let relative = crate::desktop_input::relative_capture(relative, hidden);
         *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner()) = Some((x, y, relative));
         if self.relative_requested.swap(relative, Ordering::AcqRel) != relative {
             self.apply_capture();

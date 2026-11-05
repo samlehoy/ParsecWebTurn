@@ -500,6 +500,20 @@ unsafe fn render(
     let event = Event::new()?;
     client.SetEventHandle(event.0)?;
     let render: IAudioRenderClient = client.GetService()?;
+    // Stream-local attenuation leaves the host, system master volume and other
+    // applications untouched. Failure must not stop otherwise working playback.
+    let volume: Option<IAudioStreamVolume> = match client.GetService() {
+        Ok(volume) => Some(volume),
+        Err(error) => {
+            crate::event_log::record(
+                "WARN",
+                "audio_volume_unavailable",
+                serde_json::json!({"error":error.to_string()}),
+            );
+            None
+        }
+    };
+    let mut applied_volume = None;
     let capacity = client.GetBufferSize()?;
     {
         let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -533,6 +547,21 @@ unsafe fn render(
     let _ = ready.try_send(true);
     let mut buffering = true;
     loop {
+        let level = window.audio_output.level();
+        if applied_volume != Some(level) {
+            if let Some(volume) = &volume {
+                let result = (0..channels as u32)
+                    .try_for_each(|channel| volume.SetChannelVolume(channel, level.gain()));
+                if let Err(error) = result {
+                    crate::event_log::record(
+                        "WARN",
+                        "audio_volume_failed",
+                        serde_json::json!({"error":error.to_string()}),
+                    );
+                }
+            }
+            applied_volume = Some(level);
+        }
         let wait = WaitForMultipleObjects(
             &[event.0, devices.signal.event.0],
             false,

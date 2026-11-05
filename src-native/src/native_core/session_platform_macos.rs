@@ -17,6 +17,16 @@ pub struct Platform {
     window: Arc<Window>,
     clipboard: Services,
 }
+
+struct NoControllers;
+impl crate::gamepad::Motors for NoControllers {
+    fn rumble(&mut self, _device: i32, _low: u8, _high: u8) {}
+}
+impl crate::gamepad::polling::Devices for NoControllers {
+    fn read(&mut self, _index: u32) -> Option<crate::gamepad::State> {
+        None
+    }
+}
 impl Platform {
     pub fn create(manager: Arc<Manager>) -> Result<Self> {
         let window = Window::create_native()?;
@@ -88,6 +98,12 @@ impl Runtime for Platform {
         policy: transport::Policy,
     ) -> Result<transport::Attempt> {
         transport::Attempt::spawn_native(id, peer, writer, self.window.clone(), manager, policy)
+    }
+    fn controllers(&self) -> impl crate::gamepad::polling::Devices {
+        NoControllers
+    }
+    fn controller_input_allowed(&self) -> bool {
+        false
     }
     fn register_consumer(&self) {
         self.window.events.set_consumer(std::thread::current());

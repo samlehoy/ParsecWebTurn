@@ -12,6 +12,8 @@ mod audio_layout;
 #[cfg(target_os = "macos")]
 mod audio_macos;
 #[cfg(any(windows, test))]
+mod audio_output;
+#[cfg(any(windows, test))]
 mod audio_recovery;
 mod audio_stream;
 #[cfg(windows)]
@@ -22,6 +24,8 @@ mod branding;
 mod bud_attempt;
 #[cfg(all(any(windows, target_os = "macos"), feature = "bud"))]
 mod bud_media;
+#[cfg(feature = "bud")]
+mod bud_routes;
 mod connection_settings;
 #[cfg(windows)]
 mod connection_settings_ui;
@@ -56,6 +60,8 @@ mod media_ingress;
 mod media_scheduling;
 #[cfg(any(windows, target_os = "macos"))]
 mod native_core;
+#[cfg(any(windows, target_os = "macos"))]
+mod native_wire;
 #[cfg(windows)]
 mod nvidia_vsr;
 #[cfg(windows)]
@@ -65,7 +71,10 @@ mod platform;
 mod platform_macos;
 #[cfg(windows)]
 mod platform_windows;
+mod rtc_configuration;
 mod secure_storage;
+#[cfg(any(windows, target_os = "macos"))]
+mod session_preferences;
 #[cfg(any(windows, target_os = "macos"))]
 mod settings_model;
 mod signaling;
@@ -77,6 +86,7 @@ mod stats_ui;
 #[cfg(any(windows, target_os = "macos"))]
 mod stats_view;
 mod transport;
+mod turn_configuration;
 #[cfg(windows)]
 mod updater;
 #[cfg(windows)]
@@ -111,3 +121,11 @@ fn main() {
     #[cfg(not(any(windows, target_os = "macos")))]
     eprintln!("EvoParseq currently requires Windows or macOS.");
 }
+
+mod gamepad;
+#[cfg(windows)]
+mod gamepad_windows;
+
+mod desktop_input;
+#[cfg(test)]
+mod input_handoff;
