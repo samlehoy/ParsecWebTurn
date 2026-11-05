@@ -728,9 +728,11 @@ impl Attempt {
     }
 
     #[cfg(target_os = "android")]
-    pub fn start_android_media(&self, video: Arc<crate::video_android::Pipeline>) {
+    pub fn start_native_media(&self, video: Arc<crate::video_android::Pipeline>, maximum_ms: u32) {
         let mut state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
-        state.audio_stream = Some(crate::audio_stream::Pipeline::start_with_budget(Some(100)));
+        state.audio_stream = Some(crate::audio_stream::Pipeline::start_with_budget(Some(
+            maximum_ms,
+        )));
         state.video_output = Some(video);
     }
 
