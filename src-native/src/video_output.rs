@@ -618,6 +618,7 @@ impl Queue {
 
     /// Display-layer backpressure flushed queued frames; wait for a fresh key
     /// picture without consuming the fatal decoder-error retry budget.
+    #[cfg(target_os = "macos")]
     pub fn drop_backlog(&mut self, now: Instant) {
         if self.stopped || self.report.failure_stage.is_some() {
             return;
