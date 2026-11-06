@@ -91,6 +91,18 @@ jobs:
           mkdir -p dist/android-tv
           cp android-tv/app/build/outputs/apk/release/app-release.apk dist/android-tv/EvoParseq-TV.apk
           cp android-tv/README.md LICENSE dist/android-tv/
+          cp src-native/vendor/webrtc-0.14.0/LICENSE-MIT dist/android-tv/WEBRTC-LICENSE-MIT.txt
+          cp src-native/vendor/webrtc-0.14.0/LICENSE-APACHE dist/android-tv/WEBRTC-LICENSE-APACHE.txt
+          cp src-native/vendor/webrtc-util-0.12.0/LOCAL-CHANGES.md dist/android-tv/WEBRTC-UTIL-LOCAL-CHANGES.md
+          cp src-native/vendor/dtls-0.13.0/EVOPARSEQ.md dist/android-tv/DTLS-LOCAL-CHANGES.md
+          cp src-native/vendor/webrtc-ice-0.14.0/LOCAL-CHANGES.md dist/android-tv/TURN-LOCAL-CHANGES.md
+          for opus in "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/libopus_sys-0.3.3; do
+            if [ -f "$opus/LICENSE" ]; then
+              cp "$opus/LICENSE" dist/android-tv/LIBOPUS-SYS-LICENSE.txt
+              cp "$opus/opus/COPYING" dist/android-tv/OPUS-LICENSE.txt
+            fi
+          done
+          test -s dist/android-tv/OPUS-LICENSE.txt
           cp src-native/crates/bud/vendor/lowlat-client/LICENSE dist/android-tv/LOWLAT-LICENSE.txt
           git rev-parse HEAD > dist/android-tv/SOURCE.txt
           sha256sum dist/android-tv/EvoParseq-TV.apk > dist/android-tv/SHA256.txt
