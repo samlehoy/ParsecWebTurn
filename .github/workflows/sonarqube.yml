@@ -86,7 +86,7 @@ jobs:
           root = Path(os.environ['GITHUB_WORKSPACE']).resolve()
           generic = ET.Element('coverage', version='1')
           measured = ET.SubElement(generic, 'file', path='scripts/package-native.ps1')
-          sources = [node for node in ET.parse('coverage/pester.xml').iter('sourcefile') if node.get('name') == 'package-native.ps1']
+          sources = [node for node in ET.parse('coverage/pester.xml').iter('sourcefile') if node.get('name', '').replace('\\', '/').rsplit('/', 1)[-1] == 'package-native.ps1']
           assert len(sources) == 1, 'Missing or ambiguous actual packaging coverage'
           lines = sources[0].findall('line')
           assert lines and any(int(line.get('ci', '0')) > 0 for line in lines), 'Empty packaging execution report'
