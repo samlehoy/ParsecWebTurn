@@ -371,7 +371,7 @@ impl State {
             q.report.frames_dropped = q.report.frames_dropped.saturating_add(1);
             return false;
         }
-        if bytes.len() > crate::control::MAX_CHANNEL_MESSAGE {
+        if bytes.len() > q.max_frame_bytes {
             q.fail("video-input-too-large", None);
             q.report.frames_dropped = q.report.frames_dropped.saturating_add(1);
             return false;
@@ -452,7 +452,7 @@ impl State {
                 layer.flush();
             }
             if !info.idr || !layer.is_ready() {
-                q.recover(Instant::now());
+                q.drop_backlog(Instant::now());
                 q.report.frames_dropped = q.report.frames_dropped.saturating_add(1);
                 return false;
             }
@@ -914,6 +914,31 @@ mod tests {
         assert!(!state.queue.report.waiting_for_idr);
         assert!(!state.queue.report.recovering);
         assert_eq!(state.queue.report.frames_submitted, 3);
+
+        // Repeated backpressure episodes across a session (and multiple deltas
+        // arriving during a single backpressure episode) must not exhaust the
+        // fatal decoder-error budget and freeze video.
+        for _ in 0..4 {
+            layer.ready = false;
+            layer.ready_after_flush = false;
+            assert!(!state.submit(&mut layer, &units[1], infos[1]));
+            assert!(!state.submit(&mut layer, &units[2], infos[2]));
+            assert!(state.queue.report.failure_stage.is_none());
+            layer.ready_after_flush = true;
+            assert!(state.submit(&mut layer, &units[0], infos[0]));
+            assert!(state.queue.report.failure_stage.is_none());
+            assert!(!state.queue.report.waiting_for_idr);
+        }
+
+        // A valid BUD keyframe access unit larger than WebRTC's 1 MiB
+        // MAX_CHANNEL_MESSAGE ceiling (up to BUD's 4000 * 1193 ring bound)
+        // must not trigger video-input-too-large and freeze the video layer.
+        assert!(state.encoder_rebuilt(&mut layer));
+        let mut large_bud_idr = units[0].clone();
+        large_bud_idr.resize(crate::control::MAX_CHANNEL_MESSAGE + 64 * 1024, 0);
+        assert!(state.submit(&mut layer, &large_bud_idr, infos[0]));
+        assert!(state.queue.report.failure_stage.is_none());
+        assert!(state.submit(&mut layer, &units[1], infos[1]));
     }
 
     #[test]
