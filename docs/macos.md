@@ -44,7 +44,10 @@ after the app's signature changes, for example after an update.
 
 The display layer decodes with VideoToolbox and presents through Core Animation.
 The application copies each compressed access unit once into Core Media's
-length-prefixed sample layout and never reads decoded pixels back. The layer does
+length-prefixed sample layout and never reads decoded pixels back. When the
+layer is not ready for more media data, hits a decode error, or receives new
+stream parameter sets, the pipeline flushes queued sample buffers while keeping
+the last displayed image and resumes on the next IDR keyframe. The layer does
 not report whether VideoToolbox used the hardware decoder, so statistics show
 hardware decode as not reported. This path is not the application's Zero copy
 mode and makes no zero-copy claim beyond those facts.
@@ -73,13 +76,14 @@ Immersive Mode and hosting hotkeys have no counterpart in this client.
 ## Limits
 
 - Not available on macOS: HEVC Main 10, HEVC 4:4:4, Zero copy, display-timing
-  modes, GPU selection, AI upscaling and TCP/TLS QoS marking. Settings shows only
-  the options that apply.
+  modes, GPU selection, AI upscaling, controller input and TCP/TLS QoS marking.
+  Settings shows only the options that apply.
 - Host orientation (rotated output) is not applied to the video layer yet.
 - Audio follows the system default output device; multichannel output is not
   mapped to a device channel layout.
 - The floating session button is replaced by the menu bar and Stream Settings
   window.
-- BUD and USB HID input have no live validation in this macOS build yet; the
-  `lowlat-net` unit tests have not been ported to the macOS backend.
+- The `lowlat-net`, `lowlat-client`, `lowlat-crypto` and `evoparseq-bud` unit
+  tests pass on the macOS backend; live BUD and USB HID sessions against an
+  official host still need end-to-end validation.
 - Trackpad scroll scaling (1.2 wheel units per point) is a starting value.

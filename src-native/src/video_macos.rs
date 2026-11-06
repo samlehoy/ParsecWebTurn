@@ -329,10 +329,155 @@ pub fn create_layer() -> Option<Retained<AnyObject>> {
     Some(layer)
 }
 
+trait Layer {
+    fn status(&self) -> isize;
+    fn error_code(&self) -> isize;
+    fn is_ready(&self) -> bool;
+    fn flush(&mut self);
+    fn enqueue(&mut self, sample: &Cf);
+}
+
+impl Layer for &AnyObject {
+    fn status(&self) -> isize {
+        unsafe { msg_send![*self, status] }
+    }
+    fn error_code(&self) -> isize {
+        let error: Option<Retained<AnyObject>> = unsafe { msg_send![*self, error] };
+        error.map(|e| unsafe { msg_send![&*e, code] }).unwrap_or(0)
+    }
+    fn is_ready(&self) -> bool {
+        unsafe { msg_send![*self, isReadyForMoreMediaData] }
+    }
+    fn flush(&mut self) {
+        let _: () = unsafe { msg_send![*self, flush] };
+    }
+    fn enqueue(&mut self, sample: &Cf) {
+        let _: () =
+            unsafe { msg_send![*self, enqueueSampleBuffer: sample.0.cast::<OpaqueSampleBuffer>()] };
+    }
+}
+
+#[derive(Default)]
 struct State {
     queue: Queue,
     converter: Converter,
     shown: bool,
+}
+
+impl State {
+    fn submit(&mut self, layer: &mut impl Layer, bytes: &[u8], info: PacketInfo) -> bool {
+        let q = &mut self.queue;
+        if q.stopped || q.report.failure_stage.is_some() {
+            q.report.frames_dropped = q.report.frames_dropped.saturating_add(1);
+            return false;
+        }
+        if bytes.len() > crate::control::MAX_CHANNEL_MESSAGE {
+            q.fail("video-input-too-large", None);
+            q.report.frames_dropped = q.report.frames_dropped.saturating_add(1);
+            return false;
+        }
+        if q.report.codec.is_some_and(|codec| codec != info.codec) {
+            q.fail("video-unexpected-codec-change", None);
+            return false;
+        }
+        q.report.codec = Some(info.codec);
+
+        let mut flushed = false;
+        if layer.status() == LAYER_FAILED {
+            let code = layer.error_code();
+            crate::event_log::record(
+                "WARN",
+                "video_layer_failed",
+                serde_json::json!({"code": code}),
+            );
+            layer.flush();
+            flushed = true;
+            // The decoder lost its references; resume from the next key picture.
+            if !q.report.recovering && !q.recover(Instant::now()) {
+                q.report.frames_dropped = q.report.frames_dropped.saturating_add(1);
+                return false;
+            }
+        }
+
+        if q.report.waiting_for_idr && !info.idr && !info.parameters {
+            q.report.frames_dropped = q.report.frames_dropped.saturating_add(1);
+            return false;
+        }
+        let sample = match self.converter.convert(bytes, info.codec) {
+            Ok(sample) => sample,
+            Err(error) => {
+                q.fail("video-sample-create", Some(error));
+                return false;
+            }
+        };
+        if self.converter.format.is_some() {
+            q.report.decoder_initialized = true;
+            if let Some((width, height)) = self.converter.dimensions() {
+                q.report.width = Some(width);
+                q.report.height = Some(height);
+            }
+        }
+        if std::mem::take(&mut self.converter.reconfigured) {
+            // The host changed the encoded format (e.g. a display switch or a
+            // fullscreen app transition). Retire queued frames from the old
+            // format while keeping the last image, and wait for a key picture.
+            if !flushed {
+                layer.flush();
+                flushed = true;
+            }
+            q.begin_format_change(Instant::now(), !info.idr);
+            crate::event_log::record(
+                "INFO",
+                "video_format_changed",
+                serde_json::json!({"width":q.report.width,"height":q.report.height}),
+            );
+        }
+        // Parameter sets alone never end the wait for a key picture; a delta
+        // picture attached to parameter sets is still dropped.
+        if q.report.waiting_for_idr && !info.idr {
+            if sample.is_some() {
+                q.report.frames_dropped = q.report.frames_dropped.saturating_add(1);
+                return false;
+            }
+            return true;
+        }
+        let Some(sample) = sample else {
+            return true;
+        };
+        if !layer.is_ready() {
+            // The layer's decode queue is full (slow decoding or a burst after
+            // congestion). Discard stale queued buffers while keeping the last
+            // displayed frame; only a key picture can resume after a flush.
+            if !flushed {
+                layer.flush();
+            }
+            if !info.idr || !layer.is_ready() {
+                q.recover(Instant::now());
+                q.report.frames_dropped = q.report.frames_dropped.saturating_add(1);
+                return false;
+            }
+        }
+        if info.idr {
+            q.report.decoder_initialized = true;
+            q.report.waiting_for_idr = false;
+            if q.report.recovering {
+                q.recovered();
+            }
+        }
+        layer.enqueue(&sample);
+        q.report.frames_submitted = q.report.frames_submitted.saturating_add(1);
+        self.shown = true;
+        true
+    }
+
+    fn encoder_rebuilt(&mut self, layer: &mut impl Layer) -> bool {
+        if self.queue.encoder_rebuilt(Instant::now()) {
+            self.converter = Converter::default();
+            layer.flush();
+            return true;
+        }
+        false
+    }
 }
 
 pub struct Pipeline {
@@ -378,92 +523,18 @@ impl Pipeline {
     // transform plus viewport mapping when a rotated host is validated.
     pub fn submit_oriented(&self, bytes: &[u8], info: PacketInfo, _rotation: u8) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let state = &mut *state;
-        let q = &mut state.queue;
-        if q.stopped || q.report.failure_stage.is_some() {
-            q.report.frames_dropped = q.report.frames_dropped.saturating_add(1);
-            return false;
-        }
-        if q.report.codec.is_some_and(|codec| codec != info.codec) {
-            q.fail("video-unexpected-codec-change", None);
-            return false;
-        }
-        q.report.codec = Some(info.codec);
-
-        let layer = self.layer();
-        let status: isize = unsafe { msg_send![layer, status] };
-        if status == LAYER_FAILED {
-            let error: Option<Retained<AnyObject>> = unsafe { msg_send![layer, error] };
-            let code = error
-                .map(|e| unsafe { msg_send![&*e, code] })
-                .unwrap_or(0isize);
-            crate::event_log::record(
-                "WARN",
-                "video_layer_failed",
-                serde_json::json!({"code": code}),
-            );
-            let _: () = unsafe { msg_send![layer, flush] };
-            // The decoder lost its references; resume from the next key picture.
-            q.recover(Instant::now());
-            q.report.frames_dropped = q.report.frames_dropped.saturating_add(1);
-            return false;
-        }
-
-        if q.report.waiting_for_idr && !info.idr && !info.parameters {
-            q.report.frames_dropped = q.report.frames_dropped.saturating_add(1);
-            return false;
-        }
-        let sample = match state.converter.convert(bytes, info.codec) {
-            Ok(sample) => sample,
-            Err(error) => {
-                q.fail("video-sample-create", Some(error));
-                return false;
-            }
-        };
-        if state.converter.format.is_some() {
-            q.report.decoder_initialized = true;
-            if let Some((width, height)) = state.converter.dimensions() {
-                q.report.width = Some(width);
-                q.report.height = Some(height);
-            }
-        }
-        // Parameter sets alone never end the wait for a key picture.
-        if q.report.waiting_for_idr && !info.idr {
-            return true;
-        }
-        let Some(sample) = sample else {
-            return true;
-        };
-        if info.idr {
-            q.report.waiting_for_idr = false;
-            if q.report.recovering {
-                q.recovered();
-            }
-            if std::mem::take(&mut state.converter.reconfigured) {
-                // The host changed the encoded format (e.g. a fullscreen app
-                // lost focus). Start a new sequence at this key picture, as
-                // Windows rebuilds its decoder; flush keeps the last image.
-                let _: () = unsafe { msg_send![layer, flush] };
-                crate::event_log::record(
-                    "INFO",
-                    "video_format_changed",
-                    serde_json::json!({"width":q.report.width,"height":q.report.height}),
-                );
-            }
-        }
-        let _: () =
-            unsafe { msg_send![layer, enqueueSampleBuffer: sample.0.cast::<OpaqueSampleBuffer>()] };
-        q.report.frames_submitted = q.report.frames_submitted.saturating_add(1);
-        if !state.shown {
-            state.shown = true;
+        let was_shown = state.shown;
+        let mut layer = self.layer();
+        let accepted = state.submit(&mut layer, bytes, info);
+        if !was_shown && state.shown {
             self.window.set_video_ready_for(self.generation, true);
         }
         *self
             .window
             .video_report
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(q.report.clone());
-        true
+            .unwrap_or_else(|e| e.into_inner()) = Some(state.queue.report.clone());
+        accepted
     }
 
     /// Explicit BUD encoder-generation boundary: drop old parameter sets and
@@ -471,26 +542,41 @@ impl Pipeline {
     #[cfg(feature = "bud")]
     pub fn encoder_rebuilt(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.queue.encoder_rebuilt(Instant::now()) {
-            state.converter = Converter::default();
-            let _: () = unsafe { msg_send![self.layer(), flush] };
+        let mut layer = self.layer();
+        if state.encoder_rebuilt(&mut layer) {
+            *self
+                .window
+                .video_report
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(state.queue.report.clone());
         }
     }
 
     pub fn take_keyframe_request(&self) -> Option<(u64, bool)> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state
+        let failed_before = state.queue.report.failure_stage.is_some();
+        let request = state
             .queue
             .take_keyframe_request(Instant::now())
-            .map(|_| (state.queue.reset_generation, false))
+            .map(|_| (state.queue.reset_generation, false));
+        if !failed_before && state.queue.report.failure_stage.is_some() {
+            *self
+                .window
+                .video_report
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(state.queue.report.clone());
+        }
+        request
     }
 
     pub fn recovery_request_failed(&self, generation: u64) {
-        self.state
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.queue.request_failed(generation);
+        *self
+            .window
+            .video_report
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .queue
-            .request_failed(generation);
+            .unwrap_or_else(|e| e.into_inner()) = Some(state.queue.report.clone());
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -610,12 +696,13 @@ mod tests {
         refcon: *mut c_void,
         _frame: *mut c_void,
         status: i32,
-        _flags: u32,
+        flags: u32,
         image: *mut c_void,
         _pts: CMTime,
         _duration: CMTime,
     ) {
-        if status == 0 && !image.is_null() {
+        const FRAME_DROPPED: u32 = 1 << 1;
+        if status == 0 && (!image.is_null() || flags & FRAME_DROPPED == 0) {
             unsafe { *(refcon as *mut u32) += 1 };
         }
     }
@@ -729,5 +816,263 @@ mod tests {
         assert_eq!(parameter_slot(Codec::H264, nals[0]), Some(1));
         assert_eq!(parameter_slot(Codec::H264, nals[1]), Some(2));
         assert_eq!(parameter_slot(Codec::H264, nals[2]), None);
+    }
+
+    struct TestLayer {
+        status: isize,
+        error_code: isize,
+        ready: bool,
+        ready_after_flush: bool,
+        flushes: usize,
+        enqueued: usize,
+    }
+
+    impl Default for TestLayer {
+        fn default() -> Self {
+            Self {
+                status: 0,
+                error_code: 0,
+                ready: true,
+                ready_after_flush: true,
+                flushes: 0,
+                enqueued: 0,
+            }
+        }
+    }
+
+    impl Layer for TestLayer {
+        fn status(&self) -> isize {
+            self.status
+        }
+        fn error_code(&self) -> isize {
+            self.error_code
+        }
+        fn is_ready(&self) -> bool {
+            self.ready
+        }
+        fn flush(&mut self) {
+            self.flushes += 1;
+            if self.status == LAYER_FAILED {
+                self.status = 0;
+            }
+            if self.ready_after_flush {
+                self.ready = true;
+            }
+        }
+        fn enqueue(&mut self, _sample: &Cf) {
+            self.enqueued += 1;
+        }
+    }
+
+    fn inspect_all(units: &[Vec<u8>]) -> Vec<PacketInfo> {
+        let mut inspector = crate::video_stream::Inspector::default();
+        inspector.enable_hevc(true);
+        units
+            .iter()
+            .map(|unit| inspector.receive(unit).expect("valid HEVC access unit"))
+            .collect()
+    }
+
+    #[test]
+    fn backpressure_flushes_layer_requests_keyframe_and_recovers_on_idr() {
+        let units = hevc_units();
+        let infos = inspect_all(&units);
+        let mut state = State::default();
+        let mut layer = TestLayer::default();
+        assert!(state.submit(&mut layer, &units[0], infos[0]));
+        assert!(state.submit(&mut layer, &units[1], infos[1]));
+        assert_eq!(layer.enqueued, 2);
+        assert_eq!(state.queue.report.frames_submitted, 2);
+        assert!(state.shown);
+
+        // Slow decoding or a post-congestion burst fills the display layer:
+        // flush queued frames, drop the delta chain, and request a fresh IDR.
+        layer.ready = false;
+        assert!(!state.submit(&mut layer, &units[2], infos[2]));
+        assert_eq!(layer.flushes, 1);
+        assert_eq!(layer.enqueued, 2);
+        assert!(state.queue.report.waiting_for_idr);
+        assert!(state.queue.report.recovering);
+        assert_eq!(state.queue.report.frames_dropped, 1);
+        assert_eq!(
+            state.queue.take_keyframe_request(Instant::now()),
+            Some(Codec::Hevc)
+        );
+
+        // Even after the flush makes the layer ready again, deltas following
+        // the dropped reference frame must not be enqueued before an IDR.
+        assert!(!state.submit(&mut layer, &units[3], infos[3]));
+        assert_eq!(layer.enqueued, 2);
+        assert_eq!(state.queue.report.frames_dropped, 2);
+
+        // If the layer is again not ready when the recovery IDR arrives,
+        // flushing clears the stale queue so the IDR can be enqueued immediately.
+        layer.ready = false;
+        assert!(state.submit(&mut layer, &units[0], infos[0]));
+        assert_eq!(layer.flushes, 2);
+        assert_eq!(layer.enqueued, 3);
+        assert!(!state.queue.report.waiting_for_idr);
+        assert!(!state.queue.report.recovering);
+        assert_eq!(state.queue.report.frames_submitted, 3);
+    }
+
+    #[test]
+    fn display_and_stream_reconfiguration_flush_and_wait_for_idr_without_spending_error_budget() {
+        let units = hevc_units();
+        let infos = inspect_all(&units);
+        let crop_sps = include_bytes!("../crates/video/fixtures/hevc-crop.sps");
+        let crop_info = PacketInfo {
+            picture: false,
+            codec: Codec::Hevc,
+            idr: false,
+            parameters: true,
+        };
+        let mut state = State::default();
+        let mut layer = TestLayer::default();
+        assert!(state.submit(&mut layer, &units[0], infos[0]));
+        assert!(state.submit(&mut layer, &units[1], infos[1]));
+        assert_eq!(
+            (state.queue.report.width, state.queue.report.height),
+            (Some(1280), Some(720))
+        );
+
+        // Repeat host display/resolution changes more than 3 times: valid
+        // format transitions must never exhaust the error-recovery budget.
+        let mut cropped_idr = Vec::new();
+        for nal in nal_units(&units[0]) {
+            if parameter_slot(Codec::Hevc, nal) == Some(1) {
+                cropped_idr.extend_from_slice(crop_sps);
+            } else {
+                cropped_idr.extend_from_slice(&[0, 0, 0, 1]);
+                cropped_idr.extend_from_slice(nal);
+            }
+        }
+        for _ in 0..4 {
+            // 1. Out-of-band parameter-set change before the new IDR arrives.
+            assert!(state.submit(&mut layer, crop_sps, crop_info));
+            assert!(state.queue.report.waiting_for_idr);
+            assert!(state.queue.report.recovering);
+            assert_ne!(
+                (state.queue.report.width, state.queue.report.height),
+                (Some(1280), Some(720))
+            );
+            assert!(!state.submit(&mut layer, &units[2], infos[2]));
+
+            // A packet carrying both parameters and a delta picture while
+            // waiting for IDR keeps the parameters but drops the delta.
+            let mut param_plus_delta = crop_sps.to_vec();
+            param_plus_delta.extend_from_slice(&units[2]);
+            assert!(!state.submit(
+                &mut layer,
+                &param_plus_delta,
+                PacketInfo {
+                    picture: true,
+                    codec: Codec::Hevc,
+                    idr: false,
+                    parameters: true,
+                },
+            ));
+
+            // Matching IDR completes the format transition.
+            assert!(state.submit(&mut layer, &cropped_idr, infos[0]));
+            assert!(!state.queue.report.waiting_for_idr);
+            assert!(!state.queue.report.recovering);
+            assert!(state.queue.report.failure_stage.is_none());
+
+            // 2. In-band parameter-set + IDR change in the same access unit.
+            let flushes_before = layer.flushes;
+            assert!(state.submit(&mut layer, &units[0], infos[0]));
+            assert_eq!(layer.flushes, flushes_before + 1);
+            assert!(!state.queue.report.waiting_for_idr);
+            assert!(!state.queue.report.recovering);
+            assert_eq!(
+                (state.queue.report.width, state.queue.report.height),
+                (Some(1280), Some(720))
+            );
+            assert!(state.queue.report.failure_stage.is_none());
+        }
+
+        // Explicit encoder rebuild (BUD display/mode switch) flushes the layer,
+        // clears cached parameter sets, drops deltas, and resumes on a new IDR.
+        let flushes_before = layer.flushes;
+        assert!(state.encoder_rebuilt(&mut layer));
+        assert_eq!(layer.flushes, flushes_before + 1);
+        assert!(state.queue.report.waiting_for_idr);
+        assert!(!state.submit(&mut layer, &units[1], infos[1]));
+        assert!(state.submit(&mut layer, &units[0], infos[0]));
+        assert!(!state.queue.report.waiting_for_idr);
+        assert_eq!(
+            (state.queue.report.width, state.queue.report.height),
+            (Some(1280), Some(720))
+        );
+    }
+
+    #[test]
+    fn layer_failure_and_fullscreen_resize_recover_on_idr() {
+        let units = hevc_units();
+        let infos = inspect_all(&units);
+        let mut state = State::default();
+        let mut layer = TestLayer::default();
+        assert!(state.submit(&mut layer, &units[0], infos[0]));
+        assert!(state.submit(&mut layer, &units[1], infos[1]));
+
+        // 1. Layer fails before a delta arrives: flush, enter recovery, drop delta.
+        layer.status = LAYER_FAILED;
+        assert!(!state.submit(&mut layer, &units[2], infos[2]));
+        assert_eq!(layer.status, 0);
+        assert_eq!(layer.flushes, 1);
+        assert!(state.queue.report.waiting_for_idr);
+        assert!(state.queue.report.recovering);
+        assert_eq!(state.queue.report.frames_dropped, 1);
+
+        // 2. If the layer is in LAYER_FAILED when the recovery IDR itself arrives
+        // (e.g. asynchronous failure from an earlier frame or fullscreen transition),
+        // flushing the layer allows that IDR to recover immediately without
+        // dropping the keyframe or spending another recovery attempt.
+        layer.status = LAYER_FAILED;
+        assert!(state.submit(&mut layer, &units[0], infos[0]));
+        assert_eq!(layer.status, 0);
+        assert_eq!(layer.flushes, 2);
+        assert!(!state.queue.report.waiting_for_idr);
+        assert!(!state.queue.report.recovering);
+        assert_eq!(state.queue.report.frames_submitted, 3);
+        assert!(state.submit(&mut layer, &units[1], infos[1]));
+
+        // 3. Exercise the real AVSampleBufferDisplayLayer through State::submit
+        // across fullscreen-sized bounds changes and stream reconfiguration.
+        let real_layer = create_layer().expect("AVSampleBufferDisplayLayer");
+        let mut real_ref: &AnyObject = &real_layer;
+        let mut live_state = State::default();
+        for (unit, info) in units.iter().zip(infos.iter()).take(4) {
+            assert!(live_state.submit(&mut real_ref, unit, *info));
+        }
+        // Simulate windowed -> fullscreen -> windowed layer bounds transitions.
+        for (width, height) in [(2560.0, 1440.0), (1280.0, 720.0)] {
+            let bounds = objc2_foundation::NSRect::new(
+                objc2_foundation::NSPoint::new(0.0, 0.0),
+                objc2_foundation::NSSize::new(width, height),
+            );
+            let _: () = unsafe { msg_send![real_ref, setBounds: bounds] };
+            for (unit, info) in units.iter().zip(infos.iter()).skip(4).take(2) {
+                assert!(live_state.submit(&mut real_ref, unit, *info));
+            }
+        }
+        // Reconfigure stream format on the real layer and recover on IDR.
+        let crop_sps = include_bytes!("../crates/video/fixtures/hevc-crop.sps");
+        assert!(live_state.submit(
+            &mut real_ref,
+            crop_sps,
+            PacketInfo {
+                picture: false,
+                codec: Codec::Hevc,
+                idr: false,
+                parameters: true,
+            },
+        ));
+        assert!(live_state.queue.report.waiting_for_idr);
+        assert!(live_state.submit(&mut real_ref, &units[0], infos[0]));
+        assert!(!live_state.queue.report.waiting_for_idr);
+        assert_ne!(real_ref.status(), LAYER_FAILED);
+        let _: () = unsafe { msg_send![real_ref, flushAndRemoveImage] };
     }
 }

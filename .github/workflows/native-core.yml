@@ -18,6 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-native
@@ -26,6 +28,8 @@ jobs:
         run: |
           set -eu
           target=aarch64-apple-darwin
+          cargo clippy --locked --manifest-path src-native/Cargo.toml --target $target --workspace --all-targets --all-features -- -D warnings
+          cargo clippy --locked --manifest-path src-native/crates/bud/Cargo.toml --target $target --workspace --all-targets --all-features -- -D warnings
           cargo test --locked --manifest-path src-native/Cargo.toml --target $target -p dtls --lib -- --test-threads=1
           cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml --target $target -p lowlat-crypto -- --test-threads=1
           cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml --target $target -p evoparseq-bud -- --test-threads=1
