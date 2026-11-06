@@ -60,8 +60,9 @@ the published Android APK at dev.5 so those installations can update forward.
   that brought in the unmaintained pin-utils dependency. Keep the existing
   WebRTC helper version and upstream Rust sources, requesting only the Unix
   network features actually used. Preserve advisory enforcement and unrelated
-  dependency versions. Add SonarQube analysis alongside the existing Code quality
-  checks and extend Android CI to catch accidental strong links to newer AAudio
+  dependency versions. Add a blocking SonarQube Quality Gate on every active
+  branch except legacy, with measured Rust test coverage and real release-package
+  coverage. Instrumented binaries are never shipped. Extend Android CI to catch accidental strong links to newer AAudio
   APIs that would prevent older Android versions from loading the client.
 
 ## Compatibility and validation
