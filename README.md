@@ -16,6 +16,25 @@ The stable release is [**EvoParseq v0.9.5**](https://github.com/vampywiz17/EvoPa
 `main` contains the stable Windows client; `dev` carries ongoing Windows and
 Android TV development. Android TV previews are not part of this Windows release.
 
+## Code quality
+
+Live SonarQube results for each branch. Select a badge to open its dashboard.
+
+| Metric | `main` | `dev` |
+| --- | --- | --- |
+| Quality Gate | [![main: Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=alert_status)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) | [![dev: Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=dev&metric=alert_status)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=dev) |
+| Coverage (overall code) | [![main: Coverage (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=coverage)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) | [![dev: Coverage (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=dev&metric=coverage)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=dev) |
+| Security (overall code) | [![main: Security (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=security_rating)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) | [![dev: Security (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=dev&metric=security_rating)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=dev) |
+| Reliability (overall code) | [![main: Reliability (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=reliability_rating)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) | [![dev: Reliability (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=dev&metric=reliability_rating)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=dev) |
+| Maintainability (overall code) | [![main: Maintainability (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=sqale_rating)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) | [![dev: Maintainability (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=dev&metric=sqale_rating)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=dev) |
+| Duplicated lines (overall code) | [![main: Duplicated lines (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=duplicated_lines_density)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) | [![dev: Duplicated lines (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=dev&metric=duplicated_lines_density)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=dev) |
+
+The metric badges describe **overall code**, not just newly changed lines.
+The Quality Gate applies the configured **new-code** requirements; a passing
+gate does not mean that overall coverage is 100% or that all existing findings
+have been resolved. The dashboards show both scopes. GitHub may briefly cache
+badge images after a new analysis.
+
 ## Features
 
 - **Native account and sessions:** optional 2FA, encrypted remembered sign-in,
