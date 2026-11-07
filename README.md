@@ -50,6 +50,13 @@ gate does not mean that overall coverage is 100% or that all existing findings
 have been resolved. The dashboard shows both scopes. GitHub may briefly cache
 badge images after a new analysis.
 
+Sonar also analyzes checked-in dependencies, including upstream test fixtures
+and configuration files. Their findings count toward the overall results,
+especially the Security rating, so the badges are not a score of EvoParseq's
+own implementation alone and can give a misleading impression without that
+context. Dependency findings still require review; upstream origin does not
+automatically make a finding harmless or a false positive.
+
 ## Android TV
 
 - Google TV / Android TV interface with D-pad navigation, 2FA, grouped settings

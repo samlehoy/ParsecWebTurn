@@ -102,9 +102,11 @@ Linux alpha builds and the proposed macOS port are not part of this release.
   advisory/license/source checks and workflow lint. Pin the affected CI actions
   to immutable commits and restrict tool downloads/redirects to HTTPS while
   preserving SHA-256 checks. Add Android ARMv7/ARM64, lint and optional-AAudio-symbol
-  checks. Retire temporary TV test overlays while retaining useful errors and
-  regression tests. README now includes AI-development disclosure, main-branch
-  quality badges and a live Star History chart.
+  checks. Stabilize the Windows overlay drag regression fixture by waiting for
+  initial window placement before measuring movement, preserving its assertions.
+  Retire temporary TV test overlays while retaining useful errors and regression
+  tests. README now includes AI-development disclosure, main-branch quality badges
+  with dependency-scope context, and a live Star History chart.
 
 ## Compatibility and validation
 
