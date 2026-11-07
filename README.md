@@ -323,3 +323,12 @@ Our code uses the [MIT license](LICENSE). Applicable Parsec service terms and
 third-party licenses still apply. Development did not use Parsec's proprietary
 source code, and EvoParseq does not patch the official host or client. Parsec and
 Unity names and marks belong to their owners; no affiliation is implied.
+
+## Star history
+
+<a href="https://www.star-history.com/#vampywiz17/EvoParseq&amp;Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=vampywiz17/EvoParseq&amp;type=Date&amp;theme=dark">
+    <img alt="EvoParseq GitHub star history" src="https://api.star-history.com/svg?repos=vampywiz17/EvoParseq&amp;type=Date" width="800">
+  </picture>
+</a>
