@@ -26,13 +26,10 @@ requires no browser, WebView or helper executable.
 **This is an independent community project, not affiliated with or endorsed by
 Parsec, Unity or lowlat.** A Parsec account and a compatible host are required.
 
-**This is the development branch (0.9.6-dev.5): Windows plus an Android TV preview.**
-Download [**v0.9.6-dev.5**](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.6-dev.5)
-for Windows ZIPs and the signed Android TV APK. Windows previews are installed
-manually; signed Android builds can check the prerelease channel in Settings > Updates.
-The stable Windows client is [**EvoParseq v0.9.5**](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.5)
-on `main`. This branch adds controller support on Windows and Android TV;
-these additions are not included in the stable Windows release.
+The stable release is [**EvoParseq v0.9.6**](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.6),
+with Windows x64 packages and the signed Android TV APK. This is the `main`
+branch; ongoing development continues on `dev`. Linux remains a separate alpha
+on `codex/linux-flatpak` and is not included in this release.
 
 ## Code quality
 
@@ -53,7 +50,7 @@ gate does not mean that overall coverage is 100% or that all existing findings
 have been resolved. The dashboard shows both scopes. GitHub may briefly cache
 badge images after a new analysis.
 
-## Android TV preview
+## Android TV
 
 - Google TV / Android TV interface with D-pad navigation, 2FA, grouped settings
   and encrypted remembered sign-in using Android Keystore.
@@ -77,13 +74,16 @@ stable. This is a transport-specific observation, **not a universal hardware lim
 MediaCodec submits frames to Surface without CPU pixel readback; physical scanout
 and internal driver/compositor copies are not verified.
 
-Use the [preview release](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.6-dev.5)
-or successful [dev Android CI artifacts](https://github.com/vampywiz17/EvoParseq/actions/workflows/android-tv.yml?query=branch%3Adev)
-for previews; the stable Windows ZIP is not an Android package.
-[Android TV setup, build and limits](android-tv/README.md).
-The Windows features below remain available on this branch.
+Download **EvoParseq-TV.apk** from the
+[stable release](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.6), or
+use **Settings > Updates** in an existing distribution-signed Android build.
+The APK includes ARMv7 and ARM64 libraries and requires **Android 10 (API 29)+**.
+Android still asks for installation confirmation. Normal signed updates retain
+settings and remembered sign-in; old debug-signed previews need a one-time
+reinstall, which clears their private data. The Windows ZIP cannot run on TV.
+[Android TV setup, updates and compatibility limits](android-tv/README.md).
 
-## Features
+## Windows features
 
 - **Native account and sessions:** optional 2FA, encrypted remembered sign-in,
   background-refreshing computer picker and manual peer ID. Owner connections
@@ -103,7 +103,7 @@ The Windows features below remain available on this branch.
   On Windows, the Session overlay offers immediate local mute and 0–100% volume
   control for either transport, without changing the host's volume. Mute preserves
   the chosen level; these controls reset when the client is restarted.
-- **Controllers (development):** shared Rust gamepad state/protocol for up to
+- **Controllers:** shared Rust gamepad state/protocol for up to
   four controllers, Windows XInput and Android gamepad events. Wired Windows
   and GameSir Android forwarding are live-tested; device-specific rumble and
   disconnect behavior need broader validation.
@@ -140,10 +140,8 @@ The animation illustrates processing order, not measured speed. Check
 
 ## Windows download and run
 
-1. Download `EvoParseq-v0.9.5-win64.zip` from the
-   [stable release](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.5).
-   For this branch's Windows preview (including controllers), use artifacts from successful
-   [dev CI runs](https://github.com/vampywiz17/EvoParseq/actions/workflows/native-core.yml?query=branch%3Adev).
+1. Download `EvoParseq-v0.9.6-win64.zip` from the
+   [stable release](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.6).
 2. Extract to a writable folder and run **EvoParseq.exe**. Settings and optional
    encrypted sessions are stored beside it in `settings.json`.
 3. Sign in with the host owner's account, choose a computer and connect.
