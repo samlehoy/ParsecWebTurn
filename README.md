@@ -1,3 +1,17 @@
+> [!WARNING]
+> **EvoParseq is developed with substantial AI assistance.** AI generates most of the
+> implementation code, while the project’s concept, architecture, scope, platform choices,
+> and development priorities are defined by its human maintainer.
+>
+> Development remains human-led. The maintainer directs the work, tests the application on
+> real hardware, investigates reported problems, and oversees patches and fixes.
+> Responsibility for reviewing and accepting changes stays with the maintainer.
+>
+> The project owner has a formal IT education and works in Kubernetes and DevOps. The
+> primary motivation for using AI is to save time and make effective use of LLM
+> capabilities, allowing more effort to go into design decisions, integration, and practical
+> testing.
+
 <p align="center">
   <img src="assets/evoparseq-wordmark.svg" width="360" alt="EvoParseq">
 </p>
