@@ -243,16 +243,7 @@ impl Shared {
         );
     }
 }
-/// Remote prflx cannot establish whether a remote TURN allocation is hidden.
-pub fn route(local: &str, remote: &str) -> &'static str {
-    if local == "relay" || remote == "relay" {
-        "Relay — TURN in use"
-    } else if matches!(local, "host" | "srflx" | "prflx") && matches!(remote, "host" | "srflx") {
-        "Direct — no TURN"
-    } else {
-        "Unverified"
-    }
-}
+use crate::rtc_configuration::route;
 pub async fn network(peer: &RTCPeerConnection) -> Sample {
     let dtls = peer.sctp().transport();
     let mut sample = Sample {
@@ -269,7 +260,6 @@ pub async fn network(peer: &RTCPeerConnection) -> Sample {
     sample.remote = remote.typ.to_string();
     sample.protocol = local.protocol.to_string();
     sample.route = route(&sample.local, &sample.remote);
-    let id = format!("{}-{}", local.stats_id, remote.stats_id);
     let report = peer.get_stats().await;
     // A route change during sampling must not label a previous pair as active.
     if dtls
@@ -287,13 +277,10 @@ pub async fn network(peer: &RTCPeerConnection) -> Sample {
             ..Default::default()
         };
     }
+    sample.rtt_ms =
+        crate::rtc_configuration::selected_rtt(&report, &local.stats_id, &remote.stats_id);
     for stats in report.reports.values() {
         match stats {
-            StatsReportType::CandidatePair(p) if p.id == id && p.responses_received > 0 => {
-                if p.current_round_trip_time.is_finite() && p.current_round_trip_time >= 0.0 {
-                    sample.rtt_ms = Some(p.current_round_trip_time * 1000.0);
-                }
-            }
             StatsReportType::SCTPTransport(t) => {
                 sample.received = Some(t.bytes_received as u64);
                 sample.sent = Some(t.bytes_sent as u64);

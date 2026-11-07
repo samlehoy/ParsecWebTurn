@@ -16,7 +16,7 @@
   <img src="assets/evoparseq-wordmark.svg" width="360" alt="EvoParseq">
 </p>
 
-<p align="center"><strong>An independent Windows Parsec client with a native Rust core.</strong></p>
+<p align="center"><strong>An independent Parsec client with a shared native Rust core.</strong></p>
 
 EvoParseq connects to existing, **unmodified Parsec hosts**. Native Rust handles
 sign-in, computer discovery, signaling, transport, GPU video, audio and input.
@@ -26,9 +26,13 @@ requires no browser, WebView or helper executable.
 **This is an independent community project, not affiliated with or endorsed by
 Parsec, Unity or lowlat.** A Parsec account and a compatible host are required.
 
-The stable release is [**EvoParseq v0.9.5**](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.5).
-`main` contains the stable Windows client; `dev` carries ongoing Windows and
-Android TV development. Android TV previews are not part of this Windows release.
+**This is the development branch (0.9.6-dev.5): Windows plus an Android TV preview.**
+Download [**v0.9.6-dev.5**](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.6-dev.5)
+for Windows ZIPs and the signed Android TV APK. Windows previews are installed
+manually; signed Android builds can check the prerelease channel in Settings > Updates.
+The stable Windows client is [**EvoParseq v0.9.5**](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.5)
+on `main`. This branch adds controller support on Windows and Android TV;
+these additions are not included in the stable Windows release.
 
 ## Code quality
 
@@ -49,6 +53,36 @@ gate does not mean that overall coverage is 100% or that all existing findings
 have been resolved. The dashboard shows both scopes. GitHub may briefly cache
 badge images after a new analysis.
 
+## Android TV preview
+
+- Google TV / Android TV interface with D-pad navigation, 2FA, grouped settings
+  and encrypted remembered sign-in using Android Keystore.
+- Shared Rust account, session, WebRTC/BUD, controller and input models; Android
+  adapters provide MediaCodec Surface video, AAudio and OS input/lifecycle.
+- Direct or STUN/TURN connections, Force TURN and temporary **local-only HTTPS**
+  relay setup from a phone/computer, with fingerprint verification and TV approval.
+- H.264 and HEVC 8/10-bit 4:2:0, fixed/adaptive FPS, hidden-by-default session
+  controls after five idle seconds, plus FPS/RTT/bitrate/codec/route information.
+- Standard gamepads; optional remote D-pad mouse, short/long OK clicks and
+  supported OK + direction dragging. Physical mouse/keyboard use normal input
+  with optional capture. Windows HID passthrough is not an Android feature.
+- AAudio device recovery, optional custom buffering, BUD PCM and capability-gated
+  5.1/7.1 output; diagnostic logging with save/share export. These additions need
+  live audio-device validation; WebRTC remains stereo Opus.
+
+Live-tested on Xiaomi TV Box S (3rd Gen), Android 14, including BUD at 50 Mbit/s,
+NVIDIA-encoded Main10, remote mouse and a GameSir controller. WebRTC at sustained
+50 Mbit/s still closed its video channel in this setup; around 30 Mbit/s was
+stable. This is a transport-specific observation, **not a universal hardware limit**.
+MediaCodec submits frames to Surface without CPU pixel readback; physical scanout
+and internal driver/compositor copies are not verified.
+
+Use the [preview release](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.6-dev.5)
+or successful [dev Android CI artifacts](https://github.com/vampywiz17/EvoParseq/actions/workflows/android-tv.yml?query=branch%3Adev)
+for previews; the stable Windows ZIP is not an Android package.
+[Android TV setup, build and limits](android-tv/README.md).
+The Windows features below remain available on this branch.
+
 ## Features
 
 - **Native account and sessions:** optional 2FA, encrypted remembered sign-in,
@@ -66,6 +100,13 @@ badge images after a new analysis.
 - **Audio:** stereo Opus, configurable buffering, BUD raw PCM and experimental
   multichannel output. Automatically reopen the Windows audio output after
   transient device errors or default-device changes, retiring stale audio.
+  On Windows, the Session overlay offers immediate local mute and 0–100% volume
+  control for either transport, without changing the host's volume. Mute preserves
+  the chosen level; these controls reset when the client is restarted.
+- **Controllers (development):** shared Rust gamepad state/protocol for up to
+  four controllers, Windows XInput and Android gamepad events. Wired Windows
+  and GameSir Android forwarding are live-tested; device-specific rumble and
+  disconnect behavior need broader validation.
 - **Input:** two-way Unicode text clipboard; normal mouse/keyboard forwarding;
   experimental BUD USB HID mouse and keyboard, including relative camera input.
 - **Diagnostics:** route, RTT, traffic, FPS, actual decoder/format, audio queues,
@@ -97,11 +138,11 @@ improve enlarged video but uses more GPU resources and may add latency.
 The animation illustrates processing order, not measured speed. Check
 **Connection stats** for the mode actually in use.
 
-## Download and run
+## Windows download and run
 
 1. Download `EvoParseq-v0.9.5-win64.zip` from the
    [stable release](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.5).
-   Development artifacts are also available from successful
+   For this branch's Windows preview (including controllers), use artifacts from successful
    [dev CI runs](https://github.com/vampywiz17/EvoParseq/actions/workflows/native-core.yml?query=branch%3Adev).
 2. Extract to a writable folder and run **EvoParseq.exe**. Settings and optional
    encrypted sessions are stored beside it in `settings.json`.
@@ -265,8 +306,7 @@ stereo Opus and Automatic timing with experimental options disabled.
   latency. Adaptive catch-up, QoS benefit and physical audio-device recovery
   still require broader live testing; no measured latency gain is claimed.
 
-Gamepads, microphone/camera forwarding, HDR and multi-monitor HID mapping are
-not implemented. See the [changelog](CHANGELOG.md) for shipped changes.
+Microphone/camera forwarding, HDR and multi-monitor HID mapping are not implemented. See the [changelog](CHANGELOG.md) for shipped changes.
 
 ## Troubleshooting and development
 

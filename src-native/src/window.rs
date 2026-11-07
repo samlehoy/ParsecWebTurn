@@ -15,6 +15,7 @@ use windows_sys::Win32::{
 pub use crate::native_core::session_model::Event;
 
 pub struct Window {
+    pub(crate) audio_output: crate::audio_output::Output,
     pub(crate) native_panel: AtomicUsize,
 
     pub(crate) native_session_button: AtomicUsize,
@@ -140,6 +141,7 @@ impl Window {
 
     fn create_mode(online: bool) -> Result<Arc<Self>> {
         let state = Arc::new(Self {
+            audio_output: Default::default(),
             stats: Default::default(),
 
             native_panel: AtomicUsize::new(0),
@@ -577,7 +579,7 @@ impl Window {
     pub fn set_host_cursor(&self, x: i32, y: i32, relative: bool, hidden: bool) {
         // Parsec SDK cursor_func and lowlat both use OR. A hidden-only event
         // must acquire native relative input too; button state is not evidence.
-        let relative = relative || hidden;
+        let relative = crate::desktop_input::relative_capture(relative, hidden);
         *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner()) = Some((x, y, relative));
         // When capture is suspended, the input consumer already sees relative=false and
         // may omit its redundant unlock. Do not retain a stale relative request.

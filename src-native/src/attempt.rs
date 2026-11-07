@@ -1,5 +1,9 @@
 //! Native WebRTC offer creation and managed connection lifecycle.
 //! Host signaling translation is isolated from the ICE/DTLS/SCTP engine.
+#[cfg(target_os = "android")]
+use crate::video_android as native_video;
+#[cfg(windows)]
+use crate::video_windows as native_video;
 use crate::{
     signaling::{Candidate, CandidateGate, Credentials, Description, LocalCandidateSync},
     transport::CHANNELS,
@@ -105,7 +109,15 @@ struct Progress {
     channel_messages_received: [u64; 3],
     channel_bytes_received: [u64; 3],
     channel_max_message_bytes: [usize; 3],
+    #[cfg(any(target_os = "android", test))]
+    empty_channel_messages: [u64; 3],
+    #[cfg(any(target_os = "android", test))]
+    rtt_ms: Option<f64>,
+    #[cfg(any(target_os = "android", test))]
+    route: Option<&'static str>,
     failure_channel: Option<u16>,
+    #[cfg(any(target_os = "android", test))]
+    read_error: Option<&'static str>,
     failure_elapsed_ms: Option<u64>,
     last_send_elapsed_ms: Option<u64>,
     last_sent_control_kind: Option<u8>,
@@ -144,25 +156,27 @@ struct Completion {
     media_ingress: crate::media_ingress::Ingress,
     video_stream: Arc<Mutex<crate::video_stream::Inspector>>,
     audio_stream: Option<crate::audio_stream::Pipeline>,
-    #[cfg(windows)]
-    video_output: Option<Arc<crate::video_windows::Pipeline>>,
+    #[cfg(any(windows, target_os = "android"))]
+    video_output: Option<Arc<native_video::Pipeline>>,
 }
 
 enum Delivery {
     Queued,
+    EmptyMessage,
     #[cfg(windows)]
     Timing(Option<(Arc<crate::stats::Shared>, u64)>),
     Audio(Option<crate::audio_stream::Sender>),
     Video {
         inspector: Arc<Mutex<crate::video_stream::Inspector>>,
-        #[cfg(windows)]
-        pipeline: Option<Arc<crate::video_windows::Pipeline>>,
+        #[cfg(any(windows, target_os = "android"))]
+        pipeline: Option<Arc<native_video::Pipeline>>,
     },
 }
 impl Delivery {
     fn submit(self, bytes: &[u8]) -> Option<bool> {
         match self {
             Self::Queued => None,
+            Self::EmptyMessage => Some(false),
             #[cfg(windows)]
             Self::Timing(link) => {
                 if let Some((bus, generation)) = link {
@@ -173,18 +187,18 @@ impl Delivery {
             Self::Audio(audio) => Some(!audio.is_some_and(|sender| sender.submit(bytes))),
             Self::Video {
                 inspector,
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "android"))]
                 pipeline,
             } => {
                 let info = inspector
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .receive(bytes);
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "android"))]
                 if let (Some(pipeline), Some(info)) = (pipeline, info) {
                     return Some(!pipeline.submit(bytes, info));
                 }
-                #[cfg(not(windows))]
+                #[cfg(not(any(windows, target_os = "android")))]
                 let _ = info;
                 Some(true)
             }
@@ -201,6 +215,25 @@ impl Drop for Completion {
     }
 }
 impl Completion {
+    #[cfg(any(target_os = "android", test))]
+    fn network_diagnostics(&self) -> serde_json::Value {
+        let p = &self.progress;
+        let states = if p.failed && p.transport_states_at_failure.is_object() {
+            &p.transport_states_at_failure
+        } else {
+            &p.transport_states
+        };
+        serde_json::json!({
+            "failure_stage":p.failed.then_some(p.failure_stage.unwrap_or(FailureStage::Worker)),
+            "failure_channel":p.failure_channel,"read_error":p.read_error,
+            "failure_elapsed_ms":p.failure_elapsed_ms,"states":states,
+            "received_bytes":p.channel_bytes_received,"received_messages":p.channel_messages_received,
+            "max_message_bytes":p.channel_max_message_bytes,
+            "empty_messages":p.empty_channel_messages,"rtt_ms":p.rtt_ms,
+            "route":p.route.unwrap_or("Unverified"),
+            "queued_control_messages":self.messages.len(),"queued_control_bytes":self.message_bytes,
+        })
+    }
     fn queue_local_sync(&mut self, marker: Option<serde_json::Value>) {
         if let Some(marker) = marker {
             if self.events.len() >= 64 {
@@ -237,6 +270,10 @@ impl Completion {
         }
         self.progress.failed = true;
         if self.progress.failure_stage.is_none() {
+            #[cfg(any(target_os = "android", test))]
+            {
+                self.progress.transport_states_at_failure = self.progress.transport_states.clone();
+            }
             self.progress.failure_stage = Some(stage);
             self.progress.failure_channel = Some(channel);
             self.progress.failure_elapsed_ms = Some(self.elapsed_ms());
@@ -262,6 +299,16 @@ impl Completion {
             self.progress.channel_bytes_received[i].saturating_add(bytes.len() as u64);
         self.progress.channel_max_message_bytes[i] =
             self.progress.channel_max_message_bytes[i].max(bytes.len());
+        if bytes.is_empty() {
+            #[cfg(any(target_os = "android", test))]
+            {
+                self.progress.empty_channel_messages[i] =
+                    self.progress.empty_channel_messages[i].saturating_add(1);
+            }
+            if self.discard_unavailable_media {
+                return Some(Delivery::EmptyMessage);
+            }
+        }
         #[cfg(windows)]
         if channel == 0 && self.discard_unavailable_media && crate::frame_timing::is_report(bytes) {
             return Some(Delivery::Timing(self.telemetry.clone()));
@@ -270,7 +317,7 @@ impl Completion {
             if channel == 1 {
                 return Some(Delivery::Video {
                     inspector: self.video_stream.clone(),
-                    #[cfg(windows)]
+                    #[cfg(any(windows, target_os = "android"))]
                     pipeline: self.video_output.clone(),
                 });
             }
@@ -331,15 +378,19 @@ async fn read_channel(
         .discard_unavailable_media;
     let queue_receipts = id == 0 || !native_mode;
     loop {
-        let read = channel.read_data_channel(&mut buffer).await;
-        let len = read.as_ref().map_or(0, |(len, _)| *len);
+        let read = read_data_message(&channel, &mut buffer).await;
+        let len = read
+            .as_ref()
+            .ok()
+            .and_then(|m| *m)
+            .map_or(0, |(len, _)| len);
         let delivery = match read {
-            Ok((0, _)) => {
+            Ok(None) => {
                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                 state.fail_channel(FailureStage::DataChannelClosed, id);
                 None
             }
-            Ok((len, text)) => {
+            Ok(Some((len, text))) => {
                 #[cfg(windows)]
                 let timing =
                     native_mode && id == 0 && crate::frame_timing::is_report(&buffer[..len]);
@@ -357,8 +408,12 @@ async fn read_channel(
                     delivery => delivery,
                 }
             }
-            Err(_) => {
+            Err(_error) => {
                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+                #[cfg(any(target_os = "android", test))]
+                if !state.cancelled && !state.closing && state.progress.failure_stage.is_none() {
+                    state.progress.read_error = Some(classify_channel_read_error(&_error));
+                }
                 state.fail_channel(FailureStage::DataChannelRead, id);
                 None
             }
@@ -377,6 +432,35 @@ async fn read_channel(
         if !keep_reading {
             break;
         }
+    }
+}
+
+/// The detached API returns zero for both a valid empty message (RFC 8831)
+/// and a reset stream. Its public message counter advances only for a message.
+/// This channel has one reader, so an empty message is distinguishable from EOF
+/// without private SCTP state, extra buffering, retries or changing ordering.
+pub(crate) async fn read_data_message(
+    channel: &webrtc::data::data_channel::DataChannel,
+    buffer: &mut [u8],
+) -> std::result::Result<Option<(usize, bool)>, webrtc::data::Error> {
+    let before = channel.messages_received();
+    let message = channel.read_data_channel(buffer).await?;
+    Ok((message.0 != 0 || channel.messages_received() != before).then_some(message))
+}
+
+// Fixed categories only: library error strings can contain remote text or
+// addresses. Do not serialize those strings or private connection credentials.
+#[cfg(any(target_os = "android", test))]
+fn classify_channel_read_error(error: &webrtc::data::Error) -> &'static str {
+    use webrtc::{data::Error as D, sctp::Error as S};
+    match error {
+        D::Sctp(S::ErrShortBuffer { .. }) => "message-exceeds-read-buffer",
+        D::Sctp(S::ErrNetConnReadError) => "sctp-network-read",
+        D::Sctp(S::ErrEof) => "sctp-eof",
+        D::Sctp(S::ErrStreamClosed) | D::ErrStreamClosed => "stream-closed",
+        D::Sctp(_) => "sctp-error",
+        D::Util(_) => "transport-io",
+        _ => "datachannel-error",
     }
 }
 
@@ -425,7 +509,7 @@ impl Attempt {
         config: Option<crate::control::Config>,
         stun_provider: StunProvider,
         legacy_rsa_1024: bool,
-        connection_settings: Option<Arc<crate::connection_settings::Manager>>,
+        connection_settings: Option<Arc<dyn crate::rtc_configuration::NetworkSettings>>,
     ) -> Result<Self> {
         CandidateGate::new(id)?;
         let mut active = ACTIVE_WORKERS.load(Ordering::SeqCst);
@@ -471,7 +555,7 @@ impl Attempt {
             discard_unavailable_media: config.is_some(),
             media_ingress: Default::default(),
             video_stream: Arc::new(Mutex::new(video_stream)),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "android"))]
             video_output: None,
             audio_stream: None,
         }));
@@ -543,7 +627,7 @@ impl Attempt {
         // prevents the old worker from writing into retired output callbacks.
         let mut state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
         state.cancelled = true;
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "android"))]
         if let Some(pipeline) = &state.video_output {
             pipeline.stop();
         }
@@ -569,6 +653,14 @@ impl Attempt {
             .progress
             .failed
             .then_some(state.progress.failure_stage.unwrap_or(FailureStage::Worker))
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn network_diagnostics(&self) -> serde_json::Value {
+        self.completion
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .network_diagnostics()
     }
 
     #[cfg(windows)]
@@ -632,6 +724,15 @@ impl Attempt {
         }
         state.telemetry = Some((window.stats.clone(), generation));
         state.audio_stream = Some(audio);
+        state.video_output = Some(video);
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn start_native_media(&self, video: Arc<crate::video_android::Pipeline>, maximum_ms: u32) {
+        let mut state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
+        state.audio_stream = Some(crate::audio_stream::Pipeline::start_with_budget(Some(
+            maximum_ms,
+        )));
         state.video_output = Some(video);
     }
 
@@ -751,7 +852,7 @@ impl Drop for Attempt {
 struct NetworkOptions {
     stun_provider: StunProvider,
     legacy_rsa_1024: bool,
-    connection_settings: Option<Arc<crate::connection_settings::Manager>>,
+    connection_settings: Option<Arc<dyn crate::rtc_configuration::NetworkSettings>>,
 }
 
 fn worker(
@@ -771,9 +872,7 @@ fn worker(
         // Capability work stays on this worker, outside the connection lock.
         #[cfg(windows)]
         {
-            let gpu = connection_settings
-                .as_ref()
-                .and_then(|m| m.view().0.video_gpu);
+            let gpu = connection_settings.as_ref().and_then(|m| m.video_gpu());
             config.allow_hevc =
                 config.allow_hevc && crate::video_windows::hevc_available(gpu.as_ref());
             config.chroma_444 = config.allow_hevc
@@ -783,7 +882,7 @@ fn worker(
                 && config.ten_bit
                 && crate::video_windows::hevc_ten_bit_available(gpu.as_ref());
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "android")))]
         {
             config.allow_hevc = false;
         }
@@ -821,10 +920,10 @@ fn worker(
     // thread. Snapshot settings once; a save affects only the next attempt.
     let mut ice = ice_configuration(stun_provider);
     if let Some(manager) = connection_settings {
-        settings.set_turn_tcp_qos(manager.view().0.experimental_tcp_qos);
+        settings.set_turn_tcp_qos(manager.tcp_qos());
         ice = runtime.block_on(async {
             tokio::select! {
-                result = manager.resolve_configuration() => result,
+                result = manager.resolve() => result,
                 _ = async {
                     loop {
                         if shared.lock().unwrap_or_else(|e| e.into_inner()).cancelled { break; }
@@ -856,6 +955,59 @@ fn worker(
     let peer = Arc::new(runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(5), api.new_peer_connection(ice)).await
     })??);
+    #[cfg(target_os = "android")]
+    {
+        let state = shared.clone();
+        let weak = Arc::downgrade(&peer);
+        runtime.spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                {
+                    let s = state.lock().unwrap_or_else(|e| e.into_inner());
+                    if s.cancelled || s.closing {
+                        break;
+                    }
+                }
+                if !crate::overlay::REQUESTED.load(Ordering::Relaxed) {
+                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                    s.progress.rtt_ms = None;
+                    s.progress.route = None;
+                    continue;
+                }
+                let Some(peer) = weak.upgrade() else { break };
+                let dtls = peer.sctp().transport();
+                let ice = dtls.ice_transport();
+                let sample = async {
+                    let pair = ice.get_selected_candidate_pair().await?;
+                    let report = peer.get_stats().await;
+                    let active = ice.get_selected_candidate_pair().await?;
+                    if active.local().stats_id != pair.local().stats_id
+                        || active.remote().stats_id != pair.remote().stats_id
+                    {
+                        return None;
+                    }
+                    Some((
+                        crate::rtc_configuration::selected_rtt(
+                            &report,
+                            &pair.local().stats_id,
+                            &pair.remote().stats_id,
+                        ),
+                        crate::rtc_configuration::route(
+                            &pair.local().typ.to_string(),
+                            &pair.remote().typ.to_string(),
+                        ),
+                    ))
+                };
+                let sample = tokio::time::timeout(Duration::from_millis(750), sample)
+                    .await
+                    .ok()
+                    .flatten();
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                s.progress.rtt_ms = sample.and_then(|(rtt, _)| rtt);
+                s.progress.route = sample.map(|(_, route)| route);
+            }
+        });
+    }
     let callback_state = shared.clone();
     #[cfg(windows)]
     {
@@ -1632,6 +1784,48 @@ mod tests {
         assert_eq!(full.events.len(), 64);
     }
 
+    #[test]
+    fn network_diagnostics_keep_first_failure_states_and_exclude_control_payloads() {
+        let mut state = empty_completion();
+        state.progress.transport_states = serde_json::json!({"ice":"connected","dtls":"connected"});
+        state.progress.channel_bytes_received = [10, 1_000_000, 50_000];
+        state.progress.channel_max_message_bytes = [10, 900_000, 200];
+        state.messages.push_back((
+            0,
+            false,
+            Bytes::from_static(b"private-fixture-control-text"),
+        ));
+        state.fail_channel(FailureStage::DataChannelRead, 1);
+        state.progress.read_error = Some("message-exceeds-read-buffer");
+        state.progress.transport_states = serde_json::json!({"ice":"closed","dtls":"closed"});
+        state.fail_channel(FailureStage::DataChannelClosed, 2);
+        let report = state.network_diagnostics();
+        assert_eq!(report["failure_stage"], "data-channel-read");
+        assert_eq!(report["failure_channel"], 1);
+        assert_eq!(report["states"]["ice"], "connected");
+        assert_eq!(report["max_message_bytes"][1], 900_000);
+        assert_eq!(report["queued_control_messages"], 1);
+        assert!(!report.to_string().contains("private-fixture-control-text"));
+    }
+
+    #[test]
+    fn channel_read_categories_do_not_expose_library_error_strings() {
+        use webrtc::{data::Error as D, sctp::Error as S};
+        assert_eq!(
+            classify_channel_read_error(&D::Sctp(S::ErrShortBuffer { size: 1_048_576 })),
+            "message-exceeds-read-buffer"
+        );
+        assert_eq!(
+            classify_channel_read_error(&D::Sctp(S::ErrNetConnReadError)),
+            "sctp-network-read"
+        );
+        assert_eq!(classify_channel_read_error(&D::Sctp(S::ErrEof)), "sctp-eof");
+        assert_eq!(
+            classify_channel_read_error(&D::new("private-fixture-error-text".into())),
+            "datachannel-error"
+        );
+    }
+
     fn empty_completion() -> Completion {
         Completion {
             #[cfg(windows)]
@@ -1649,7 +1843,7 @@ mod tests {
             discard_unavailable_media: false,
             media_ingress: Default::default(),
             video_stream: Default::default(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "android"))]
             video_output: None,
             audio_stream: None,
         }
@@ -1821,6 +2015,24 @@ mod tests {
             ));
             assert_eq!(state.progress.failure_channel, Some(channel));
         }
+    }
+
+    #[test]
+    fn empty_native_media_messages_are_accounted_without_codec_submission_or_close() {
+        let mut state = empty_completion();
+        state.discard_unavailable_media = true;
+        for channel in [0, 1, 2] {
+            assert!(matches!(
+                state.prepare_receive(channel, false, &[]),
+                Some(Delivery::EmptyMessage)
+            ));
+        }
+        assert!(!state.progress.failed);
+        assert_eq!(state.progress.empty_channel_messages, [1, 1, 1]);
+        assert!(state.messages.is_empty());
+        assert!(state.receive(1, false, b"nonempty-media-after-empty"));
+        assert!(!state.progress.failed);
+        assert_eq!(state.progress.channel_messages_received, [1, 2, 1]);
     }
 
     #[test]

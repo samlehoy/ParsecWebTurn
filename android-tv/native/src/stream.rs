@@ -1,0 +1,465 @@
+//! Android lifecycle adapter around the existing authenticated WebRTC engine.
+use crate::{
+    account::Session,
+    account_signaling::Socket,
+    audio_android, native_wire,
+    preferences::Preferences,
+    transport_android::Transport,
+    video_android::{Choices, NativeWindow, Pipeline},
+};
+use anyhow::{ensure, Context, Result};
+use serde_json::{json, Value};
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+struct Running {
+    stop: Arc<AtomicBool>,
+    thread: thread::Thread,
+    status: Arc<Mutex<Value>>,
+    controllers: Arc<crate::input_handoff::Inbox>,
+}
+static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
+struct Request {
+    session: Arc<Session>,
+    peer: String,
+    prefs: Preferences,
+    window: NativeWindow,
+    choices: Choices,
+    audio_inventory: crate::audio_preferences::Inventory,
+    size: (u32, u32),
+    controllers: Arc<crate::input_handoff::Inbox>,
+}
+
+pub fn start(
+    session: Arc<Session>,
+    peer: String,
+    prefs: Preferences,
+    window: NativeWindow,
+    choices: Choices,
+    audio_inventory: crate::audio_preferences::Inventory,
+    size: (u32, u32),
+) -> Result<()> {
+    ensure!(
+        !peer.is_empty() && peer.len() <= 256 && !peer.chars().any(char::is_control),
+        "Invalid computer ID"
+    );
+    ensure!(
+        prefs.video == 0 || choices.hevc.is_some(),
+        "This device has no declared hardware HEVC decoder"
+    );
+    ensure!(
+        prefs.video != 2 || choices.main10,
+        "This device has no declared Main 10 decoder"
+    );
+    let mut slot = RUNNING
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Stream unavailable"))?;
+    if let Some(old) = slot.as_ref() {
+        ensure!(
+            old.stop.load(Ordering::Acquire)
+                && old.status.lock().unwrap_or_else(|e| e.into_inner())["ended"] == true,
+            "The previous session is still closing. Retry shortly."
+        );
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let status = Arc::new(Mutex::new(json!({"state":"Connecting…","ended":false})));
+    let controllers = Arc::new(crate::input_handoff::Inbox::default());
+    let worker_controllers = controllers.clone();
+    let worker_stop = stop.clone();
+    let worker_status = status.clone();
+    let handle = thread::Builder::new()
+        .name("android-session".into())
+        .spawn(move || {
+            let result = run(
+                Request {
+                    session,
+                    peer,
+                    prefs,
+                    window,
+                    choices,
+                    audio_inventory,
+                    size,
+                    controllers: worker_controllers,
+                },
+                &worker_stop,
+                &worker_status,
+            );
+            crate::event_log::record(
+                if result.is_ok() { "INFO" } else { "ERROR" },
+                "android_stream_ended",
+                json!({"completed":result.is_ok()}),
+            );
+            worker_stop.store(true, Ordering::Release);
+            let mut report = worker_status.lock().unwrap_or_else(|e| e.into_inner());
+            report["ended"] = true.into();
+            match result {
+                Ok(()) => report["state"] = "Disconnected".into(),
+                Err(error) => {
+                    report["state"] = "Stream stopped".into();
+                    report["error"] = error.to_string().into();
+                }
+            }
+        })?;
+    *slot = Some(Running {
+        stop,
+        thread: handle.thread().clone(),
+        status,
+        controllers,
+    });
+    Ok(())
+}
+pub fn input_event(event: impl Into<crate::input_handoff::Event>) {
+    let slot = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(r) = slot.as_ref().filter(|r| !r.stop.load(Ordering::Acquire)) {
+        r.controllers.push(event);
+        r.thread.unpark();
+    }
+}
+pub fn controller_event(event: crate::gamepad::Event) {
+    input_event(event);
+}
+pub fn active() -> bool {
+    RUNNING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|r| !r.stop.load(Ordering::Acquire))
+}
+pub fn stop() {
+    if let Ok(slot) = RUNNING.lock() {
+        if let Some(r) = slot.as_ref() {
+            r.stop.store(true, Ordering::Release);
+            r.thread.unpark();
+        }
+    }
+}
+pub fn status() -> Value {
+    RUNNING
+        .lock()
+        .ok()
+        .and_then(|s| {
+            s.as_ref()
+                .map(|r| r.status.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        })
+        .unwrap_or_else(|| json!({"state":"Disconnected","ended":true}))
+}
+struct Connection {
+    attempt: Transport,
+    socket: Socket,
+    peer: String,
+    id: String,
+    video: Arc<Pipeline>,
+}
+impl Drop for Connection {
+    fn drop(&mut self) {
+        (self.socket.writer)(
+            native_wire::envelope(
+                "offer_cancel",
+                &self.peer,
+                self.attempt.wire_id(&self.id),
+                json!({}),
+            )
+            .to_string(),
+        );
+        self.attempt.disconnect();
+        self.video.stop();
+    }
+}
+fn run(request: Request, stop: &AtomicBool, status: &Mutex<Value>) -> Result<()> {
+    let Request {
+        session,
+        peer,
+        prefs,
+        window,
+        choices,
+        audio_inventory,
+        size,
+        controllers,
+    } = request;
+    if stop.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    crate::event_log::record(
+        "INFO",
+        "android_stream_start",
+        json!({"bud":prefs.transport==1,"video_request":prefs.video,"pcm_requested":prefs.audio.pcm,"surround_requested":prefs.audio.surround,"buffer_max_ms":prefs.audio.maximum()}),
+    );
+    let socket = Socket::open(&session)?;
+    if stop.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let id = format!(
+        "tv-{}",
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+    );
+    let config = crate::control::Config {
+        video_protocol: crate::video_stream::VideoProtocol {
+            version: 1,
+            message_size: 11,
+            version_offset: 0,
+            flag_offset: 4,
+        },
+        allow_hevc: prefs.video > 0,
+        ten_bit: prefs.video == 2,
+        chroma_444: false,
+    };
+    let video = Pipeline::start(window, choices)?;
+    let mut audio =
+        audio_android::Output::prepare(prefs.audio, &audio_inventory, prefs.transport == 1);
+    let attempt = Transport::start(
+        &id,
+        &peer,
+        socket.writer.clone(),
+        &config,
+        prefs.transport == 1,
+        video.clone(),
+        crate::network::current(),
+        prefs.audio,
+        audio.layout(),
+    )?;
+    let mut connection = Connection {
+        attempt,
+        socket,
+        peer,
+        id,
+        video,
+    };
+    let receiver = connection
+        .attempt
+        .audio_receiver()
+        .context("Audio pipeline unavailable")?;
+    audio.attach(receiver.clone())?;
+    let mut pads = crate::gamepad::Manager::default();
+    let mut desktop = crate::desktop_input::Engine::default();
+    let mut last_pointer = 0u64;
+    let mut motors = crate::gamepad_android::Output::default();
+    let mut controller_batch = std::collections::VecDeque::new();
+    let mut diagnostic_update = Instant::now();
+    let mut configured = false;
+    let mut queried = false;
+    let mut host_config = crate::host_video::Config::default();
+    let mut confirmation = None;
+    let mut settings_confirmed = false;
+    let mut signaling_closed = false;
+    let started = Instant::now();
+    let mut update = Instant::now();
+    let mut previous_received_bytes = 0u64;
+    let mut received_mbps = 0.;
+    let mut previous_submitted = 0u64;
+    while !stop.load(Ordering::Acquire) {
+        if !signaling_closed {
+            for _ in 0..64 {
+                match connection.socket.next() {
+                    Ok(Some(text)) => connection.attempt.receive(&text, &connection.id)?,
+                    Ok(None) => break,
+                    Err(error) => {
+                        if !connection.attempt.control_ready() {
+                            return Err(error);
+                        }
+                        signaling_closed = true;
+                        break;
+                    }
+                }
+            }
+        }
+        connection
+            .attempt
+            .poll(&connection.socket.writer, &connection.peer, &connection.id)?;
+        // Reuse the Windows host-settings model: query, preserve other fields,
+        // write once after the reply, then verify with bounded read-only polls.
+        for _ in 0..64 {
+            let Some((channel, text, frame)) = connection.attempt.pop_binary() else {
+                break;
+            };
+            ensure!(channel == 0 && !text, "Invalid session control channel");
+            match crate::control::decode(&frame)? {
+                crate::control::Message::Rumble { pad, low, high } => {
+                    pads.feedback(pad, low, high, &mut motors)
+                }
+                crate::control::Message::Buffer { event, .. } if event["type"] == 1 => {
+                    desktop.host_cursor(
+                        event["cursor"]["relative"].as_bool().unwrap_or(false),
+                        event["cursor"]["hidden"].as_bool().unwrap_or(false),
+                        event["cursor"]["positionX"].as_i64().unwrap_or(-1) as i32,
+                        event["cursor"]["positionY"].as_i64().unwrap_or(-1) as i32,
+                    );
+                }
+                crate::control::Message::Status(code) if code != 0 => {
+                    anyhow::bail!("The host ended the stream (status {code}). Check the host encoder and requested video format.");
+                }
+                crate::control::Message::Buffer {
+                    event,
+                    payload: Some(range),
+                } if event["type"] == 3 && event["id"] == 11 => {
+                    let bytes = &frame[range];
+                    host_config.receive(bytes.strip_suffix(&[0]).unwrap_or(bytes))?;
+                }
+                _ => {}
+            }
+        }
+        if let Some(code) = connection.attempt.host_status().filter(|c| *c != 0) {
+            anyhow::bail!("The host ended the stream (status {code}). Check the host encoder and requested video format.");
+        }
+        if let Some(stage) = connection.attempt.failure_stage() {
+            let mut network = connection.attempt.network_diagnostics();
+            network["received_mbps"] = received_mbps.into();
+            // Retain the failure evidence before Connection::drop closes the
+            // peer and changes its native state enums to Closed.
+            let mut report = status.lock().unwrap_or_else(|e| e.into_inner());
+            report["network"] = network;
+            report["video"] = serde_json::to_value(connection.video.snapshot())?;
+            report["audio"] = serde_json::to_value(receiver.snapshot())?;
+            report["audio_output"] = serde_json::to_value(audio.snapshot())?;
+            anyhow::bail!("WebRTC connection failed: {stage}");
+        }
+        if connection.attempt.control_ready() && !queried {
+            connection
+                .attempt
+                .send_binary(0, crate::host_video::query()?)?;
+            queried = true;
+        }
+        if connection.attempt.control_ready() && host_config.ready() && !configured {
+            let request = host_config.request(&prefs.host_request()?, size)?;
+            confirmation = Some(crate::host_video::Confirmation::new(
+                &request,
+                Instant::now(),
+            )?);
+            connection.attempt.send_binary(0, request)?;
+            configured = true;
+        }
+        if let Some(check) = confirmation.as_mut() {
+            match check.poll(&host_config, Instant::now()) {
+                crate::host_video::Verification::Query => connection
+                    .attempt
+                    .send_binary(0, crate::host_video::query()?)?,
+                crate::host_video::Verification::Confirmed => {
+                    settings_confirmed = true;
+                    confirmation = None;
+                }
+                crate::host_video::Verification::TimedOut => {
+                    confirmation = None;
+                }
+                crate::host_video::Verification::Waiting => {}
+            }
+        }
+        if configured && connection.video.take_keyframe_request() {
+            connection.attempt.keyframe(&config)?;
+        }
+        if connection.attempt.control_ready() {
+            if let Err(error) = controllers.take(&mut controller_batch) {
+                let _ = pads.focus(false, &mut motors, |f| {
+                    connection
+                        .attempt
+                        .send_binary(0, bytes::Bytes::copy_from_slice(f))
+                });
+                return Err(error);
+            }
+            for event in controller_batch.drain(..) {
+                let mut send = |f: &[u8]| {
+                    connection
+                        .attempt
+                        .send_binary(0, bytes::Bytes::copy_from_slice(f))
+                };
+                match event {
+                    crate::input_handoff::Event::Controller(e) => {
+                        pads.event(e, &mut motors, &mut send)?
+                    }
+                    crate::input_handoff::Event::Desktop(e) => {
+                        desktop.event(e, Instant::now(), &mut send)?
+                    }
+                }
+            }
+            desktop.tick(Instant::now(), |f| {
+                connection
+                    .attempt
+                    .send_binary(0, bytes::Bytes::copy_from_slice(f))
+            })?;
+            let pointer = desktop.pointer();
+            if pointer != last_pointer {
+                motors.pointer(pointer);
+                last_pointer = pointer;
+            }
+        }
+        audio.tick(Instant::now());
+        if update.elapsed() >= Duration::from_millis(500) {
+            let snapshot = connection.video.snapshot();
+            desktop.geometry((snapshot.width, snapshot.height));
+            if diagnostic_update.elapsed() >= Duration::from_secs(10) {
+                crate::event_log::record(
+                    "INFO",
+                    "android_media_status",
+                    json!({"codec":snapshot.codec,"width":snapshot.width,"height":snapshot.height,"depth":snapshot.depth,"audio":receiver.snapshot(),"audio_output":audio.snapshot()}),
+                );
+                diagnostic_update = Instant::now();
+            }
+            let mut network = connection.attempt.network_diagnostics();
+            let bytes = network["received_bytes"]
+                .as_array()
+                .map(|v| v.iter().filter_map(Value::as_u64).sum::<u64>())
+                .unwrap_or(0);
+            received_mbps = bytes.saturating_sub(previous_received_bytes) as f64 * 8.
+                / update.elapsed().as_secs_f64()
+                / 1_000_000.;
+            previous_received_bytes = bytes;
+            network["received_mbps"] = received_mbps.into();
+            let fps = (snapshot.submitted >= previous_submitted).then_some(
+                snapshot.submitted.saturating_sub(previous_submitted) as f64
+                    / update.elapsed().as_secs_f64(),
+            );
+            previous_submitted = snapshot.submitted;
+            let mut overlay = crate::overlay::metrics(
+                fps,
+                network["rtt_ms"].as_f64(),
+                received_mbps,
+                snapshot.codec,
+                snapshot.width,
+                snapshot.height,
+                snapshot.depth,
+            );
+
+            overlay["frame_rate_hint"] =
+                crate::overlay::frame_rate_hint(&host_config.observed()).into();
+
+            *status.lock().unwrap_or_else(|e| e.into_inner()) = json!({"state":if snapshot.submitted>0 {"Streaming"} else {"Connecting…"},"ended":false,"video":snapshot,"settings_confirmed":settings_confirmed,
+                "audio":receiver.snapshot(),"audio_output":audio.snapshot(),"network":network,"overlay":overlay});
+            if let Some(error) = snapshot.error.as_ref() {
+                anyhow::bail!("{error}");
+            }
+            ensure!(
+                snapshot.submitted > 0 || started.elapsed() < Duration::from_secs(30),
+                "No video output received within 30 seconds"
+            );
+            update = Instant::now();
+        }
+        if connection.attempt.more_media_pending() {
+            continue;
+        }
+        thread::park_timeout(Duration::from_millis(if desktop.ticking() {
+            16
+        } else {
+            25
+        }));
+    }
+    let _ = desktop.event(
+        crate::desktop_input::Event::Focus(false),
+        Instant::now(),
+        |f| {
+            connection
+                .attempt
+                .send_binary(0, bytes::Bytes::copy_from_slice(f))
+        },
+    );
+    motors.pointer(0);
+    let _ = pads.disconnect(&mut motors, |f| {
+        connection
+            .attempt
+            .send_binary(0, bytes::Bytes::copy_from_slice(f))
+    });
+    Ok(())
+}

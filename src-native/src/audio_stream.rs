@@ -1,7 +1,12 @@
 //! RFC 6716 reference decoder. The pinned Parsec channel carries raw Opus,
 //! 48 kHz stereo; containers/RTP headers must not be invented around it.
 use crate::audio_layout::Layout;
+#[cfg(not(windows))]
+#[path = "audio_callback.rs"]
+mod callback;
 use anyhow::{bail, Result};
+#[cfg(not(windows))]
+pub use callback::CallbackReader;
 use serde::Serialize;
 use std::{
     collections::VecDeque,
@@ -11,6 +16,15 @@ use std::{
 const MAX_SAMPLES: usize = 48_000; // 500 ms, interleaved stereo
 const PCM_SAMPLES: usize = 5760 * 2; // RFC maximum 120 ms, stereo
 const RECYCLED_BUFFERS: usize = 32;
+/// Common Windows/Android/Linux custom-buffer bounds, in milliseconds.
+pub fn validate_buffer_limits(minimum: u32, maximum: u32) -> Result<()> {
+    anyhow::ensure!(
+        maximum > 0 && maximum <= 500 && minimum <= maximum,
+        "Audio buffer must satisfy 0 <= minimum <= maximum <= 500 ms, with maximum above zero"
+    );
+    Ok(())
+}
+
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
     pub layout: Option<Layout>,
@@ -25,6 +39,8 @@ pub struct Snapshot {
 }
 #[derive(Default)]
 struct State {
+    #[cfg(not(windows))]
+    callback: Option<callback::Publisher>,
     report: Snapshot,
     pcm: VecDeque<Vec<i16>>,
     free_pcm: Vec<Vec<i16>>,
@@ -36,6 +52,10 @@ struct State {
 }
 impl State {
     fn discard_pending(&mut self) {
+        #[cfg(not(windows))]
+        if let Some(callback) = &self.callback {
+            callback.discard();
+        }
         self.generation = self.generation.wrapping_add(1);
         while let Some(pcm) = self.pcm.pop_front() {
             self.report.packets_dropped += 1;
@@ -52,6 +72,17 @@ pub struct Handoff {
     pub pcm: Vec<i16>,
 }
 fn stage_pcm(state: &mut State, mut pcm: Vec<i16>, max_samples: usize) {
+    #[cfg(not(windows))]
+    if let Some(callback) = state.callback.as_mut() {
+        let layout = state.report.layout.unwrap_or(Layout::STEREO);
+        if let Err(pcm) = callback.push(pcm, layout, max_samples) {
+            state.report.packets_dropped += 1;
+            if state.free_pcm.len() < RECYCLED_BUFFERS {
+                state.free_pcm.push(pcm);
+            }
+        }
+        return;
+    }
     if pcm.len() > max_samples {
         pcm.drain(..pcm.len() - max_samples);
         state.report.packets_dropped += 1;
@@ -157,7 +188,38 @@ pub struct NativeReceiver {
     state: Arc<Mutex<State>>,
 }
 
+fn snapshot(shared: &Mutex<State>) -> Snapshot {
+    let state = shared.lock().unwrap_or_else(|e| e.into_inner());
+    let mut report = state.report.clone();
+    #[cfg(not(windows))]
+    if let Some(callback) = &state.callback {
+        callback.snapshot(&mut report);
+        return report;
+    }
+    report.queued_frames =
+        report.queued_samples / usize::from(report.layout.unwrap_or(Layout::STEREO).channels);
+    report
+}
+
 impl NativeReceiver {
+    #[cfg(not(windows))]
+    pub fn callback_reader(&self) -> Result<CallbackReader> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.callback.is_some() {
+            bail!("An audio callback consumer already exists");
+        }
+        let (publisher, reader) = callback::new();
+        state.callback = Some(publisher);
+        state.report.queued_samples = 0;
+        while let Some(pcm) = state.pcm.pop_front() {
+            stage_pcm(&mut state, pcm, MAX_SAMPLES);
+        }
+        Ok(reader)
+    }
+    #[cfg(not(windows))]
+    pub fn snapshot(&self) -> Snapshot {
+        snapshot(&self.state)
+    }
     pub fn set_native_consumer(&self, thread: std::thread::Thread) {
         self.state
             .lock()
@@ -326,11 +388,16 @@ impl Pipeline {
                         Err(mpsc::RecvTimeoutError::Timeout) => continue,
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     };
-                    let recycled = shared
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .free_pcm
-                        .pop();
+                    let recycled = {
+                        let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+                        #[cfg(not(windows))]
+                        while let Some(pcm) = state.callback.as_mut().and_then(|c| c.recycled()) {
+                            if state.free_pcm.len() < RECYCLED_BUFFERS {
+                                state.free_pcm.push(pcm);
+                            }
+                        }
+                        state.free_pcm.pop()
+                    };
                     let mut pcm = recycled.unwrap_or_else(|| Vec::with_capacity(PCM_SAMPLES));
                     let decoded = if packet.raw {
                         pcm.clear();
@@ -386,6 +453,10 @@ impl Pipeline {
                         }
                         Ok(()) => {
                             if state.report.layout != Some(packet.layout) {
+                                #[cfg(not(windows))]
+                                if let Some(callback) = &state.callback {
+                                    callback.discard();
+                                }
                                 state.pcm.clear();
                                 state.report.queued_samples = 0;
                                 state.report.layout = Some(packet.layout);
@@ -470,15 +541,7 @@ impl Pipeline {
         self.native_receiver().take_native_pcm()
     }
     pub fn snapshot(&self) -> Snapshot {
-        let mut report = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .report
-            .clone();
-        report.queued_frames =
-            report.queued_samples / usize::from(report.layout.unwrap_or(Layout::STEREO).channels);
-        report
+        snapshot(&self.state)
     }
     pub fn stop(&mut self) {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).stopped = true;

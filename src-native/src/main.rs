@@ -9,6 +9,8 @@ mod attempt;
 #[cfg(windows)]
 mod audio_endpoint_windows;
 mod audio_layout;
+#[cfg(windows)]
+mod audio_output;
 mod audio_recovery;
 mod audio_stream;
 #[cfg(windows)]
@@ -19,6 +21,8 @@ mod branding;
 mod bud_attempt;
 #[cfg(all(windows, feature = "bud"))]
 mod bud_media;
+#[cfg(feature = "bud")]
+mod bud_routes;
 mod connection_settings;
 #[cfg(windows)]
 mod connection_settings_ui;
@@ -52,13 +56,18 @@ mod media_scheduling;
 #[cfg(windows)]
 mod native_core;
 #[cfg(windows)]
+mod native_wire;
+#[cfg(windows)]
 mod nvidia_vsr;
 #[cfg(windows)]
 mod performance;
 mod platform;
 #[cfg(windows)]
 mod platform_windows;
+mod rtc_configuration;
 mod secure_storage;
+#[cfg(windows)]
+mod session_preferences;
 #[cfg(windows)]
 mod settings_model;
 mod signaling;
@@ -70,6 +79,7 @@ mod stats_ui;
 #[cfg(windows)]
 mod stats_view;
 mod transport;
+mod turn_configuration;
 mod updater;
 #[cfg(windows)]
 mod updater_ui;
@@ -93,3 +103,11 @@ fn main() {
     #[cfg(not(windows))]
     eprintln!("EvoParseq currently requires Windows.");
 }
+
+mod gamepad;
+#[cfg(windows)]
+mod gamepad_windows;
+
+mod desktop_input;
+#[cfg(test)]
+mod input_handoff;
