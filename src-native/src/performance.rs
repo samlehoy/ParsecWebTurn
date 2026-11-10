@@ -1,8 +1,4 @@
-use std::time::Instant;
-
-#[cfg(windows)]
-use std::collections::BTreeMap;
-#[cfg(windows)]
+use std::{collections::BTreeMap, time::Instant};
 use windows::{
     core::w,
     Win32::{
@@ -17,15 +13,8 @@ use windows::{
     },
 };
 
+pub use crate::stats::MemoryUsage;
 /// One documented, allocation-free query of this process. No working-set trim.
-#[derive(Clone, Copy, Default, serde::Serialize)]
-pub struct MemoryUsage {
-    pub working_set_bytes: usize,
-    pub private_committed_bytes: usize,
-    pub private_working_set_bytes: Option<usize>,
-}
-
-#[cfg(windows)]
 pub fn own_memory() -> Option<MemoryUsage> {
     use windows::Win32::System::{ProcessStatus::*, Threading::GetCurrentProcess};
     unsafe {
@@ -64,50 +53,14 @@ pub fn own_memory() -> Option<MemoryUsage> {
     }
 }
 
-#[cfg(target_os = "macos")]
-pub fn own_memory() -> Option<MemoryUsage> {
-    // proc_pid_rusage (libproc.h): resident size, and the physical footprint that
-    // Activity Monitor reports as "Memory" (private dirty + compressed pages).
-    // macOS has no private working-set figure, so that one stays unknown.
-    let mut info = unsafe { std::mem::zeroed::<libc::rusage_info_v2>() };
-    let status = unsafe {
-        libc::proc_pid_rusage(
-            std::process::id() as libc::c_int,
-            libc::RUSAGE_INFO_V2,
-            &mut info as *mut _ as *mut libc::rusage_info_t,
-        )
-    };
-    (status == 0).then_some(MemoryUsage {
-        working_set_bytes: info.ri_resident_size as usize,
-        private_committed_bytes: info.ri_phys_footprint as usize,
-        private_working_set_bytes: None,
-    })
-}
-
-#[cfg(not(any(windows, target_os = "macos")))]
-pub fn own_memory() -> Option<MemoryUsage> {
-    None
-}
-
-pub fn record_memory(stage: &'static str, wasm_bytes: Option<usize>) {
-    if crate::event_log::enabled() {
-        crate::event_log::record(
-            "INFO",
-            "memory_snapshot",
-            serde_json::json!({
-                "stage":stage,"process":own_memory(),"wasm_linear_bytes":wasm_bytes,
-            }),
-        );
-    }
-}
-
 #[derive(Default)]
 pub struct Processes {
     pub all: Vec<u32>,
     pub gpu: Vec<u32>,
 }
 
-#[cfg(windows)]
+// PDH queries support successive samples across callers. Store handle addresses
+// as integers so no COM interface/raw pointer is sent across threads.
 #[derive(Default)]
 pub struct Sampler {
     previous: BTreeMap<u32, (u64, u64)>,
@@ -116,12 +69,9 @@ pub struct Sampler {
     attempted: bool,
 }
 
-#[cfg(windows)]
 fn ticks(value: FILETIME) -> u64 {
     (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime)
 }
-
-#[cfg(windows)]
 fn process_time(pid: u32) -> Option<(u64, u64)> {
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
@@ -138,7 +88,6 @@ fn process_time(pid: u32) -> Option<(u64, u64)> {
     }
 }
 
-#[cfg(windows)]
 impl Sampler {
     pub fn sample(&mut self, processes: &Processes) -> (Option<f64>, Option<f64>, Option<f64>) {
         let now = Instant::now();
@@ -213,6 +162,7 @@ impl Sampler {
             {
                 return None;
             }
+            // u64 storage supplies the alignment required by PDH's pointer/double structs.
             let mut buffer = vec![0_u64; (size as usize).div_ceil(8)];
             let items = buffer.as_mut_ptr().cast::<PDH_FMT_COUNTERVALUE_ITEM_W>();
             if PdhGetFormattedCounterArrayW(
@@ -272,8 +222,6 @@ impl Sampler {
         }
     }
 }
-
-#[cfg(windows)]
 impl Drop for Sampler {
     fn drop(&mut self) {
         if let Some((query, _)) = self.query {
@@ -281,19 +229,5 @@ impl Drop for Sampler {
                 PdhCloseQuery(PDH_HQUERY(query as *mut _));
             }
         }
-    }
-}
-
-#[cfg(not(windows))]
-#[derive(Default)]
-pub struct Sampler {
-    time: Option<Instant>,
-}
-
-#[cfg(not(windows))]
-impl Sampler {
-    pub fn sample(&mut self, _processes: &Processes) -> (Option<f64>, Option<f64>, Option<f64>) {
-        self.time = Some(Instant::now());
-        (None, None, None)
     }
 }

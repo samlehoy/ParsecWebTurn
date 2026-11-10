@@ -30,7 +30,7 @@ impl Viewport {
         let [l, t, r, b] = self.rect()?;
         let axis = |v: i32, origin: i32, span: i32, source: u32| {
             let v = ((v as f64 - origin as f64) * source as f64 / span as f64).round() as i64;
-            // Preserve the pinned browser adapter's inclusive right/bottom edge.
+            // Preserve the host input protocol's inclusive right/bottom edge.
             if v == source as i64 - 1 {
                 source as i32
             } else {
@@ -43,7 +43,7 @@ impl Viewport {
         ))
     }
     /// Host cursor -> client pixels, using the same letterbox as video/input.
-    #[cfg(any(windows, target_os = "macos", test))]
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub fn unmap(self, x: i32, y: i32) -> Option<(i32, i32)> {
         let [l, t, r, b] = self.rect()?;
         let axis = |v: i32, size: u32, origin: i32, end: i32| {

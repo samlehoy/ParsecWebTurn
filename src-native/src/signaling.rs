@@ -1,4 +1,4 @@
-//! Pinned Parsec JS ABI -> standard SDP/ICE. No account signaling or credentials
+//! Parsec compact host signaling -> standard SDP/ICE. No account signaling or credentials
 //! are logged. The private field mapping is isolated from the WebRTC engine.
 use anyhow::{bail, Context, Result};
 use std::{collections::VecDeque, net::IpAddr};
@@ -60,7 +60,7 @@ fn remote_ufrag(value: &str) -> Result<()> {
 
 /// Aggregate categories only: no bytes, positions, prefixes, suffixes or hashes.
 /// In particular, '=' and URL-safe Base64 punctuation are not RFC 8839 ice-char.
-#[cfg(any(test, feature = "diagnostics"))]
+#[cfg(test)]
 fn token_shape(value: &str, min: usize) -> serde_json::Value {
     let mut counts = [0usize; 8];
     for byte in value.bytes() {
@@ -87,7 +87,7 @@ fn token_shape(value: &str, min: usize) -> serde_json::Value {
 
 impl Credentials {
     /// The pinned ia() splits SDP on LF, retaining the single SDP line-ending
-    /// CR in its compact fields. Normalize that representation at the ABI edge;
+    /// CR in its compact fields. Normalize that representation at the signaling boundary;
     /// never strip embedded newlines or relax the standard ICE token grammar.
     pub fn normalize_compact(mut self) -> Self {
         for value in [&mut self.ufrag, &mut self.password, &mut self.fingerprint] {
@@ -104,7 +104,7 @@ impl Credentials {
     }
 
     /// Shapes and fixed categories only, never credential bytes or hashes.
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     pub fn diagnostic(&self) -> serde_json::Value {
         serde_json::json!({
             "ufrag_bytes":self.ufrag.len(), "password_bytes":self.password.len(),
@@ -168,7 +168,7 @@ impl Description {
         Self::parse(sdp, false)
     }
     /// Remote-only parsing for the isolated Parsec interoperability fixture.
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     pub fn from_parsec_remote_sdp(sdp: &str) -> Result<Self> {
         Self::parse(sdp, true)
     }
@@ -210,7 +210,7 @@ impl Description {
         mid_valid(&self.mid)?;
         // Parsec's pinned ja() uses legacy DTLS/SCTP + sctpmap. RFC 8841's
         // UDP/DTLS/SCTP + sctp-port represents the same SCTP port with the
-        // modern standardized spelling. Confirm interoperability in the probe.
+        // modern standardized spelling. Covered by the compact-signaling interoperability tests.
         Ok(format!(
             "v=0\r\no=- 0 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE {mid}\r\n\
              m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\n\
@@ -250,7 +250,7 @@ impl Candidate {
         })
     }
 
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     pub fn from_sdp_line(line: &str) -> Result<Self> {
         if line.len() > 1024 {
             bail!("candidate line exceeds the adapter limit");
@@ -266,7 +266,7 @@ impl Candidate {
             || fields[6] != "typ"
             || !matches!(fields[7], "host" | "srflx")
         {
-            bail!("candidate cannot be represented by the pinned compact ABI");
+            bail!("candidate cannot be represented by the compact host signaling format");
         }
         Self::new(fields[4], fields[5].parse()?, fields[7] == "srflx")
     }

@@ -17,6 +17,11 @@ pub(crate) struct Tcp {
 }
 
 impl Tcp {
+    /// No platform marking on macOS; the shared guard reports it as not applied.
+    pub(crate) fn qos(&self, requested: bool) -> evoparseq_socket_qos::Flow {
+        evoparseq_socket_qos::Flow::new(&self.socket, requested, "BUD")
+    }
+
     pub(crate) fn start(server: SocketAddr) -> io::Result<Self> {
         let raw = unsafe {
             libc::socket(

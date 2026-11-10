@@ -1,5 +1,5 @@
-//! Optional, bounded operational JSON Lines log. No packet or guest log capture.
-#![cfg_attr(any(not(windows), feature = "diagnostics"), allow(dead_code))]
+//! Optional, bounded operational JSON Lines log. No packet or media-content capture.
+#![cfg_attr(not(windows), allow(dead_code))]
 use serde_json::{json, Value};
 use std::{
     fs::{File, OpenOptions},
@@ -30,6 +30,8 @@ struct Logger {
 enum Command {
     Entry(Value),
     Stop(mpsc::SyncSender<()>),
+    #[cfg(target_os = "android")]
+    Flush(mpsc::SyncSender<bool>),
 }
 
 pub fn initialize(path: PathBuf, enable: bool) -> anyhow::Result<()> {
@@ -51,6 +53,11 @@ pub fn initialize(path: PathBuf, enable: bool) -> anyhow::Result<()> {
                                 log.failed.store(true, Ordering::Relaxed);
                             }
                         }
+                    }
+                    #[cfg(target_os = "android")]
+                    Command::Flush(ack) => {
+                        let ok = output.as_mut().is_none_or(|file| file.flush().is_ok());
+                        let _ = ack.send(ok);
                     }
                     Command::Stop(ack) => {
                         if let Some(file) = &mut output {
@@ -114,6 +121,33 @@ pub fn record(level: &'static str, event: &'static str, details: Value) {
     if log.sender.try_send(Command::Entry(entry)).is_err() {
         log.dropped.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// Export barrier outside media/UI threads. Keeps the process-wide logger alive.
+#[cfg(target_os = "android")]
+pub fn flush() -> anyhow::Result<()> {
+    let Some(log) = LOG.get() else {
+        return Ok(());
+    };
+    let (tx, rx) = mpsc::sync_channel(1);
+    let until = std::time::Instant::now() + Duration::from_secs(2);
+    let mut command = Command::Flush(tx);
+    loop {
+        match log.sender.try_send(command) {
+            Ok(()) => break,
+            Err(mpsc::TrySendError::Full(c)) if std::time::Instant::now() < until => {
+                command = c;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => anyhow::bail!("Diagnostic logger unavailable"),
+        }
+    }
+    anyhow::ensure!(
+        rx.recv_timeout(until.saturating_duration_since(std::time::Instant::now()))
+            .unwrap_or(false),
+        "Diagnostic flush failed"
+    );
+    Ok(())
 }
 
 pub fn shutdown() {
@@ -196,7 +230,7 @@ mod tests {
         assert_eq!(timestamp(0), "1970-01-01T00:00:00.000Z");
         assert_eq!(timestamp(1709164800123), "2024-02-29T00:00:00.123Z");
         let dir = std::env::temp_dir().join(format!(
-            "parsec-log-{}-{}",
+            "evoparseq-log-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

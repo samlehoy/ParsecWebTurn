@@ -49,6 +49,7 @@ mod integration {
         settings.set_network_types(vec![NetworkType::Udp4]);
         settings.set_data_channel_only(true);
         settings.set_prefer_turn_udp(prefer_udp);
+        settings.set_turn_tcp_qos(true);
         settings.detach_data_channels();
         settings.set_sctp_max_message_size_can_send(
             webrtc::api::setting_engine::SctpMaxMessageSize::Bounded(262144),

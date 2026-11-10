@@ -1,8 +1,9 @@
-//! Optional 8-bit GPU video backends. No transport, pixels on CPU or exporter.
+//! Optional GPU video backends. No transport, pixels on CPU or exporter.
 #![cfg(windows)]
 pub mod direct;
 pub mod display;
 mod intel;
+pub mod intel_vsr;
 use anyhow::{Context as _, Result, ensure};
 use lowlat_decode::{Fed, hevc, nal};
 use lowlat_drivers::{
@@ -12,6 +13,62 @@ use lowlat_drivers::{
 use self_cell::self_cell;
 use std::time::{Duration, Instant};
 use windows::{Win32::Graphics::Direct3D11::ID3D11Device, core::Interface};
+
+// AMF can accept Init even when the engine cannot decode the coded dimensions.
+// Ask D3D11 on that same device once, before AMF allocates its live decoder.
+// No surfaces, compressed input or GPU commands are submitted by this probe.
+fn verify_amf_size(device: &ID3D11Device, coded: (u32, u32), bit_depth: u8) -> Result<()> {
+    use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::*};
+    let (profile, format) = match bit_depth {
+        8 => (D3D11_DECODER_PROFILE_HEVC_VLD_MAIN, DXGI_FORMAT_NV12),
+        10 => (D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10, DXGI_FORMAT_P010),
+        _ => anyhow::bail!("unsupported AMF depth"),
+    };
+    let desc = D3D11_VIDEO_DECODER_DESC {
+        Guid: profile,
+        SampleWidth: coded.0,
+        SampleHeight: coded.1,
+        OutputFormat: format,
+    };
+    let check = || -> Result<()> {
+        let video: ID3D11VideoDevice = device.cast().context("D3D11 video device")?;
+        // SAFETY: the device and all descriptors live through each synchronous
+        // call. The temporary decoder is released before AMF initialization.
+        unsafe {
+            ensure!(
+                video
+                    .CheckVideoDecoderFormat(&desc.Guid, desc.OutputFormat)?
+                    .as_bool(),
+                "D3D11 decoder output format unavailable"
+            );
+            let count = video.GetVideoDecoderConfigCount(&desc)?;
+            let mut last_error = None;
+            for index in 0..count {
+                let mut config = D3D11_VIDEO_DECODER_CONFIG::default();
+                let result = video
+                    .GetVideoDecoderConfig(&desc, index, &mut config)
+                    .and_then(|()| video.CreateVideoDecoder(&desc, &config));
+                match result {
+                    Ok(decoder) => {
+                        drop(decoder);
+                        return Ok(());
+                    }
+                    Err(error) => last_error = Some(error),
+                }
+            }
+            if let Some(error) = last_error {
+                return Err(error.into());
+            }
+            anyhow::bail!("D3D11 offers no decoder configuration for the coded size")
+        }
+    };
+    check().with_context(|| {
+        format!(
+            "AMF HEVC hardware-size check: {}x{}, {bit_depth}-bit",
+            coded.0, coded.1
+        )
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -34,6 +91,19 @@ pub fn original_surface_vendor_allowed(vendor: u32) -> bool {
     matches!(vendor, 0x10de | 0x8086 | 0x1002)
 }
 
+/// Normal HEVC decoding policy; unsupported formats use the caller's MF recovery.
+pub fn normal_mode(vendor: u32, chroma: u32, depth: u32) -> Result<Mode> {
+    ensure!(
+        matches!((chroma, depth), (1 | 3, 8 | 10)),
+        "unsupported HEVC chroma/depth"
+    );
+    ensure!(
+        vendor != 0x1002 || chroma == 1,
+        "AMD HEVC 4:4:4 is unavailable"
+    );
+    preferred(vendor, true).context("no native HEVC backend for this GPU")
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Layout {
     pub left: u32,
@@ -43,14 +113,29 @@ pub struct Layout {
     pub full_range: bool,
 }
 impl Layout {
-    pub fn hevc(s: &hevc::sps::Sps) -> Result<Self> {
+    pub fn hevc_amf(s: &hevc::sps::Sps, bit_depth: u8) -> Result<Self> {
         ensure!(
             s.chroma_format_idc == 1
-                && s.bit_depth_luma_minus8 == 0
-                && s.bit_depth_chroma_minus8 == 0
-                && !s.is_range_extended(),
+                && !s.separate_colour_plane
+                && !s.is_range_extended()
+                && matches!(bit_depth, 8 | 10)
+                && s.bit_depth_luma_minus8 == bit_depth - 8
+                && s.bit_depth_chroma_minus8 == s.bit_depth_luma_minus8,
+            "unsupported or changed AMF color format"
+        );
+        Self::geometry(s)
+    }
+    pub fn hevc_direct(s: &hevc::sps::Sps) -> Result<Self> {
+        ensure!(
+            matches!(s.chroma_format_idc, 1 | 3)
+                && !s.separate_colour_plane
+                && matches!(s.bit_depth_luma_minus8, 0 | 2)
+                && s.bit_depth_chroma_minus8 == s.bit_depth_luma_minus8,
             "unsupported HEVC color format"
         );
+        Self::geometry(s)
+    }
+    fn geometry(s: &hevc::sps::Sps) -> Result<Self> {
         let (width, height) = s.visible();
         let crop = s.conformance_window.unwrap_or([0; 4]);
         ensure!(
@@ -58,8 +143,8 @@ impl Layout {
             "unsupported video geometry"
         );
         Ok(Self {
-            left: crop[0] * 2,
-            top: crop[2] * 2,
+            left: crop[0] * if s.chroma_format_idc == 3 { 1 } else { 2 },
+            top: crop[2] * if s.chroma_format_idc == 3 { 1 } else { 2 },
             width,
             height,
             full_range: s.video_full_range,
@@ -116,7 +201,9 @@ struct AmfState<'a> {
     decoder: amf::Component<'a>,
     buffer: amf::Buffer<'a>,
     layout: Option<Layout>,
-    size: (u32, u32),
+    coded_size: (u32, u32),
+    visible_size: (u32, u32),
+    bit_depth: u8,
     sequence: i64,
 }
 self_cell!(
@@ -135,12 +222,32 @@ pub struct Decoder {
     inner: Inner,
     sequence: usize,
 }
-impl Decoder {
-    pub fn open(mode: Mode, luid: u64, size: (u32, u32)) -> Result<Self> {
+// AMF 1.4.31 needs the displayed size at Init for cropped streams. Other
+// backends retain their coded-size contract. Validate coded limits either way.
+fn decoder_init_size(mode: Mode, coded: (u32, u32), visible: (u32, u32)) -> Result<(u32, u32)> {
+    ensure!(
+        coded.0 > 0 && coded.1 > 0 && coded.0 <= 4096 && coded.1 <= 4096,
+        "unsupported decoder size"
+    );
+    if mode == Mode::AmdAmf {
         ensure!(
-            size.0 > 0 && size.1 > 0 && size.0 <= 4096 && size.1 <= 4096,
-            "unsupported decoder size"
+            visible.0 > 0 && visible.1 > 0 && visible.0 <= coded.0 && visible.1 <= coded.1,
+            "unsupported AMF visible size"
         );
+        Ok(visible)
+    } else {
+        Ok(coded)
+    }
+}
+impl Decoder {
+    pub fn open(
+        mode: Mode,
+        luid: u64,
+        size: (u32, u32),
+        visible_size: (u32, u32),
+        bit_depth: u8,
+    ) -> Result<Self> {
+        let init_size = decoder_init_size(mode, size, visible_size)?;
         let device = DeviceOwner::open(luid)?;
         let inner = match mode {
             Mode::IntelVpl => Inner::Intel(intel::Backend::open(device, size)?),
@@ -148,16 +255,27 @@ impl Decoder {
                 direct::Backend::new(&owner.device)
             })),
             Mode::AmdAmf => {
+                let format = match bit_depth {
+                    8 => amf::Layout::Nv12,
+                    10 => amf::Layout::P010,
+                    _ => anyhow::bail!("unsupported AMF depth"),
+                };
+                let raw = device.device.device().cast();
+                // SAFETY: borrow the very device AMF will use; no second adapter.
+                let native = unsafe { ID3D11Device::from_raw_borrowed(&raw) }
+                    .context("missing AMF D3D11 device")?;
+                verify_amf_size(native, size, bit_depth)?;
                 let owner = AmfOwner {
                     device,
                     runtime: amf::Amf::load()?,
                 };
                 let context = ContextCell::try_new(owner, |o| o.runtime.context(&o.device.device))?;
                 let state = AmfCell::try_new(context, |c| -> Result<AmfState<'_>> {
-                    let decoder = c
-                        .borrow_owner()
-                        .runtime
-                        .decoder(c.borrow_dependent(), amf::Codec::Hevc)?;
+                    let decoder = c.borrow_owner().runtime.decoder_with_layout(
+                        c.borrow_dependent(),
+                        amf::Codec::Hevc,
+                        format,
+                    )?;
                     decoder.set_int(amf::REORDER_MODE, amf::REORDER_LOW_LATENCY)?;
                     ensure!(
                         decoder.has(amf::LOW_LATENCY_DECODE),
@@ -166,13 +284,15 @@ impl Decoder {
                     decoder.set_bool(amf::LOW_LATENCY_DECODE, true)?;
                     decoder.set_bool("SurfaceCopy", false)?;
                     decoder.set_bool("EnableDecoderSmartAccessVideo", false)?;
-                    decoder.init(amf::Layout::Nv12, size.0, size.1)?;
+                    decoder.init(format, init_size.0, init_size.1)?;
                     let buffer = c.borrow_dependent().buffer(8 * 1024 * 1024)?;
                     Ok(AmfState {
                         decoder,
                         buffer,
                         layout: None,
-                        size,
+                        coded_size: size,
+                        visible_size: init_size,
+                        bit_depth,
                         sequence: 0,
                     })
                 })?;
@@ -180,6 +300,19 @@ impl Decoder {
             }
         };
         Ok(Self { inner, sequence: 0 })
+    }
+    /// Reset only the direct decoder's reference/surface pool on its owner thread.
+    /// The D3D11 device is unchanged, so attached rendering/effect state stays valid.
+    pub fn reset_direct(&mut self) -> bool {
+        if let Inner::Direct(cell) = &mut self.inner {
+            cell.with_dependent_mut(|owner, backend| {
+                *backend = direct::Backend::new(&owner.device)
+            });
+            self.sequence = 0;
+            true
+        } else {
+            false
+        }
     }
     fn device(&self) -> &Device {
         match &self.inner {
@@ -240,8 +373,8 @@ impl Decoder {
                     if kind==33 {
                         let sps=hevc::sps::parse(unit.bytes.get(2..).context("truncated HEVC SPS")?).map_err(|error|anyhow::anyhow!("HEVC SPS: {error:?}"))?;
                         ensure!(sps.max_num_reorder_pics==0,"AMF low latency requires a non-reordered stream");
-                        let layout=Layout::hevc(&sps)?;
-                        ensure!((sps.width,sps.height)==state.size,"AMF geometry changed");
+                        let layout=Layout::hevc_amf(&sps,state.bit_depth)?;
+                        ensure!((sps.width,sps.height)==state.coded_size && (layout.width,layout.height)==state.visible_size,"AMF geometry changed");
                         state.layout=Some(layout);
                     }
                 }
@@ -271,6 +404,88 @@ impl Decoder {
 mod tests {
     use super::*;
     #[test]
+    fn normal_hevc_routes_all_supported_formats_without_amf_opt_in() {
+        for depth in [8, 10] {
+            for chroma in [1, 3] {
+                assert_eq!(
+                    normal_mode(0x10de, chroma, depth).unwrap(),
+                    Mode::DirectD3d11
+                );
+                assert_eq!(normal_mode(0x8086, chroma, depth).unwrap(), Mode::IntelVpl);
+                if chroma == 1 {
+                    assert_eq!(normal_mode(0x1002, chroma, depth).unwrap(), Mode::AmdAmf);
+                } else {
+                    assert!(normal_mode(0x1002, chroma, depth).is_err());
+                }
+            }
+        }
+        for (vendor, chroma, depth) in [(0, 1, 8), (0x10de, 2, 8), (0x8086, 1, 12)] {
+            assert!(normal_mode(vendor, chroma, depth).is_err());
+        }
+    }
+    #[test]
+    fn amf_size_probe_rejects_software_hevc_without_an_amf_runtime() {
+        use windows::Win32::Graphics::{Direct3D::D3D_DRIVER_TYPE_WARP, Direct3D11::*};
+        let mut device = None;
+        // SAFETY: WARP is an isolated software device; no live session/GPU state.
+        unsafe {
+            D3D11CreateDevice(
+                None,
+                D3D_DRIVER_TYPE_WARP,
+                windows::Win32::Foundation::HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                None,
+            )
+            .unwrap();
+        }
+        let device = device.unwrap();
+        for depth in [8, 10] {
+            let error = verify_amf_size(&device, (1920, 1088), depth).unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains("AMF HEVC hardware-size check: 1920x1088"));
+            assert!(message.contains(&format!("{depth}-bit")));
+        }
+        assert!(verify_amf_size(&device, (1920, 1088), 12).is_err());
+    }
+    #[test]
+    fn cropped_amf_init_uses_visible_size_but_other_backends_keep_coded_size() {
+        assert_eq!(
+            decoder_init_size(Mode::AmdAmf, (1920, 1088), (1920, 1080)).unwrap(),
+            (1920, 1080)
+        );
+        assert_eq!(
+            decoder_init_size(Mode::AmdAmf, (1920, 1080), (1920, 1080)).unwrap(),
+            (1920, 1080)
+        );
+        for mode in [Mode::IntelVpl, Mode::DirectD3d11] {
+            assert_eq!(
+                decoder_init_size(mode, (1920, 1088), (1920, 1080)).unwrap(),
+                (1920, 1088)
+            );
+        }
+        for (coded, visible) in [
+            ((4097, 1088), (1920, 1080)),
+            ((1920, 1088), (0, 1080)),
+            ((1920, 1088), (1922, 1080)),
+            ((1920, 1088), (1920, 1090)),
+        ] {
+            assert!(decoder_init_size(Mode::AmdAmf, coded, visible).is_err());
+        }
+        let bytes = include_bytes!("../fixtures/hevc-crop.sps");
+        let sps = hevc::sps::parse(&bytes[5..]).unwrap();
+        let layout = Layout::hevc_amf(&sps, 8).unwrap();
+        assert_eq!((sps.width, sps.height), (152, 152));
+        assert_eq!((layout.width, layout.height), (150, 146));
+        assert_eq!(
+            decoder_init_size(Mode::AmdAmf, (sps.width, sps.height), sps.visible()).unwrap(),
+            (150, 146)
+        );
+    }
+    #[test]
     fn only_measured_hevc_gpu_routes_are_selected() {
         assert_eq!(preferred(0x1002, true), Some(Mode::AmdAmf));
         assert_eq!(preferred(0x10de, true), Some(Mode::DirectD3d11));
@@ -282,5 +497,24 @@ mod tests {
         assert!(original_surface_vendor_allowed(0x1002));
         assert!(original_surface_vendor_allowed(0x8086));
         assert!(!original_surface_vendor_allowed(0));
+    }
+    #[test]
+    fn amf_main10_keeps_geometry_and_rejects_depth_or_chroma_changes() {
+        let bytes = include_bytes!("../fixtures/hevc-crop.sps");
+        let mut sps = hevc::sps::parse(&bytes[5..]).unwrap();
+        assert!(Layout::hevc_amf(&sps, 8).is_ok());
+        assert!(Layout::hevc_amf(&sps, 10).is_err());
+        sps.bit_depth_luma_minus8 = 2;
+        sps.bit_depth_chroma_minus8 = 2;
+        let layout = Layout::hevc_amf(&sps, 10).unwrap();
+        assert_eq!((layout.width, layout.height), (150, 146));
+        assert!(Layout::hevc_direct(&sps).is_ok());
+        assert!(Layout::hevc_amf(&sps, 8).is_err());
+        assert!(Layout::hevc_amf(&sps, 12).is_err());
+        sps.bit_depth_chroma_minus8 = 0;
+        assert!(Layout::hevc_amf(&sps, 10).is_err());
+        sps.bit_depth_chroma_minus8 = 2;
+        sps.chroma_format_idc = 3;
+        assert!(Layout::hevc_amf(&sps, 10).is_err());
     }
 }

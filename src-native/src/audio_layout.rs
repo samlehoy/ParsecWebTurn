@@ -25,6 +25,27 @@ impl Layout {
         frames * usize::from(self.channels)
     }
 
+    /// Explicit stereo fallback for a disconnected multichannel endpoint.
+    /// Equal-power center/surround fold-down, LFE omitted; saturates to i16.
+    /// Normal matching-layout output never runs this conversion.
+    #[cfg(any(not(windows), test))]
+    pub fn stereo(self, frame: &[i16]) -> [i16; 2] {
+        let front = |side: usize| {
+            let center = i64::from(frame[2]);
+            let mut surround = i64::from(frame[4 + side]);
+            if self.channels == 8 {
+                surround += i64::from(frame[6 + side]);
+            }
+            let sample = i64::from(frame[side]) + ((center + surround) * 23170 / 32768);
+            sample.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
+        };
+        if self == Self::STEREO {
+            [frame[0], frame[1]]
+        } else {
+            [front(0), front(1)]
+        }
+    }
+
     /// Parsec's multistream contract, in Windows speaker order. These are not
     /// Vorbis output channel positions; the mapping describes the wire streams.
     pub fn opus(self) -> (i32, i32, [u8; 8]) {
@@ -34,35 +55,27 @@ impl Layout {
             _ => (1, 1, [0, 1, 0, 0, 0, 0, 0, 0]),
         }
     }
-
-    /// The unchanged WASM mixer takes stereo. Give it a valid reference mix
-    /// while the native queue retains the original channels for presentation.
-    /// Its queue/reset decisions still own mute and playback; no audio is sent
-    /// to the device until that exact polled block is queued by the core.
-    pub fn stereo_mix(self, pcm: &[i16]) -> Vec<i16> {
-        let mut output = Vec::with_capacity(pcm.len() / usize::from(self.channels) * 2);
-        for frame in pcm.chunks_exact(usize::from(self.channels)) {
-            let mut left = f32::from(frame[0]);
-            let mut right = f32::from(frame[1]);
-            if self.channels > 2 {
-                let center = f32::from(frame[2]) * std::f32::consts::FRAC_1_SQRT_2;
-                left += center;
-                right += center;
-                // LFE is omitted from the reference stereo fold-down.
-                for pair in frame[4..].as_chunks::<2>().0 {
-                    left += f32::from(pair[0]) * std::f32::consts::FRAC_1_SQRT_2;
-                    right += f32::from(pair[1]) * std::f32::consts::FRAC_1_SQRT_2;
-                }
-            }
-            output.extend([left as i16, right as i16]);
-        }
-        output
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fallback_fold_down_uses_correct_speakers_omits_lfe_and_saturates() {
+        let layout = Layout::new(8, 0x63f).unwrap();
+        assert_eq!(layout.stereo(&[0, 0, 0, 30000, 0, 0, 0, 0]), [0, 0]);
+        assert_eq!(layout.stereo(&[0, 0, 0, 0, 10000, 0, 0, 0]), [7070, 0]);
+        assert_eq!(layout.stereo(&[0, 0, 0, 0, 0, 0, 0, 10000]), [0, 7070]);
+        assert_eq!(
+            layout.stereo(&[30000, 30000, 30000, 0, 30000, 30000, 30000, 30000]),
+            [i16::MAX, i16::MAX]
+        );
+        assert_eq!(
+            layout.stereo(&[-30000, -30000, -30000, 0, -30000, -30000, -30000, -30000]),
+            [i16::MIN, i16::MIN]
+        );
+        assert_eq!(Layout::STEREO.stereo(&[-123, 456]), [-123, 456]);
+    }
     #[test]
     fn speaker_masks_and_wire_mapping_are_validated() {
         for (channels, mask) in [(6, 0x3f), (6, 0x60f), (8, 0x63f)] {

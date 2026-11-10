@@ -1,222 +1,364 @@
-# ParsecWebTurn
+> [!WARNING]
+> **EvoParseq is developed with substantial AI assistance.** AI generates most of the
+> implementation code, while the project’s concept, architecture, scope, platform choices,
+> and development priorities are defined by its human maintainer.
+>
+> Development remains human-led. The maintainer directs the work, tests the application on
+> real hardware, investigates reported problems, and oversees patches and fixes.
+> Responsibility for reviewing and accepting changes stays with the maintainer.
+>
+> The project owner has a formal IT education and works in Kubernetes and DevOps. The
+> primary motivation for using AI is to save time and make effective use of LLM
+> capabilities, allowing more effort to go into design decisions, integration, and practical
+> testing.
 
-**A portable Windows client for connecting to your Parsec computers.**
+<p align="center">
+  <img src="assets/evoparseq-wordmark.svg" width="360" alt="EvoParseq">
+</p>
 
-ParsecWebTurn runs the original, pinned Parsec WebAssembly core in Wasmtime,
-with native Rust video, audio, input and networking. No browser, WebView2 or
-installer is needed: run **ParsecWebTurn.exe**.
+<p align="center"><strong>An independent Parsec client with a shared native Rust core.</strong></p>
 
-**The Parsec WASM core is unmodified. Rust provides the surrounding runtime and
-platform integrations; this is not a rewrite of the proprietary Parsec client.**
+EvoParseq connects to existing, **unmodified Parsec hosts**. Native Rust handles
+sign-in, computer discovery, signaling, transport, GPU video, audio and input.
+It does not bundle or run the proprietary Parsec WebAssembly client core and
+requires no browser, WebView or helper executable.
 
-[Download v0.9.4](https://github.com/vampywiz17/ParsecWebTurn/releases/tag/v0.9.4)
-· [Latest stable release](https://github.com/vampywiz17/ParsecWebTurn/releases/latest)
-· [Changelog](CHANGELOG.md)
+**This is an independent community project, not affiliated with or endorsed by
+Parsec, Unity or lowlat.** A Parsec account and a compatible host are required.
 
-This README describes the **v0.9.4 stable client** on `main`; `dev` is used for
-further development. The earlier WebView2 version remains on the [legacy branch](https://github.com/vampywiz17/ParsecWebTurn/tree/legacy).
-For stability-first use, choose **WebRTC with H.264** and leave experimental
-options disabled, or use the stable release.
+The stable release is [**EvoParseq v0.9.6**](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.6),
+with Windows x64 packages and the signed Android TV APK. This is the `main`
+branch; ongoing development continues on `dev`. Linux remains a separate alpha
+on `codex/linux-flatpak` and is not included in this release.
 
-## Getting started
+## Code quality
 
-1. Extract the Windows x64 release ZIP and run **ParsecWebTurn.exe**.
-2. Sign in, select your host and choose the **web** launch option, including
-   when using BUD.
-3. Open **Settings** to configure networking, video, audio or input. Save and
-   reconnect to apply changes; event logging changes apply immediately.
+Live SonarQube results for `main`. Select a badge to open the dashboard.
 
-Requires Windows x64, compatible GPU drivers and D3D11/OpenGL support.
-Zero copy additionally requires Windows 11 and driver support. Normal use
-requires no administrator rights.
+| Metric | `main` |
+| --- | --- |
+| Quality Gate | [![main: Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=alert_status)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) |
+| Coverage (overall code) | [![main: Coverage (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=coverage)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) |
+| Security (overall code) | [![main: Security (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=security_rating)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) |
+| Reliability (overall code) | [![main: Reliability (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=reliability_rating)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) |
+| Maintainability (overall code) | [![main: Maintainability (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=sqale_rating)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) |
+| Duplicated lines (overall code) | [![main: Duplicated lines (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=duplicated_lines_density)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) |
+
+The metric badges describe **overall code**, not just newly changed lines.
+The Quality Gate applies the configured **new-code** requirements; a passing
+gate does not mean that overall coverage is 100% or that all existing findings
+have been resolved. The dashboard shows both scopes. GitHub may briefly cache
+badge images after a new analysis.
+
+Sonar also analyzes checked-in dependencies, including upstream test fixtures
+and configuration files. Their findings count toward the overall results,
+especially the Security rating, so the badges are not a score of EvoParseq's
+own implementation alone and can give a misleading impression without that
+context. Dependency findings still require review; upstream origin does not
+automatically make a finding harmless or a false positive.
+
+## Android TV
+
+- Google TV / Android TV interface with D-pad navigation, 2FA, grouped settings
+  and encrypted remembered sign-in using Android Keystore.
+- Shared Rust account, session, WebRTC/BUD, controller and input models; Android
+  adapters provide MediaCodec Surface video, AAudio and OS input/lifecycle.
+- Direct or STUN/TURN connections, Force TURN and temporary **local-only HTTPS**
+  relay setup from a phone/computer, with fingerprint verification and TV approval.
+- H.264 and HEVC 8/10-bit 4:2:0, fixed/adaptive FPS, hidden-by-default session
+  controls after five idle seconds, plus FPS/RTT/bitrate/codec/route information.
+- Standard gamepads; optional remote D-pad mouse, short/long OK clicks and
+  supported OK + direction dragging. Physical mouse/keyboard use normal input
+  with optional capture. Windows HID passthrough is not an Android feature.
+- AAudio device recovery, optional custom buffering, BUD PCM and capability-gated
+  5.1/7.1 output; diagnostic logging with save/share export. These additions need
+  live audio-device validation; WebRTC remains stereo Opus.
+
+Live-tested on Xiaomi TV Box S (3rd Gen), Android 14, including BUD at 50 Mbit/s,
+NVIDIA-encoded Main10, remote mouse and a GameSir controller. WebRTC at sustained
+50 Mbit/s still closed its video channel in this setup; around 30 Mbit/s was
+stable. This is a transport-specific observation, **not a universal hardware limit**.
+MediaCodec submits frames to Surface without CPU pixel readback; physical scanout
+and internal driver/compositor copies are not verified.
+
+Download **EvoParseq-TV.apk** from the
+[stable release](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.6), or
+use **Settings > Updates** in an existing distribution-signed Android build.
+The APK includes ARMv7 and ARM64 libraries and requires **Android 10 (API 29)+**.
+Android still asks for installation confirmation. Normal signed updates retain
+settings and remembered sign-in; old debug-signed previews need a one-time
+reinstall, which clears their private data. The Windows ZIP cannot run on TV.
+[Android TV setup, updates and compatibility limits](android-tv/README.md).
+
+## Windows features
+
+- **Native account and sessions:** optional 2FA, encrypted remembered sign-in,
+  background-refreshing computer picker and manual peer ID. Owner connections
+  are supported; friend/invitation authorization is not implemented.
+- **WebRTC or BUD:** direct or custom TURN connections over UDP/TLS/TCP,
+  Force TURN, STUN-only and Cloudflare TURN credentials. No silent transport
+  switch. Optional experimental Windows TCP/TLS QoS marks outgoing TURN traffic.
+- **GPU video:** H.264 and H.265/HEVC, GPU selection, Media Foundation and
+  experimental vendor HEVC decoders, 10-bit SDR output, original-surface
+  zero-copy, and compatible NVIDIA/Intel HEVC 4:4:4 at 8 or 10 bits.
+- **Session overlay:** draggable icon; resolution, bandwidth, FPS, constant FPS,
+  orientation, fullscreen and immersive input controls. Switch the current stream
+  between host-listed physical or virtual displays.
+- **Audio:** stereo Opus, configurable buffering, BUD raw PCM and experimental
+  multichannel output. Automatically reopen the Windows audio output after
+  transient device errors or default-device changes, retiring stale audio.
+  On Windows, the Session overlay offers immediate local mute and 0–100% volume
+  control for either transport, without changing the host's volume. Mute preserves
+  the chosen level; these controls reset when the client is restarted.
+- **Controllers:** shared Rust gamepad state/protocol for up to
+  four controllers, Windows XInput and Android gamepad events. Wired Windows
+  and GameSir Android forwarding are live-tested; device-specific rumble and
+  disconnect behavior need broader validation.
+- **Input:** two-way Unicode text clipboard; normal mouse/keyboard forwarding;
+  experimental BUD USB HID mouse and keyboard, including relative camera input.
+- **Diagnostics:** route, RTT, traffic, FPS, actual decoder/format, audio queues,
+  host/local timings and system resource use. Optional bounded event logs record
+  failures without continuous mouse/key activity.
+- **Presentation:** Automatic, Low latency, VSync and experimental DXGI VRR,
+  with reference-safe catch-up after bursts. VRR requires an enabled compatible
+  display/driver; DXGI support alone does not verify panel activation. Zero copy
+  retains Windows-managed timing. WebRTC uses bounded recent queue history.
+
+Host permissions, encoders and graphics drivers determine the actual stream.
+**Connection stats shows the received depth/chroma and application RGB output**;
+a selected preference alone does not prove that the host accepted it.
+
+The Session panel compares the client's configured display refresh with the host
+FPS setting and shows measured decoded FPS separately. It can suggest a
+Windows-listed refresh rate at the current client resolution for more even
+fixed-refresh cadence; it never changes the display automatically. VRR activation
+is not verified. A confirmed 120 FPS request does not prove 120 distinct frames:
+the captured host display/mode must support it, and static content can lower FPS.
+
+## Video rendering modes
+
+![Animated comparison of normal GPU rendering, Zero copy and optional AI upscaling.](assets/evoparseq-rendering-modes.gif)
+
+Start with **Normal GPU rendering** for compatibility. **Zero copy** skips a
+separate picture-conversion pass on supported systems; **AI upscaling** can
+improve enlarged video but uses more GPU resources and may add latency.
+The animation illustrates processing order, not measured speed. Check
+**Connection stats** for the mode actually in use.
+
+## macOS (experimental)
+
+A native macOS build shares the same Rust core and replaces only the platform
+adapters (AppKit, VideoToolbox, Core Audio, Keychain). See
+[docs/macos.md](docs/macos.md) for building, packaging and current limits.
+
+## Windows download and run
+
+1. Download `EvoParseq-v0.9.6-win64.zip` from the
+   [stable release](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.6).
+2. Extract to a writable folder and run **EvoParseq.exe**. Settings and optional
+   encrypted sessions are stored beside it in `settings.json`.
+3. Sign in with the host owner's account, choose a computer and connect.
+   Configure Network, Video, Audio and Input in Settings. Save and reconnect
+   after changing transport or connection capabilities; session video requests
+   can be applied while connected.
+
+**Windows 11 x64 and a GPU with Direct3D feature level 11.0 or newer are required**,
+with compatible D3D11 video-support drivers. The DirectX version shown on
+dxdiag's System tab is the installed runtime version; check **Feature Levels**
+on its Display tab for the GPU's capabilities. DirectX 10.x hardware, such as
+the GeForce 210, is unsupported. Support below feature level 11.0 is not planned,
+as it would require developing and maintaining a separate video path in parallel.
+
+Zero-copy
+requires Windows 11 and suitable drivers. Ordinary client use needs no admin
+rights. The stock host must already be configured for hosting.
+
+**Upgrading from ParsecWebTurn:** keep `settings.json` under the same Windows
+account and sign in again. The old web-core login is not imported. A legacy-named
+transition ZIP supports existing executable shortcuts. After the repository rename,
+older updaters may reject the new download URL; use the release page for this
+one-time manual upgrade. See [migration](MIGRATION.md).
+Help > Check for updates offers newer **stable** EvoParseq packages; prerelease
+installation is manual.
 
 | Shortcut | Action |
 | --- | --- |
-| F11 | Toggle fullscreen |
-| Ctrl+, | Settings |
-| Ctrl+Shift+S | Connection stats |
-| F8 | Toggle the video layer to reach the underlying interface |
+| Ctrl+Shift+M / Ctrl+Shift+O | Open session menu and restore hidden icon |
+| Ctrl+Shift+W | Toggle fullscreen |
+| Ctrl+Shift+R | Release / recapture remote input |
+| Ctrl+Shift+Q | Disconnect |
+| Ctrl+Shift+S | Open Connection stats |
+| Ctrl+Alt+End | Request host Ctrl+Alt+Del |
 
-Custom shortcuts in the embedded Hotkeys page take priority.
+These exact shortcuts stay local; their trigger keys are not also forwarded to
+the host. In Keyboard or Keyboard + Mouse immersive mode, other supported keys
+and combinations (including Alt+Tab, Alt+Enter, Windows-key chords and F8/F11)
+are forwarded while the stream has input focus. Extra Alt/Windows modifiers do
+not activate a Ctrl+Shift client shortcut. Local menus and released input retain
+normal Windows handling; Ctrl+Shift+R releases or recaptures remote input.
 
-## Features and settings
+Ctrl+Alt+Del requires the installed Parsec host service and permissions; a
+portable host may not execute it.
 
-The client includes the familiar Parsec overlay, persistent sign-in/preferences,
-keyboard/mouse and immersive input, Opus audio, GPU video playback, and two-way
-Unicode text clipboard synchronization. Clipboard permissions remain controlled
-by the core and host; files and images are not transferred.
+## TURN relay: connect through restrictive networks
 
-### Network
+![Animated TURN relay: video and audio travel from the host through Cloudflare to the client; input travels back.](assets/turn-relay.gif)
 
-**WebRTC is the default.** Direct connections and custom STUN/TURN are supported,
-including Cloudflare credentials and TURN over UDP, TCP or TLS. Enter server URLs
-one per line. STUN only excludes TURN; Force TURN relay requires a relay and
-cannot be combined with STUN only.
+TURN forwards encrypted session traffic when NAT or a firewall prevents a direct
+connection. The stock Parsec host stays unmodified. The client-to-relay leg can
+use UDP, TLS or TCP; the relay-to-host leg uses UDP. Direct connections remain
+available unless **Force TURN relay** is enabled.
 
-Optional **BUD** uses the same relay settings: direct UDP, then configured TURN
-routes preferring **UDP → TLS → TCP** (port 80 first among TCP URLs). Failed initial
-attempts try the next relay; established connections are not migrated and BUD
-never silently switches to WebRTC. TLS verifies the server certificate and
-hostname. TCP/TLS can add head-of-line blocking; the relay-to-host leg stays UDP.
-See [BUD TURN transport details](docs/bud-turn-stream.md).
+**A relay does not necessarily mean higher latency.** When the route through
+the relay is better than the available direct or VPN route, TURN can deliver
+comparable or even lower round-trip time (RTT). This depends on ISP peering,
+relay location and congestion; it is not a guaranteed improvement. Compare the
+actual routes in **Connection stats**. Cloudflare describes its routing in
+[TURN and anycast](https://blog.cloudflare.com/webrtc-turn-using-anycast/).
+**No separate VPN, tunnel client, driver or relay helper needs to be installed
+on the client PC:** TURN support is built into the application.
 
-### Video
+**Cloudflare Realtime TURN is our recommended relay.** A free Cloudflare account
+is sufficient, including an account already used for Zero Trust Free. TURN is a
+separate **Realtime** service: no paid Zero Trust plan or Cloudflare Tunnel is
+required.
 
-H.264 is the default. **Prefer H.265 / HEVC** requests HEVC; the host decides the
-actual stream. Video GPU selects Automatic or a particular adapter.
+1. Sign in to the [Cloudflare dashboard](https://dash.cloudflare.com/), select
+   your account, and open **Realtime → TURN Server → Create** (or search for
+   **TURN Server** in the dashboard).
+2. Give the TURN key a name and create it. Copy its **TURN Key ID / Token ID**
+   and **API Token** from the resulting credentials panel.
+3. In the client's **Settings → Network**, select **Cloudflare TURN**, enter
+   the key ID and API token, then save and reconnect. The client generates
+   temporary TURN credentials automatically. Enable **Force TURN relay** if you
+   want to require the relay; **Connection stats** shows the route actually used.
 
-| Decoder path | NVIDIA | AMD | Intel |
-| --- | --- | --- | --- |
-| H.264 | Media Foundation | Media Foundation | Media Foundation |
-| HEVC normal, 8-bit | Direct D3D11 | AMF | VPL |
-| HEVC Zero copy, 8-bit | Direct D3D11 | Direct D3D11 | Direct D3D11 |
+Keep the API token private; do not attach it or `settings.json` to issues.
+See Cloudflare's [setup guide](https://developers.cloudflare.com/realtime/turn/generate-credentials/)
+and [dashboard example](https://github.com/cloudflare/speedtest/tree/main/example/turn-worker#creating-a-new-realtime-turn-app).
 
-Vendor HEVC and Zero copy have been live-tested on selected GPUs with both
-transports, but remain **experimental**. Normal rendering uses a GPU conversion/
-scaling pass. **Zero copy** presents the original NV12 decoder surface through
-Windows Presentation API, removing that application pass without CPU readback.
-This does not prove direct scanout or absence of internal Windows/driver copies.
-Unsupported configurations use normal rendering; inspect Connection stats.
-Firmware-disabled HEVC, including affected Dell systems, cannot be bypassed by
-selecting another decoder.
+**Free allowance: 1 TB (1,000 GB) per month**, shared with Realtime SFU.
+At a constant average relayed bitrate, this is approximately:
 
-**10-bit HEVC (experimental)** requests Main 10. The normal Media Foundation path
-can output 10-bit RGB SDR without an extra conversion pass, with 8-bit fallback.
-Live Main 10 is currently verified only with **NVIDIA host encoding**, including
-AMD 780M client decoding; the tested AMD 780M host sent 8-bit instead. Check the
-actual profile, decoded depth and RGB output in stats. This is not HDR or proof
-of the monitor's physical bit depth. Zero copy currently supports 8-bit only.
-See [10-bit output details](docs/rgb10-output.md).
+| Average relayed traffic | Hours/month | Hours/day over 30 days |
+| --- | ---: | ---: |
+| 10 Mbit/s | 222 | 7.4 |
+| 20 Mbit/s | 111 | 3.7 |
+| 30 Mbit/s | 74 | 2.5 |
+| 50 Mbit/s | 44 | 1.5 |
 
-**Display timing (experimental)** offers **Automatic** (default, previous behavior),
-**Low latency** and **VSync**. Explicit modes request a one-presentation DXGI queue;
-VSync can add delay. Zero copy retains Windows-managed timing. BUD also skips
-obsolete display work during backlogs while decoding every reference picture.
-Synthetic tests show reduced display work, not a proven live latency gain.
-See [timing and measurement scope](docs/local-video-timing.md).
+**Video uses a variable bitrate:** with little or no screen movement, such as
+mostly static desktop work, it can use much less bandwidth than during active
+gameplay. Read the table using the **actual average relayed bitrate**, not the
+configured bandwidth limit. Lower average usage makes the allowance last longer;
+these figures are estimates, not fixed daily streaming limits.
 
-### Audio
+Estimates use decimal GB and exclude audio/control/protocol overhead, which
+reduces the available streaming time. Actual usage varies with the stream;
+direct traffic does not consume TURN allowance. Cloudflare meters traffic sent
+from its edge to the TURN client. Usage above the shared allowance is currently
+**$0.05/GB**; check [current pricing](https://developers.cloudflare.com/realtime/sfu/platform/pricing/)
+and the [TURN billing FAQ](https://developers.cloudflare.com/realtime/turn/faq/).
 
-- **Custom audio buffer:** optional minimum/maximum limits in milliseconds.
-  Initial custom values are **75/150**, matching the pinned core's automatic
-  limits. Disabled uses the core's actual limits; enabled requests the shortest
-  supported shared WASAPI period with fallback. Lower values can cause gaps.
-- **Allow raw PCM audio:** BUD-only, disabled by default. The host must also enable
-  `network_raw_audio=1`; otherwise it can send Opus. WebRTC remains Opus.
-- **Multichannel audio (experimental, BUD):** optionally request the Windows
-  output's 5.1/7.1 layout. The host capture layout must match; stereo is the
-  default and fallback. **Validated with synthetic tests only:** live surround,
-  channel ordering and audible playback remain unverified. WebRTC stays stereo.
+## Optional AI upscaling
 
-[Audio configuration and limitations](docs/native-audio-options.md)
+The Video tab offers one **AI upscaling (experimental)** selector: NVIDIA RTX
+VSR has Off/Low/Medium/High/Ultra; Intel VPL AI has Off/On. Other GPUs disable the
+control. Each vendor's saved preference is retained.
 
-### Input (experimental)
+Both paths upscale on the GPU in normal DXGI mode. They add GPU processing,
+resources and an output copy, may increase latency, and are **not Zero copy**.
+Unsupported configurations retain ordinary rendering. No CPU pixel readback
+or generated frames are introduced.
 
-Optional **USB HID mouse and keyboard** require **BUD** and **USB/Yubikey
-passthrough enabled on the stock host**. Select either or both on the Input tab,
-save and reconnect. No helper, host modification or extra client installation
-is needed.
+- **NVIDIA:** RTX Video SDK 1.1.0; RTX 3060 playback is live-confirmed.
+  The runtime is outside the EXE. On first launch with an NVIDIA GPU, setup asks
+  permission before downloading the pinned official NVIDIA payload. Archive
+  and DLL hashes are checked; verified caches are reused. The DLL lives under
+  `%LOCALAPPDATA%/EvoParseq/vsr/1.1.0`, without admin rights. Declining leaves
+  normal video available; enabling VSR later can authorize setup on next launch.
+  SDK-enabled packages include NVIDIA's license; no CUDA toolkit is required.
+- **Intel:** documented VPL 2.17 API with the installed Intel driver runtime,
+  without a bundled/downloaded DLL or model. **Hardware operation is unverified.**
+  Strict checks require the AI filter and same-device D3D11 surfaces; rejected
+  runtime/configuration details remain in event logs. Currently limited to
+  8-bit SDR upscaling; 10-bit, 4:4:4 and Zero copy keep their existing paths.
 
-Mouse input supports desktop positioning, relative camera control, five buttons,
-dragging and scrolling on **one physical or virtual display**. Multi-monitor
-mapping is unsupported. Keyboard input requires matching active host/client
-layouts, such as Hungarian on both; it does not switch the host layout.
-Desktop, camera control and simultaneous mouse/keyboard have been live-tested.
+## Experimental features and limits
 
-Selected HID devices replace ordinary Parsec forwarding, including if setup
-fails; disable the option and reconnect to restore normal input. Local menus
-remain accessible, and focus loss/disconnect releases held inputs.
-See [HID behavior and scope](docs/usb-hid-input.md).
+**Vendor HEVC, zero-copy, 10-bit HEVC, 4:4:4, display timing, USB HID and
+multichannel audio remain experimental.** For conservative operation, use H.264,
+stereo Opus and Automatic timing with experimental options disabled.
 
-## Statistics and troubleshooting
+- **Video:** live decoded frames remain on the GPU. Normal rendering uses the
+  conversion/output pass; zero-copy presents original 8-bit NV12 or capability-checked 10-bit P010 surfaces.
+  HEVC 10-bit 4:2:0 Zero copy is live-confirmed by the maintainer on tested AMD
+  and NVIDIA systems. Intel HEVC, including 8/10-bit 4:4:4 normal rendering,
+  has also been live-tested on the maintainer's UHD 770 setup; this does not
+  establish support on every Intel GPU or driver.
+  Driver/compositor copies and direct scanout are not independently verified.
+- **10-bit:** RGB10 output is SDR, not HDR. NVIDIA host encoding is confirmed;
+  other host encoders may refuse it or send 8-bit. An initial encoder failure
+  asks you to disable 10-bit and reconnect. AMF Main10 output is live-validated on AMD Radeon 780M and is now the AMD default.
+- **4:4:4:** 8/10-bit playback is live-validated on NVIDIA RTX 3060. Intel UHD 770 8/10-bit playback is also live-confirmed. Support remains
+  capability-gated; a measured UHD 770 driver-query exception is logged.
+  AMD selection is disabled.
+  H.264 stays 4:2:0; 4:4:4 does not combine with original-surface zero-copy.
+  Compatible host encoding, account permissions and service terms still apply.
+- **HID:** requires BUD and the stock host's USB/Yubikey passthrough plus its
+  supported USB driver. HID mouse uses the host primary display and disables
+  display switching; forwarding pauses until that selection is reported.
+  Use matching host/client keyboard layouts. No host patch is needed.
+- **Audio:** raw PCM is BUD-only and requires host permission
+  (`network_raw_audio=1`). WebRTC remains stereo Opus. Multichannel audio has
+  synthetic coverage only; live surround playback/channel order is unconfirmed.
+- **Displays and timing:** host virtual-display limitations can delay switching.
+  Reported timings are CPU/host durations, not GPU completion, scanout or total
+  latency. Adaptive catch-up, QoS benefit and physical audio-device recovery
+  still require broader live testing; no measured latency gain is claimed.
 
-**Connection stats** shows route, RTT, incoming/outgoing traffic, decoded FPS,
-decoder/output format, local drops, audio queues and app CPU/GPU/memory use.
-Traffic is usage, not available bandwidth or pure video bitrate; RTT is not ICMP
-ping. GPU surfaces indicate a GPU path, not independent proof of hardware decode.
+Microphone/camera forwarding, HDR and multi-monitor HID mapping are not implemented. See the [changelog](CHANGELOG.md) for shipped changes.
 
-Host video/audio timing is requested automatically while stats is open or event
-logging is enabled. Local video timings measure overlapping CPU durations,
-**not GPU execution, scanout or end-to-end latency**. Host reports have been
-observed live with BUD; WebRTC validation and unusual audio intervals remain open.
-The embedded overlay receives native Decode and Network values; its Bitrate
-field remains N/A because the core's interface has no bitrate output.
+## Troubleshooting and development
 
-[Host timing](docs/frame-timing-diagnostics.md) ·
-[Local video timing](docs/local-video-timing.md) ·
-[Overlay metrics](docs/wasm-overlay-metrics.md)
+Enable **Event logging** in Network settings for `client-events.jsonl` beside
+settings.json. Include the build, GPU/driver, transport and reproduction steps
+with a log or screenshot when reporting issues. Logs omit credentials, media,
+clipboard text and continuous input. **Do not publish settings.json or tokens.**
+Saved credentials use Windows CurrentUser DPAPI; copying them to another machine
+or Windows account does not transfer access. `--data-dir "C:\YourFolder"` selects
+another writable data directory.
 
-Enable **event logging** in Network settings to write `client-events.jsonl`
-beside `settings.json`. It records connection/decoder failures and state changes
-with UTC timestamps, without credentials, media, clipboard text or continuous
-input events. Logging is off by default, asynchronous and bounded; rotation
-retains one previous file. When [reporting a problem](https://github.com/vampywiz17/ParsecWebTurn/issues),
-include the version, Windows/GPU/driver, transport, reproduction steps and a log
-or screenshot. Never publish settings files, credentials or sign-in tokens.
+Build with Rust MSVC and Windows C++ Build Tools/SDK:
 
-## Saved data and updates
+```powershell
+cargo build --locked --release --manifest-path src-native/Cargo.toml
+```
 
-`settings.json` beside the EXE stores native preferences and Windows-protected
-server credentials. Use `--data-dir "C:\YourFolder"` for another writable location.
-Sign-in and embedded preferences live under `%LOCALAPPDATA%\ParsecWebTurn\Native`,
-protected for your Windows user. Close the app and replace the EXE to update;
-keep your settings. Moving from the legacy client requires signing in again.
+CI packages `src-native/target/x86_64-pc-windows-msvc/release/evoparseq.exe` as
+EvoParseq.exe. Application logic lives in `src-native/src`; platform, transport
+and video adapters reuse the existing bounded workers and GPU path.
 
-**Help > Check for updates** offers stable releases only; download dev releases
-manually. Updates are never installed automatically. **Help > About** shows the
-pinned core and checks the currently served version without replacing it.
-`PARSECWEBTURN_NO_UPDATE_CHECK=1` disables background update/core-version checks.
+[Architecture](docs/native-core.md) · [Settings comparison](docs/native-settings-comparison.md) ·
+[Development references](docs/NATIVE_REFERENCES.md)
 
-## Status and roadmap
+## Credits and independence
 
-BUD, custom audio buffering, raw PCM permission and host timing are included
-without an experimental label in **v0.9.4**. Vendor HEVC, Zero copy, 10-bit HEVC,
-display timing, multichannel audio and USB HID input remain experimental, with
-the validation limits above.
+Thanks to **Duy (Nguyen Duy)** and [lowlat](https://github.com/nomi-san/lowlat)
+for inspiration, feedback and selected MIT-licensed protocol, transport and GPU
+components. Their licenses and local-change notices are retained. EvoParseq is
+independently developed and maintained; it is not an official lowlat client.
 
-The maintainer completed Intel/AMD/NVIDIA video testing before this stable
-release. Results apply to supported combinations actually tested; the capability
-requirements and specific validation limits above still apply.
+Our code uses the [MIT license](LICENSE). Applicable Parsec service terms and
+third-party licenses still apply. Development did not use Parsec's proprietary
+source code, and EvoParseq does not patch the official host or client. Parsec and
+Unity names and marks belong to their owners; no affiliation is implied.
 
-HID mouse/keyboard are implemented; gamepad verification and further native menu
-integration remain pending. Vulkan/Linux are planned; D3D12 and Android/Android TV
-are exploratory, without delivery dates. HDR and 4:4:4 are not implemented.
-Not every setting in the embedded interface has a native implementation.
+## Star history
 
-## Legal notice and original Parsec code
-
-**This project was developed without access to Parsec's proprietary source code.
-No proprietary Parsec source code has been edited or incorporated into the Rust
-implementation. The original Parsec WASM binary is unmodified.**
-
-The publicly served, closed-source WASM binary is pinned, SHA-256 verified and
-precompiled for Wasmtime, then included in the application. Precompilation does
-not patch the WASM. Rust supplies the native framework, not a rewritten Parsec
-core; the lowlat-based BUD adapter is a separate implementation.
-
-The MIT license covers this project's own code, not the proprietary component.
-Third-party licenses and applicable terms still apply; integrity checks do not
-grant redistribution permission. Included license notices must accompany binaries.
-ParsecWebTurn is independent and is not affiliated with or endorsed by Parsec or
-Unity. Names and marks belong to their respective owners.
-
-## Acknowledgements: lowlat
-
-Thanks to Duy (Nguyen Duy) and [lowlat](https://github.com/nomi-san/lowlat) for
-inspiration, open-source components and technical feedback. ParsecWebTurn adapts
-selected MIT-licensed lowlat code for BUD, TURN and vendor GPU backends, retaining
-licenses and attribution. See the backend notices and
-[research references](docs/NATIVE_REFERENCES.md).
-
-**ParsecWebTurn is independently developed and maintained, not part of lowlat or
-an official lowlat client.** Code reuse does not imply affiliation or endorsement.
-
-## Build and contribute
-
-Build on Windows with Rust MSVC and C++ build tools: `./scripts/build.ps1`.
-Application code and backend crates are under `src-native`; diagnostic tools
-require the separate opt-in `diagnostics` build feature.
-
-[Technical guide](docs/NATIVE_TECHNICAL.md) ·
-[Configuration compatibility](docs/NATIVE_CONFIG_COMPATIBILITY.md) ·
-[Research references](docs/NATIVE_REFERENCES.md)
+<a href="https://www.star-history.com/#vampywiz17/EvoParseq&amp;Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=vampywiz17/EvoParseq&amp;type=Date&amp;theme=dark">
+    <img alt="EvoParseq GitHub star history" src="https://api.star-history.com/svg?repos=vampywiz17/EvoParseq&amp;type=Date" width="800">
+  </picture>
+</a>

@@ -84,3 +84,9 @@ there is no fallback to host, srflx or peer-reflexive local data paths. DTLS
 fingerprint verification and STUN authentication are unchanged. Separate coturn
 fixtures cover full discovery with a relay-selected SCTP path and a usable direct
 path that must remain disconnected when the restriction is enabled without TURN.
+
+
+TCP/TLS QoS: optional default-off connected-socket marking through the shared
+`evoparseq-socket-qos` platform adapter. Windows uses non-adaptive qWAVE
+AudioVideo; other targets are no-ops. BUD IOCP and WebRTC Tokio/TLS framing,
+verification and media processing are preserved. Failure never rejects a stream.

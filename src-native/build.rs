@@ -1,31 +1,32 @@
 use std::{env, fs, path::PathBuf, process::Command};
-#[path = "src/core_config.rs"]
-mod core_config;
 fn main() {
-    println!("cargo:rerun-if-changed=../assets/parsec.ico");
-    println!("cargo:rerun-if-changed=vendor/parsecd.wasm");
-    println!("cargo:rerun-if-changed=src/core_config.rs");
-    // Compile once for the portable target, never the build machine CPU.
-    {
-        use sha2::{Digest, Sha256};
-        let bytes = fs::read("vendor/parsecd.wasm").expect("Fetch the pinned core first");
-        assert_eq!(
-            format!("{:x}", Sha256::digest(&bytes)),
-            "d663dd96df477c65479fb93eb88756c7fcafff581cc93be563625cd195a4b4a6",
-            "Refusing to precompile an unaudited core"
-        );
-        let mut config = core_config::config();
-        config.target(&env::var("TARGET").unwrap()).unwrap();
-        let engine = wasmtime::Engine::new(&config).unwrap();
-        let compiled = engine
-            .precompile_module(&bytes)
-            .expect("Core AOT compilation failed");
-        fs::write(
-            PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("parsecd.cwasm"),
-            compiled,
-        )
-        .unwrap();
+    println!("cargo:rustc-check-cfg=cfg(nvidia_vsr_sdk)");
+    println!("cargo:rerun-if-env-changed=EVOPARSEQ_RTX_VIDEO_SDK");
+    if env::var("TARGET").unwrap_or_default() == "x86_64-pc-windows-msvc" {
+        if let Some(root) = env::var_os("EVOPARSEQ_RTX_VIDEO_SDK") {
+            let root = fs::canonicalize(root).expect("RTX Video SDK folder missing");
+            let runtime = root.join("bin/Windows/x64/rel/nvngx_vsr.dll");
+            assert!(runtime.is_file(), "RTX VSR release runtime missing");
+            assert!(
+                root.join("lib/Windows/x64/nvsdk_ngx_s.lib").is_file(),
+                "RTX Video static library missing"
+            );
+            println!("cargo:rustc-cfg=nvidia_vsr_sdk");
+            println!(
+                "cargo:rustc-link-search=native={}",
+                root.join("lib/Windows/x64").display()
+            );
+            println!("cargo:rustc-link-lib=static=nvsdk_ngx_s");
+            for library in [
+                "advapi32", "shell32", "ole32", "shlwapi", "version", "wintrust", "crypt32",
+                "dxgi", "d3d11",
+            ] {
+                println!("cargo:rustc-link-lib={library}");
+            }
+        }
     }
+
+    println!("cargo:rerun-if-changed=../assets/evoparseq.ico");
     if !env::var("TARGET")
         .unwrap_or_default()
         .contains("windows-msvc")
@@ -33,7 +34,7 @@ fn main() {
         return;
     }
     let output = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    let icon = fs::canonicalize("../assets/parsec.ico").expect("Application icon missing");
+    let icon = fs::canonicalize("../assets/evoparseq.ico").expect("Application icon missing");
     let icon = icon
         .display()
         .to_string()
@@ -57,8 +58,8 @@ BEGIN
  BEGIN
   BLOCK "040904B0"
   BEGIN
-   VALUE "FileDescription", "ParsecWebTurn native client\0"
-   VALUE "ProductName", "ParsecWebTurn\0"
+   VALUE "FileDescription", "EvoParseq native client\0"
+   VALUE "ProductName", "EvoParseq\0"
    VALUE "FileVersion", "{version}\0"
    VALUE "ProductVersion", "{version}\0"
   END

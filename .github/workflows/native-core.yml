@@ -1,0 +1,147 @@
+name: EvoParseq native client
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-core-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-native
+          cache-on-failure: true
+      - name: Verify EvoParseq macOS build
+        run: |
+          set -eu
+          target=aarch64-apple-darwin
+          cargo clippy --locked --manifest-path src-native/Cargo.toml --target $target --workspace --all-targets --all-features -- -D warnings
+          cargo clippy --locked --manifest-path src-native/crates/bud/Cargo.toml --target $target --workspace --all-targets --all-features -- -D warnings
+          cargo test --locked --manifest-path src-native/Cargo.toml --target $target -p dtls --lib -- --test-threads=1
+          cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml --target $target -p lowlat-crypto -- --test-threads=1
+          cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml --target $target -p evoparseq-bud -- --test-threads=1
+          cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml --target $target -p lowlat-client --features external-video,turn-stream,usb-hid-input -- --test-threads=1
+          cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml --target $target -p lowlat-net --features turn-stream -- --test-threads=1
+          cargo test --locked --manifest-path src-native/Cargo.toml --target $target -- --test-threads=1
+          ./scripts/package-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EvoParseq-macos
+          path: |
+            dist/EvoParseq-v*-macos-*.zip
+            dist/SHA256SUMS-macos.txt
+          if-no-files-found: error
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: src-native
+          cache-on-failure: true
+      - name: Prepare optional RTX Video SDK
+        shell: pwsh
+        run: ./scripts/fetch-rtx-video-sdk.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'rtx-video-sdk-1.1.0')
+      - name: Verify EvoParseq native build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo fmt --manifest-path src-native/Cargo.toml -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
+          $nativeTree = cargo tree --locked --manifest-path src-native/Cargo.toml --target x86_64-pc-windows-msvc --edges normal,build,dev --prefix none
+          if ($LASTEXITCODE -ne 0) { throw 'Native dependency audit failed' }
+          if ($nativeTree | Select-String '^(wasmtime|cranelift|glow|lowlat-(sdk|host|daemon|capture|encode))') { throw 'Unexpected legacy/host dependency in native runtime build' }
+          if ($nativeTree | Select-String '^(jni|jni-sys|ndk|ndk-sys|rtrb|evoparseq-tv) v') { throw 'Android adapter dependency leaked into Windows build' }
+          if ($nativeTree | Select-String '^(bincode |crypto-bigint v0\.5\.)') { throw 'Unused state exporter/browser certificate dependency returned' }
+          # The upstream Opus buildscript does not track CMake toolchain changes.
+          # Do not reuse /MD objects restored from an older dependency cache.
+          cargo clean --manifest-path src-native/Cargo.toml -p libopus_sys
+          if ($LASTEXITCODE -ne 0) { throw 'Opus cache reset failed' }
+          cargo clean --manifest-path src-native/Cargo.toml --release -p libopus_sys
+          if ($LASTEXITCODE -ne 0) { throw 'Release Opus cache reset failed' }
+          $env:EVOPARSEQ_UI_CAPTURE = Join-Path (Get-Location) "dist/native-core/session-panel.png"
+          $env:EVOPARSEQ_STATS_CAPTURE = Join-Path (Get-Location) "dist/native-core/stats"
+          cargo test --locked --manifest-path src-native/Cargo.toml -p dtls --lib -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'DTLS crypto and protocol regression tests failed' }
+          cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml -p lowlat-crypto -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'BUD credential and record compatibility regression failed' }
+          cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml -p evoparseq-bud -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'BUD application control routing regression failed' }
+          cargo test --locked --manifest-path src-native/crates/bud/Cargo.toml -p lowlat-client --features external-video,turn-stream,usb-hid-input -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'BUD control and HID regression tests failed' }
+          cargo test --locked --manifest-path src-native/crates/video/Cargo.toml -p lowlat-drivers evoparseq_main10_tests -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'AMF component selection regression failed' }
+          cargo test --locked --manifest-path src-native/crates/video/Cargo.toml -p lowlat-drivers vpl::ai::tests -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Intel AI VPL contract tests failed' }
+          cargo test --locked --manifest-path src-native/crates/video/Cargo.toml -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'GPU surface format and ownership regression tests failed' }
+          cargo test --locked --manifest-path src-native/Cargo.toml -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Native core and shared regression tests failed' }
+          # This existing capture test owns foreground/cursor state. Run alone
+          # after the other UI tests, which otherwise steal its foreground focus.
+          cargo test --locked --manifest-path src-native/Cargo.toml immersive_native_capture_lifecycle -- --ignored --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Isolated immersive/camera capture regression failed' }
+          cargo build --locked --release --manifest-path src-native/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw 'Native core build failed' }
+          New-Item -ItemType Directory -Path dist/native-core -Force | Out-Null
+          $nativeTree | Set-Content -LiteralPath dist/native-core/dependencies.txt -Encoding utf8
+          Copy-Item -LiteralPath src-native/target/x86_64-pc-windows-msvc/release/evoparseq.exe -Destination dist/native-core/EvoParseq.exe
+          & ./dist/native-core/EvoParseq.exe --version
+          if ($LASTEXITCODE -ne 0) { throw 'Native version probe failed' }
+          & ./scripts/package-native.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Portable packaging failed' }
+          $packageVersion = (Get-Content VERSION -Raw).Trim()
+          $packageRoot = Get-ChildItem -Path "dist/evoparseq-package-*/EvoParseq-v$packageVersion-win64" -Directory | Select-Object -Last 1
+          Copy-Item -Path (Join-Path $packageRoot.FullName '*') -Destination dist/native-core -Force
+          Copy-Item -LiteralPath docs/native-core.md -Destination dist/native-core/README.md
+          Copy-Item -LiteralPath LICENSE -Destination dist/native-core/LICENSE
+          Copy-Item -LiteralPath src-native/crates/bud/vendor/lowlat-client/LICENSE -Destination dist/native-core/LOWLAT-LICENSE.txt
+          git rev-parse HEAD | Set-Content -LiteralPath dist/native-core/SOURCE.txt -Encoding ascii
+          Get-FileHash -Algorithm SHA256 dist/native-core/EvoParseq.exe | Format-List | Out-String | Set-Content -LiteralPath dist/native-core/SHA256.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: EvoParseq-win64
+          path: dist/native-core/*
+          if-no-files-found: error
+      - name: Verify migration ZIP contents
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packageVersion = (Get-Content VERSION -Raw).Trim()
+          $expectedHash = (Get-FileHash dist/native-core/EvoParseq.exe).Hash
+          foreach ($product in @('EvoParseq', 'ParsecWebTurn')) {
+            $archive = [IO.Compression.ZipFile]::OpenRead((Join-Path (Get-Location) "dist/$product-v$packageVersion-win64.zip"))
+            try {
+              $executables = @($archive.Entries | Where-Object FullName -like '*.exe')
+              if ($executables.Count -ne 1 -or $executables[0].Name -ne "$product.exe") { throw 'Unexpected ZIP executable layout' }
+              if ($archive.Entries | Where-Object Name -eq 'settings.json') { throw 'User settings must not be packaged' }
+              if (!($archive.Entries | Where-Object Name -eq 'MIGRATION.md')) { throw 'Migration guide missing' }
+              $stream = $executables[0].Open()
+              try {
+                $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream))
+                if ($hash -ne $expectedHash) { throw 'ZIP executable hash mismatch' }
+              } finally { $stream.Dispose() }
+            } finally { $archive.Dispose() }
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: EvoParseq-update-packages
+          path: |
+            dist/EvoParseq-v*-win64.zip
+            dist/ParsecWebTurn-v*-win64.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error

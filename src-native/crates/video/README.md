@@ -11,8 +11,9 @@ write; original-surface presentation omits that application pass. Windows/driver
 internal copies and direct scanout are not established.
 
 `direct.rs` derives parameter staging from MIT-licensed lowlat revision
-5f8db5689e55de0d396b0520824caa9fc053dd86. Exporters, CPU pixel paths, full chroma
-and high-depth profiles were omitted. Driver bindings and parser dependencies
+5f8db5689e55de0d396b0520824caa9fc053dd86. Exporters and CPU pixel paths were omitted. Native-core full chroma uses
+AYUV (8-bit) or Y410 (10-bit) original decoder textures on the existing normal
+GPU conversion/output pass. Original-surface presentation remains NV12-only. Driver bindings and parser dependencies
 remain pinned; the original license is in LICENSE-lowlat.
 
 The earlier direct H.264 comparison path was removed: this backend is HEVC-only.
@@ -25,3 +26,29 @@ at most two renderer reads until a GPU fence completes; original presentation
 retains at most two display leases. Busy display updates can be skipped without
 dropping encoded reference pictures or adding GPU waits/copies. AMF's existing
 low-latency and no-SurfaceCopy settings remain unchanged.
+
+## Cropped AMF initialization
+
+The application supplies coded and visible SPS dimensions separately. Our AMF
+adapter initializes the existing NV12 component at the visible size, following
+the older-runtime issue documented by lowlat commit
+`2529df60b4b9f28c1e9a22a00db8abc15ed72589`. Coded-size limits and both size
+checks remain in place. Existing low-latency settings, surface ownership,
+rendering crop coordinates and recovery are retained; Intel/D3D11 decoder
+initialization still uses its original coded-size contract. No dependency pin,
+SDK implementation, decoded-frame copy or CPU readback is changed.
+
+## Optional AMD AMF Main10
+
+The default HEVC 4:2:0 Main10 path remains Media Foundation. The Video tab's
+experimental AMF Main10 checkbox allows an explicit comparison on AMD, using
+`AMFVideoDecoderHW_H265_MAIN10` initialized as P010. Selection follows actual
+SPS depth, not the requested host flags. Eight-bit AMF retains NV12 and its
+original component. Low-latency, no-SurfaceCopy and same-device ownership rules
+are unchanged; format/order/runtime errors use the existing MF recovery.
+
+P010 flows directly to the existing D3D11 processor/RGB10 output path, with no
+additional decoded-frame copy, readback, conversion pass, or parallel decoder.
+Original-surface presentation remains NV12-only. Hardware load and performance
+versus MF are unmeasured; the preference defaults off. The pinned driver binding
+has a local, layout-selecting factory patch; see `../../vendor/lowlat-drivers/EVOPARSEQ.md`.

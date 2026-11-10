@@ -1,4 +1,4 @@
-//! Native Win32 window. Its UI thread blocks in GetMessage; WASM runs separately.
+//! Native Win32 window; its UI thread blocks in GetMessage.
 use anyhow::{bail, Result};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -6,55 +6,44 @@ use std::sync::{
 };
 use windows_sys::Win32::{
     Foundation::*,
-    Graphics::{Gdi::*, OpenGL::*},
+    Graphics::Gdi::*,
     System::{DataExchange::*, LibraryLoader::*},
     UI::Input::{KeyboardAndMouse::*, *},
     UI::WindowsAndMessaging::*,
 };
 
-pub use crate::window_event::Event;
+pub use crate::native_core::session_model::Event;
 
 pub struct Window {
+    pub(crate) audio_output: crate::audio_output::Output,
+    pub(crate) native_panel: AtomicUsize,
+
+    pub(crate) native_session_button: AtomicUsize,
+
+    pub(crate) session: crate::native_core::session_model::State,
     pub stats: Arc<crate::stats::Shared>,
     stats_page: AtomicUsize,
-    pub updates: Arc<crate::updater::State>,
-    updates_page: AtomicUsize,
-    core_version: Arc<crate::core_version::State>,
-    about_page: AtomicUsize,
+    info_pages: Arc<crate::updater_ui::Pages>,
+
     connection_settings: Mutex<Option<Arc<crate::connection_settings::Manager>>>,
     settings_page: AtomicUsize,
     // Covers construction and destruction as well as the visible page. Its HWND
     // is not available until open() has already painted the native controls.
     settings_active: AtomicBool,
-    pub gui_visibility: crate::gui_visibility::State,
     pub hwnd: AtomicUsize,
     pub closing: AtomicBool,
-    pub active_contexts: AtomicUsize,
     pub events: crate::event_queue::Queue<Event>,
     pub dimensions: Mutex<(i32, i32)>,
-    pub overlay: Mutex<crate::overlay::Shared>,
-    pub software_overlay_enabled: AtomicBool,
-    software_pending: Mutex<crate::overlay_software::Pending>,
-    software_presenter: Mutex<crate::overlay_software::Presenter>,
-    pub graphics: Mutex<Option<crate::graphics::GraphicsReport>>,
-    pub audio_registry: Mutex<crate::audio_windows::Registry>,
+
     pub video_report: Mutex<Option<crate::video_output::Snapshot>>,
     video_hwnd: AtomicUsize,
     video_create_failed: AtomicBool,
     video_ready: AtomicBool,
     video_generation: Mutex<u64>,
     video_visible: AtomicBool,
-    #[cfg(any(test, feature = "diagnostics"))]
-    pub capture: Mutex<Option<std::path::PathBuf>>,
-    #[cfg(any(test, feature = "diagnostics"))]
-    pub synthetic_login: bool,
-    #[cfg(any(test, feature = "diagnostics"))]
-    pub script_steps: AtomicUsize,
-    pub run_seconds: u64,
-    pub live: bool,
+
     pub online: bool,
-    #[cfg(any(test, feature = "diagnostics"))]
-    pub network_origin_audit: bool,
+
     pub stop: Arc<crate::lifecycle::StopSignal>,
     relative_mouse: AtomicBool,
     #[cfg(feature = "bud")]
@@ -68,8 +57,8 @@ pub struct Window {
     relative_anchor: Mutex<Option<(i32, i32)>>,
     has_focus: AtomicBool,
     clipboard_pending: AtomicBool,
-    input_state: Mutex<crate::core_input::State>,
-    core_hotkeys: Mutex<Option<crate::core_hotkeys::Binding>>,
+    input_state: Mutex<crate::input_state::State>,
+
     mouse_clipped: AtomicBool,
     input_suspended: AtomicBool,
     host_cursor: Mutex<Option<(i32, i32, bool)>>,
@@ -79,6 +68,7 @@ pub struct Window {
     keyboard_grab: Mutex<crate::keyboard_grab::State>,
     pressed_buttons: AtomicUsize,
     pressed_keys: Mutex<std::collections::BTreeSet<&'static str>>,
+    local_shortcuts: Mutex<crate::input::Shortcuts>,
     text_decoder: Mutex<crate::input::TextDecoder>,
     cursor_pending: Mutex<crate::cursor::Pending>,
     cursor_posted: AtomicBool,
@@ -91,32 +81,47 @@ pub struct Window {
 }
 
 impl Window {
+    unsafe fn route_shortcut(&self, message: &MSG) -> bool {
+        use crate::input::{Shortcut, ShortcutRoute};
+        let Some(key) =
+            crate::input_windows::key_message(message.message, message.wParam, message.lParam)
+        else {
+            return false;
+        };
+        // A posted hook event must not restore remote input after focus/menu loss.
+        if message.message == crate::input_windows::CAPTURED_KEY
+            && (!crate::keyboard_grab::current(message.wParam) || !self.input_allowed())
+        {
+            return true;
+        }
+        let action =
+            crate::input::shortcut(key.code, key.modifiers).filter(|action| match action {
+                Shortcut::Statistics => true,
+                Shortcut::Menu | Shortcut::SecureAttention => !self.settings_open(),
+                _ => !self.settings_open() && message.hwnd == self.handle(),
+            });
+        let route = self
+            .local_shortcuts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .route(key.code, key.down, key.repeated, action);
+        match route {
+            ShortcutRoute::Forward => return false,
+            ShortcutRoute::Consume => {}
+            ShortcutRoute::Activate(Shortcut::Menu) => self.native_toggle_overlay(),
+            ShortcutRoute::Activate(Shortcut::Statistics) => self.open_stats(),
+            ShortcutRoute::Activate(Shortcut::SecureAttention) => self.push(Event::NativeSession(
+                crate::native_core::session_model::Command::SecureAttention,
+            )),
+            ShortcutRoute::Activate(action) => self.push(Event::Shortcut(action)),
+        }
+        true
+    }
     unsafe fn open_about(&self) {
-        self.core_version.check();
-        let existing = self.about_page.load(Ordering::Acquire) as HWND;
-        if !existing.is_null() {
-            ShowWindow(existing, SW_RESTORE);
-            SetForegroundWindow(existing);
-            return;
-        }
-        let page = crate::updater_ui::open_about(self.handle(), self.core_version.clone());
-        self.about_page.store(page as usize, Ordering::Release);
+        self.info_pages
+            .open(self.handle(), crate::updater::Mode::About);
     }
-    unsafe fn open_updates(&self, check: bool, activate: bool) {
-        if check {
-            self.updates.check(false);
-        }
-        let existing = self.updates_page.load(Ordering::Acquire) as HWND;
-        if !existing.is_null() {
-            if activate {
-                ShowWindow(existing, SW_RESTORE);
-                SetForegroundWindow(existing);
-            }
-            return;
-        }
-        let page = crate::updater_ui::open(self.handle(), self.updates.clone(), activate);
-        self.updates_page.store(page as usize, Ordering::Release);
-    }
+
     unsafe fn open_stats(&self) {
         let existing = self.stats_page.load(Ordering::Acquire) as HWND;
         if !existing.is_null() {
@@ -127,67 +132,43 @@ impl Window {
         let page = crate::stats_ui::open(self.handle(), self.stats.clone());
         self.stats_page.store(page as usize, Ordering::Release);
     }
-    pub fn create(
-        synthetic_login: bool,
-        live: bool,
-        online: bool,
-        network_origin_audit: bool,
-    ) -> Result<Arc<Self>> {
-        Self::create_mode(synthetic_login, live, online, network_origin_audit, true)
+
+    // The native window uses Win32/GDI controls beside the GPU video surface.
+
+    pub fn create_native() -> Result<Arc<Self>> {
+        Self::create_mode(true)
     }
 
-    // The standalone D3D11 test has no OpenGL UI and must not depend on WGL.
-    #[cfg(feature = "diagnostics")]
-    pub fn create_video_probe() -> Result<Arc<Self>> {
-        Self::create_mode(false, true, false, false, false)
-    }
-
-    fn create_mode(
-        synthetic_login: bool,
-        live: bool,
-        online: bool,
-        _network_origin_audit: bool,
-        opengl_required: bool,
-    ) -> Result<Arc<Self>> {
+    fn create_mode(online: bool) -> Result<Arc<Self>> {
         let state = Arc::new(Self {
+            audio_output: Default::default(),
             stats: Default::default(),
+
+            native_panel: AtomicUsize::new(0),
+
+            native_session_button: AtomicUsize::new(0),
+
+            session: Default::default(),
             stats_page: AtomicUsize::new(0),
-            updates: Default::default(),
-            updates_page: AtomicUsize::new(0),
-            core_version: Default::default(),
-            about_page: AtomicUsize::new(0),
+            info_pages: Default::default(),
+
             connection_settings: Default::default(),
             settings_page: AtomicUsize::new(0),
             settings_active: AtomicBool::new(false),
-            gui_visibility: Default::default(),
             hwnd: AtomicUsize::new(0),
             closing: AtomicBool::new(false),
-            active_contexts: AtomicUsize::new(0),
-            events: Default::default(),
+            events: crate::event_queue::Queue::input(),
             dimensions: Mutex::new((1024, 720)),
-            graphics: Default::default(),
-            overlay: Default::default(),
-            software_overlay_enabled: AtomicBool::new(true),
-            software_pending: Default::default(),
-            software_presenter: Default::default(),
+
             video_report: Default::default(),
-            audio_registry: Default::default(),
             video_hwnd: AtomicUsize::new(0),
             video_create_failed: AtomicBool::new(false),
             video_ready: AtomicBool::new(false),
             video_generation: Mutex::new(0),
             video_visible: AtomicBool::new(true),
-            #[cfg(any(test, feature = "diagnostics"))]
-            capture: Default::default(),
-            #[cfg(any(test, feature = "diagnostics"))]
-            synthetic_login,
-            #[cfg(any(test, feature = "diagnostics"))]
-            script_steps: AtomicUsize::new(0),
-            run_seconds: if synthetic_login { 20 } else { 8 },
-            live,
+
             online,
-            #[cfg(any(test, feature = "diagnostics"))]
-            network_origin_audit: _network_origin_audit,
+
             stop: Default::default(),
             relative_mouse: AtomicBool::new(false),
             #[cfg(feature = "bud")]
@@ -202,7 +183,7 @@ impl Window {
             has_focus: AtomicBool::new(false),
             clipboard_pending: AtomicBool::new(false),
             input_state: Default::default(),
-            core_hotkeys: Default::default(),
+
             mouse_clipped: AtomicBool::new(false),
             input_suspended: AtomicBool::new(false),
             host_cursor: Default::default(),
@@ -212,6 +193,7 @@ impl Window {
             keyboard_grab: Default::default(),
             pressed_buttons: AtomicUsize::new(0),
             pressed_keys: Default::default(),
+            local_shortcuts: Default::default(),
             text_decoder: Default::default(),
             cursor_pending: Default::default(),
             cursor_posted: AtomicBool::new(false),
@@ -227,25 +209,26 @@ impl Window {
         std::thread::spawn(move || {
             // SAFETY: all window creation/destruction and message dispatch run
             // on this thread. Arc keeps the userdata alive until dispatch ends.
-            let outcome = unsafe { create_window(&ui, opengl_required) };
+            let outcome = unsafe { create_window(&ui) };
             match outcome {
                 Ok(hwnd) => {
                     ui.hwnd.store(hwnd as usize, Ordering::Release);
                     let _ = tx.send(Ok(()));
                     unsafe {
                         let mut msg: MSG = std::mem::zeroed();
+
                         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
-                            if msg.message == WM_KEYDOWN
-                                && msg.wParam == b'S' as usize
-                                && GetKeyState(VK_CONTROL as i32) < 0
-                                && GetKeyState(VK_SHIFT as i32) < 0
-                                && !ui.core_owns_key("KeyS", modifiers())
-                            {
-                                if msg.lParam & (1 << 30) == 0 {
-                                    ui.open_stats();
-                                }
+                            if ui.info_pages.dialog(&msg) {
                                 continue;
                             }
+                            if ui.route_shortcut(&msg) {
+                                continue;
+                            }
+
+                            if crate::native_core::session_ui::dialog(hwnd, &msg) {
+                                continue;
+                            }
+
                             let page = ui.settings_page.load(Ordering::Acquire) as HWND;
                             if !page.is_null() && (msg.hwnd == page || IsChild(page, msg.hwnd) != 0)
                             {
@@ -257,26 +240,13 @@ impl Window {
                                     continue;
                                 }
                             }
-                            let updates = [
-                                ui.updates_page.load(Ordering::Acquire),
-                                ui.about_page.load(Ordering::Acquire),
-                            ]
-                            .into_iter()
-                            .map(|h| h as HWND)
-                            .find(|h| {
-                                !h.is_null() && (msg.hwnd == *h || IsChild(*h, msg.hwnd) != 0)
-                            })
-                            .unwrap_or(std::ptr::null_mut());
-                            if !updates.is_null()
-                                && (msg.hwnd == updates || IsChild(updates, msg.hwnd) != 0)
+
+                            let stats = ui.stats_page.load(Ordering::Acquire) as HWND;
+                            if !stats.is_null()
+                                && (msg.hwnd == stats || IsChild(stats, msg.hwnd) != 0)
+                                && IsDialogMessageW(stats, &msg) != 0
                             {
-                                if msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE as usize {
-                                    PostMessageW(updates, WM_CLOSE, 0, 0);
-                                    continue;
-                                }
-                                if IsDialogMessageW(updates, &msg) != 0 {
-                                    continue;
-                                }
+                                continue;
                             }
                             TranslateMessage(&msg);
                             DispatchMessageW(&msg);
@@ -297,25 +267,29 @@ impl Window {
     pub fn handle(&self) -> HWND {
         self.hwnd.load(Ordering::Acquire) as HWND
     }
-    pub fn bind_core_hotkeys(&self, binding: crate::core_hotkeys::Binding) {
-        *self.core_hotkeys.lock().unwrap_or_else(|e| e.into_inner()) = Some(binding);
-    }
-    fn core_owns_key(&self, code: &str, mods: i32) -> bool {
-        self.core_hotkeys
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .is_some_and(|binding| binding.owns(code, mods).unwrap_or(true))
+
+    fn native_menu_allows_input(&self) -> bool {
+        {
+            self.native_panel.load(Ordering::Acquire) == 0
+        }
     }
     pub fn settings_open(&self) -> bool {
         self.settings_active.load(Ordering::Acquire)
     }
-    pub fn repaint_settings_after_gl_pause(&self) {
-        // The GL worker has passed its last swap. Queue one final native paint
-        // on the UI thread in case that in-flight swap covered initial paint.
-        unsafe {
-            PostMessageW(self.handle(), WM_APP + 15, 0, 0);
-        }
+
+    pub fn native_input_allowed(&self) -> bool {
+        self.native_menu_allows_input()
+            && self.has_focus.load(Ordering::Acquire)
+            && self.video_ready.load(Ordering::Acquire)
+            && self.video_visible.load(Ordering::Acquire)
+            && !self.settings_open()
+            && !self.input_suspended.load(Ordering::Acquire)
+            && !self.closing.load(Ordering::Acquire)
+            && !self
+                .input_state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .detached
     }
     #[cfg(feature = "vendor-video")]
     pub fn direct_presentation_allowed(&self) -> bool {
@@ -330,6 +304,22 @@ impl Window {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .is_some_and(|manager| manager.view().0.experimental_zero_copy)
+    }
+    pub fn ai_upscale_quality(&self) -> u8 {
+        let settings = self
+            .connection_settings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|manager| manager.view().0);
+        settings.map_or(0, |settings| {
+            let vendor = settings
+                .video_gpu
+                .as_ref()
+                .map(|g| g.vendor_id)
+                .or_else(|| crate::video_windows::video_gpu_vendor(None));
+            settings.ai_upscale_quality(vendor)
+        })
     }
     pub fn video_gpu(&self) -> Option<crate::connection_settings::GpuPreference> {
         self.connection_settings
@@ -383,10 +373,8 @@ impl Window {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         if let Some(manager) = manager {
-            // Suspend GL swaps before open() creates/shows/paints the GDI child,
-            // not after it returns. The video surface must also be hidden first.
+            // Suspend input and hide video before painting the GDI settings child.
             self.settings_active.store(true, Ordering::Release);
-            self.gui_visibility.cover(true);
             self.input_suspended.store(true, Ordering::Release);
             self.apply_input_capture();
             self.apply_relative_mouse(false);
@@ -395,7 +383,6 @@ impl Window {
             self.settings_page.store(page as usize, Ordering::Release);
             if page.is_null() {
                 self.settings_active.store(false, Ordering::Release);
-                self.gui_visibility.cover(false);
                 self.redraw_client();
             }
             self.input_suspended.store(false, Ordering::Release);
@@ -482,23 +469,7 @@ impl Window {
         self.set_relative_mouse(false);
         self.set_keyboard_grab(false);
     }
-    pub fn publish_software_overlay(&self, frame: &crate::overlay::Frame) {
-        if !self.software_overlay_enabled.load(Ordering::Acquire)
-            || !self.video_ready.load(Ordering::Acquire)
-        {
-            return;
-        }
-        // Rasterize on the GUI render worker, never on the input/UI/video worker.
-        let surface = crate::overlay_software::rasterize(frame);
-        let mut pending = self
-            .software_pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        pending.surface = surface;
-        if !pending.posted {
-            pending.posted = unsafe { PostMessageW(self.handle(), WM_APP + 14, 0, 0) != 0 };
-        }
-    }
+
     unsafe fn show_video_surface(&self) {
         let hwnd = self.video_hwnd.load(Ordering::Acquire) as HWND;
         if !hwnd.is_null() {
@@ -507,13 +478,9 @@ impl Window {
                 && self.video_visible.load(Ordering::Acquire)
                 && !self.closing.load(Ordering::Acquire);
             ShowWindow(hwnd, if show { SW_SHOWNA } else { SW_HIDE });
-            if !show {
-                self.software_presenter
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .hide();
-            }
         }
+
+        crate::native_core::session_ui::raise(self);
         self.apply_input_capture();
     }
 
@@ -541,7 +508,11 @@ impl Window {
         let bit = 1usize << button;
         if down {
             self.pressed_buttons.fetch_or(bit, Ordering::AcqRel);
-            SetCapture(self.handle());
+            // Reacquiring our own capture can send WM_CAPTURECHANGED and
+            // synthesize releases for every held button during a chord.
+            if GetCapture() != self.handle() {
+                SetCapture(self.handle());
+            }
         } else if self.pressed_buttons.fetch_and(!bit, Ordering::AcqRel) & !bit == 0
             && GetCapture() == self.handle()
         {
@@ -570,9 +541,7 @@ impl Window {
     }
 
     pub fn set_relative_mouse(&self, enabled: bool) {
-        // The browser build omits the native `relative || hidden` rule because
-        // MTY_AppCanWarpCursor returns false. Known native host intent takes
-        // precedence over that browser-specific pointer-lock callback.
+        // Preserve known host intent across temporary local capture changes.
         let enabled = self
             .host_cursor
             .lock()
@@ -591,7 +560,7 @@ impl Window {
             || self.settings_open()
             || state.detached;
         let previous = self.relative_requested.load(Ordering::Acquire);
-        // The core may issue an unlock while focus/detach temporarily suspends
+        // The session may issue an unlock while focus/detach temporarily suspends
         // acquisition. Keep the host's relative request for the next activation.
         if authoritative || enabled || !suspended {
             self.relative_requested.store(enabled, Ordering::Release);
@@ -607,30 +576,12 @@ impl Window {
             PostMessageW(self.handle(), WM_APP + 7, 0, 0);
         }
     }
-    pub fn host_cursor_event(&self, event: &serde_json::Value) {
-        if event["type"].as_i64() != Some(1) {
-            return;
-        }
-        let cursor = &event["cursor"];
-        if let (Some(x), Some(y), Some(relative), Some(hidden)) = (
-            cursor["positionX"]
-                .as_i64()
-                .and_then(|v| i32::try_from(v).ok()),
-            cursor["positionY"]
-                .as_i64()
-                .and_then(|v| i32::try_from(v).ok()),
-            cursor["relative"].as_bool(),
-            cursor["hidden"].as_bool(),
-        ) {
-            self.set_host_cursor(x, y, relative, hidden);
-        }
-    }
-    fn set_host_cursor(&self, x: i32, y: i32, relative: bool, hidden: bool) {
+    pub fn set_host_cursor(&self, x: i32, y: i32, relative: bool, hidden: bool) {
         // Parsec SDK cursor_func and lowlat both use OR. A hidden-only event
         // must acquire native relative input too; button state is not evidence.
-        let relative = relative || hidden;
+        let relative = crate::desktop_input::relative_capture(relative, hidden);
         *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner()) = Some((x, y, relative));
-        // When capture is suspended, the guest already sees relative=false and
+        // When capture is suspended, the input consumer already sees relative=false and
         // may omit its redundant unlock. Do not retain a stale relative request.
         if relative != self.relative_requested.load(Ordering::Acquire) {
             // A host transition is permanent, including while unfocused.
@@ -688,7 +639,7 @@ impl Window {
             PostMessageW(self.handle(), WM_APP + 12, 0, 0);
         }
     }
-    pub fn set_input_state(&self, state: crate::core_input::State) {
+    pub fn set_input_state(&self, state: crate::input_state::State) {
         let mut current = self.input_state.lock().unwrap_or_else(|e| e.into_inner());
         let keyboard_changed = self
             .keyboard_requested
@@ -703,7 +654,8 @@ impl Window {
         }
     }
     unsafe fn input_allowed(&self) -> bool {
-        GetForegroundWindow() == self.handle()
+        self.native_menu_allows_input()
+            && GetForegroundWindow() == self.handle()
             && GetFocus() == self.handle()
             && IsIconic(self.handle()) == 0
             && self.video_ready.load(Ordering::Acquire)
@@ -785,7 +737,7 @@ impl Window {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                     {
-                        // Native Matoya holds relative capture at one screen
+                        // The native input model holds relative capture at one screen
                         // pixel; movement comes from Raw Input, not OS position.
                         let x = x.clamp(rect.left, rect.right - 1);
                         let y = y.clamp(rect.top, rect.bottom - 1);
@@ -901,24 +853,11 @@ impl Window {
         } else {
             self.select_client_cursor();
         }
-        // A rejected request must also report the actual state to the guest.
+        // Report the actual acquisition state to the input consumer, including rejection.
         self.relative_mouse.store(acquired, Ordering::Release);
         self.push(Event::RelativeMode(acquired));
     }
 
-    pub fn initial_geometry(&self) -> (i32, i32, i32, i32, bool) {
-        unsafe {
-            let mut origin = POINT { x: 0, y: 0 };
-            ClientToScreen(self.handle(), &mut origin);
-            (
-                origin.x,
-                origin.y,
-                GetSystemMetrics(SM_CXSCREEN),
-                GetSystemMetrics(SM_CYSCREEN),
-                GetForegroundWindow() == self.handle(),
-            )
-        }
-    }
     pub fn close(&self) {
         self.request_stop();
         unsafe {
@@ -946,6 +885,69 @@ impl Window {
                     self.cursor_posted.store(false, Ordering::Release);
                 }
             }
+        }
+    }
+
+    pub fn native_fullscreen(&self) -> bool {
+        self.fullscreen_active.load(Ordering::Acquire)
+    }
+
+    pub fn native_toggle_overlay(&self) {
+        unsafe {
+            PostMessageW(
+                self.handle(),
+                WM_COMMAND,
+                crate::native_core::session_ui::OPEN_SHORTCUT,
+                0,
+            );
+        }
+    }
+
+    pub fn native_session_button_hidden(&self) -> bool {
+        self.connection_settings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|manager| manager.native_session_button_hidden())
+    }
+
+    pub fn native_refresh_overlay(&self) {
+        unsafe {
+            PostMessageW(
+                self.handle(),
+                crate::native_core::session_ui::VISIBILITY,
+                0,
+                0,
+            );
+        }
+    }
+
+    pub fn native_display_size(&self) -> (u32, u32) {
+        unsafe {
+            let monitor = MonitorFromWindow(self.handle(), MONITOR_DEFAULTTONEAREST);
+            let mut info: MONITORINFOEXW = std::mem::zeroed();
+            info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+            if GetMonitorInfoW(monitor, &mut info.monitorInfo) != 0 {
+                let mut mode: DEVMODEW = std::mem::zeroed();
+                mode.dmSize = std::mem::size_of::<DEVMODEW>() as u16;
+                // EnumDisplaySettings gives physical display pixels even for a DPI-
+                // virtualized UI; client-area or work-area sizes are not resolutions.
+                if EnumDisplaySettingsW(info.szDevice.as_ptr(), ENUM_CURRENT_SETTINGS, &mut mode)
+                    != 0
+                {
+                    return (mode.dmPelsWidth.max(1), mode.dmPelsHeight.max(1));
+                }
+                return (
+                    (info.monitorInfo.rcMonitor.right - info.monitorInfo.rcMonitor.left).max(1)
+                        as u32,
+                    (info.monitorInfo.rcMonitor.bottom - info.monitorInfo.rcMonitor.top).max(1)
+                        as u32,
+                );
+            }
+            (
+                GetSystemMetrics(SM_CXSCREEN).max(1) as u32,
+                GetSystemMetrics(SM_CYSCREEN).max(1) as u32,
+            )
         }
     }
     pub fn set_fullscreen(&self, enable: bool) {
@@ -998,21 +1000,26 @@ impl Window {
         self.events.push(event);
     }
     fn raw_mouse_motion(&self, mouse: &RAWMOUSE) {
-        if self.relative_mouse.load(Ordering::Acquire) && mouse.usFlags & MOUSE_MOVE_ABSOLUTE == 0 {
-            self.push(Event::RelativeMotion(mouse.lLastX, mouse.lLastY));
+        if let Some(event) =
+            crate::input_windows::raw_motion(mouse, self.relative_mouse.load(Ordering::Acquire))
+        {
+            self.push(event);
         }
     }
 }
 
-unsafe fn create_window(state: &Arc<Window>, opengl_required: bool) -> Result<HWND> {
+unsafe fn create_window(state: &Arc<Window>) -> Result<HWND> {
     let instance = GetModuleHandleW(std::ptr::null());
-    let name: Vec<u16> = "ParsecWebTurnNative\0".encode_utf16().collect();
+    let name: Vec<u16> = "EvoParseqNative\0".encode_utf16().collect();
     let class = WNDCLASSW {
         style: CS_OWNDC | CS_HREDRAW | CS_VREDRAW,
         lpfnWndProc: Some(window_proc),
         hInstance: instance,
         hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
-        hIcon: LoadIconW(instance, std::ptr::without_provenance(1)),
+        hIcon: crate::branding::icon(),
+        // The native UI does not repaint this background while
+        // signaling and the first decoder frame are still pending.
+        hbrBackground: GetStockObject(BLACK_BRUSH) as HBRUSH,
         lpszClassName: name.as_ptr(),
         ..std::mem::zeroed()
     };
@@ -1037,33 +1044,7 @@ unsafe fn create_window(state: &Arc<Window>, opengl_required: bool) -> Result<HW
     if hwnd.is_null() {
         bail!("CreateWindowExW failed: {}", GetLastError());
     }
-    if opengl_required {
-        let dc = GetDC(hwnd);
-        let descriptor = PIXELFORMATDESCRIPTOR {
-            nSize: std::mem::size_of::<PIXELFORMATDESCRIPTOR>() as u16,
-            nVersion: 1,
-            dwFlags: PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER,
-            iPixelType: PFD_TYPE_RGBA,
-            cColorBits: 32,
-            cAlphaBits: 8,
-            ..std::mem::zeroed()
-        };
-        let format = ChoosePixelFormat(dc, &descriptor);
-        let mut actual: PIXELFORMATDESCRIPTOR = std::mem::zeroed();
-        let described = DescribePixelFormat(
-            dc,
-            format,
-            std::mem::size_of_val(&actual) as u32,
-            &mut actual,
-        );
-        let configured =
-            format != 0 && described != 0 && SetPixelFormat(dc, format, &descriptor) != 0;
-        ReleaseDC(hwnd, dc);
-        if !configured || actual.dwFlags & PFD_GENERIC_FORMAT != 0 {
-            DestroyWindow(hwnd);
-            bail!("A native accelerated OpenGL pixel format is required; no software fallback");
-        }
-    }
+
     let mut rect: RECT = std::mem::zeroed();
     GetClientRect(hwnd, &mut rect);
     *state.dimensions.lock().unwrap_or_else(|e| e.into_inner()) = (rect.right, rect.bottom);
@@ -1085,33 +1066,67 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
     let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Window;
     if !ptr.is_null() {
         let s = &*ptr;
-        let x = lp as i16 as i32;
-        let y = (lp >> 16) as i16 as i32;
         match message {
-            crate::updater_ui::CLOSED => {
-                let _ = s
-                    .about_page
-                    .compare_exchange(wp, 0, Ordering::AcqRel, Ordering::Acquire);
-                let _ = s
-                    .updates_page
-                    .compare_exchange(wp, 0, Ordering::AcqRel, Ordering::Acquire);
+            WM_ERASEBKGND => {
+                let mut rect = std::mem::zeroed();
+                GetClientRect(hwnd, &mut rect);
+                FillRect(wp as HDC, &rect, GetStockObject(BLACK_BRUSH) as HBRUSH);
+                return 1;
+            }
+
+            WM_PAINT => {
+                let mut paint: PAINTSTRUCT = std::mem::zeroed();
+                let dc = BeginPaint(hwnd, &mut paint);
+                FillRect(dc, &paint.rcPaint, GetStockObject(BLACK_BRUSH) as HBRUSH);
+                EndPaint(hwnd, &paint);
                 return 0;
             }
-            crate::updater_ui::START => {
-                SetTimer(hwnd, crate::updater_ui::NOTIFY_TIMER, 1000, None);
+
+            m if m == crate::native_core::session_ui::VISIBILITY => {
+                crate::native_core::session_ui::raise(s);
                 return 0;
             }
-            WM_TIMER if wp == crate::updater_ui::NOTIFY_TIMER => {
-                if !s.closing.load(Ordering::Acquire) && s.updates.take_notification() {
-                    s.open_updates(false, false);
-                }
-                if s.updates.view().phase != crate::updater::Phase::Checking {
-                    KillTimer(hwnd, crate::updater_ui::NOTIFY_TIMER);
+
+            WM_DRAWITEM if crate::native_core::ui::draw_button(lp) => {
+                return 1;
+            }
+
+            WM_COMMAND
+                if matches!(
+                    wp & 0xffff,
+                    crate::native_core::session_ui::OPEN
+                        | crate::native_core::session_ui::OPEN_SHORTCUT
+                ) || (lp != 0
+                    && lp as usize == s.native_session_button.load(Ordering::Acquire)
+                    && wp >> 16 == BN_CLICKED as usize) =>
+            {
+                let manager = s
+                    .connection_settings
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                if let Some(manager) = manager {
+                    if wp & 0xffff == crate::native_core::session_ui::OPEN_SHORTCUT
+                        && manager.native_session_button_hidden()
+                    {
+                        if manager
+                            .update_native(|p| p.hide_session_button = false)
+                            .is_err()
+                        {
+                            crate::event_log::record(
+                                "WARN",
+                                "native_session_button_save_failed",
+                                serde_json::json!({}),
+                            );
+                        }
+                        crate::native_core::session_ui::raise(s);
+                    }
+                    crate::native_core::session_ui::toggle(s, manager);
                 }
                 return 0;
             }
             WM_COMMAND if wp & 0xffff == crate::updater_ui::OPEN => {
-                s.open_updates(true, true);
+                s.info_pages.open(hwnd, crate::updater::Mode::Updates);
                 return 0;
             }
             m if m == WM_APP + 10 => {
@@ -1126,6 +1141,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             m if m == WM_APP + 8 => {
                 crate::connection_settings_ui::install_menu(hwnd);
+
+                crate::native_core::session_ui::install(s);
                 return 0;
             }
             m if m == WM_APP + 9 => {
@@ -1135,22 +1152,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                     // all its controls have actually finished destruction.
                     DestroyWindow(page);
                     s.settings_active.store(false, Ordering::Release);
-                    s.gui_visibility.cover(false);
                     SetFocus(hwnd);
                     s.show_video_surface();
                     s.redraw_client();
-                }
-                return 0;
-            }
-            m if m == WM_APP + 15 => {
-                let page = s.settings_page.load(Ordering::Acquire) as HWND;
-                if !page.is_null() && s.settings_open() {
-                    RedrawWindow(
-                        page,
-                        std::ptr::null(),
-                        std::ptr::null_mut(),
-                        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW,
-                    );
                 }
                 return 0;
             }
@@ -1163,9 +1167,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 return 0;
             }
             WM_KEYDOWN
-                if wp as u32 == VK_OEM_COMMA as u32
-                    && GetKeyState(VK_CONTROL as i32) < 0
-                    && !s.core_owns_key("Comma", modifiers()) =>
+                if wp as u32 == VK_OEM_COMMA as u32 && GetKeyState(VK_CONTROL as i32) < 0 =>
             {
                 if lp & (1 << 30) == 0 {
                     s.open_connection_settings();
@@ -1189,6 +1191,13 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 s.apply_relative_mouse(false);
                 s.apply_wake_lock(false, false);
                 s.request_stop();
+                return 0;
+            }
+            WM_DESTROY => {
+                s.info_pages.close();
+                // Each stream window owns this thread's message loop. Destroying
+                // its HWND must also let GetMessage finish and release the Arc.
+                PostQuitMessage(0);
                 return 0;
             }
             m if m == WM_APP + 1 => {
@@ -1226,6 +1235,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 }
                 return 0;
             }
+            WM_SETTINGCHANGE | WM_DISPLAYCHANGE | WM_DPICHANGED => {
+                crate::native_core::session_ui::display_changed(s);
+                // Reuse the existing UI thread; no process DPI-awareness change.
+                s.cursor
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .refresh_size();
+            }
             WM_SETCURSOR if lp as u16 as u32 == HTCLIENT => {
                 s.select_client_cursor();
                 return 1;
@@ -1239,8 +1256,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 let pending = s.fullscreen_pending.swap(0, Ordering::AcqRel);
                 if pending != 0 {
                     let mut fullscreen = s.fullscreen.lock().unwrap_or_else(|e| e.into_inner());
-                    // Like a rejected browser fullscreen request, an OS failure
-                    // leaves the guest running and reports the retained state.
+                    // An OS failure keeps the session running and reports the retained state.
                     if fullscreen.set(hwnd, pending == 2).is_err() {
                         crate::event_log::record(
                             "WARN",
@@ -1271,7 +1287,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             m if m == WM_APP + 5 => {
                 if s.video_hwnd.load(Ordering::Acquire) == 0 && !s.closing.load(Ordering::Acquire) {
-                    let class: Vec<u16> = "ParsecNativeVideoSurface\0".encode_utf16().collect();
+                    let class: Vec<u16> = "EvoParseqVideoSurface\0".encode_utf16().collect();
                     let (width, height) = *s.dimensions.lock().unwrap_or_else(|e| e.into_inner());
                     // Disabled child receives no input: parent retains its
                     // documented keyboard/mouse handling and window shortcuts.
@@ -1320,81 +1336,17 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 s.queue_clipboard();
                 return 0;
             }
-            m if m == WM_APP + 14 => {
-                let surface = {
-                    let mut pending = s.software_pending.lock().unwrap_or_else(|e| e.into_inner());
-                    pending.posted = false;
-                    pending.surface.take()
-                };
-                let mut presenter = s
-                    .software_presenter
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                let size = *s.dimensions.lock().unwrap_or_else(|e| e.into_inner());
-                if s.video_ready.load(Ordering::Acquire)
-                    && s.video_visible.load(Ordering::Acquire)
-                    && IsIconic(hwnd) == 0
-                    && !s.settings_open()
-                    && !s.closing.load(Ordering::Acquire)
-                {
-                    if let Some(surface) =
-                        surface.filter(|surface| surface.size == (size.0 as u32, size.1 as u32))
-                    {
-                        if !presenter.show(hwnd, &surface) {
-                            s.overlay
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .report
-                                .failure = Some("software-gui-composition-failed");
-                        }
-                    } else {
-                        presenter.hide();
-                    }
-                } else {
-                    presenter.hide();
-                }
-                return 0;
-            }
-            m if m == WM_APP + 13 => {
-                if let Some(code) =
-                    crate::input::code(wp as u32, ((lp >> 16) & 255) as u8, lp & (1 << 24) != 0)
-                {
-                    let down = lp & (1 << 31) == 0;
-                    let mut pressed = s.pressed_keys.lock().unwrap_or_else(|e| e.into_inner());
-                    if down {
-                        pressed.insert(code);
-                    } else {
-                        pressed.remove(code);
-                    }
-                    let mods = (lp & 15) as i32;
-                    s.push(Event::Key(down, code, mods));
-                }
+
+            m if m == crate::input_windows::CAPTURED_KEY => {
+                crate::input_windows::captured_key(wp, lp, &s.pressed_keys, |event| s.push(event));
                 return 0;
             }
             WM_INPUT if s.relative_mouse.load(Ordering::Acquire) => {
-                let mut raw: RAWINPUT = std::mem::zeroed();
-                let mut size = std::mem::size_of::<RAWINPUT>() as u32;
-                let read = GetRawInputData(
-                    lp as HRAWINPUT,
-                    RID_INPUT,
-                    (&mut raw as *mut RAWINPUT).cast(),
-                    &mut size,
-                    std::mem::size_of::<RAWINPUTHEADER>() as u32,
-                );
-                if read != u32::MAX
-                    && raw.header.dwType == RIM_TYPEMOUSE
-                    && read
-                        >= std::mem::size_of::<RAWINPUTHEADER>() as u32
-                            + std::mem::size_of::<RAWMOUSE>() as u32
-                {
-                    s.raw_mouse_motion(&raw.data.mouse);
-                }
+                crate::input_windows::raw_input(lp, |mouse| s.raw_mouse_motion(mouse));
                 // DefWindowProc releases the foreground WM_INPUT bookkeeping.
             }
             WM_KEYDOWN
-                if wp as u32 == VK_F8 as u32
-                    && s.video_hwnd.load(Ordering::Acquire) != 0
-                    && !s.core_owns_key("F8", modifiers()) =>
+                if wp as u32 == VK_F8 as u32 && s.video_hwnd.load(Ordering::Acquire) != 0 =>
             {
                 if lp & (1 << 30) == 0 {
                     s.apply_relative_mouse(false);
@@ -1403,27 +1355,19 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 }
                 return 0;
             }
-            WM_KEYUP
-                if wp as u32 == VK_F8 as u32
-                    && s.video_hwnd.load(Ordering::Acquire) != 0
-                    && !s.core_owns_key("F8", modifiers()) =>
-            {
+            WM_KEYUP if wp as u32 == VK_F8 as u32 && s.video_hwnd.load(Ordering::Acquire) != 0 => {
                 return 0;
             }
-            WM_KEYDOWN if wp as u32 == VK_F11 as u32 && !s.core_owns_key("F11", modifiers()) => {
+            WM_KEYDOWN if wp as u32 == VK_F11 as u32 => {
                 if lp & (1 << 30) == 0 {
                     s.set_fullscreen(!s.fullscreen_active.load(Ordering::Acquire));
                 }
                 return 0;
             }
-            WM_KEYUP if wp as u32 == VK_F11 as u32 && !s.core_owns_key("F11", modifiers()) => {
+            WM_KEYUP if wp as u32 == VK_F11 as u32 => {
                 return 0;
             }
             WM_SIZE => {
-                s.software_presenter
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .hide();
                 let requested =
                     s.wake_lock_snapshot().requested && !s.closing.load(Ordering::Acquire);
                 s.apply_wake_lock(requested, wp as u32 != SIZE_MINIMIZED);
@@ -1454,17 +1398,18 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                         SWP_NOACTIVATE | SWP_NOZORDER,
                     );
                 }
+
+                crate::native_core::session_ui::raise(s);
                 s.push(Event::Size(w, h));
                 s.apply_input_capture();
             }
             WM_MOVE => {
-                s.software_presenter
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .hide();
+                crate::native_core::session_ui::raise(s);
+
                 s.apply_input_capture();
             }
             WM_SETFOCUS => {
+                PostMessageW(hwnd, crate::native_core::session_ui::VISIBILITY, 0, 0);
                 s.has_focus.store(true, Ordering::Release);
                 // Foreground activation can still be in progress while this
                 // synchronous focus notification is being dispatched.
@@ -1480,6 +1425,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             WM_ENTERMENULOOP | WM_ENTERSIZEMOVE => {
                 s.input_suspended.store(true, Ordering::Release);
+
+                s.push(Event::HidInputRelease);
                 #[cfg(feature = "bud")]
                 s.apply_hid_capture(false);
                 s.apply_input_capture();
@@ -1489,6 +1436,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 s.apply_input_capture();
             }
             WM_KILLFOCUS => {
+                s.local_shortcuts
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clear();
+                PostMessageW(hwnd, crate::native_core::session_ui::VISIBILITY, 0, 0);
                 s.has_focus.store(false, Ordering::Release);
                 #[cfg(feature = "bud")]
                 s.apply_hid_capture(false);
@@ -1508,43 +1460,23 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             WM_CAPTURECHANGED => s.release_buttons(),
             WM_MOUSEMOVE if !s.relative_mouse.load(Ordering::Acquire) => {
                 let echo = s.warp_echo.swap(0, Ordering::AcqRel);
-                if echo == 0 || echo - 1 != (u64::from(x as u32) << 32 | u64::from(y as u32)) {
-                    s.push(Event::Motion(x, y));
+                if let Some(event) = crate::input_windows::motion(lp, echo) {
+                    s.push(event);
                 }
             }
-            WM_LBUTTONDOWN | WM_LBUTTONUP => s.mouse_button(message == WM_LBUTTONDOWN, 0, x, y),
-            WM_MBUTTONDOWN | WM_MBUTTONUP => {
-                s.mouse_button(message == WM_MBUTTONDOWN, 1, x, y);
-            }
-            WM_XBUTTONDOWN | WM_XBUTTONUP => {
-                s.mouse_button(
-                    message == WM_XBUTTONDOWN,
-                    if ((wp >> 16) & 0xffff) == 1 { 3 } else { 4 },
-                    x,
-                    y,
-                );
-                return 1;
-            }
-            WM_RBUTTONDOWN | WM_RBUTTONUP => s.mouse_button(message == WM_RBUTTONDOWN, 2, x, y),
-            WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP => {
-                if let Some(code) =
-                    crate::input::code(wp as u32, ((lp >> 16) & 0xFF) as u8, lp & (1 << 24) != 0)
+            WM_LBUTTONDOWN | WM_LBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP | WM_RBUTTONDOWN
+            | WM_RBUTTONUP | WM_XBUTTONDOWN | WM_XBUTTONUP => {
+                if let Some(Event::Button(down, button, x, y)) =
+                    crate::input_windows::button(message, wp, lp)
                 {
-                    let down = matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN);
-                    let mut pressed = s.pressed_keys.lock().unwrap_or_else(|e| e.into_inner());
-                    if down {
-                        pressed.insert(code);
-                    } else {
-                        pressed.remove(code);
-                    }
-                    let mods = modifiers()
-                        | if pressed.contains("MetaLeft") || pressed.contains("MetaRight") {
-                            8
-                        } else {
-                            0
-                        };
-                    s.push(Event::Key(down, code, mods));
+                    s.mouse_button(down, button, x, y);
                 }
+                if matches!(message, WM_XBUTTONDOWN | WM_XBUTTONUP) {
+                    return 1;
+                }
+            }
+            WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP => {
+                crate::input_windows::key(message, wp, lp, &s.pressed_keys, |event| s.push(event));
                 // Keep system handling (notably Alt+F4) in DefWindowProc.
                 if matches!(message, WM_KEYDOWN | WM_KEYUP)
                     || s.keyboard_grab
@@ -1556,76 +1488,30 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 }
             }
             WM_CHAR => {
-                if let Some(ch) = s
-                    .text_decoder
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(wp as u16)
+                if let Some(event) = crate::input_windows::text(
+                    wp,
+                    &mut s.text_decoder.lock().unwrap_or_else(|e| e.into_inner()),
+                ) {
+                    s.push(event);
+                }
+                return 0;
+            }
+            WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+                #[cfg(feature = "bud")]
                 {
-                    s.push(Event::Text(ch as u32));
+                    let (x, y) = crate::input_windows::position(lp);
+                    s.sync_absolute_pointer(x, y, true);
+                }
+                if let Some(event) = crate::input_windows::scroll(message, wp) {
+                    s.push(event);
                 }
                 return 0;
             }
-            WM_MOUSEWHEEL => {
-                #[cfg(feature = "bud")]
-                s.sync_absolute_pointer(lp as i16 as i32, (lp >> 16) as i16 as i32, true);
-                s.push(Event::Scroll(0, -((wp >> 16) as i16 as i32)));
-                return 0;
-            }
-            WM_MOUSEHWHEEL => {
-                #[cfg(feature = "bud")]
-                s.sync_absolute_pointer(lp as i16 as i32, (lp >> 16) as i16 as i32, true);
-                s.push(Event::Scroll((wp >> 16) as i16 as i32, 0));
-                return 0;
-            }
-            WM_DESTROY => {
-                if s.online {
-                    RemoveClipboardFormatListener(hwnd);
-                }
-                KillTimer(hwnd, crate::updater_ui::NOTIFY_TIMER);
-                s.input_suspended.store(true, Ordering::Release);
-                #[cfg(feature = "bud")]
-                s.apply_hid_capture(false);
-                s.software_presenter
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .destroy();
-                s.keyboard_grab
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .set(hwnd, false);
-                s.apply_relative_mouse(false);
-                s.apply_wake_lock(false, false);
-                // Cursor resources are created, replaced and freed on this UI
-                // thread. The remaining Arc state owns no native cursor handle.
-                *s.cursor.lock().unwrap_or_else(|e| e.into_inner()) = Default::default();
-                *s.cursor_pending.lock().unwrap_or_else(|e| e.into_inner()) = Default::default();
-                PostQuitMessage(0);
-                return 0;
-            }
+
             _ => {}
         }
     }
     DefWindowProcW(hwnd, message, wp, lp)
-}
-
-unsafe fn modifiers() -> i32 {
-    let mut mods = 0;
-    for (vk, bit) in [(VK_SHIFT, 1), (VK_CONTROL, 2), (VK_MENU, 4)] {
-        if GetKeyState(vk as i32) < 0 {
-            mods |= bit;
-        }
-    }
-    if GetKeyState(VK_LWIN as i32) < 0 || GetKeyState(VK_RWIN as i32) < 0 {
-        mods |= 8;
-    }
-    if GetKeyState(VK_CAPITAL as i32) & 1 != 0 {
-        mods |= 16;
-    }
-    if GetKeyState(VK_NUMLOCK as i32) & 1 != 0 {
-        mods |= 32;
-    }
-    mods
 }
 
 // DXGI owns video pixels; do not repaint the child with GDI/static-control text.
@@ -1650,6 +1536,66 @@ unsafe extern "system" fn video_surface_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_input_boundary_keeps_signed_axes_text_and_focus_release_order() {
+        struct Close(Arc<Window>);
+        impl Drop for Close {
+            fn drop(&mut self) {
+                self.0.end_session();
+                self.0.close();
+            }
+        }
+        let window = Window::create_native().unwrap();
+        let _close = Close(window.clone());
+        fn point(x: i16, y: i16) -> LPARAM {
+            (u32::from(x as u16) | (u32::from(y as u16) << 16)) as isize
+        }
+        window.events.drain();
+        unsafe {
+            let hwnd = window.handle();
+            // Target this fixture window only; do not inject system input or
+            // forward anything to a host/account.
+            SendMessageW(hwnd, WM_MOUSEMOVE, 0, point(-12, 34));
+            SendMessageW(hwnd, WM_MOUSEWHEEL, 120 << 16, point(-20, 30));
+            SendMessageW(
+                hwnd,
+                WM_MOUSEHWHEEL,
+                usize::from(-120i16 as u16) << 16,
+                point(-20, 30),
+            );
+            SendMessageW(hwnd, WM_CHAR, 0xd83e, 0);
+            SendMessageW(hwnd, WM_KEYDOWN, VK_LWIN as usize, 0x5b << 16);
+            SendMessageW(hwnd, WM_KEYDOWN, b'A' as usize, 0x1e << 16);
+            SendMessageW(hwnd, WM_KEYUP, VK_LWIN as usize, (0x5b << 16) | (1 << 31));
+            SendMessageW(hwnd, WM_LBUTTONDOWN, 1, point(120, 120));
+            SendMessageW(hwnd, WM_KILLFOCUS, 0, 0);
+            SendMessageW(hwnd, WM_CHAR, 0xdd80, 0); // Pending high surrogate was reset.
+            SendMessageW(hwnd, WM_CHAR, 'ő' as usize, 0);
+        }
+        let events = window.events.drain();
+        assert!(events.iter().any(|e| matches!(e, Event::Motion(-12, 34))));
+        assert!(events.iter().any(|e| matches!(e, Event::Scroll(0, -120))));
+        assert!(events.iter().any(|e| matches!(e, Event::Scroll(-120, 0))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::Key(true, "KeyA", mods) if mods & 8 != 0)));
+        let button_release = events
+            .iter()
+            .position(|e| matches!(e, Event::Button(false, 0, ..)))
+            .unwrap();
+        let key_release = events
+            .iter()
+            .position(|e| matches!(e, Event::Key(false, "KeyA", 0)))
+            .unwrap();
+        let focus_loss = events
+            .iter()
+            .position(|e| matches!(e, Event::Focus(false)))
+            .unwrap();
+        assert!(button_release < key_release && key_release < focus_loss);
+        assert!(events.iter().any(|e| matches!(e, Event::Text(0x151))));
+        assert!(!events.iter().any(|e| matches!(e, Event::Text(0x1f980))));
+        assert!(window.pressed_keys.lock().unwrap().is_empty());
+    }
     #[cfg(feature = "bud")]
     #[test]
     fn hid_input_desktop_edges_and_local_menu_release() {
@@ -1678,7 +1624,7 @@ mod tests {
                 foreground: GetForegroundWindow() as usize,
             }
         };
-        let window = Window::create_mode(false, false, false, false, false).unwrap();
+        let window = Window::create_mode(false).unwrap();
         #[track_caller]
         fn wait(mut ready: impl FnMut() -> bool) {
             let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1752,7 +1698,7 @@ mod tests {
                 SendMessageW(window.handle(), WM_LBUTTONUP, 0, (200 << 16) | 200);
             }
             window.events.drain();
-            window.set_input_state(crate::core_input::State {
+            window.set_input_state(crate::input_state::State {
                 detached: true,
                 ..Default::default()
             });
@@ -1783,136 +1729,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an accelerated OpenGL desktop; run the isolated GUI harness explicitly"]
-    fn idle_core_gui_presents_after_back_without_extra_input() {
-        let mut nonce = [0; 16];
-        getrandom::fill(&mut nonce).unwrap();
-        let suffix: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
-        let path = std::env::temp_dir().join(format!("parsec-settings-redraw-{suffix}.json"));
-        assert!(!path.exists());
-        // Original embedded core, anonymous in-memory filesystem, networking
-        // disabled. No production profile, credentials or host are involved.
-        let window = Window::create_mode(false, true, false, false, true).unwrap();
-        window.install_connection_settings(crate::connection_settings::Manager::open(path.clone()));
-        let worker_window = window.clone();
-        let runtime = std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024)
-            .spawn(move || -> anyhow::Result<()> {
-                let engine = wasmtime::Engine::new(&crate::core_config::config())?;
-                let module = crate::core_runtime::load(&engine)?;
-                let (mut store, instance) =
-                    crate::instantiate_mode(&engine, &module, Some(worker_window.clone()))?;
-                let startup = instance
-                    .get_typed_func::<(), ()>(&mut store, "_start")?
-                    .call(&mut store, ());
-                let outcome = if store.data().event_loop.is_some() {
-                    crate::desktop::run(&mut store, &instance)
-                } else {
-                    startup
-                };
-                store
-                    .data()
-                    .backend
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .destroy();
-                worker_window.request_stop();
-                engine.increment_epoch();
-                if let Some(runtime) = &store.data().threads {
-                    runtime.http.shutdown();
-                    runtime.websocket.shutdown();
-                }
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-                while worker_window.active_contexts.load(Ordering::Acquire) != 0
-                    && std::time::Instant::now() < deadline
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                anyhow::ensure!(
-                    worker_window.active_contexts.load(Ordering::Acquire) == 0,
-                    "GUI context did not stop"
-                );
-                worker_window.close();
-                match outcome {
-                    Err(error) if crate::lifecycle::is_cancellation(&error) => Ok(()),
-                    other => other,
-                }
-            })
-            .unwrap();
-        let frames = || {
-            window
-                .graphics
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-                .map_or(0, |g| g.frames_presented)
-        };
-        let wait = |ready: &dyn Fn() -> bool, seconds: u64| -> anyhow::Result<()> {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
-            while !ready() {
-                anyhow::ensure!(!runtime.is_finished(), "Core GUI stopped unexpectedly");
-                anyhow::ensure!(
-                    std::time::Instant::now() < deadline,
-                    "Core GUI transition timed out"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            Ok(())
-        };
-        let result = (|| -> anyhow::Result<()> {
-            wait(&|| frames() > 0, 10)?;
-            for _ in 0..3 {
-                unsafe {
-                    anyhow::ensure!(
-                        PostMessageW(
-                            window.handle(),
-                            WM_COMMAND,
-                            crate::connection_settings_ui::OPEN,
-                            0
-                        ) != 0
-                    );
-                }
-                wait(
-                    &|| {
-                        window.settings_page.load(Ordering::Acquire) != 0
-                            && !window.input_suspended.load(Ordering::Acquire)
-                    },
-                    5,
-                )?;
-                let page = window.settings_page.load(Ordering::Acquire) as HWND;
-                let size = *window.dimensions.lock().unwrap_or_else(|e| e.into_inner());
-                // Let an idle GUI observe coverage; Back must produce a real
-                // SwapBuffers afterward, not merely enqueue a notification.
-                std::thread::sleep(std::time::Duration::from_millis(250));
-                let before = frames();
-                unsafe {
-                    let class: Vec<u16> = "BUTTON\0".encode_utf16().collect();
-                    let label: Vec<u16> = "Back\0".encode_utf16().collect();
-                    let back =
-                        FindWindowExW(page, std::ptr::null_mut(), class.as_ptr(), label.as_ptr());
-                    anyhow::ensure!(!back.is_null());
-                    SendMessageW(page, WM_COMMAND, GetDlgCtrlID(back) as usize, back as isize);
-                }
-                // No mouse, keyboard, activation or size event is injected.
-                wait(&|| !window.settings_open() && frames() > before, 3)?;
-                anyhow::ensure!(unsafe { IsWindow(page) } == 0);
-                anyhow::ensure!(
-                    *window.dimensions.lock().unwrap_or_else(|e| e.into_inner()) == size
-                );
-            }
-            anyhow::ensure!(!path.exists());
-            Ok(())
-        })();
-        window.request_stop();
-        let finished = runtime.join().unwrap();
-        if window.active_contexts.load(Ordering::Acquire) == 0 {
-            window.close();
-        }
-        result.unwrap();
-        finished.unwrap();
-    }
-
-    #[test]
     #[ignore = "foreground desktop test; run separately so other window tests cannot steal focus"]
     fn immersive_native_capture_lifecycle() {
         struct Restore {
@@ -1940,7 +1756,7 @@ mod tests {
                 cursor,
             }
         };
-        let window = Window::create_mode(false, false, false, false, false).unwrap();
+        let window = Window::create_mode(false).unwrap();
         #[track_caller]
         fn wait(mut check: impl FnMut() -> bool) {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
@@ -1957,8 +1773,60 @@ mod tests {
                 SetForegroundWindow(window.handle());
             }
             wait(|| unsafe { GetForegroundWindow() == window.handle() });
-            let mode = |mouse, keyboard| crate::core_input::State {
-                mode: crate::core_input::Mode { mouse, keyboard },
+            // Capture is foreground-owned. Exercise chords in this isolated
+            // fixture, not among UI tests whose window teardown can steal focus.
+            for (first_down, second_down, first_up, second_up, first, second) in [
+                (
+                    WM_LBUTTONDOWN,
+                    WM_RBUTTONDOWN,
+                    WM_LBUTTONUP,
+                    WM_RBUTTONUP,
+                    0,
+                    2,
+                ),
+                (
+                    WM_RBUTTONDOWN,
+                    WM_LBUTTONDOWN,
+                    WM_RBUTTONUP,
+                    WM_LBUTTONUP,
+                    2,
+                    0,
+                ),
+            ] {
+                window.events.drain();
+                unsafe {
+                    SendMessageW(
+                        window.handle(),
+                        first_down,
+                        if first == 0 { 1 } else { 2 },
+                        (120 << 16) | 120,
+                    );
+                    assert_eq!(
+                        window.pressed_buttons.load(Ordering::Acquire),
+                        1 << first,
+                        "first press: {:?}",
+                        window.events.drain()
+                    );
+                    SendMessageW(window.handle(), second_down, 3, (120 << 16) | 120);
+                    assert_eq!(
+                        window.pressed_buttons.load(Ordering::Acquire),
+                        5,
+                        "second press: {:?}",
+                        window.events.drain()
+                    );
+                    SendMessageW(
+                        window.handle(),
+                        first_up,
+                        if second == 0 { 1 } else { 2 },
+                        (120 << 16) | 120,
+                    );
+                    assert_eq!(window.pressed_buttons.load(Ordering::Acquire), 1 << second);
+                    SendMessageW(window.handle(), second_up, 0, (120 << 16) | 120);
+                    assert_eq!(window.pressed_buttons.load(Ordering::Acquire), 0);
+                }
+            }
+            let mode = |mouse, keyboard| crate::input_state::State {
+                mode: crate::input_state::Mode { mouse, keyboard },
                 ..Default::default()
             };
             let clipped = || window.mouse_clipped.load(Ordering::Acquire);
@@ -1987,6 +1855,24 @@ mod tests {
                         (origin.y + client.bottom).min(sy + GetSystemMetrics(SM_CYVIRTUALSCREEN))
                     )
                 );
+                // Windows confines the hotspot, not the cursor's bitmap. Keep
+                // edge pixels reachable and verify actual positions cannot escape.
+                for (x, y) in [
+                    (
+                        actual.right.saturating_add(32),
+                        actual.bottom.saturating_add(32),
+                    ),
+                    (
+                        actual.left.saturating_sub(32),
+                        actual.top.saturating_sub(32),
+                    ),
+                ] {
+                    assert_ne!(SetCursorPos(x, y), 0);
+                    let mut position = POINT::default();
+                    assert_ne!(GetCursorPos(&mut position), 0);
+                    assert!((actual.left..actual.right).contains(&position.x));
+                    assert!((actual.top..actual.bottom).contains(&position.y));
+                }
             }
             window.set_input_state(mode(false, true));
             wait(|| !clipped() && keyboard());
@@ -2003,6 +1889,77 @@ mod tests {
             assert!(received
                 .iter()
                 .any(|e| matches!(e, Event::Key(true, "Tab", 4))));
+            received.clear();
+            let old_capture_key = crate::keyboard_grab::test_immersive_chords(window.handle());
+            wait(|| {
+                received.extend(window.events.drain());
+                received
+                    .iter()
+                    .any(|e| matches!(e, Event::Key(false, "F12", 0)))
+            });
+            let keys: Vec<_> = received
+                .iter()
+                .filter_map(|event| {
+                    if let Event::Key(down, code, mods) = event {
+                        Some((*down, *code, *mods))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(
+                keys,
+                [
+                    (true, "ControlLeft", 2),
+                    (true, "ShiftLeft", 3),
+                    (true, "KeyW", 3),
+                    (false, "KeyW", 3),
+                    (false, "ShiftLeft", 2),
+                    (false, "ControlLeft", 0),
+                    (true, "AltLeft", 4),
+                    (true, "Enter", 4),
+                    (false, "Enter", 4),
+                    (false, "AltLeft", 0),
+                    (true, "ControlLeft", 2),
+                    (true, "ShiftRight", 3),
+                    (false, "ShiftRight", 2),
+                    (false, "ControlLeft", 0),
+                    (true, "ControlLeft", 2),
+                    (true, "ShiftLeft", 3),
+                    (true, "AltRight", 7),
+                    (true, "KeyW", 7),
+                    (false, "KeyW", 7),
+                    (false, "AltRight", 3),
+                    (false, "ShiftLeft", 2),
+                    (false, "ControlLeft", 0),
+                    (true, "MetaLeft", 8),
+                    (true, "KeyR", 8),
+                    (false, "MetaLeft", 0),
+                    (false, "KeyR", 0),
+                    (true, "F8", 0),
+                    (false, "F8", 0),
+                    (true, "F11", 0),
+                    (false, "F11", 0),
+                    (true, "ControlLeft", 2),
+                    (true, "Comma", 2),
+                    (false, "Comma", 2),
+                    (false, "ControlLeft", 0),
+                    (true, "F12", 0),
+                    (false, "F12", 0),
+                ]
+            );
+            assert_eq!(
+                received
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        Event::Shortcut(crate::input::Shortcut::Fullscreen)
+                    ))
+                    .count(),
+                1
+            );
+            assert!(window.pressed_keys.lock().unwrap().is_empty());
+            assert!(!window.settings_open());
             window.set_input_state(mode(true, true));
             wait(|| clipped() && keyboard());
             window.set_relative_mouse(true);
@@ -2011,6 +1968,40 @@ mod tests {
             wait(|| !relative() && clipped()); // Immersive Mouse survives raw unlock.
             window.set_input_state(mode(false, false));
             wait(|| !clipped() && !keyboard());
+            assert!(!crate::keyboard_grab::current(old_capture_key));
+            window.events.drain();
+            unsafe {
+                // A late hook packet from the previous capture must not become
+                // a new remote key after the input mode has already changed.
+                PostMessageW(
+                    window.handle(),
+                    crate::input_windows::CAPTURED_KEY,
+                    old_capture_key,
+                    0x58 << 16,
+                );
+                // FIFO completion marker after the stale event.
+                PostMessageW(window.handle(), WM_KEYDOWN, VK_F12 as usize, 0x58 << 16);
+                PostMessageW(
+                    window.handle(),
+                    WM_KEYUP,
+                    VK_F12 as usize,
+                    (0x58 << 16) | (1 << 31),
+                );
+            }
+            let mut after_capture = Vec::new();
+            wait(|| {
+                after_capture.extend(window.events.drain());
+                after_capture
+                    .iter()
+                    .any(|event| matches!(event, Event::Key(false, "F12", 0)))
+            });
+            assert_eq!(
+                after_capture
+                    .iter()
+                    .filter(|event| matches!(event, Event::Key(true, "F12", _)))
+                    .count(),
+                1
+            );
             // Native relative intent comes from host flags, not button state.
             unsafe {
                 SendMessageW(window.handle(), WM_LBUTTONDOWN, 1, (100 << 16) | 100);
@@ -2022,7 +2013,7 @@ mod tests {
             wait(|| !clipped());
             window.set_relative_mouse(true);
             wait(|| relative() && clipped());
-            window.set_input_state(crate::core_input::State {
+            window.set_input_state(crate::input_state::State {
                 warp_disabled: true,
                 ..mode(false, false)
             });
@@ -2043,28 +2034,36 @@ mod tests {
                 wire[26..28].copy_from_slice(&540i16.to_be_bytes());
                 let flags: u16 = if rel { 0x100 } else { 0 } | if hidden { 0x200 } else { 0 };
                 wire[32..34].copy_from_slice(&flags.to_be_bytes());
-                let crate::control::Message::Buffer { event, .. } =
-                    crate::control::decode(&wire).unwrap()
-                else {
-                    panic!("not a cursor event");
-                };
-                window.host_cursor_event(&event);
+                let pointer = evoparseq_bud::bud::cursor_message(&wire).unwrap();
+                window.set_host_cursor(
+                    i32::from(pointer.update.x),
+                    i32::from(pointer.update.y),
+                    pointer.update.relative,
+                    pointer.update.hidden,
+                );
                 wait(|| relative() && clipped());
                 unsafe {
                     let mut rect = RECT::default();
                     assert_ne!(GetClipCursor(&mut rect), 0);
                     assert_eq!((rect.right - rect.left, rect.bottom - rect.top), (1, 1));
                 }
-                // Browser callback must not cancel a hidden-only native request.
+                // Local cleanup must not cancel a hidden-only native request.
                 window.set_relative_mouse(false);
                 assert!(window.relative_requested.load(Ordering::Acquire));
                 window.events.drain();
-                for dx in [-400, 1] {
+                for (dx, dy) in [(-400, 0), (1, 0), (0, -300), (0, 1)] {
                     window.raw_mouse_motion(&RAWMOUSE {
                         lLastX: dx,
+                        lLastY: dy,
                         ..Default::default()
                     });
                 }
+                window.raw_mouse_motion(&RAWMOUSE {
+                    usFlags: MOUSE_MOVE_ABSOLUTE,
+                    lLastX: 65535,
+                    lLastY: 65535,
+                    ..Default::default()
+                });
                 let motion: Vec<_> = window
                     .events
                     .drain()
@@ -2077,14 +2076,10 @@ mod tests {
                         }
                     })
                     .collect();
-                assert_eq!(motion, [(-400, 0), (1, 0)]); // Immediate reversal, no absolute dead zone.
-                for (x, y) in motion {
-                    let packet = crate::control::input(
-                        &serde_json::json!({"type":4,"relative":true,"x":x,"y":y}),
-                    )
-                    .unwrap();
-                    assert_eq!(packet, crate::control::header(3, 1, x, y));
-                }
+                // The queue combines adjacent relative reports; both immediate
+                // reversals contribute exactly, absolute RAWINPUT is excluded.
+                // input_windows tests also verify the per-report translation.
+                assert_eq!(motion, [(-399, -299)]);
                 let mut held = POINT::default();
                 unsafe {
                     GetCursorPos(&mut held);
@@ -2142,12 +2137,12 @@ mod tests {
             wait(relative);
             window.set_input_state(mode(true, true));
             wait(|| relative() && clipped() && keyboard());
-            window.set_input_state(crate::core_input::State {
+            window.set_input_state(crate::input_state::State {
                 detached: true,
                 ..mode(true, true)
             });
             wait(|| !relative() && !clipped() && !keyboard());
-            window.set_relative_mouse(false); // Core detach cleanup must not lose the request.
+            window.set_relative_mouse(false); // Session detach cleanup must not lose the request.
             window.set_input_state(mode(true, true));
             wait(|| relative() && clipped() && keyboard());
             unsafe {
@@ -2193,77 +2188,10 @@ mod tests {
             std::panic::resume_unwind(panic);
         }
     }
-    #[test]
-    fn worker_yield_returns_to_guest_cleanup_and_notifies_join_on_repeated_sessions() {
-        let window = Window::create_mode(false, false, false, false, false).unwrap();
-        unsafe {
-            ShowWindow(window.handle(), SW_HIDE);
-        }
-        let result = (|| -> anyhow::Result<()> {
-            let engine = wasmtime::Engine::new(&crate::core_config::config())?;
-            // Models the relevant guest contract without an account, a codec,
-            // audio hardware or private pthread-layout writes from the host.
-            let module = wasmtime::Module::new(
-                &engine,
-                r#"(module
-                (import "env" "memory" (memory 1 1 shared))
-                (import "env" "web_run_and_yield" (func $yield (param i32 i32)))
-                (table (export "__indirect_function_table") 1 funcref)
-                (elem (i32.const 0) $tick)
-                (func $tick (param i32) (result i32)
-                    i32.const 12 i32.const 1 i32.atomic.rmw.add drop
-                    i32.const 0 i32.atomic.load i32.eqz)
-                (func (export "wasi_thread_start") (param i32 i32)
-                    i32.const 0 i32.const 0 call $yield
-                    ;; Real WASM audio/thread cleanup also follows the yield.
-                    i32.const 4 i32.const 1 i32.atomic.store
-                    i32.const 8 i32.const 0 i32.atomic.store
-                    i32.const 8 i32.const 1 memory.atomic.notify drop))"#,
-            )?;
-            let (store, _) = crate::instantiate_mode(&engine, &module, Some(window.clone()))?;
-            let runtime = store.data().threads.as_ref().unwrap();
-            let memory = &runtime.memory;
-            for _ in 0..3 {
-                for (ptr, value) in [(0, 0), (4, 0), (8, 1), (12, 0)] {
-                    memory.sync_word(ptr)?.store(value, Ordering::SeqCst);
-                }
-                let id = runtime.spawn(0);
-                anyhow::ensure!(id > 0, "worker spawn failed");
-                let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
-                while memory.sync_word(12)?.load(Ordering::SeqCst) < 2 {
-                    anyhow::ensure!(std::time::Instant::now() < until, "callback did not run");
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                }
-                memory.sync_word(0)?.store(1, Ordering::SeqCst);
-                memory
-                    .0
-                    .atomic_wait32(8, 1, Some(std::time::Duration::from_secs(2)))?;
-                anyhow::ensure!(
-                    memory.sync_word(8)?.load(Ordering::SeqCst) == 0,
-                    "guest join remained blocked after callback completion"
-                );
-                anyhow::ensure!(
-                    memory.sync_word(4)?.load(Ordering::SeqCst) == 1,
-                    "guest cleanup following yield was skipped"
-                );
-                loop {
-                    let records = runtime.snapshot();
-                    if let Some(record) = records.iter().find(|r| r.id == id && r.finished) {
-                        anyhow::ensure!(record.error.is_none(), "guest worker failed");
-                        break;
-                    }
-                    anyhow::ensure!(std::time::Instant::now() < until, "worker did not finish");
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                }
-            }
-            Ok(())
-        })();
-        window.close();
-        result.unwrap();
-    }
+
     #[test]
     fn disconnect_retires_video_and_old_workers_cannot_reveal_or_hide_new_session() {
-        let window = Window::create_mode(false, false, false, false, false).unwrap();
+        let window = Window::create_mode(false).unwrap();
         unsafe {
             ShowWindow(window.handle(), SW_HIDE);
         }

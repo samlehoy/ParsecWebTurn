@@ -1,9 +1,9 @@
 //! Real UDP connectivity gates. Two native clients are connectivity peers,
 //! not a stock host/media fixture: this proves the adapter's route and lifecycle
 //! only. The separately configured coturn test must not use real credentials.
+use evoparseq_bud::bud::{RelayTransport, Route, Session};
 use lowlat_client::{Event, Peer};
 use lowlat_core::conn::Kind;
-use parsec_native_bud::bud::{RelayTransport, Route, Session};
 use std::time::{Duration, Instant};
 
 fn peer(ours: lowlat_crypto::Credentials) -> Peer {
@@ -134,29 +134,29 @@ fn direct_udp_connectivity() {
 }
 
 #[test]
-#[ignore = "requires isolated coturn on loopback, PWT_TEST_TURN endpoint"]
+#[ignore = "requires isolated coturn on loopback, EVOPARSEQ_TEST_TURN endpoint"]
 fn turn_udp_connectivity() {
-    let server = std::env::var("PWT_TEST_TURN")
+    let server = std::env::var("EVOPARSEQ_TEST_TURN")
         .expect("isolated TURN endpoint")
         .parse()
         .unwrap();
     connect(
-        Route::turn_udp(server, "pwt-fixture", "isolated-fixture-only"),
+        Route::turn_udp(server, "evoparseq-fixture", "isolated-fixture-only"),
         true,
     );
 }
 
 #[test]
-#[ignore = "requires isolated coturn with TCP listener, PWT_TEST_TURN endpoint"]
+#[ignore = "requires isolated coturn with TCP listener, EVOPARSEQ_TEST_TURN endpoint"]
 fn turn_tcp_connectivity() {
-    let server = std::env::var("PWT_TEST_TURN")
+    let server = std::env::var("EVOPARSEQ_TEST_TURN")
         .expect("isolated TURN endpoint")
         .parse()
         .unwrap();
     connect(
         Route::turn(
             server,
-            "pwt-fixture",
+            "evoparseq-fixture",
             "isolated-fixture-only",
             RelayTransport::Tcp,
         ),

@@ -152,6 +152,7 @@ impl Conn for RelayStream {
 }
 
 pub struct TurnStream {
+    _qos: evoparseq_socket_qos::Flow,
     reader: Mutex<Reader>,
     writer: Mutex<Writer>,
     local: SocketAddr,
@@ -177,6 +178,10 @@ impl TurnStream {
     /// TLS always validates the server hostname and public certificate chain.
     /// No permissive verifier or legacy Parsec DTLS option applies to TURN TLS.
     pub async fn dial(host: &str, port: u16, tls: bool) -> io::Result<Self> {
+        Self::dial_with_qos(host, port, tls, false).await
+    }
+
+    pub async fn dial_with_qos(host: &str, port: u16, tls: bool, qos: bool) -> io::Result<Self> {
         tokio::time::timeout(Duration::from_secs(10), async {
             let addresses: Vec<_> = tokio::net::lookup_host((host, port))
                 .await?
@@ -189,6 +194,7 @@ impl TurnStream {
             }
             let tcp = TcpStream::connect(addresses.as_slice()).await?;
             tcp.set_nodelay(true)?;
+            let marking = evoparseq_socket_qos::Flow::new(&tcp, qos, "WebRTC");
             let local = tcp.local_addr()?;
             let remote = tcp.peer_addr()?;
             let stream: Stream = if tls {
@@ -215,7 +221,9 @@ impl TurnStream {
             } else {
                 Box::new(tcp)
             };
-            Ok(Self::from_stream(stream, local, remote, !tls))
+            let mut connection = Self::from_stream(stream, local, remote, !tls);
+            connection._qos = marking;
+            Ok(connection)
         })
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TURN connect timed out"))?
@@ -229,6 +237,7 @@ impl TurnStream {
     ) -> Self {
         let (reader, writer) = tokio::io::split(stream);
         Self {
+            _qos: Default::default(),
             reader: Mutex::new(Reader {
                 stream: reader,
                 buffer: buffer_tcp.then(|| ReceiveBuffer {

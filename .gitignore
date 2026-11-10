@@ -1,9 +1,11 @@
 # Sensitive local configuration
 settings.json
 ice.json
+qos-peer.json
+qos-results-*.json
 
 # Build output
-ParsecWebTurn.exe
+EvoParseq.exe
 *.exe
 dist/
 **/target/
@@ -20,9 +22,12 @@ Profile/
 SettingsProfile/
 WebView2Profile/
 extension/
+# DTLS protocol extensions are source code, not a legacy browser profile.
+!src-native/vendor/dtls-0.13.0/src/extension/
+!src-native/vendor/dtls-0.13.0/src/extension/**
 .launcher.lock
 .turn-cache.json
-.parsecwebturn-*.tmp
+.evoparseq-*.tmp
 settings-cloudflare.png
 settings-custom.png
 tauri-settings.png

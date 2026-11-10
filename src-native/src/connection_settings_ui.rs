@@ -2,7 +2,10 @@
 //! All HWND/GDI ownership and control access stay on the window's UI thread.
 #[path = "settings_controls.rs"]
 pub(crate) mod controls;
-use crate::connection_settings::{Manager, Settings};
+use crate::connection_settings::Manager;
+use crate::settings_model::{
+    AiUpscaler, BinaryChoice, Form, InputMode, RouteMode, Tab, VideoFormat,
+};
 use std::{
     ptr::{null, null_mut},
     sync::Arc,
@@ -21,13 +24,15 @@ use windows_sys::Win32::{
     },
 };
 pub const OPEN: usize = 4100;
-pub const ABOUT: usize = 4300;
+pub const ABOUT: usize = crate::updater_ui::ABOUT;
 // Give the large heading and subtitle enough space, including font overhang.
 const HEADER_EXTRA: i32 = 20;
 const SAVE: usize = 4101;
 const BACK: usize = 4102;
+
+const HIDE_SESSION_BUTTON: usize = 4135;
 const PROVIDER: usize = 4103;
-const STUN_ONLY: usize = 4104;
+const ROUTE_MODE: usize = 4104;
 const STUN: usize = 4105;
 const TURN: usize = 4106;
 const USERNAME: usize = 4107;
@@ -40,14 +45,13 @@ const FORGET_PASSWORD: usize = 4113;
 const FORGET_TOKEN: usize = 4114;
 const STATUS: usize = 4115;
 const GPU: usize = 4116;
-const HEVC: usize = 4117;
-const FORCE_RELAY: usize = 4118;
+const VIDEO_FORMAT: usize = 4117;
 #[cfg(feature = "bud")]
 const BUD: usize = 4119;
 const BUD_EXTRA: i32 = if cfg!(feature = "bud") { 94 } else { 0 };
 #[cfg(feature = "vendor-video")]
 const ZERO_COPY: usize = 4120;
-const BG: u32 = 0x00282828;
+const BG: u32 = crate::branding::BACKGROUND;
 const FIELD: u32 = 0x00212121;
 const FG: u32 = 0x00eeeeee;
 const MUTED: u32 = 0x00bcbcbc;
@@ -57,25 +61,20 @@ const CLOUDFLARE: u8 = 2;
 const HELP: usize = 4200;
 const NETWORK_TAB: usize = 4201;
 const VIDEO_TAB: usize = 4121;
-const TEN_BIT: usize = 4122;
+
+const CHROMA_444: usize = 4136;
 const EVENT_LOG: usize = 4123;
+const TCP_QOS: usize = 4138;
 const AUDIO_TAB: usize = 4124;
 const INPUT_TAB: usize = 4129;
-const HID_MOUSE: usize = 4130;
-const HID_KEYBOARD: usize = 4131;
+const INPUT_MODE: usize = 4130;
 const AUDIO_CUSTOM: usize = 4125;
 const AUDIO_MIN: usize = 4126;
 const AUDIO_MAX: usize = 4127;
 const AUDIO_RAW: usize = 4128;
 const AUDIO_SURROUND: usize = 4132;
 const PRESENTATION: usize = 4133;
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Tab {
-    Network,
-    Video,
-    Audio,
-    Input,
-}
+const AI_UPSCALE: usize = 4139;
 const SECTION: usize = 4202;
 const NOTICE: usize = 4203;
 fn wide(s: &str) -> Vec<u16> {
@@ -90,16 +89,16 @@ struct Item {
 struct Page {
     window_owned: bool,
     manager: Arc<Manager>,
-    saved: Settings,
-    gpu_choices: Vec<Option<crate::connection_settings::GpuPreference>>,
+    model: Form,
     gpu_labels: Vec<String>,
+    ai_upscaler: Option<AiUpscaler>,
+    ai_hint: HWND,
     background: HBRUSH,
     field: HBRUSH,
     font: HFONT,
     heading: HFONT,
     small: HFONT,
     items: Vec<Item>,
-    active_tab: Tab,
     building_tab: Option<Tab>,
     scroll: i32,
     reflowing: bool,
@@ -146,20 +145,12 @@ pub unsafe fn install_menu(parent: HWND) {
         crate::stats_ui::OPEN,
         wide("Connection stats").as_ptr(),
     );
-    let help = CreatePopupMenu();
-    AppendMenuW(help, MF_STRING, ABOUT, wide("About ParsecWebTurn").as_ptr());
-    AppendMenuW(
-        help,
-        MF_STRING,
-        crate::updater_ui::OPEN,
-        wide("Check for updates").as_ptr(),
-    );
-    AppendMenuW(menu, MF_POPUP, help as usize, wide("Help").as_ptr());
+    crate::updater_ui::append_help(menu);
     SetMenu(parent, menu);
     DrawMenuBar(parent);
 }
 pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
-    let name = wide("ParsecWebTurnSettings");
+    let name = wide("EvoParseqSettings");
     let instance = GetModuleHandleW(null());
     let class = WNDCLASSW {
         lpfnWndProc: Some(page_proc),
@@ -173,16 +164,16 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     let mut page = Box::new(Page {
         window_owned: false,
         manager,
-        saved,
-        gpu_choices: vec![None],
+        model: Form::new(saved, crate::video_windows::video_gpu_vendor(None)),
         gpu_labels: vec!["Automatic (Windows default)".into()],
+        ai_upscaler: None,
+        ai_hint: null_mut(),
         background: CreateSolidBrush(BG),
         field: CreateSolidBrush(FIELD),
         font: font(16, 400),
         heading: font(46, 300),
         small: font(13, 400),
         items: Vec::new(),
-        active_tab: Tab::Network,
         building_tab: None,
         scroll: 0,
         reflowing: false,
@@ -225,7 +216,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     }
     page.window_owned = true;
     let page = &mut *Box::into_raw(page);
-    let s = page.saved.clone();
+    let s = page.model.values.clone();
     add(
         hwnd,
         page,
@@ -283,27 +274,15 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     row(hwnd, page, "STUN servers",
         "Discover a direct route. One stun: URL per line.\nLeave blank to use the default discovery server.",
         STUN, &s.stun_urls.join("\r\n"), 242, 76, 0, ES_MULTILINE as u32 | ES_WANTRETURN as u32 | ES_AUTOVSCROLL as u32 | WS_CLIPCHILDREN);
-    row_label(
+    row_label(hwnd, page, "Connection route", "Choose automatic routing, direct-only or TURN relay.\nDirect-only is intended for LAN or VPN connections.", 344, 0, 40);
+    choice(
         hwnd,
         page,
-        "STUN only",
-        "For LAN or VPN connections that do not need a relay.",
+        ROUTE_MODE,
         344,
-        0,
-        40,
+        &RouteMode::LABELS,
+        RouteMode::current(&s) as usize,
     );
-    add(
-        hwnd,
-        page,
-        "BUTTON",
-        "Use STUN only (no TURN relay)",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 344, 400, 36],
-        STUN_ONLY,
-        0,
-        page.font,
-    );
-    check(hwnd, STUN_ONLY, s.stun_only);
     row_label(
         hwnd,
         page,
@@ -428,7 +407,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         hwnd,
         page,
         "Credential cache",
-        "Reuse valid credentials until you close ParsecWebTurn.",
+        "Reuse valid credentials until you close EvoParseq.",
         758,
         CLOUDFLARE,
         24,
@@ -491,7 +470,7 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
                 p.name.clone()
             };
             SendMessageW(gpu, CB_ADDSTRING, 0, wide(&label).as_ptr() as isize);
-            page.gpu_choices.push(Some(p));
+            page.model.gpu_choices.push(Some(p));
             page.gpu_labels.push(label);
         }
     }
@@ -499,7 +478,14 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         .video_gpu
         .as_ref()
         .map(|preferred| {
-            let available: Vec<_> = page.gpu_choices.iter().skip(1).flatten().cloned().collect();
+            let available: Vec<_> = page
+                .model
+                .gpu_choices
+                .iter()
+                .skip(1)
+                .flatten()
+                .cloned()
+                .collect();
             match crate::gpu_windows::match_index(preferred, &available) {
                 Some(index) => index + 1,
                 None => {
@@ -509,50 +495,33 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
                         0,
                         wide(&format!("Unavailable: {}", preferred.name)).as_ptr() as isize,
                     );
-                    page.gpu_choices.push(Some(preferred.clone()));
+                    page.model.gpu_choices.push(Some(preferred.clone()));
                     page.gpu_labels
                         .push(format!("Unavailable: {}", preferred.name));
-                    page.gpu_choices.len() - 1
+                    page.model.gpu_choices.len() - 1
                 }
             }
         })
         .unwrap_or(0);
     SendMessageW(gpu, CB_SETCURSEL, selected, 0);
+    row_label(hwnd, page, "Video format", "HEVC and 10-bit require compatible host encoding.\nThe host may select H.264; reconnect after changing.", 344, 0, 48);
+    choice(
+        hwnd,
+        page,
+        VIDEO_FORMAT,
+        344,
+        &VideoFormat::LABELS,
+        VideoFormat::current(&s) as usize,
+    );
     row_label(
         hwnd,
         page,
-        "Video codec",
-        "Use HEVC when supported by this GPU and driver.\nReconnect after changing.",
-        344,
+        "Display timing",
+        crate::settings_model::DISPLAY_TIMING_HINT,
+        626,
         0,
-        40,
+        60,
     );
-    add(
-        hwnd,
-        page,
-        "BUTTON",
-        "Prefer H.265 / HEVC",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 344, 400, 36],
-        HEVC,
-        0,
-        page.font,
-    );
-    check(hwnd, HEVC, s.prefer_hevc);
-    row_label(hwnd, page, "Color depth", "Verified with NVIDIA host encoding only.\n10-bit RGB SDR output when supported. Reconnect to apply.", 438, 0, 40);
-    add(
-        hwnd,
-        page,
-        "BUTTON",
-        "10-bit HEVC (experimental)",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 438, 400, 36],
-        TEN_BIT,
-        0,
-        page.font,
-    );
-    check(hwnd, TEN_BIT, s.experimental_ten_bit);
-    row_label(hwnd, page, "Display timing", "Experimental: applies to normal GPU rendering.\nZero copy keeps Windows-managed timing. Reconnect to apply.", 626, 0, 48);
     let timing = add(
         hwnd,
         page,
@@ -564,77 +533,101 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
         0,
         page.font,
     );
-    for label in [
-        "Automatic (existing behavior)",
-        "Low latency (one queued presentation)",
-        "VSync (synchronize to display refresh)",
-    ] {
-        SendMessageW(timing, CB_ADDSTRING, 0, wide(label).as_ptr() as isize);
+    for mode in crate::connection_settings::PresentationMode::ALL {
+        SendMessageW(
+            timing,
+            CB_ADDSTRING,
+            0,
+            wide(mode.label()).as_ptr() as isize,
+        );
     }
-    let selection = match s.presentation_mode {
-        crate::connection_settings::PresentationMode::Automatic => 0,
-        crate::connection_settings::PresentationMode::LowLatency => 1,
-        crate::connection_settings::PresentationMode::Vsync => 2,
-    };
+    let selection = crate::connection_settings::PresentationMode::ALL
+        .iter()
+        .position(|mode| *mode == s.presentation_mode)
+        .unwrap_or(0);
     SendMessageW(timing, CB_SETCURSEL, selection, 0);
-    page.building_tab = Some(Tab::Network);
-    row_label(
-        hwnd,
-        page,
-        "Connection route",
-        "Use a TURN relay even when a direct route is available.",
-        844,
-        0,
-        40,
-    );
-    add(
-        hwnd,
-        page,
-        "BUTTON",
-        "Force TURN relay",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 844, 400, 36],
-        FORCE_RELAY,
-        0,
-        page.font,
-    );
-    check(hwnd, FORCE_RELAY, s.force_relay);
-    #[cfg(feature = "bud")]
+
     {
-        row_label(hwnd, page, "Transport", "BUD: direct UDP or TURN over UDP/TLS/TCP.\nUses the TURN URLs above. Reconnect after changing.", 938, 0, 40);
+        row_label(hwnd, page, "Chroma", "NVIDIA tested; Intel not live-validated. AMD unavailable.\nHEVC 8/10-bit; requires compatible host and GPU.\nNormal GPU rendering; host may send 4:2:0 instead.", 438, 0, 60);
+        binary_choice(hwnd, page, CHROMA_444, 438);
+        check(hwnd, CHROMA_444, s.experimental_chroma_444);
+        row_label(
+            hwnd,
+            page,
+            "Session menu",
+            "Ctrl+Shift+M opens the menu even when its button is hidden.\nApplies after saving.",
+            834,
+            0,
+            48,
+        );
         add(
             hwnd,
             page,
             "BUTTON",
-            "BUD",
+            "Hide session button",
             BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-            [420, 938, 400, 36],
+            [420, 834, 400, 36],
+            HIDE_SESSION_BUTTON,
+            0,
+            page.font,
+        );
+        check(hwnd, HIDE_SESSION_BUTTON, s.native_core.hide_session_button);
+    }
+    page.ai_hint = row_label(hwnd, page, "AI upscaling (experimental)", "", 924, 0, 64);
+    let ai = add(
+        hwnd,
+        page,
+        "COMBOBOX",
+        "",
+        CBS_DROPDOWNLIST as u32 | WS_VSCROLL | WS_TABSTOP,
+        [420, 924, 400, 180],
+        AI_UPSCALE,
+        0,
+        page.font,
+    );
+    controls::combo(ai);
+    page.building_tab = Some(Tab::Network);
+    #[cfg(feature = "bud")]
+    {
+        row_label(hwnd, page, "Transport", "WebRTC or BUD: direct UDP or TURN over UDP/TLS/TCP.\nUses the TURN URLs above. Reconnect after changing.", 844, 0, 40);
+        let transport = add(
+            hwnd,
+            page,
+            "COMBOBOX",
+            "",
+            CBS_DROPDOWNLIST as u32 | WS_VSCROLL | WS_TABSTOP,
+            [420, 844, 400, 160],
             BUD,
             0,
             page.font,
         );
+        for label in ["WebRTC", "BUD"] {
+            SendMessageW(transport, CB_ADDSTRING, 0, wide(label).as_ptr() as isize);
+        }
+        controls::combo(transport);
         check(hwnd, BUD, s.bud);
     }
     #[cfg(feature = "vendor-video")]
     {
         page.building_tab = Some(Tab::Video);
         let y = 532;
-        let hint = "Present original HEVC decoder surfaces on supported GPUs.\nWindows 11 / compatible driver. Reconnect after changing.";
+        let hint = "HEVC 4:2:0: NV12 (8-bit) or P010 (10-bit).\nRequires driver support; otherwise MF. Reconnect to apply.";
         row_label(hwnd, page, "Video presentation", hint, y, 0, 40);
-        add(
-            hwnd,
-            page,
-            "BUTTON",
-            "Zero copy (experimental, HEVC)",
-            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-            [420, y, 400, 36],
-            ZERO_COPY,
-            0,
-            page.font,
-        );
+        binary_choice(hwnd, page, ZERO_COPY, 532);
         check(hwnd, ZERO_COPY, s.experimental_zero_copy);
     }
     page.building_tab = Some(Tab::Network);
+    row_label(
+        hwnd,
+        page,
+        crate::settings_model::TCP_QOS_LABEL,
+        crate::settings_model::TCP_QOS_HINT,
+        844 + BUD_EXTRA,
+        0,
+        60,
+    );
+    binary_choice(hwnd, page, TCP_QOS, 844 + BUD_EXTRA);
+    check(hwnd, TCP_QOS, s.experimental_tcp_qos);
     row_label(hwnd, page, "Event log", "Log connection changes and decoder errors.\nSaved beside settings.json; no credentials or media payloads.\nApplies immediately after saving.", 938 + BUD_EXTRA, 0, 60);
     add(
         hwnd,
@@ -650,86 +643,63 @@ pub unsafe fn open(parent: HWND, manager: Arc<Manager>) -> HWND {
     check(hwnd, EVENT_LOG, s.event_logging);
     page.building_tab = Some(Tab::Audio);
     row_label(hwnd, page, "Playback buffer", "Custom limits apply only when enabled.\nOff uses the core's limits (normally 75 / 150 ms).", 242, 0, 48);
-    add(
-        hwnd,
-        page,
-        "BUTTON",
-        "Custom audio buffer",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 242, 400, 36],
-        AUDIO_CUSTOM,
-        0,
-        page.font,
-    );
+    binary_choice(hwnd, page, AUDIO_CUSTOM, 242);
     check(hwnd, AUDIO_CUSTOM, s.custom_audio_buffer);
     row(hwnd, page, "Minimum buffer (ms)", "PCM reserve before starting or refilling playback.\nSmaller values can increase audible gaps.", AUDIO_MIN,
         &s.audio_min_buffer_ms.to_string(), 344, 36, 0, ES_NUMBER as u32);
     row(hwnd, page, "Maximum buffer (ms)", "Local PCM plus audio queued on the Windows device.\n0 <= minimum <= maximum <= 500; maximum above zero.", AUDIO_MAX,
         &s.audio_max_buffer_ms.to_string(), 438, 36, 0, ES_NUMBER as u32);
     row_label(hwnd, page, "Audio format", "RAW: BUD only; host must also enable RAW.\n48 kHz stereo PCM uses about 1.54 Mbps before overhead.\nThe actual codec is shown in Connection stats.", 532, 0, 60);
-    add(
-        hwnd,
-        page,
-        "BUTTON",
-        "Allow raw PCM audio (BUD)",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 532, 400, 36],
-        AUDIO_RAW,
-        0,
-        page.font,
-    );
+    binary_choice(hwnd, page, AUDIO_RAW, 532);
     check(hwnd, AUDIO_RAW, s.allow_raw_audio);
     row_label(hwnd, page, "Speaker layout", "Experimental: match the Windows output's 5.1 or 7.1 layout.\nSynthetic tests only; no live host/client validation.\nBUD only; stereo fallback. Reconnect to apply.", 630, 0, 68);
-    add(
-        hwnd,
-        page,
-        "BUTTON",
-        "Multichannel audio (experimental, BUD)",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 630, 400, 36],
-        AUDIO_SURROUND,
-        0,
-        page.font,
-    );
+    binary_choice(hwnd, page, AUDIO_SURROUND, 630);
     check(hwnd, AUDIO_SURROUND, s.experimental_surround_audio);
     page.building_tab = Some(Tab::Input);
-    row_label(hwnd,page,"Mouse","Experimental USB HID mouse over BUD.\nEnable USB/Yubikey passthrough on the host.\nSupports a single physical or virtual display.",242,0,64);
-    add(
+    row_label(
         hwnd,
         page,
-        "BUTTON",
-        "USB HID mouse (experimental, BUD)",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 242, 400, 36],
-        HID_MOUSE,
+        "Input mode",
+        crate::settings_model::INPUT_MODE_HINT,
+        242,
         0,
-        page.font,
+        48,
     );
-    #[cfg(feature = "bud")]
-    check(hwnd, HID_MOUSE, s.experimental_hid_mouse);
-    row_label(hwnd,page,"Keyboard","Experimental physical keyboard over BUD.\nUse the same keyboard layout on host and client.\nFor example: Hungarian on both computers.",354,0,64);
-    add(
+    choice(
         hwnd,
         page,
-        "BUTTON",
-        "USB HID keyboard (experimental, BUD)",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        [420, 354, 400, 36],
-        HID_KEYBOARD,
-        0,
-        page.font,
+        INPUT_MODE,
+        242,
+        &InputMode::LABELS,
+        InputMode::current(&s) as usize,
     );
-    #[cfg(feature = "bud")]
-    check(hwnd, HID_KEYBOARD, s.experimental_hid_keyboard);
-    row_label(hwnd,page,"Compatibility","Absolute desktop and relative camera movement.\nCamera mode follows the host cursor state.\nKeyboard layout is not switched automatically.",466,0,64);
+    row_label(
+        hwnd,
+        page,
+        "HID requirements",
+        crate::settings_model::HID_REQUIREMENTS_HINT,
+        354,
+        0,
+        64,
+    );
+    row_label(
+        hwnd,
+        page,
+        "Compatibility",
+        crate::settings_model::HID_COMPATIBILITY_HINT,
+        466,
+        0,
+        64,
+    );
 
     page.building_tab = None;
     add(hwnd, page, "STATIC",
         "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection.",
-        0, [0, 1056 + BUD_EXTRA, 820, 48], NOTICE, 0, page.small);
-    let status = error.unwrap_or_else(|| {
+        0, [0, 1056 + BUD_EXTRA, 820, 64], NOTICE, 0, page.small);
+    page.model.feedback = error.unwrap_or_else(|| {
         "Saved in settings.json. Secrets are protected for your Windows user.".into()
     });
+    let status = page.model.feedback.clone();
     add(
         hwnd,
         page,
@@ -787,7 +757,7 @@ unsafe fn row_label(
     y: i32,
     group: u8,
     help_height: i32,
-) {
+) -> HWND {
     add(
         hwnd,
         page,
@@ -809,7 +779,7 @@ unsafe fn row_label(
         HELP,
         group,
         page.small,
-    );
+    )
 }
 #[allow(clippy::too_many_arguments)] // Label, help and native editor describe one settings row.
 unsafe fn row(
@@ -854,13 +824,13 @@ unsafe fn layout(hwnd: HWND) {
     let mut client = std::mem::zeroed();
     GetClientRect(hwnd, &mut client);
     let cloudflare = SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1;
-    let footer = match page.active_tab {
+    let footer = match page.model.active_tab {
         Tab::Network => 1056 + BUD_EXTRA,
         Tab::Audio => 750,
         Tab::Input => 570,
-        Tab::Video => 728,
+        Tab::Video => 1034,
     };
-    let height = footer + 122 + HEADER_EXTRA;
+    let height = footer + 138 + HEADER_EXTRA;
     page.scroll = page.scroll.clamp(0, (height - client.bottom).max(0));
     let info = SCROLLINFO {
         cbSize: size_of::<SCROLLINFO>() as u32,
@@ -877,13 +847,13 @@ unsafe fn layout(hwnd: HWND) {
     GetClientRect(hwnd, &mut client);
     let x = ((client.right - 820) / 2).max(24);
     for item in &page.items {
-        let visible = item.tab.is_none_or(|tab| tab == page.active_tab)
+        let visible = item.tab.is_none_or(|tab| tab == page.model.active_tab)
             && (item.group == 0 || item.group == if cloudflare { CLOUDFLARE } else { CUSTOM });
         let mut r = item.rect;
         let id = GetDlgCtrlID(item.hwnd) as usize;
         let new_top = match id {
             NOTICE => Some(footer),
-            STATUS => Some(footer + 62),
+            STATUS => Some(footer + 78),
             _ => None,
         };
         if let Some(top) = new_top {
@@ -1003,7 +973,85 @@ unsafe fn text(hwnd: HWND, id: usize) -> String {
     let length = GetWindowTextW(field, buffer.as_mut_ptr(), buffer.len() as i32);
     String::from_utf16_lossy(&buffer[..length as usize])
 }
+fn binary_choice_kind(id: usize) -> Option<BinaryChoice> {
+    match id {
+        TCP_QOS => Some(BinaryChoice::TcpQos),
+        CHROMA_444 => Some(BinaryChoice::Chroma),
+        AUDIO_CUSTOM => Some(BinaryChoice::AudioBuffer),
+        AUDIO_RAW => Some(BinaryChoice::AudioCodec),
+        AUDIO_SURROUND => Some(BinaryChoice::Speakers),
+        #[cfg(feature = "vendor-video")]
+        ZERO_COPY => Some(BinaryChoice::Rendering),
+        _ => None,
+    }
+}
+unsafe fn choice(hwnd: HWND, page: &mut Page, id: usize, y: i32, labels: &[&str], selected: usize) {
+    let control = add(
+        hwnd,
+        page,
+        "COMBOBOX",
+        "",
+        CBS_DROPDOWNLIST as u32
+            | CBS_OWNERDRAWFIXED as u32
+            | CBS_HASSTRINGS as u32
+            | WS_VSCROLL
+            | WS_TABSTOP,
+        [420, y, 400, 200],
+        id,
+        0,
+        page.font,
+    );
+    for label in labels {
+        SendMessageW(control, CB_ADDSTRING, 0, wide(label).as_ptr() as isize);
+    }
+    controls::combo(control);
+    select(hwnd, id, selected);
+}
+unsafe fn binary_choice(hwnd: HWND, page: &mut Page, id: usize, y: i32) {
+    let labels = binary_choice_kind(id)
+        .expect("binary mode binding")
+        .labels();
+    choice(hwnd, page, id, y, &labels, 0);
+}
+fn mode_combo(id: usize) -> bool {
+    matches!(id, VIDEO_FORMAT | INPUT_MODE | ROUTE_MODE) || binary_choice_kind(id).is_some()
+}
+fn mode_label(id: usize, index: u32) -> &'static str {
+    let index = index as usize;
+    if id == VIDEO_FORMAT {
+        VideoFormat::LABELS.get(index).copied()
+    } else if id == INPUT_MODE {
+        InputMode::LABELS.get(index).copied()
+    } else if id == ROUTE_MODE {
+        RouteMode::LABELS.get(index).copied()
+    } else {
+        binary_choice_kind(id).and_then(|kind| kind.labels().get(index).copied())
+    }
+    .unwrap_or_default()
+}
+fn binary_combo(id: usize) -> bool {
+    #[cfg(feature = "bud")]
+    if id == BUD {
+        return true;
+    }
+    binary_choice_kind(id).is_some()
+}
+unsafe fn selection(hwnd: HWND, id: usize) -> usize {
+    SendMessageW(GetDlgItem(hwnd, id as i32), CB_GETCURSEL, 0, 0) as usize
+}
+unsafe fn select(hwnd: HWND, id: usize, index: usize) {
+    SendMessageW(GetDlgItem(hwnd, id as i32), CB_SETCURSEL, index, 0);
+}
 unsafe fn check(hwnd: HWND, id: usize, value: bool) {
+    if binary_combo(id) {
+        SendMessageW(
+            GetDlgItem(hwnd, id as i32),
+            CB_SETCURSEL,
+            usize::from(value),
+            0,
+        );
+        return;
+    }
     SendMessageW(
         GetDlgItem(hwnd, id as i32),
         BM_SETCHECK,
@@ -1012,154 +1060,175 @@ unsafe fn check(hwnd: HWND, id: usize, value: bool) {
     );
 }
 unsafe fn checked(hwnd: HWND, id: usize) -> bool {
+    if binary_combo(id) {
+        return SendMessageW(GetDlgItem(hwnd, id as i32), CB_GETCURSEL, 0, 0) == 1;
+    }
     SendMessageW(GetDlgItem(hwnd, id as i32), BM_GETCHECK, 0, 0) == 1
 }
-unsafe fn update_enabled(hwnd: HWND) {
-    #[cfg(feature = "bud")]
-    EnableWindow(
-        GetDlgItem(hwnd, HID_KEYBOARD as i32),
-        checked(hwnd, BUD) as i32,
-    );
-    #[cfg(not(feature = "bud"))]
-    EnableWindow(GetDlgItem(hwnd, HID_KEYBOARD as i32), 0);
-
-    #[cfg(feature = "bud")]
-    EnableWindow(
-        GetDlgItem(hwnd, HID_MOUSE as i32),
-        checked(hwnd, BUD) as i32,
-    );
-    #[cfg(not(feature = "bud"))]
-    EnableWindow(GetDlgItem(hwnd, HID_MOUSE as i32), 0);
-
-    for id in [AUDIO_MIN, AUDIO_MAX] {
-        EnableWindow(
-            GetDlgItem(hwnd, id as i32),
-            checked(hwnd, AUDIO_CUSTOM) as i32,
-        );
+// Read native editor values; parsing, option rules and save feedback belong
+// to the shared model. This runs on user edits/saving, never on a media frame.
+unsafe fn read_options(hwnd: HWND, page: &mut Page) {
+    let model = &mut page.model;
+    model.gpu_selection = usize::try_from(SendMessageW(
+        GetDlgItem(hwnd, GPU as i32),
+        CB_GETCURSEL,
+        0,
+        0,
+    ))
+    .ok();
+    let s = &mut model.values;
+    if let Some(mode) = VideoFormat::ALL.get(selection(hwnd, VIDEO_FORMAT)) {
+        mode.apply(s);
     }
-    #[cfg(feature = "bud")]
-    EnableWindow(
-        GetDlgItem(hwnd, AUDIO_RAW as i32),
-        checked(hwnd, BUD) as i32,
-    );
-    #[cfg(not(feature = "bud"))]
-    EnableWindow(GetDlgItem(hwnd, AUDIO_RAW as i32), 0);
-    #[cfg(feature = "bud")]
-    EnableWindow(
-        GetDlgItem(hwnd, AUDIO_SURROUND as i32),
-        checked(hwnd, BUD) as i32,
-    );
-    #[cfg(not(feature = "bud"))]
-    EnableWindow(GetDlgItem(hwnd, AUDIO_SURROUND as i32), 0);
-    let hevc = checked(hwnd, HEVC) as i32;
-    EnableWindow(GetDlgItem(hwnd, TEN_BIT as i32), hevc);
-    #[cfg(feature = "vendor-video")]
-    EnableWindow(GetDlgItem(hwnd, ZERO_COPY as i32), hevc);
-    let turn = !checked(hwnd, STUN_ONLY);
-    let cloudflare = SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1;
-    for id in [
-        PROVIDER,
-        TURN,
-        USERNAME,
-        PASSWORD,
-        FORGET_PASSWORD,
-        KEY,
-        TOKEN,
-        FORGET_TOKEN,
-        TTL,
-        CACHE,
-        FORCE_RELAY,
-    ] {
-        let enabled = turn
-            && match id {
-                TURN | USERNAME | PASSWORD | FORGET_PASSWORD => !cloudflare,
-                KEY | TOKEN | FORGET_TOKEN | TTL | CACHE => cloudflare,
-                _ => true,
-            };
-        EnableWindow(GetDlgItem(hwnd, id as i32), enabled as i32);
+    s.experimental_chroma_444 = checked(hwnd, CHROMA_444);
+    if let Some(backend) = page.ai_upscaler {
+        backend.apply(s, selection(hwnd, AI_UPSCALE));
     }
-    layout(hwnd);
-}
-unsafe fn save(hwnd: HWND, page: &mut Page) -> anyhow::Result<()> {
-    let mut s = page.saved.clone();
-    s.prefer_hevc = checked(hwnd, HEVC);
-    s.presentation_mode =
-        match SendMessageW(GetDlgItem(hwnd, PRESENTATION as i32), CB_GETCURSEL, 0, 0) {
-            1 => crate::connection_settings::PresentationMode::LowLatency,
-            2 => crate::connection_settings::PresentationMode::Vsync,
-            _ => crate::connection_settings::PresentationMode::Automatic,
-        };
-    s.experimental_ten_bit = checked(hwnd, TEN_BIT);
     s.custom_audio_buffer = checked(hwnd, AUDIO_CUSTOM);
-    s.audio_min_buffer_ms = text(hwnd, AUDIO_MIN)
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Enter an audio minimum in milliseconds"))?;
-    s.audio_max_buffer_ms = text(hwnd, AUDIO_MAX)
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Enter an audio maximum in milliseconds"))?;
-    s.allow_raw_audio = checked(hwnd, AUDIO_RAW);
-    s.experimental_surround_audio = checked(hwnd, AUDIO_SURROUND);
-    s.event_logging = checked(hwnd, EVENT_LOG);
-    #[cfg(feature = "vendor-video")]
-    {
-        s.experimental_zero_copy = checked(hwnd, ZERO_COPY);
+    if let Some(mode) = RouteMode::ALL.get(selection(hwnd, ROUTE_MODE)) {
+        mode.apply(s);
     }
-    #[cfg(feature = "bud")]
-    {
-        s.bud = checked(hwnd, BUD);
-        s.experimental_hid_mouse = checked(hwnd, HID_MOUSE);
-        s.experimental_hid_keyboard = checked(hwnd, HID_KEYBOARD);
-    }
-    let selected = SendMessageW(GetDlgItem(hwnd, GPU as i32), CB_GETCURSEL, 0, 0);
-    s.video_gpu = usize::try_from(selected)
-        .ok()
-        .and_then(|i| page.gpu_choices.get(i))
-        .ok_or_else(|| anyhow::anyhow!("Choose Automatic or an available video GPU"))?
-        .clone();
-    let urls = |id| {
-        text(hwnd, id)
-            .lines()
-            .map(str::trim)
-            .filter(|u| !u.is_empty())
-            .map(|u| {
-                if let Some((scheme, rest)) = u.split_once(':') {
-                    format!("{}:{rest}", scheme.to_ascii_lowercase())
-                } else {
-                    u.into()
-                }
-            })
-            .collect()
-    };
     s.provider = if SendMessageW(GetDlgItem(hwnd, PROVIDER as i32), CB_GETCURSEL, 0, 0) == 1 {
         "cloudflare"
     } else {
         "custom"
     }
     .into();
-    s.stun_urls = urls(STUN);
-    s.turn_urls = urls(TURN);
-    s.stun_only = checked(hwnd, STUN_ONLY);
-    s.force_relay = checked(hwnd, FORCE_RELAY);
-    s.custom_username = text(hwnd, USERNAME).trim().into();
-    s.turn_key_id = text(hwnd, KEY).trim().into();
-    s.ttl = text(hwnd, TTL)
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Enter a valid credential lifetime"))?;
-    s.cache_credentials = checked(hwnd, CACHE);
-    page.manager.save(
-        s,
-        &text(hwnd, PASSWORD),
-        &text(hwnd, TOKEN),
-        checked(hwnd, FORGET_PASSWORD),
-        checked(hwnd, FORGET_TOKEN),
-    )?;
-    page.saved = page.manager.view().0;
-    for id in [PASSWORD, TOKEN] {
-        SetWindowTextW(GetDlgItem(hwnd, id as i32), wide("").as_ptr());
+    #[cfg(feature = "bud")]
+    {
+        s.bud = checked(hwnd, BUD);
     }
-    check(hwnd, FORGET_PASSWORD, false);
-    check(hwnd, FORGET_TOKEN, false);
-    Ok(())
+}
+unsafe fn update_enabled(hwnd: HWND) {
+    let page = &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Page);
+    read_options(hwnd, page);
+    let enabled = page.model.availability();
+    let backend = page.model.ai_upscaler();
+    if page.ai_upscaler != Some(backend) {
+        let control = GetDlgItem(hwnd, AI_UPSCALE as i32);
+        SendMessageW(control, WM_SETREDRAW, 0, 0);
+        SendMessageW(control, CB_RESETCONTENT, 0, 0);
+        for label in backend.labels() {
+            SendMessageW(control, CB_ADDSTRING, 0, wide(label).as_ptr() as isize);
+        }
+        SendMessageW(
+            control,
+            CB_SETCURSEL,
+            backend.selection(&page.model.values),
+            0,
+        );
+        SetWindowTextW(page.ai_hint, wide(backend.hint()).as_ptr());
+        page.ai_upscaler = Some(backend);
+        SendMessageW(control, WM_SETREDRAW, 1, 0);
+        InvalidateRect(control, null(), 0);
+    }
+    check(hwnd, CHROMA_444, page.model.values.experimental_chroma_444);
+    for (id, on) in [
+        (INPUT_MODE, enabled.bud),
+        (AUDIO_MIN, enabled.audio_limits),
+        (AUDIO_MAX, enabled.audio_limits),
+        (AUDIO_RAW, enabled.bud),
+        (AUDIO_SURROUND, enabled.bud),
+        (CHROMA_444, enabled.chroma_444),
+        (AI_UPSCALE, enabled.ai_upscale),
+        (TCP_QOS, enabled.relay),
+        (PROVIDER, enabled.relay),
+        (TURN, enabled.custom_turn),
+        (USERNAME, enabled.custom_turn),
+        (PASSWORD, enabled.custom_turn),
+        (FORGET_PASSWORD, enabled.custom_turn),
+        (KEY, enabled.cloudflare_turn),
+        (TOKEN, enabled.cloudflare_turn),
+        (FORGET_TOKEN, enabled.cloudflare_turn),
+        (TTL, enabled.cloudflare_turn),
+        (CACHE, enabled.cloudflare_turn),
+    ] {
+        EnableWindow(GetDlgItem(hwnd, id as i32), i32::from(on));
+    }
+    #[cfg(feature = "vendor-video")]
+    {
+        EnableWindow(
+            GetDlgItem(hwnd, ZERO_COPY as i32),
+            i32::from(enabled.zero_copy),
+        );
+    }
+    layout(hwnd);
+}
+unsafe fn save(hwnd: HWND, page: &mut Page) {
+    read_options(hwnd, page);
+    let model = &mut page.model;
+    let vsr_available =
+        model.ai_upscaler() == AiUpscaler::Nvidia && model.availability().ai_upscale;
+    let s = &mut model.values;
+    s.native_core.hide_session_button = checked(hwnd, HIDE_SESSION_BUTTON);
+    s.presentation_mode = crate::connection_settings::PresentationMode::from_index(SendMessageW(
+        GetDlgItem(hwnd, PRESENTATION as i32),
+        CB_GETCURSEL,
+        0,
+        0,
+    ) as usize);
+    s.allow_raw_audio = checked(hwnd, AUDIO_RAW);
+    s.experimental_surround_audio = checked(hwnd, AUDIO_SURROUND);
+    s.event_logging = checked(hwnd, EVENT_LOG);
+    s.experimental_tcp_qos = checked(hwnd, TCP_QOS);
+    #[cfg(feature = "vendor-video")]
+    {
+        s.experimental_zero_copy = checked(hwnd, ZERO_COPY);
+    }
+    #[cfg(feature = "bud")]
+    {
+        if let Some(mode) = InputMode::ALL.get(selection(hwnd, INPUT_MODE)) {
+            mode.apply(s);
+        }
+    }
+    s.custom_username = text(hwnd, USERNAME);
+    s.turn_key_id = text(hwnd, KEY);
+    s.cache_credentials = checked(hwnd, CACHE);
+    model.audio_min = text(hwnd, AUDIO_MIN);
+    model.audio_max = text(hwnd, AUDIO_MAX);
+    model.ttl = text(hwnd, TTL);
+    model.stun_urls = text(hwnd, STUN);
+    model.turn_urls = text(hwnd, TURN);
+    model.password = zeroize::Zeroizing::new(text(hwnd, PASSWORD));
+    model.token = zeroize::Zeroizing::new(text(hwnd, TOKEN));
+    model.forget_password = checked(hwnd, FORGET_PASSWORD);
+    model.forget_token = checked(hwnd, FORGET_TOKEN);
+    let needs_vsr = s.nvidia_vsr != 0 && vsr_available && !crate::vsr_runtime::present();
+    if needs_vsr && s.vsr_runtime_consent != crate::connection_settings::VsrRuntimeConsent::Allowed
+    {
+        let accepted = MessageBoxW(hwnd, wide("The NVIDIA VSR runtime is missing. Allow its verified download from NVIDIA on the next app start? Normal video remains available without it.").as_ptr(), wide("EvoParseq - NVIDIA VSR").as_ptr(), MB_YESNO | MB_DEFBUTTON2 | MB_ICONQUESTION) == IDYES;
+        if accepted {
+            s.vsr_runtime_consent = crate::connection_settings::VsrRuntimeConsent::Allowed;
+        } else {
+            s.nvidia_vsr = 0;
+            PostMessageW(
+                hwnd,
+                WM_COMMAND,
+                AI_UPSCALE | ((CBN_SELCHANGE as usize) << 16),
+                0,
+            );
+            SendMessageW(GetDlgItem(hwnd, AI_UPSCALE as i32), CB_SETCURSEL, 0, 0);
+        }
+    }
+    if model.save(&page.manager) {
+        if needs_vsr
+            && model.values.vsr_runtime_consent
+                == crate::connection_settings::VsrRuntimeConsent::Allowed
+        {
+            model.feedback.push_str(crate::vsr_runtime::RESTART_HINT);
+        }
+        PostMessageW(
+            GetParent(hwnd),
+            crate::native_core::session_ui::VISIBILITY,
+            0,
+            0,
+        );
+        for id in [PASSWORD, TOKEN] {
+            SetWindowTextW(GetDlgItem(hwnd, id as i32), wide("").as_ptr());
+        }
+        check(hwnd, FORGET_PASSWORD, false);
+        check(hwnd, FORGET_TOKEN, false);
+    }
 }
 
 unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -1203,7 +1272,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                 scroll_to(hwnd, requested);
                 return 0;
             }
-            WM_MEASUREITEM if wp == PROVIDER || wp == GPU => {
+            WM_MEASUREITEM if wp == PROVIDER || wp == GPU || mode_combo(wp) => {
                 (*(lp as *mut MEASUREITEMSTRUCT)).itemHeight = 30;
                 return 1;
             }
@@ -1220,15 +1289,16 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     GPU as u32,
                 ]
                 .contains(&draw.CtlID)
+                    || mode_combo(draw.CtlID as usize)
                 {
                     let dc = draw.hDC;
                     let state = SaveDC(dc);
                     let primary = draw.CtlID == SAVE as u32;
                     let selected_tab = (draw.CtlID == NETWORK_TAB as u32
-                        && page.active_tab == Tab::Network)
-                        || (draw.CtlID == VIDEO_TAB as u32 && page.active_tab == Tab::Video)
-                        || (draw.CtlID == AUDIO_TAB as u32 && page.active_tab == Tab::Audio)
-                        || (draw.CtlID == INPUT_TAB as u32 && page.active_tab == Tab::Input);
+                        && page.model.active_tab == Tab::Network)
+                        || (draw.CtlID == VIDEO_TAB as u32 && page.model.active_tab == Tab::Video)
+                        || (draw.CtlID == AUDIO_TAB as u32 && page.model.active_tab == Tab::Audio)
+                        || (draw.CtlID == INPUT_TAB as u32 && page.model.active_tab == Tab::Input);
                     let color = if draw.itemState & ODS_SELECTED != 0 {
                         0x00404040
                     } else if primary || selected_tab {
@@ -1251,7 +1321,9 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                             FG
                         },
                     );
-                    let combo = draw.CtlID == PROVIDER as u32 || draw.CtlID == GPU as u32;
+                    let combo = draw.CtlID == PROVIDER as u32
+                        || draw.CtlID == GPU as u32
+                        || mode_combo(draw.CtlID as usize);
                     let label = if draw.CtlID == PROVIDER as u32 {
                         match draw.itemID {
                             0 => "Custom servers".into(),
@@ -1263,6 +1335,8 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                             .get(draw.itemID as usize)
                             .cloned()
                             .unwrap_or_default()
+                    } else if mode_combo(draw.CtlID as usize) {
+                        mode_label(draw.CtlID as usize, draw.itemID).into()
                     } else if draw.CtlID == NETWORK_TAB as u32 {
                         "Network".into()
                     } else if draw.CtlID == VIDEO_TAB as u32 {
@@ -1313,7 +1387,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                 NETWORK_TAB | VIDEO_TAB | AUDIO_TAB | INPUT_TAB
                     if (wp >> 16) as u32 == BN_CLICKED =>
                 {
-                    page.active_tab = if wp & 0xffff == VIDEO_TAB {
+                    page.model.active_tab = if wp & 0xffff == VIDEO_TAB {
                         Tab::Video
                     } else if wp & 0xffff == INPUT_TAB {
                         Tab::Input
@@ -1325,62 +1399,50 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                     page.scroll = 0;
                     SetWindowTextW(
                         GetDlgItem(hwnd, SECTION as i32),
-                        wide(if page.active_tab == Tab::Video {
-                            "VIDEO"
-                        } else if page.active_tab == Tab::Input {
-                            "INPUT"
-                        } else if page.active_tab == Tab::Audio {
-                            "AUDIO"
-                        } else {
-                            "NETWORK"
-                        })
-                        .as_ptr(),
+                        wide(page.model.active_tab.heading()).as_ptr(),
                     );
-                    SetWindowTextW(GetDlgItem(hwnd, NOTICE as i32), wide(if page.active_tab == Tab::Video {
-                        "Video changes apply to your next connection."
-                    } else if page.active_tab == Tab::Input {
-                        "Enable BUD on the Network tab to use HID input.\nInput changes apply to your next connection."
-                    } else if page.active_tab == Tab::Audio {
-                        "Audio changes apply on your next connection."
-                    } else {
-                        "ICE chooses the route automatically unless Force TURN relay is enabled.\nChanges apply to your next connection."
-                    }).as_ptr());
+                    SetWindowTextW(
+                        GetDlgItem(hwnd, NOTICE as i32),
+                        wide(page.model.active_tab.notice()).as_ptr(),
+                    );
                     layout(hwnd);
                     return 0;
                 }
                 SAVE | 1 => {
-                    let status = match save(hwnd, page) {
-                        Ok(()) => "Settings saved. They apply on your next connection.".into(),
-                        Err(e) => e.to_string(),
-                    };
-                    SetWindowTextW(GetDlgItem(hwnd, STATUS as i32), wide(&status).as_ptr());
+                    save(hwnd, page);
+                    SetWindowTextW(
+                        GetDlgItem(hwnd, STATUS as i32),
+                        wide(&page.model.feedback).as_ptr(),
+                    );
                     return 0;
                 }
                 BACK => {
                     PostMessageW(GetParent(hwnd), WM_APP + 9, 0, 0);
                     return 0;
                 }
-                PROVIDER if (wp >> 16) as u32 == CBN_SELCHANGE => {
+                GPU | PROVIDER if (wp >> 16) as u32 == CBN_SELCHANGE => {
                     update_enabled(hwnd);
                     return 0;
                 }
-                HEVC if (wp >> 16) as u32 == BN_CLICKED => {
+                VIDEO_FORMAT if (wp >> 16) as u32 == CBN_SELCHANGE => {
                     update_enabled(hwnd);
                     return 0;
                 }
-                AUDIO_CUSTOM if (wp >> 16) as u32 == BN_CLICKED => {
+
+                CHROMA_444 | AI_UPSCALE if (wp >> 16) as u32 == CBN_SELCHANGE => {
+                    update_enabled(hwnd);
+                    return 0;
+                }
+                AUDIO_CUSTOM if (wp >> 16) as u32 == CBN_SELCHANGE => {
                     update_enabled(hwnd);
                     return 0;
                 }
                 #[cfg(feature = "bud")]
-                BUD if (wp >> 16) as u32 == BN_CLICKED => {
+                BUD if (wp >> 16) as u32 == CBN_SELCHANGE => {
                     update_enabled(hwnd);
                     return 0;
                 }
-                STUN_ONLY if (wp >> 16) as u32 == BN_CLICKED => {
-                    if checked(hwnd, STUN_ONLY) {
-                        check(hwnd, FORCE_RELAY, false);
-                    }
+                ROUTE_MODE if (wp >> 16) as u32 == CBN_SELCHANGE => {
                     update_enabled(hwnd);
                     return 0;
                 }
@@ -1438,11 +1500,11 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
 mod tests {
     use super::*;
     #[test]
-    fn native_controls_save_and_reopen_without_guest_or_real_profile() {
+    fn native_controls_save_and_reopen_without_real_profile() {
         let mut nonce = [0; 16];
         getrandom::fill(&mut nonce).unwrap();
         let suffix: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
-        let directory = std::env::temp_dir().join(format!("parsec-settings-ui-{suffix}"));
+        let directory = std::env::temp_dir().join(format!("evoparseq-settings-ui-{suffix}"));
         std::fs::create_dir(&directory).unwrap();
         let manager = Manager::open(directory.join("settings.json"));
         unsafe {
@@ -1524,10 +1586,48 @@ mod tests {
             SendMessageW(page, WM_COMMAND, VIDEO_TAB, 0);
             assert_eq!(IsWindowVisible(GetDlgItem(page, PROVIDER as i32)), 0);
             assert_ne!(IsWindowVisible(GetDlgItem(page, GPU as i32)), 0);
-            check(page, HEVC, true);
+            select(page, VIDEO_FORMAT, VideoFormat::Hevc8 as usize);
+            SendMessageW(
+                page,
+                WM_COMMAND,
+                VIDEO_FORMAT | ((CBN_SELCHANGE as usize) << 16),
+                0,
+            );
+            assert_eq!(
+                GetWindowLongW(GetDlgItem(page, VIDEO_FORMAT as i32), GWL_STYLE) as u32 & 3,
+                CBS_DROPDOWNLIST as u32
+            );
+            assert_combo_label_visible(page, VIDEO_FORMAT);
             assert_no_overlaps(page);
             capture(page, "video");
             assert_combo_label_visible(page, GPU);
+
+            {
+                // Synthetic adapter identities: no production GPU settings are changed.
+                let state = &mut *(GetWindowLongPtrW(page, GWLP_USERDATA) as *mut Page);
+                let default_vendor = state.model.default_gpu_vendor;
+                SendMessageW(GetDlgItem(page, GPU as i32), CB_SETCURSEL, 0, 0);
+                for vendor in [0x10de, 0x1002, 0x8086] {
+                    state.model.default_gpu_vendor = Some(vendor);
+                    check(page, CHROMA_444, true);
+                    update_enabled(page);
+                    assert_eq!(
+                        IsWindowEnabled(GetDlgItem(page, CHROMA_444 as i32)) != 0,
+                        matches!(vendor, 0x10de | 0x8086)
+                    );
+                    assert_eq!(checked(page, CHROMA_444), matches!(vendor, 0x10de | 0x8086));
+                    assert_ne!(IsWindowEnabled(GetDlgItem(page, VIDEO_FORMAT as i32)), 0);
+                    #[cfg(feature = "vendor-video")]
+                    assert_eq!(
+                        IsWindowEnabled(GetDlgItem(page, ZERO_COPY as i32)) != 0,
+                        !matches!(vendor, 0x10de | 0x8086)
+                    );
+                }
+                state.model.default_gpu_vendor = default_vendor;
+                check(page, CHROMA_444, false);
+                update_enabled(page);
+            }
+
             SendMessageW(page, WM_COMMAND, AUDIO_TAB, 0);
             assert_ne!(IsWindowVisible(GetDlgItem(page, AUDIO_CUSTOM as i32)), 0);
             assert_eq!(IsWindowEnabled(GetDlgItem(page, AUDIO_MIN as i32)), 0);
@@ -1541,26 +1641,27 @@ mod tests {
             assert_no_overlaps(page);
             capture(page, "audio");
             SendMessageW(page, WM_COMMAND, INPUT_TAB, 0);
-            assert_ne!(IsWindowVisible(GetDlgItem(page, HID_MOUSE as i32)), 0);
+            assert_ne!(IsWindowVisible(GetDlgItem(page, INPUT_MODE as i32)), 0);
             assert_eq!(IsWindowVisible(GetDlgItem(page, GPU as i32)), 0);
             #[cfg(feature = "bud")]
             {
                 update_enabled(page);
-                assert_ne!(IsWindowEnabled(GetDlgItem(page, HID_MOUSE as i32)), 0);
-                check(page, HID_MOUSE, true);
+                assert_ne!(IsWindowEnabled(GetDlgItem(page, INPUT_MODE as i32)), 0);
+                select(page, INPUT_MODE, InputMode::HidMouse as usize);
                 check(page, BUD, false);
                 update_enabled(page);
-                assert_eq!(IsWindowEnabled(GetDlgItem(page, HID_MOUSE as i32)), 0);
-                assert!(checked(page, HID_MOUSE));
+                assert_eq!(IsWindowEnabled(GetDlgItem(page, INPUT_MODE as i32)), 0);
+                assert_eq!(selection(page, INPUT_MODE), InputMode::HidMouse as usize);
                 check(page, BUD, true);
                 update_enabled(page);
             }
+            assert_combo_label_visible(page, INPUT_MODE);
             assert_no_overlaps(page);
             capture(page, "input");
 
             SendMessageW(page, WM_COMMAND, NETWORK_TAB, 0);
             assert_eq!(IsWindowVisible(GetDlgItem(page, GPU as i32)), 0);
-            assert!(checked(page, HEVC));
+            assert_ne!(selection(page, VIDEO_FORMAT), VideoFormat::H264 as usize);
             assert_eq!(text(page, TOKEN), "fixture-token");
             assert_eq!(text(page, USERNAME), "unsaved-user");
             SendMessageW(GetDlgItem(page, PROVIDER as i32), CB_SETCURSEL, 0, 0);
@@ -1582,10 +1683,17 @@ mod tests {
                 GetDlgItem(page, PASSWORD as i32),
                 wide("fixture-password").as_ptr(),
             );
-            check(page, FORCE_RELAY, true);
-            check(page, TEN_BIT, true);
+            select(page, ROUTE_MODE, RouteMode::ForceRelay as usize);
+            select(page, VIDEO_FORMAT, VideoFormat::Hevc10 as usize);
             SendMessageW(GetDlgItem(page, PRESENTATION as i32), CB_SETCURSEL, 2, 0);
             check(page, EVENT_LOG, true);
+            check(page, TCP_QOS, true);
+            SetWindowTextW(GetDlgItem(page, AUDIO_MIN as i32), wide("invalid").as_ptr());
+            SendMessageW(page, WM_COMMAND, SAVE, 0);
+            assert_eq!(text(page, STATUS), "Enter an audio minimum in milliseconds");
+            assert_eq!(text(page, PASSWORD), "fixture-password");
+            assert_eq!(text(page, TOKEN), "fixture-token");
+            SetWindowTextW(GetDlgItem(page, AUDIO_MIN as i32), wide("20").as_ptr());
             SendMessageW(page, WM_COMMAND, SAVE, 0);
             assert!(manager.view().0.force_relay);
             assert!(manager.view().0.experimental_ten_bit);
@@ -1593,7 +1701,14 @@ mod tests {
                 manager.view().0.presentation_mode,
                 crate::connection_settings::PresentationMode::Vsync
             );
+            SendMessageW(GetDlgItem(page, PRESENTATION as i32), CB_SETCURSEL, 3, 0);
+            SendMessageW(page, WM_COMMAND, SAVE, 0);
+            assert_eq!(
+                manager.view().0.presentation_mode,
+                crate::connection_settings::PresentationMode::Vrr
+            );
             assert!(manager.view().0.event_logging);
+            assert!(manager.view().0.experimental_tcp_qos);
             assert!(manager.view().0.custom_audio_buffer);
             assert_eq!(manager.view().0.audio_min_buffer_ms, 20);
             assert_eq!(manager.view().0.audio_max_buffer_ms, 60);
@@ -1605,20 +1720,20 @@ mod tests {
             assert!(manager.view().0.hid_mouse_enabled());
             assert_eq!(manager.view().0.stun_urls.len(), 2);
             assert_eq!(manager.view().0.turn_urls.len(), 2);
-            check(page, STUN_ONLY, true);
+            select(page, ROUTE_MODE, RouteMode::DirectOnly as usize);
             SendMessageW(
                 page,
                 WM_COMMAND,
-                STUN_ONLY | ((BN_CLICKED as usize) << 16),
+                ROUTE_MODE | ((CBN_SELCHANGE as usize) << 16),
                 0,
             );
-            assert!(!checked(page, FORCE_RELAY));
-            check(page, HEVC, true);
+            assert_eq!(selection(page, ROUTE_MODE), RouteMode::DirectOnly as usize);
+            select(page, VIDEO_FORMAT, VideoFormat::Hevc8 as usize);
             update_enabled(page);
             assert_eq!(IsWindowEnabled(GetDlgItem(page, TURN as i32)), 0);
             let state = &*(GetWindowLongPtrW(page, GWLP_USERDATA) as *const Page);
-            let selected = usize::from(state.gpu_choices.len() > 1);
-            let expected_gpu = state.gpu_choices[selected].clone();
+            let selected = usize::from(state.model.gpu_choices.len() > 1);
+            let expected_gpu = state.model.gpu_choices[selected].clone();
             SendMessageW(GetDlgItem(page, GPU as i32), CB_SETCURSEL, selected, 0);
             SendMessageW(page, WM_COMMAND, SAVE, 0);
             assert!(text(page, STATUS).starts_with("Settings saved"));
@@ -1633,17 +1748,18 @@ mod tests {
             assert!(manager.view().0.prefer_hevc);
             DestroyWindow(page);
             let page = open(parent, manager.clone());
+            assert!(checked(page, TCP_QOS));
             assert_eq!(
                 text(page, STUN),
                 "stun:stun.example.org:3478\r\nstun:second.example.invalid:3478"
             );
             assert_eq!(text(page, TURN), "turn:relay.example.invalid:3478?transport=udp\r\nturns:relay.example.invalid:443?transport=tcp");
-            assert!(checked(page, STUN_ONLY));
+            assert_eq!(selection(page, ROUTE_MODE), RouteMode::DirectOnly as usize);
             #[cfg(feature = "vendor-video")]
             assert!(checked(page, ZERO_COPY));
-            assert!(checked(page, HEVC));
+            assert_ne!(selection(page, VIDEO_FORMAT), VideoFormat::H264 as usize);
             #[cfg(feature = "bud")]
-            assert!(checked(page, HID_MOUSE));
+            assert_eq!(selection(page, INPUT_MODE), InputMode::HidMouse as usize);
             assert_eq!(
                 SendMessageW(GetDlgItem(page, GPU as i32), CB_GETCURSEL, 0, 0),
                 selected as isize

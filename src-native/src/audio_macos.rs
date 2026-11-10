@@ -1,12 +1,15 @@
-//! macOS CoreAudio AudioUnit Output.
+//! Documented Core Audio default-output AudioUnit for decoded 48 kHz PCM.
+//! The default-output unit follows the system's output device changes itself.
 use crate::audio_layout::Layout;
 use anyhow::{bail, Result};
 use serde::Serialize;
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::VecDeque,
+    ffi::c_void,
     sync::{Arc, Mutex},
 };
 
+/// Same report fields as the Windows backend, for the shared statistics view.
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
     pub layout: Option<Layout>,
@@ -24,68 +27,90 @@ pub struct Snapshot {
     pub device_padding: u32,
     pub failure_hresult: Option<String>,
     pub resources_released: bool,
+    pub recovering: bool,
+    pub recovery_attempts: u64,
+    pub recoveries: u64,
+    pub last_device_error: Option<String>,
 }
 
-#[derive(Default)]
-pub struct Registry {
-    next: u32,
-    outputs: BTreeMap<u32, Arc<Playback>>,
-    completed: VecDeque<Snapshot>,
-    rejected_layouts: BTreeMap<u32, Layout>,
-}
+mod ffi {
+    use std::ffi::c_void;
+    pub type OSStatus = i32;
+    pub type AudioUnit = *mut c_void;
+    pub const OUTPUT: u32 = u32::from_be_bytes(*b"auou");
+    pub const DEFAULT_OUTPUT: u32 = u32::from_be_bytes(*b"def ");
+    pub const APPLE: u32 = u32::from_be_bytes(*b"appl");
+    pub const LINEAR_PCM: u32 = u32::from_be_bytes(*b"lpcm");
+    pub const SIGNED_INTEGER: u32 = 1 << 2;
+    pub const PACKED: u32 = 1 << 3;
+    pub const STREAM_FORMAT: u32 = 8;
+    pub const SET_RENDER_CALLBACK: u32 = 23;
+    pub const SCOPE_INPUT: u32 = 1;
 
-impl Registry {
-    #[cfg(feature = "diagnostics")]
-    pub fn snapshots(&self) -> Vec<Snapshot> {
-        self.completed
-            .iter()
-            .cloned()
-            .chain(self.outputs.values().map(|v| v.snapshot()))
-            .collect()
+    #[repr(C)]
+    pub struct AudioComponentDescription {
+        pub component_type: u32,
+        pub component_sub_type: u32,
+        pub component_manufacturer: u32,
+        pub component_flags: u32,
+        pub component_flags_mask: u32,
     }
-    pub fn retain_snapshot(&mut self, snapshot: Snapshot) {
-        if self.completed.len() == 8 {
-            self.completed.pop_front();
-        }
-        self.completed.push_back(snapshot);
+    #[repr(C)]
+    pub struct AudioStreamBasicDescription {
+        pub sample_rate: f64,
+        pub format_id: u32,
+        pub format_flags: u32,
+        pub bytes_per_packet: u32,
+        pub frames_per_packet: u32,
+        pub bytes_per_frame: u32,
+        pub channels_per_frame: u32,
+        pub bits_per_channel: u32,
+        pub reserved: u32,
     }
-    pub fn insert(&mut self, output: Playback) -> Result<u32> {
-        if self.outputs.len() >= 4 {
-            bail!("audio context limit");
-        }
-        self.next = self
-            .next
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("audio handle overflow"))?;
-        self.outputs.insert(self.next, Arc::new(output));
-        Ok(self.next)
+    #[repr(C)]
+    pub struct AudioBuffer {
+        pub number_channels: u32,
+        pub data_byte_size: u32,
+        pub data: *mut c_void,
     }
-    pub fn get(&self, handle: u32) -> Result<Arc<Playback>> {
-        self.outputs
-            .get(&handle)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("invalid audio context"))
+    #[repr(C)]
+    pub struct AudioBufferList {
+        pub number_buffers: u32,
+        pub buffers: [AudioBuffer; 1],
     }
-    pub fn remove(&mut self, handle: u32) -> Result<Arc<Playback>> {
-        self.rejected_layouts.remove(&handle);
-        self.outputs
-            .remove(&handle)
-            .ok_or_else(|| anyhow::anyhow!("invalid audio context"))
+    pub type RenderCallback = unsafe extern "C" fn(
+        *mut c_void,
+        *mut u32,
+        *const c_void,
+        u32,
+        u32,
+        *mut AudioBufferList,
+    ) -> OSStatus;
+    #[repr(C)]
+    pub struct AURenderCallbackStruct {
+        pub input_proc: RenderCallback,
+        pub input_proc_ref_con: *mut c_void,
     }
-    pub fn rejected(&self, handle: u32, layout: Layout) -> bool {
-        self.rejected_layouts.get(&handle) == Some(&layout)
-    }
-    pub fn reject(&mut self, handle: u32, layout: Layout) {
-        self.rejected_layouts.insert(handle, layout);
-    }
-    pub fn replace(&mut self, handle: u32, output: Playback) -> Result<Arc<Playback>> {
-        let slot = self
-            .outputs
-            .get_mut(&handle)
-            .ok_or_else(|| anyhow::anyhow!("invalid audio context"))?;
-        let old = std::mem::replace(slot, Arc::new(output));
-        self.rejected_layouts.remove(&handle);
-        Ok(old)
+    #[link(name = "AudioToolbox", kind = "framework")]
+    extern "C" {
+        pub fn AudioComponentFindNext(
+            component: *mut c_void,
+            description: *const AudioComponentDescription,
+        ) -> *mut c_void;
+        pub fn AudioComponentInstanceNew(component: *mut c_void, out: *mut AudioUnit) -> OSStatus;
+        pub fn AudioComponentInstanceDispose(unit: AudioUnit) -> OSStatus;
+        pub fn AudioUnitSetProperty(
+            unit: AudioUnit,
+            id: u32,
+            scope: u32,
+            element: u32,
+            data: *const c_void,
+            size: u32,
+        ) -> OSStatus;
+        pub fn AudioUnitInitialize(unit: AudioUnit) -> OSStatus;
+        pub fn AudioUnitUninitialize(unit: AudioUnit) -> OSStatus;
+        pub fn AudioOutputUnitStart(unit: AudioUnit) -> OSStatus;
+        pub fn AudioOutputUnitStop(unit: AudioUnit) -> OSStatus;
     }
 }
 
@@ -93,30 +118,29 @@ impl Registry {
 struct State {
     report: Snapshot,
     pcm: VecDeque<i16>,
+    channels: usize,
+    min_frames: usize,
+    // Silence until the minimum buffer is queued again after an underrun.
+    primed: bool,
     stopped: bool,
-    reset: bool,
 }
 
 pub struct Playback {
     pub layout: Layout,
     shared: Arc<Mutex<State>>,
-    audio_unit: *mut std::ffi::c_void,
+    unit: Mutex<Option<Unit>>,
     max_frames: usize,
-    custom_buffer: bool,
 }
 
-unsafe impl Send for Playback {}
-unsafe impl Sync for Playback {}
+/// The AudioUnit plus the callback's strong reference, released after disposal.
+struct Unit {
+    unit: ffi::AudioUnit,
+    callback_state: *const Mutex<State>,
+}
+// Core Audio units may be stopped and disposed from any thread.
+unsafe impl Send for Unit {}
 
 impl Playback {
-    pub fn create(
-        window: Arc<crate::window::Window>,
-        min_buffer: u32,
-        max_buffer: u32,
-    ) -> Result<Self> {
-        Self::create_layout(window, min_buffer, max_buffer, Layout::STEREO)
-    }
-
     pub fn create_layout(
         window: Arc<crate::window::Window>,
         min_buffer: u32,
@@ -128,225 +152,250 @@ impl Playback {
         if min_buffer > max_buffer || max_buffer == 0 || max_buffer > 500 {
             bail!("invalid audio latency limits");
         }
-        let max_frames = max_buffer as usize * 48;
         let shared = Arc::new(Mutex::new(State {
             report: Snapshot {
                 layout: Some(layout),
                 minimum_ms: min_buffer,
                 maximum_ms: max_buffer,
                 custom_buffer: custom.is_some(),
-                device_opened: true,
                 ..Default::default()
             },
+            channels: usize::from(layout.channels),
+            min_frames: min_buffer as usize * 48,
             ..Default::default()
         }));
-
-        let au = unsafe { setup_audio_unit(&shared, layout.channels as u32)? };
-
-        Ok(Self {
-            layout,
-            shared,
-            audio_unit: au,
-            max_frames,
-            custom_buffer: custom.is_some(),
-        })
-    }
-
-    pub fn queue(&self, samples: &[i16]) {
-        let mut state = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-        if state.stopped {
-            return;
-        }
-        let channels = self.layout.channels as usize;
-        let incoming_frames = samples.len() / channels;
-        let current_frames = state.pcm.len() / channels;
-        if current_frames + incoming_frames > self.max_frames {
-            state.report.frames_dropped += incoming_frames as u64;
-            return;
-        }
-        state.pcm.extend(samples.iter().copied());
-        state.report.frames_queued += incoming_frames as u64;
-        state.report.queued_frames = state.pcm.len() / channels;
-    }
-
-    pub fn reset(&self) {
-        let mut state = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-        state.pcm.clear();
-        state.reset = true;
-        state.report.queued_frames = 0;
-    }
-
-    pub fn queued_ms(&self) -> u32 {
-        let state = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-        ((state.pcm.len() / self.layout.channels as usize) / 48) as u32
-    }
-
-    pub fn queued_frames(&self) -> u32 {
-        let state = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-        (state.pcm.len() / self.layout.channels as usize) as u32
-    }
-
-    pub fn snapshot(&self) -> Snapshot {
-        let mut report = self
-            .shared
+        crate::event_log::record(
+            "INFO",
+            "audio_output_configured",
+            serde_json::json!({
+                "minimum_ms":min_buffer,"maximum_ms":max_buffer,"custom":custom.is_some(),
+                "channels":layout.channels,"channel_mask":layout.mask
+            }),
+        );
+        let unit = match unsafe { open(&shared, u32::from(layout.channels)) } {
+            Ok(unit) => unit,
+            Err(error) => {
+                crate::event_log::record(
+                    "ERROR",
+                    "audio_output_failed",
+                    serde_json::json!({"reason":error.to_string()}),
+                );
+                return Err(error);
+            }
+        };
+        shared
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .report
-            .clone();
-        report.custom_buffer = self.custom_buffer;
-        report
+            .device_opened = true;
+        Ok(Self {
+            layout,
+            shared,
+            unit: Mutex::new(Some(unit)),
+            max_frames: max_buffer as usize * 48,
+        })
     }
-
-    pub fn close(&self) {
-        {
-            let mut state = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-            // stop() then Drop both reach here; dispose the unit only once.
-            if state.stopped {
-                return;
-            }
-            state.stopped = true;
-            state.pcm.clear();
-            state.report.resources_released = true;
+    pub fn queue(&self, pcm: &[i16]) {
+        let channels = usize::from(self.layout.channels);
+        if !pcm.len().is_multiple_of(channels) {
+            return;
         }
-        // The render callback takes the same lock, so stop the unit without holding it.
-        if !self.audio_unit.is_null() {
-            unsafe {
-                coreaudio_sys::AudioOutputUnitStop(self.audio_unit as _);
-                coreaudio_sys::AudioComponentInstanceDispose(self.audio_unit as _);
-            }
+        let frames = pcm.len() / channels;
+        let mut s = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        if s.stopped || s.pcm.len() / channels + frames > self.max_frames {
+            s.report.frames_dropped += frames as u64;
+            return;
         }
+        s.pcm.extend(pcm);
+        s.report.frames_queued += frames as u64;
+        s.report.queued_frames = s.pcm.len() / channels;
     }
-
+    /// The default-output unit handles device changes without a reopen.
+    pub fn take_recovery_flush(&self) -> bool {
+        false
+    }
+    pub fn snapshot(&self) -> Snapshot {
+        self.shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .report
+            .clone()
+    }
     pub fn stop(&self) {
-        self.close();
+        {
+            let mut s = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+            s.stopped = true;
+            s.pcm.clear();
+        }
+        // The render callback takes the state lock; never stop the unit while holding it.
+        if let Some(unit) = self.unit.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            unsafe {
+                ffi::AudioOutputUnitStop(unit.unit);
+                ffi::AudioUnitUninitialize(unit.unit);
+                ffi::AudioComponentInstanceDispose(unit.unit);
+                drop(Arc::from_raw(unit.callback_state));
+            }
+            let mut s = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+            s.report.resources_released = true;
+            s.report.device_opened = false;
+            s.report.queued_frames = 0;
+        }
     }
 }
-
 impl Drop for Playback {
     fn drop(&mut self) {
-        self.close();
+        self.stop();
     }
 }
 
-unsafe fn setup_audio_unit(
-    state: &Arc<Mutex<State>>,
-    channels: u32,
-) -> Result<*mut std::ffi::c_void> {
-    let desc = coreaudio_sys::AudioComponentDescription {
-        componentType: coreaudio_sys::kAudioUnitType_Output,
-        componentSubType: coreaudio_sys::kAudioUnitSubType_DefaultOutput,
-        componentManufacturer: coreaudio_sys::kAudioUnitManufacturer_Apple,
-        componentFlags: 0,
-        componentFlagsMask: 0,
+unsafe fn open(state: &Arc<Mutex<State>>, channels: u32) -> Result<Unit> {
+    let description = ffi::AudioComponentDescription {
+        component_type: ffi::OUTPUT,
+        component_sub_type: ffi::DEFAULT_OUTPUT,
+        component_manufacturer: ffi::APPLE,
+        component_flags: 0,
+        component_flags_mask: 0,
     };
-    let comp = coreaudio_sys::AudioComponentFindNext(std::ptr::null_mut(), &desc);
-    if comp.is_null() {
-        bail!("Default audio output component not found");
+    let component = ffi::AudioComponentFindNext(std::ptr::null_mut(), &description);
+    if component.is_null() {
+        bail!("default audio output unavailable");
     }
-    let mut au: coreaudio_sys::AudioComponentInstance = std::ptr::null_mut();
-    let status = coreaudio_sys::AudioComponentInstanceNew(comp, &mut au);
-    if status != 0 || au.is_null() {
+    let mut unit = std::ptr::null_mut();
+    let status = ffi::AudioComponentInstanceNew(component, &mut unit);
+    if status != 0 || unit.is_null() {
         bail!("AudioComponentInstanceNew failed: {status}");
     }
-
-    let mut stream_desc = coreaudio_sys::AudioStreamBasicDescription {
-        mSampleRate: 48000.0,
-        mFormatID: coreaudio_sys::kAudioFormatLinearPCM,
-        mFormatFlags: coreaudio_sys::kAudioFormatFlagIsSignedInteger
-            | coreaudio_sys::kAudioFormatFlagIsPacked,
-        mBytesPerPacket: channels * 2,
-        mFramesPerPacket: 1,
-        mBytesPerFrame: channels * 2,
-        mChannelsPerFrame: channels,
-        mBitsPerChannel: 16,
-        mReserved: 0,
+    let format = ffi::AudioStreamBasicDescription {
+        sample_rate: 48_000.0,
+        format_id: ffi::LINEAR_PCM,
+        format_flags: ffi::SIGNED_INTEGER | ffi::PACKED,
+        bytes_per_packet: channels * 2,
+        frames_per_packet: 1,
+        bytes_per_frame: channels * 2,
+        channels_per_frame: channels,
+        bits_per_channel: 16,
+        reserved: 0,
     };
-
-    let status = coreaudio_sys::AudioUnitSetProperty(
-        au,
-        coreaudio_sys::kAudioUnitProperty_StreamFormat,
-        coreaudio_sys::kAudioUnitScope_Input,
+    let callback_state = Arc::into_raw(state.clone());
+    let callback = ffi::AURenderCallbackStruct {
+        input_proc: render,
+        input_proc_ref_con: callback_state as *mut c_void,
+    };
+    let fail = |stage: &str, status: i32| {
+        ffi::AudioComponentInstanceDispose(unit);
+        drop(Arc::from_raw(callback_state));
+        anyhow::anyhow!("{stage} failed: {status}")
+    };
+    let status = ffi::AudioUnitSetProperty(
+        unit,
+        ffi::STREAM_FORMAT,
+        ffi::SCOPE_INPUT,
         0,
-        &mut stream_desc as *mut _ as *const _,
-        std::mem::size_of_val(&stream_desc) as u32,
+        (&format as *const ffi::AudioStreamBasicDescription).cast(),
+        size_of::<ffi::AudioStreamBasicDescription>() as u32,
     );
     if status != 0 {
-        coreaudio_sys::AudioComponentInstanceDispose(au);
-        bail!("AudioUnitSetProperty StreamFormat failed: {status}");
+        return Err(fail("AudioUnit stream format", status));
     }
-
-    let cb_struct = coreaudio_sys::AURenderCallbackStruct {
-        inputProc: Some(audio_render_cb),
-        inputProcRefCon: Arc::into_raw(state.clone()) as *mut _,
-    };
-    let status = coreaudio_sys::AudioUnitSetProperty(
-        au,
-        coreaudio_sys::kAudioUnitProperty_SetRenderCallback,
-        coreaudio_sys::kAudioUnitScope_Input,
+    let status = ffi::AudioUnitSetProperty(
+        unit,
+        ffi::SET_RENDER_CALLBACK,
+        ffi::SCOPE_INPUT,
         0,
-        &cb_struct as *const _ as *const _,
-        std::mem::size_of_val(&cb_struct) as u32,
+        (&callback as *const ffi::AURenderCallbackStruct).cast(),
+        size_of::<ffi::AURenderCallbackStruct>() as u32,
     );
     if status != 0 {
-        coreaudio_sys::AudioComponentInstanceDispose(au);
-        bail!("AudioUnitSetProperty SetRenderCallback failed: {status}");
+        return Err(fail("AudioUnit render callback", status));
     }
-
-    let status = coreaudio_sys::AudioUnitInitialize(au);
+    let status = ffi::AudioUnitInitialize(unit);
     if status != 0 {
-        coreaudio_sys::AudioComponentInstanceDispose(au);
-        bail!("AudioUnitInitialize failed: {status}");
+        return Err(fail("AudioUnitInitialize", status));
     }
-
-    let status = coreaudio_sys::AudioOutputUnitStart(au);
+    let status = ffi::AudioOutputUnitStart(unit);
     if status != 0 {
-        coreaudio_sys::AudioUnitUninitialize(au);
-        coreaudio_sys::AudioComponentInstanceDispose(au);
-        bail!("AudioOutputUnitStart failed: {status}");
+        ffi::AudioUnitUninitialize(unit);
+        return Err(fail("AudioOutputUnitStart", status));
     }
-
-    Ok(au as *mut _)
+    Ok(Unit {
+        unit,
+        callback_state,
+    })
 }
 
-unsafe extern "C" fn audio_render_cb(
-    in_ref_con: *mut std::ffi::c_void,
-    _io_action_flags: *mut coreaudio_sys::AudioUnitRenderActionFlags,
-    _in_time_stamp: *const coreaudio_sys::AudioTimeStamp,
-    _in_bus_number: u32,
-    in_number_frames: u32,
-    io_data: *mut coreaudio_sys::AudioBufferList,
-) -> coreaudio_sys::OSStatus {
-    let state_ptr = in_ref_con as *const Mutex<State>;
-    let state_arc = std::mem::ManuallyDrop::new(Arc::from_raw(state_ptr));
-    if let Ok(mut state) = state_arc.lock() {
-        if io_data.is_null() {
-            return 0;
-        }
-        let buffers = (*io_data).mBuffers.as_mut_ptr();
-        let buf = &mut *buffers;
-        let out_ptr = buf.mData as *mut i16;
-        let channels = state.report.layout.map_or(2, |l| l.channels as usize);
-        let needed_samples = in_number_frames as usize * channels;
-        let available = state.pcm.len();
-        if available >= needed_samples {
-            for i in 0..needed_samples {
-                *out_ptr.add(i) = state.pcm.pop_front().unwrap_or(0);
-            }
-            state.report.frames_written += in_number_frames as u64;
-        } else {
-            for i in 0..available {
-                *out_ptr.add(i) = state.pcm.pop_front().unwrap_or(0);
-            }
-            for i in available..needed_samples {
-                *out_ptr.add(i) = 0;
-            }
-            state.report.frames_written += (available / channels) as u64;
-            state.report.underruns += 1;
-        }
+unsafe extern "C" fn render(
+    state: *mut c_void,
+    _flags: *mut u32,
+    _time: *const c_void,
+    _bus: u32,
+    frames: u32,
+    data: *mut ffi::AudioBufferList,
+) -> ffi::OSStatus {
+    if data.is_null() || (*data).number_buffers == 0 {
+        return 0;
     }
+    let buffer = &mut (*data).buffers[0];
+    let out = std::slice::from_raw_parts_mut(
+        buffer.data.cast::<i16>(),
+        buffer.data_byte_size as usize / 2,
+    );
+    let state = &*(state as *const Mutex<State>);
+    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+    fill(&mut s, out, frames as usize);
     0
 }
 
+fn fill(s: &mut State, out: &mut [i16], frames: usize) {
+    let wanted = (frames * s.channels).min(out.len());
+    if !s.primed && s.pcm.len() / s.channels.max(1) >= s.min_frames.max(1) {
+        s.primed = true;
+    }
+    let mut written = 0;
+    if s.primed {
+        for (slot, sample) in out[..wanted]
+            .iter_mut()
+            .zip(s.pcm.drain(..wanted.min(s.pcm.len())))
+        {
+            *slot = sample;
+            written += 1;
+        }
+        if written < wanted {
+            s.report.underruns += 1;
+            s.primed = false;
+        }
+    }
+    out[written..].fill(0);
+    s.report.frames_written += (written / s.channels.max(1)) as u64;
+    s.report.queued_frames = s.pcm.len() / s.channels.max(1);
+}
+
+/// Output follows the decoded stream's layout; Core Audio maps stereo to the device.
 pub fn device_layout() -> Result<Layout> {
     Ok(Layout::STEREO)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn playback_waits_for_minimum_buffer_and_reprimes_after_underrun() {
+        let mut s = State {
+            channels: 2,
+            min_frames: 4,
+            ..Default::default()
+        };
+        let mut out = [7i16; 8];
+        s.pcm.extend([1, 1, 2, 2]);
+        fill(&mut s, &mut out, 4);
+        assert_eq!(out, [0; 8], "below minimum: silence, queue kept");
+        assert_eq!(s.pcm.len(), 4);
+        s.pcm.extend([3, 3, 4, 4, 5, 5]);
+        fill(&mut s, &mut out, 4);
+        assert_eq!(out, [1, 1, 2, 2, 3, 3, 4, 4]);
+        fill(&mut s, &mut out, 4);
+        assert_eq!(out, [5, 5, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(s.report.underruns, 1);
+        assert!(!s.primed);
+        assert_eq!(s.report.frames_written, 5);
+    }
 }

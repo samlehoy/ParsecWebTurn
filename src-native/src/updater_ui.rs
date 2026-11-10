@@ -1,42 +1,93 @@
 //! Native modeless update window. Network workers never access HWNDs.
-use crate::updater::{Phase, State, View};
+use crate::updater::{self, Mode, Phase, State, View};
 use std::{
     ptr::{null, null_mut},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
 };
 use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
-    System::LibraryLoader::*,
+    System::{LibraryLoader::*, SystemServices::SS_ICON},
     UI::{
         Controls::{DRAWITEMSTRUCT, ODS_DISABLED, ODS_FOCUS},
         Input::KeyboardAndMouse::*,
+        Shell::ShellExecuteW,
         WindowsAndMessaging::*,
     },
 };
+pub const ABOUT: usize = 4300;
 pub const OPEN: usize = 4302;
-pub const CLOSED: u32 = WM_APP + 15;
-pub const START: u32 = WM_APP + 16;
-pub const NOTIFY_TIMER: usize = 4302;
+#[derive(Default)]
+pub struct Pages {
+    about: AtomicUsize,
+    updates: AtomicUsize,
+    state: Arc<State>,
+}
+impl Pages {
+    fn handle(&self, mode: Mode) -> &AtomicUsize {
+        if mode == Mode::About {
+            &self.about
+        } else {
+            &self.updates
+        }
+    }
+    pub unsafe fn open(self: &Arc<Self>, parent: HWND, mode: Mode) -> HWND {
+        let existing = self.handle(mode).load(Ordering::Acquire) as HWND;
+        if !existing.is_null() && IsWindow(existing) != 0 {
+            ShowWindow(existing, SW_RESTORE);
+            SetForegroundWindow(existing);
+            return existing;
+        }
+        let hwnd = open_page(parent, self.clone(), mode);
+        if !hwnd.is_null() && mode == Mode::Updates {
+            self.state.check();
+        }
+        hwnd
+    }
+    pub unsafe fn close(&self) {
+        for slot in [&self.about, &self.updates] {
+            let hwnd = slot.swap(0, Ordering::AcqRel) as HWND;
+            if !hwnd.is_null() && IsWindow(hwnd) != 0 {
+                DestroyWindow(hwnd);
+            }
+        }
+    }
+    pub unsafe fn dialog(&self, msg: &MSG) -> bool {
+        [&self.about, &self.updates].into_iter().any(|slot| {
+            let hwnd = slot.load(Ordering::Acquire) as HWND;
+            !hwnd.is_null()
+                && (msg.hwnd == hwnd || IsChild(hwnd, msg.hwnd) != 0)
+                && IsDialogMessageW(hwnd, msg) != 0
+        })
+    }
+}
+pub unsafe fn append_help(menu: HMENU) {
+    let help = CreatePopupMenu();
+    AppendMenuW(help, MF_STRING, ABOUT, wide("About EvoParseq").as_ptr());
+    AppendMenuW(help, MF_STRING, OPEN, wide("Check for updates").as_ptr());
+    AppendMenuW(menu, MF_POPUP, help as usize, wide("Help").as_ptr());
+}
 const CHECK: usize = 4400;
 const DOWNLOAD: usize = 4401;
 const CLOSE: usize = 4402;
 const STATUS: usize = 4403;
 const NOTES: usize = 4404;
 const VERSION: usize = 4405;
-const BG: u32 = 0x282828;
+const BG: u32 = crate::branding::BACKGROUND;
 const FIELD: u32 = 0x212121;
 const FG: u32 = 0xeeeeee;
-const CYAN: u32 = 0xffbb00;
+const CYAN: u32 = crate::branding::BLUE;
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
 }
 struct Page {
     owned: bool,
-    state: Arc<State>,
+    pages: Arc<Pages>,
+    mode: Mode,
     last: Option<View>,
-    core: Option<Arc<crate::core_version::State>>,
-    last_core: Option<crate::core_version::View>,
     background: HBRUSH,
     field: HBRUSH,
     font: HFONT,
@@ -88,20 +139,9 @@ unsafe fn add(parent: HWND, class: &str, title: &str, id: usize, style: u32, fon
     SendMessageW(hwnd, WM_SETFONT, font as usize, 0);
     hwnd
 }
-pub unsafe fn open(parent: HWND, state: Arc<State>, activate: bool) -> HWND {
-    open_page(parent, state, activate, None)
-}
-pub unsafe fn open_about(parent: HWND, core: Arc<crate::core_version::State>) -> HWND {
-    open_page(parent, Arc::new(State::default()), true, Some(core))
-}
-unsafe fn open_page(
-    parent: HWND,
-    state: Arc<State>,
-    activate: bool,
-    core: Option<Arc<crate::core_version::State>>,
-) -> HWND {
-    let about = core.is_some();
-    let class = wide("ParsecWebTurnUpdates");
+unsafe fn open_page(parent: HWND, pages: Arc<Pages>, mode: Mode) -> HWND {
+    let about = mode == Mode::About;
+    let class = wide("EvoParseqInformation");
     let instance = GetModuleHandleW(null());
     RegisterClassW(&WNDCLASSW {
         lpfnWndProc: Some(proc),
@@ -113,10 +153,9 @@ unsafe fn open_page(
     });
     let mut page = Box::new(Page {
         owned: false,
-        state,
+        pages,
+        mode,
         last: None,
-        core,
-        last_core: None,
         background: CreateSolidBrush(BG),
         field: CreateSolidBrush(FIELD),
         font: font(16),
@@ -126,17 +165,12 @@ unsafe fn open_page(
     let hwnd = CreateWindowExW(
         WS_EX_CONTROLPARENT,
         class.as_ptr(),
-        wide(if about {
-            "About ParsecWebTurn"
-        } else {
-            "ParsecWebTurn - Updates"
-        })
-        .as_ptr(),
+        wide(mode.title()).as_ptr(),
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         740,
-        if about { 540 } else { 680 },
+        if about { 640 } else { 720 },
         parent,
         null_mut(),
         instance,
@@ -147,17 +181,16 @@ unsafe fn open_page(
     }
     page.owned = true;
     let page = &mut *Box::into_raw(page);
-    add(
-        hwnd,
-        "STATIC",
-        if about {
-            "About ParsecWebTurn"
-        } else {
-            "Updates"
-        },
-        1,
+    page.pages
+        .handle(mode)
+        .store(hwnd as usize, Ordering::Release);
+    add(hwnd, "STATIC", mode.heading(), 1, 0, page.heading);
+    let mark = add(hwnd, "STATIC", "", 6, SS_ICON, page.font);
+    SendMessageW(
+        mark,
+        STM_SETICON,
+        crate::branding::launcher_icon() as usize,
         0,
-        page.heading,
     );
     add(hwnd, "STATIC", "", VERSION, 0, page.font);
     add(hwnd, "STATIC", "", STATUS, 0, page.font);
@@ -176,7 +209,7 @@ unsafe fn open_page(
     );
     crate::connection_settings_ui::controls::multiline(notes);
     for (id, label) in [
-        (CHECK, "Check again"),
+        (CHECK, if about { "Project page" } else { "Check again" }),
         (DOWNLOAD, "Download ZIP"),
         (CLOSE, "Close"),
     ] {
@@ -190,16 +223,15 @@ unsafe fn open_page(
         );
     }
     if about {
-        ShowWindow(GetDlgItem(hwnd, CHECK as i32), SW_HIDE);
         ShowWindow(GetDlgItem(hwnd, DOWNLOAD as i32), SW_HIDE);
     }
     refresh(hwnd, page);
     layout(hwnd);
-    SetTimer(hwnd, 1, 500, None);
-    ShowWindow(hwnd, if activate { SW_SHOW } else { SW_SHOWNOACTIVATE });
-    if activate {
-        SetFocus(GetDlgItem(hwnd, if about { CLOSE } else { CHECK } as i32));
+    if !about {
+        SetTimer(hwnd, 1, 500, None);
     }
+    ShowWindow(hwnd, SW_SHOW);
+    SetFocus(GetDlgItem(hwnd, CHECK as i32));
     hwnd
 }
 unsafe fn layout(hwnd: HWND) {
@@ -208,7 +240,8 @@ unsafe fn layout(hwnd: HWND) {
     let width = (rect.right - 48).max(1);
     let bottom = rect.bottom - 62;
     for (id, x, y, w, h) in [
-        (1, 24, 20, width, 48),
+        (6, 24, 25, 40, 40),
+        (1, 80, 20, width - 56, 48),
         (VERSION, 24, 76, width, 42),
         (STATUS, 24, 126, width, 78),
         (NOTES, 24, 214, width, (bottom - 234).max(1)),
@@ -228,58 +261,25 @@ unsafe fn layout(hwnd: HWND) {
     }
 }
 unsafe fn refresh(hwnd: HWND, page: &mut Page) {
-    if let Some(core) = &page.core {
-        let view = core.view();
-        if page.last_core.as_ref() == Some(&view) {
-            return;
-        }
-        let version = format!(
-            "Native Rust app: {}\r\nEmbedded Parsec WASM client: {}",
-            env!("CARGO_PKG_VERSION"),
-            crate::PARSEC_CORE_VERSION
-        );
-        SetWindowTextW(GetDlgItem(hwnd, VERSION as i32), wide(&version).as_ptr());
-        SetWindowTextW(
-            GetDlgItem(hwnd, STATUS as i32),
-            wide(&crate::core_version::status(
-                &view,
-                crate::PARSEC_CORE_VERSION,
-            ))
-            .as_ptr(),
-        );
-        let explanation = format!("Independent client; not an official Parsec application.\r\n\r\nSource: {}\r\n\r\nThe embedded core is never updated automatically. A core change requires compatibility testing and a new app release. Different version labels do not establish compatibility.\r\n\r\nSuccessful checks are cached for one hour in this app session. Reopen About to retry a failed check.", crate::core_version::SOURCE);
-        SetWindowTextW(GetDlgItem(hwnd, NOTES as i32), wide(&explanation).as_ptr());
-        page.last_core = Some(view);
-        InvalidateRect(hwnd, null(), 1);
-        return;
-    }
-    let view = page.state.view();
+    let view = page.pages.state.view();
     if page.last.as_ref() == Some(&view) {
         return;
     }
-    let version = format!(
-        "Installed: v{}{}",
-        env!("CARGO_PKG_VERSION"),
-        view.release
-            .as_ref()
-            .map(|r| format!("\r\nAvailable: {} (stable)", r.version))
-            .unwrap_or_default()
-    );
-    SetWindowTextW(GetDlgItem(hwnd, VERSION as i32), wide(&version).as_ptr());
-    SetWindowTextW(GetDlgItem(hwnd, STATUS as i32), wide(view.message).as_ptr());
-    let notes = view
-        .release
-        .as_ref()
-        .map(|r| r.notes.replace("\r\n", "\n").replace('\n', "\r\n"))
-        .unwrap_or_default();
-    SetWindowTextW(GetDlgItem(hwnd, NOTES as i32), wide(&notes).as_ptr());
+    let content = updater::content(page.mode, &view);
+    for (id, text) in [
+        (VERSION, content.version),
+        (STATUS, content.status),
+        (NOTES, content.notes),
+    ] {
+        SetWindowTextW(GetDlgItem(hwnd, id as i32), wide(&text).as_ptr());
+    }
     EnableWindow(
         GetDlgItem(hwnd, CHECK as i32),
-        i32::from(view.phase != Phase::Checking),
+        i32::from(page.mode == Mode::About || view.phase != Phase::Checking),
     );
     ShowWindow(
         GetDlgItem(hwnd, DOWNLOAD as i32),
-        if view.phase == Phase::Available {
+        if page.mode == Mode::Updates && view.phase == Phase::Available {
             SW_SHOW
         } else {
             SW_HIDE
@@ -287,6 +287,20 @@ unsafe fn refresh(hwnd: HWND, page: &mut Page) {
     );
     page.last = Some(view);
     InvalidateRect(hwnd, null(), 1);
+}
+unsafe fn browser(owner: HWND, url: &str) -> bool {
+    if !updater::allowed_url(url) {
+        return false;
+    }
+    (ShellExecuteW(
+        owner,
+        wide("open").as_ptr(),
+        wide(url).as_ptr(),
+        null(),
+        null(),
+        SW_SHOWNORMAL,
+    ) as isize)
+        > 32
 }
 unsafe fn draw_button(draw: &DRAWITEMSTRUCT, page: &Page) {
     let saved = SaveDC(draw.hDC);
@@ -336,7 +350,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         let page = &mut *ptr;
         match msg {
             WM_TIMER => {
-                refresh(hwnd, page);
+                if IsIconic(hwnd) == 0 {
+                    refresh(hwnd, page);
+                }
                 return 0;
             }
             WM_SIZE => {
@@ -367,24 +383,22 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             }
             WM_COMMAND => match wp & 0xffff {
                 CHECK => {
-                    if page.core.is_some() {
-                        return 0;
+                    if page.mode == Mode::About {
+                        if !browser(hwnd, updater::REPOSITORY) {
+                            open_failed(hwnd);
+                        }
+                    } else {
+                        page.pages.state.check();
+                        refresh(hwnd, page);
                     }
-                    page.state.check(false);
-                    refresh(hwnd, page);
                     return 0;
                 }
                 DOWNLOAD => {
-                    if page.core.is_some() {
-                        return 0;
-                    }
-                    if let Some(release) = page.state.view().release {
-                        use crate::platform::Desktop;
-                        if !crate::platform_windows::NativeDesktop(hwnd as usize)
-                            .open_url(&release.download_url)
-                        {
-                            MessageBoxW(hwnd, wide("Cannot open the download in your browser. Your organization may restrict it.").as_ptr(),
-                                wide("Updates").as_ptr(), MB_OK | MB_ICONINFORMATION);
+                    if page.mode == Mode::Updates {
+                        if let Some(release) = page.pages.state.view().release {
+                            if !browser(hwnd, &release.download_url) {
+                                open_failed(hwnd);
+                            }
                         }
                     }
                     return 0;
@@ -398,7 +412,12 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             WM_NCDESTROY => {
                 KillTimer(hwnd, 1);
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-                SendMessageW(GetWindow(hwnd, GW_OWNER), CLOSED, hwnd as usize, 0);
+                let _ = page.pages.handle(page.mode).compare_exchange(
+                    hwnd as usize,
+                    0,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
                 if page.owned {
                     drop(Box::from_raw(ptr));
                 }
@@ -409,67 +428,71 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
     DefWindowProcW(hwnd, msg, wp, lp)
 }
 
+unsafe fn open_failed(hwnd: HWND) {
+    MessageBoxW(hwnd, wide("Cannot open the project or download in your browser. Your organization may restrict it.").as_ptr(),
+        wide("EvoParseq").as_ptr(), MB_OK | MB_ICONINFORMATION);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn modeless_updates_resize_and_close_without_network_or_browser() {
+    fn native_information_pages_render_resize_and_release_ownership_without_network() {
         unsafe {
+            let pages = Arc::new(Pages::default());
             let parent = CreateWindowExW(
                 0,
                 wide("STATIC").as_ptr(),
-                wide("Isolated update fixture").as_ptr(),
+                wide("Offline information fixture").as_ptr(),
                 WS_OVERLAPPEDWINDOW,
                 0,
                 0,
                 800,
-                800,
+                700,
                 null_mut(),
                 null_mut(),
                 GetModuleHandleW(null()),
                 null(),
             );
             assert!(!parent.is_null());
-            let state = Arc::new(State::default());
-            let hwnd = open(parent, state, false);
-            assert!(!hwnd.is_null());
-            assert_eq!(IsWindowEnabled(GetDlgItem(hwnd, CHECK as i32)), 1);
-            assert_eq!(IsWindowVisible(GetDlgItem(hwnd, DOWNLOAD as i32)), 0);
-            SetWindowPos(
-                hwnd,
-                null_mut(),
-                0,
-                0,
-                560,
-                500,
-                SWP_NOZORDER | SWP_NOACTIVATE,
-            );
-            let mut notes = RECT::default();
-            let mut close = RECT::default();
-            GetWindowRect(GetDlgItem(hwnd, NOTES as i32), &mut notes);
-            GetWindowRect(GetDlgItem(hwnd, CLOSE as i32), &mut close);
-            assert!(
-                notes.bottom < close.top && notes.right > notes.left && notes.bottom > notes.top
-            );
-            SendMessageW(hwnd, WM_COMMAND, CLOSE, 0);
+            for mode in [Mode::About, Mode::Updates] {
+                // Same production constructor, without Pages::open's explicit network check.
+                let hwnd = open_page(parent, pages.clone(), mode);
+                assert!(!hwnd.is_null());
+                assert_eq!(GetWindow(hwnd, GW_OWNER), parent);
+                assert_eq!(pages.state.view().phase, Phase::Idle);
+                assert_eq!(pages.handle(mode).load(Ordering::Acquire), hwnd as usize);
+                if mode == Mode::About {
+                    assert_eq!(pages.open(parent, mode), hwnd);
+                }
+                for (w, h, suffix) in [(740, 720, ""), (560, 500, "-small")] {
+                    SetWindowPos(hwnd, null_mut(), 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER);
+                    let mut notes: RECT = std::mem::zeroed();
+                    let mut close: RECT = std::mem::zeroed();
+                    GetWindowRect(GetDlgItem(hwnd, NOTES as i32), &mut notes);
+                    GetWindowRect(GetDlgItem(hwnd, CLOSE as i32), &mut close);
+                    assert!(notes.bottom < close.top);
+                    assert!(notes.right > notes.left && notes.bottom > notes.top);
+                    if let Some(path) = std::env::var_os("EVOPARSEQ_UI_CAPTURE") {
+                        let path = std::path::PathBuf::from(path).with_file_name(format!(
+                            "{}{}.png",
+                            if mode == Mode::About {
+                                "about"
+                            } else {
+                                "updates"
+                            },
+                            suffix
+                        ));
+                        crate::native_core::ui::capture_fixture(hwnd, &path).unwrap();
+                    }
+                }
+                SendMessageW(hwnd, WM_COMMAND, CLOSE, 0);
+                assert_eq!(IsWindow(hwnd), 0);
+                assert_eq!(pages.handle(mode).load(Ordering::Acquire), 0);
+            }
+            let hwnd = open_page(parent, pages.clone(), Mode::About);
+            pages.close();
             assert_eq!(IsWindow(hwnd), 0);
-            // About shares the native layout but exposes no updater actions.
-            // The idle fixture never makes a request or opens a browser.
-            let about = open_about(parent, Arc::new(crate::core_version::State::default()));
-            assert!(!about.is_null());
-            assert_eq!(IsWindowVisible(GetDlgItem(about, CHECK as i32)), 0);
-            assert_eq!(IsWindowVisible(GetDlgItem(about, DOWNLOAD as i32)), 0);
-            let mut text = [0; 512];
-            GetWindowTextW(
-                GetDlgItem(about, VERSION as i32),
-                text.as_mut_ptr(),
-                text.len() as i32,
-            );
-            let text = String::from_utf16_lossy(&text);
-            assert!(text.contains(env!("CARGO_PKG_VERSION")));
-            assert!(text.contains(crate::PARSEC_CORE_VERSION));
-            SendMessageW(about, WM_COMMAND, CLOSE, 0);
-            assert_eq!(IsWindow(about), 0);
             DestroyWindow(parent);
         }
     }

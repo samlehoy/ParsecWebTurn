@@ -1,16 +1,16 @@
-# Icon source
+# EvoParseq branding
 
-`parsec.ico` is the Parsec favicon obtained from <https://parsec.app/favicon.ico> on 2026-09-29. It is checked in so builds require no icon download, ImageMagick installation or conversion.
+`evoparseq-wordmark.svg` is the editable white **EVO** / blue **PARSEQ** wordmark,
+matching the maintainer's supplied direction. The dark backing keeps it legible
+in both light and dark README themes. The native launcher uses matching text
+and colors rendered by standard Win32 controls.
 
-SHA-256: `fce1a24e408ac00dcef4c8eb64e20d4042728b1fd1e96965a3da0f6f21869770`
+`evoparseq.svg` is the project's original blue linked-portals icon, independent
+of Parsec's logo. `evoparseq.png` is its 512 px transparent preview;
+`evoparseq.ico` includes 16, 20, 24, 32, 40, 48, 64, 128 and 256 px resources.
+The icon artwork is retained; its source/resource names now use EvoParseq.
+These assets use the project's root license.
 
-The icon is used only to identify the Parsec-focused launcher. ParsecWebTurn is an independent community project and is not affiliated with, endorsed by, or sponsored by Parsec or Unity.
-
-Parsec trademarks remain the property of their owners.
-
-## Client comparison illustration
-
-`native-client-comparison.png` is the comparison infographic supplied by the
-project maintainer for the native client's README. It is included unchanged.
-It illustrates both existing and proposed capabilities; the README roadmap,
-rather than the image, defines the native dev client's current feature status.
+Windows builds embed the ICO directly. No asset downloads, image conversion or
+extra runtime files are needed. The embedded resource is shared by the EXE,
+taskbar, native launcher, session icon, settings, statistics and About dialogs.

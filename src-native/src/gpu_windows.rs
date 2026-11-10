@@ -8,6 +8,7 @@ pub struct Adapter {
     pub preference: GpuPreference,
     pub handle: IDXGIAdapter1,
 }
+pub use crate::connection_settings::full_chroma_vendor_allowed;
 pub fn enumerate() -> windows::core::Result<Vec<Adapter>> {
     unsafe {
         let factory: IDXGIFactory1 = CreateDXGIFactory1()?;

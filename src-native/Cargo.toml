@@ -1,49 +1,42 @@
 [package]
-name = "parsec-web-turn"
-version = "0.9.5-dev.1"
+name = "evoparseq"
+version = "0.9.6"
 edition = "2021"
 rust-version = "1.90"
 publish = false
+license = "MIT"
 
-# Independent crate: neither Tauri nor WebView2 is linked.
+# Native Windows and macOS application.
 [features]
-# vendor-video only links its decoder on Windows; macOS ignores it.
-default = ["vendor-video", "bud"]
-vendor-video = ["dep:parsec-gpu-video"]
-bud = ["dep:parsec-native-bud"]
-diagnostics = ["dep:log", "dep:rcgen", "dep:ring", "dep:rustls", "dep:tokio-rustls", "wasmtime/wat", "wasmtime/cranelift"]
+default = ["native-core", "vendor-video"]
+vendor-video = ["dep:evoparseq-video"]
+bud = ["dep:evoparseq-bud"]
+native-core = ["windows-sys/Win32_System_SystemServices", "bud", "evoparseq-bud/native-core", "dep:zeroize"]
 
 [dependencies]
+evoparseq-socket-qos = { path = "crates/socket-qos" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = "1.0.154"
 sha2 = "0.10"
 getrandom = "0.3"
 bytes = "1"
+zeroize = { version = "1", optional = true }
 base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }
-rcgen = { version = "0.13", optional = true }
 futures-util = { version = "0.3", features = ["sink"] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync", "time", "net"] }
 webrtc = "=0.14.0"
-glow = "=0.16.0"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-log = { version = "0.4", optional = true }
+image = { version = "0.25", default-features = false, features = ["png"] }
 libopus_sys = { version = "=0.3.3", features = ["bundled", "static"] }
-ring = { version = "0.17", optional = true }
-wasmtime = { version = "38", default-features = false, features = ["std", "runtime", "threads"] }
 
-# Unit tests also exercise the diagnostic helpers without requiring a CLI build.
+# Synthetic crypto-policy and loopback TLS regression fixtures.
 [dev-dependencies]
-log = "0.4"
 rcgen = "0.13"
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
-wasmtime = { version = "38", default-features = false, features = ["wat", "cranelift"] }
 
 [profile.release]
 strip = true
@@ -51,42 +44,41 @@ lto = "thin"
 codegen-units = 1
 opt-level = "s"
 
+[target.'cfg(not(windows))'.dependencies]
+rtrb = "=0.4.1"
+
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
-parsec-native-bud = { path = "crates/bud", optional = true }
+evoparseq-bud = { path = "crates/bud", optional = true }
 
 [target.'cfg(windows)'.dependencies]
+# Already present through PNG; also decode the pinned optional NVIDIA SDK payload.
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+windows-core = "=0.62.2"
 windows = { version = "=0.62.2", features = ["Wdk_Graphics_Direct3D", "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D10", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Media_MediaFoundation", "Win32_Media_Audio", "Win32_System_Threading", "Win32_System_Performance", "Win32_System_ProcessStatus", "Win32_Security", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_Variant"] }
-windows-sys = { version = "0.61", features = [ "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Graphics_OpenGL", "Win32_System_Power", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_UI_Shell"] }
+windows-sys = { version = "0.61", features = [ "Win32_Foundation", "Win32_Devices_Display", "Win32_Graphics_Gdi", "Win32_System_Power", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_XboxController", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_UI_Shell"] }
 
-# Isolated, documented SCTP-only correction; defaults preserve upstream RTP behavior.
+# Documented AppKit, Core Animation and Security framework bindings.
+[target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = "0.3"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["std", "NSString", "NSArray", "NSData", "NSDate", "NSRunLoop", "NSThread", "NSGeometry", "NSObject", "NSURL", "NSValue"] }
+objc2-app-kit = { version = "0.3", features = ["std", "NSApplication", "NSWindow", "NSView", "NSResponder", "NSEvent", "NSMenu", "NSMenuItem", "NSColor", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSCursor", "NSPasteboard", "NSAlert", "NSButton", "NSButtonCell", "NSControl", "NSTextField", "NSSecureTextField", "NSPopUpButton", "NSScreen", "NSFont", "NSText", "NSTextView", "NSScrollView", "NSClipView", "NSRunningApplication", "NSGraphics", "NSCell", "NSActionCell", "NSTabView", "NSTabViewItem", "NSStackView", "NSLayoutConstraint", "NSWorkspace", "NSTextStorage", "NSAttributedString"] }
+ring = "0.17"
+
+# Isolated DTLS curve upgrade and SCTP-only corrections; preserve upstream RTP behavior.
 [patch.crates-io]
+webrtc-util = { path = "vendor/webrtc-util-0.12.0" }
+dtls = { path = "vendor/dtls-0.13.0" }
 webrtc = { path = "vendor/webrtc-0.14.0" }
 webrtc-ice = { path = "vendor/webrtc-ice-0.14.0" }
 turn = { path = "vendor/turn-0.11.0" }
 
 [patch."https://github.com/nomi-san/lowlat"]
+lowlat-drivers = { path = "vendor/lowlat-drivers" }
 lowlat-core = { path = "crates/bud/vendor/lowlat-core" }
 lowlat-common = { path = "crates/bud/vendor/lowlat-common" }
+lowlat-crypto = { path = "crates/bud/vendor/lowlat-crypto" }
 
-[build-dependencies]
-wasmtime = { version = "38", default-features = false, features = ["std", "runtime", "cranelift", "threads"] }
-sha2 = "0.10"
-
-[target.'cfg(windows)'.dependencies.parsec-gpu-video]
+[target.'cfg(windows)'.dependencies.evoparseq-video]
 path = "crates/video"
 optional = true
-
-[target.'cfg(target_os = "macos")'.dependencies]
-ring = "0.17"
-dispatch2 = "0.3"
-objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["std", "NSString", "NSArray", "NSData", "NSProcessInfo", "NSRunLoop", "NSThread", "NSDate"] }
-objc2-app-kit = { version = "0.3", features = ["std", "NSApplication", "NSWindow", "NSView", "NSResponder", "NSEvent", "NSMenu", "NSMenuItem", "NSColor", "NSImage", "NSCursor", "NSPasteboard", "NSAlert", "NSWorkspace", "NSAppearance", "NSOpenGL", "NSOpenGLView", "NSGraphicsContext", "NSTabView", "NSTabViewItem", "NSButton", "NSTextField", "NSControl", "NSPopUpButton", "NSSecureTextField", "NSFont"] }
-objc2-metal = { version = "0.3", features = ["std"] }
-objc2-quartz-core = { version = "0.3", features = ["std", "CAMetalLayer", "CALayer"] }
-objc2-core-video = { version = "0.3", features = ["std", "CVMetalTextureCache", "CVMetalTexture", "CVPixelBuffer", "CVImageBuffer", "CVBuffer", "CVReturn"] }
-objc2-video-toolbox = { version = "0.3", features = ["std", "VTDecompressionSession"] }
-core-foundation = "0.10"
-core-graphics = "0.24"
-coreaudio-sys = "0.2"
-libc = "0.2"

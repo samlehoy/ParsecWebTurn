@@ -1,17 +1,14 @@
-//! Metadata-only stable release checks, following the main branch updater.
+//! Shared EvoParseq information and metadata-only stable release checks.
 //! Downloads and installation are performed by the user through their browser.
 use serde::Deserialize;
 use std::{
     io::Read,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
-const API: &str = "https://api.github.com/repos/vampywiz17/ParsecWebTurn/releases/latest";
-const REPOSITORY: &str = "https://github.com/vampywiz17/ParsecWebTurn";
+const API: &str = "https://api.github.com/repos/vampywiz17/EvoParseq/releases/latest";
+pub const REPOSITORY: &str = "https://github.com/vampywiz17/EvoParseq";
 const MAX_METADATA: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,25 +54,90 @@ struct Release {
     assets: Vec<Asset>,
 }
 
+#[derive(Debug)]
+enum CheckResult {
+    Current,
+    NotPublished,
+    Available(Available),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    About,
+    Updates,
+}
+impl Mode {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::About => "About EvoParseq",
+            Self::Updates => "EvoParseq - Updates",
+        }
+    }
+    pub fn heading(self) -> &'static str {
+        match self {
+            Self::About => "EvoParseq",
+            Self::Updates => "Updates",
+        }
+    }
+}
+const RTX_CREDIT: &str = if cfg!(nvidia_vsr_sdk) {
+    "Optional NVIDIA RTX Video SDK 1.1.0 / NVIDIA RTX technology. The optional NVIDIA runtime and linked SDK library are proprietary and excluded from the EvoParseq MIT license; see NVIDIA-RTX-VIDEO-LICENSE.pdf in the download package. VSR may increase latency, GPU load and memory use."
+} else {
+    ""
+};
+pub const MIGRATION: &str = "Upgrading from ParsecWebTurn: close the old application and keep settings.json in the same folder. Replace the executable using the transition ZIP, or use EvoParseq.exe from the normal ZIP. Network, video, audio and input settings are retained. Sign in again: the old web-core sign-in cannot be imported. Original files are not deleted automatically.";
+pub struct Content {
+    pub version: String,
+    pub status: String,
+    pub notes: String,
+}
+pub fn content(mode: Mode, view: &View) -> Content {
+    if mode == Mode::About {
+        return Content {
+            version: format!("Version {} | Windows x64\r\nNative Rust core", env!("CARGO_PKG_VERSION")),
+            status: "Independent client for compatible, unmodified Parsec hosts.".into(),
+            notes: format!("Networking, GPU video, audio and input are handled by the native Rust client. No Parsec WebAssembly core is bundled, loaded or executed.\r\n\r\nProject: {REPOSITORY}\r\n\r\nEvoParseq is an independent community project, not affiliated with or endorsed by Parsec/Unity or lowlat.\r\n\r\nThanks to nomi-san/lowlat for inspiration and the reused open-source components. Original license and attribution notices are included with the application.\r\nhttps://github.com/nomi-san/lowlat\r\n\r\n{RTX_CREDIT}\r\n\r\n{MIGRATION}"),
+        };
+    }
+    Content {
+        version: format!("Installed: v{}{}", env!("CARGO_PKG_VERSION"), view.release.as_ref().map(|r| format!("\r\nAvailable: {} (stable)",r.version)).unwrap_or_default()),
+        status: view.message.into(),
+        notes: view.release.as_ref().map(|r| format!("{}\r\n\r\n{MIGRATION}",r.notes.replace("\r\n", "\n").replace('\n', "\r\n"))).unwrap_or_else(|| format!("Stable EvoParseq releases are checked on GitHub. Downloads open in your browser; this application does not replace files or install updates automatically.\r\n\r\nRelease channel: {REPOSITORY}\r\n\r\n{MIGRATION}")),
+    }
+}
+/// Only fixed project links and strictly validated stable EvoParseq ZIP URLs
+/// may be passed to the platform browser launcher.
+pub fn allowed_url(url: &str) -> bool {
+    if url == REPOSITORY {
+        return true;
+    }
+    let Some(tail) = url.strip_prefix(&format!("{REPOSITORY}/releases/download/")) else {
+        return false;
+    };
+    let Some((tag, name)) = tail.split_once('/') else {
+        return false;
+    };
+    if stable_version(tag).is_err() {
+        return false;
+    }
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    name == format!("EvoParseq-v{version}-win64.zip")
+}
+
 #[derive(Default)]
 pub struct State {
     view: Mutex<View>,
-    notification: AtomicBool,
 }
 impl State {
     pub fn view(&self) -> View {
         self.view.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
-    pub fn take_notification(&self) -> bool {
-        self.notification.swap(false, Ordering::AcqRel)
-    }
-    pub fn check(self: &Arc<Self>, notify: bool) {
-        self.check_with(notify, latest);
+    pub fn check(self: &Arc<Self>) {
+        self.check_with(latest);
     }
     fn check_with(
         self: &Arc<Self>,
-        notify: bool,
-        fetch: impl FnOnce() -> Result<Option<Available>, &'static str> + Send + 'static,
+        fetch: impl FnOnce() -> Result<CheckResult, &'static str> + Send + 'static,
     ) {
         {
             let mut view = self.view.lock().unwrap_or_else(|e| e.into_inner());
@@ -87,20 +149,20 @@ impl State {
                 message: "Checking the latest stable GitHub release...",
                 release: None,
             };
-            self.notification.store(false, Ordering::Release);
         }
         let state = self.clone();
-        if std::thread::Builder::new().name("parsec-update-check".into()).spawn(move || {
+        if std::thread::Builder::new().name("evoparseq-update-check".into()).spawn(move || {
             let result = fetch();
             let mut view = state.view.lock().unwrap_or_else(|e| e.into_inner());
             *view = match result {
-                Ok(Some(release)) => View { phase: Phase::Available,
-                    message: "A newer stable version is available. Download the ZIP in your browser, then close the app and replace the EXE manually.", release: Some(release) },
-                Ok(None) => View { phase: Phase::Current,
-                    message: "No newer stable release is available. Development builds may be ahead of the latest stable release.", release: None },
+                Ok(CheckResult::Available(release)) => View { phase: Phase::Available,
+                    message: "A newer EvoParseq stable version is available. Download the ZIP in your browser, then close the app and replace the EXE manually.", release: Some(release) },
+                Ok(CheckResult::Current) => View { phase: Phase::Current,
+                    message: "No newer EvoParseq stable release is available. Development builds may be ahead of the latest stable release.", release: None },
+                Ok(CheckResult::NotPublished) => View { phase: Phase::Current,
+                    message: "No EvoParseq stable package has been published in this release channel yet. ParsecWebTurn packages are not offered as EvoParseq updates.", release: None },
                 Err(message) => View { phase: Phase::Error, message, release: None },
             };
-            state.notification.store(notify && view.phase == Phase::Available, Ordering::Release);
         }).is_err() {
             *self.view.lock().unwrap_or_else(|e| e.into_inner()) = View {
                 phase: Phase::Error, message: "Cannot start the update check. Try again later.", release: None,
@@ -148,7 +210,7 @@ fn download_url(release: &Release) -> Result<String, &'static str> {
         .tag_name
         .strip_prefix('v')
         .unwrap_or(&release.tag_name);
-    let name = format!("ParsecWebTurn-v{number}-win64.zip");
+    let name = format!("EvoParseq-v{number}-win64.zip");
     let mut matches = release.assets.iter().filter(|a| a.name == name);
     let asset = matches
         .next()
@@ -187,17 +249,25 @@ fn metadata(client: &reqwest::blocking::Client, url: &str) -> Result<Vec<u8>, &'
     }
     Ok(bytes)
 }
-fn select(bytes: &[u8], installed: &str) -> Result<Option<Available>, &'static str> {
+fn select(bytes: &[u8], installed: &str) -> Result<CheckResult, &'static str> {
     let release: Release =
         serde_json::from_slice(bytes).map_err(|_| "Invalid GitHub release response.")?;
     if release.draft || release.prerelease {
         return Err("Only published stable releases are supported.");
     }
+    stable_version(&release.tag_name)?;
+    if !release
+        .assets
+        .iter()
+        .any(|a| a.name.starts_with("EvoParseq-v") && a.name.ends_with("-win64.zip"))
+    {
+        return Ok(CheckResult::NotPublished);
+    }
     if !newer_stable(&release.tag_name, installed)? {
-        return Ok(None);
+        return Ok(CheckResult::Current);
     }
     let download_url = download_url(&release)?;
-    Ok(Some(Available {
+    Ok(CheckResult::Available(Available {
         version: release.tag_name,
         notes: release
             .body
@@ -209,9 +279,9 @@ fn select(bytes: &[u8], installed: &str) -> Result<Option<Available>, &'static s
         download_url,
     }))
 }
-fn latest() -> Result<Option<Available>, &'static str> {
+fn latest() -> Result<CheckResult, &'static str> {
     let client = reqwest::blocking::Client::builder()
-        .user_agent(concat!("ParsecWebTurn/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("EvoParseq/", env!("CARGO_PKG_VERSION")))
         .https_only(true)
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(20))
@@ -224,121 +294,134 @@ fn latest() -> Result<Option<Available>, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn release(tag: &str) -> Release {
-        Release {
-            tag_name: tag.into(),
-            draft: false,
-            prerelease: false,
-            body: Some("Release notes".into()),
-            assets: vec![Asset {
-                name: format!("ParsecWebTurn-{tag}-win64.zip"),
-                browser_download_url: format!(
-                    "{REPOSITORY}/releases/download/{tag}/ParsecWebTurn-{tag}-win64.zip"
-                ),
-            }],
-        }
+    fn release(product: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "tag_name":"v1.0.0","draft":false,"prerelease":false,"body":"Notes\u{0000}",
+            "assets":[{"name":format!("{product}-v1.0.0-win64.zip"),
+            "browser_download_url":format!("{REPOSITORY}/releases/download/v1.0.0/{product}-v1.0.0-win64.zip")}]
+        })).unwrap()
     }
     #[test]
-    fn development_build_can_upgrade_to_matching_stable_without_downgrading() {
-        assert!(newer_stable("v0.9.3", "0.9.3-dev.1").unwrap());
-        assert!(newer_stable("v0.10.0", "0.9.9-dev.2").unwrap());
-        assert!(!newer_stable("v0.7.0", "0.9.3-dev.1").unwrap());
-        assert!(!newer_stable("v0.9.3", "0.9.3").unwrap());
+    fn stable_selection_separates_products_and_never_downgrades() {
+        assert!(matches!(
+            select(&release("ParsecWebTurn"), "0.9.4").unwrap(),
+            CheckResult::NotPublished
+        ));
+        let CheckResult::Available(r) = select(&release("EvoParseq"), "1.0.0-dev.7").unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(r.notes, "Notes");
+        assert!(allowed_url(&r.download_url));
+        for installed in ["1.0.0", "1.1.0-dev.1", "2.0.0"] {
+            assert!(matches!(
+                select(&release("EvoParseq"), installed).unwrap(),
+                CheckResult::Current
+            ));
+        }
         for invalid in [
-            "v1.0.0-beta",
             "01.0.0",
-            "1.2",
-            "1.2.3.4",
-            "../1.2.3",
+            "1.0",
+            "1.0.0-beta",
+            "../1.0.0",
+            "1.0.0.1",
             "18446744073709551616.0.0",
         ] {
-            assert!(newer_stable(invalid, "0.9.3-dev.1").is_err());
+            assert!(stable_version(invalid).is_err());
         }
-        for invalid in ["0.9.3-dev.0", "0.9.3-dev.01", "0.9.3-dev.x", "0.9.3-beta"] {
-            assert!(newer_stable("v0.9.4", invalid).is_err());
+        for invalid in ["1.0.0-dev.0", "1.0.0-dev.01", "1.0.0-beta"] {
+            assert!(newer_stable("v1.0.0", invalid).is_err());
         }
     }
     #[test]
-    fn only_unique_published_stable_repository_zip_can_be_opened() {
-        let mut r = release("v0.9.3");
-        assert!(download_url(&r).is_ok());
-        r.assets[0]
-            .browser_download_url
-            .push_str("?redirect=elsewhere");
-        assert!(download_url(&r).is_err());
-        r = release("v0.9.3");
+    fn download_requires_unique_published_canonical_project_asset() {
+        let bytes = release("EvoParseq");
+        let mut r: Release = serde_json::from_slice(&bytes).unwrap();
+        let url = download_url(&r).unwrap();
+        for invalid in [
+            format!("{url}?redirect=x"),
+            url.replace("github.com", "other.example"),
+            "file:///EvoParseq.exe".into(),
+        ] {
+            assert!(!allowed_url(&invalid));
+            r.assets[0].browser_download_url = invalid;
+            assert!(download_url(&r).is_err());
+        }
+        r = serde_json::from_slice(&bytes).unwrap();
         r.assets.push(Asset {
             name: r.assets[0].name.clone(),
-            browser_download_url: r.assets[0].browser_download_url.clone(),
+            browser_download_url: url,
         });
         assert!(download_url(&r).is_err());
-        r = release("v0.9.3");
-        r.prerelease = true;
-        assert!(download_url(&r).is_err());
-        r.prerelease = false;
-        r.draft = true;
-        assert!(download_url(&r).is_err());
-        r.draft = false;
-        r.assets.clear();
-        assert!(download_url(&r).is_err());
-        let bytes = br#"{"tag_name":"v0.9.3","draft":false,"prerelease":false,"body":"Notes","assets":[{"name":"ParsecWebTurn-v0.9.3-win64.zip","browser_download_url":"https://github.com/vampywiz17/ParsecWebTurn/releases/download/v0.9.3/ParsecWebTurn-v0.9.3-win64.zip"}]}"#;
-        assert_eq!(
-            select(bytes, "0.9.3-dev.1").unwrap().unwrap().notes,
-            "Notes"
-        );
-        assert!(select(bytes, "0.9.4-dev.1").unwrap().is_none());
-        assert!(select(b"not json", "0.9.3-dev.1").is_err());
+        for flag in ["draft", "prerelease"] {
+            let mut v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            v[flag] = true.into();
+            assert!(select(&serde_json::to_vec(&v).unwrap(), "0.9.4").is_err());
+        }
+        assert!(select(b"invalid JSON", "0.9.4").is_err());
     }
     #[test]
-    fn metadata_rejects_redirects_and_bounds_bodies_with_or_without_length() {
+    fn metadata_rejects_redirects_and_bounds_bodies() {
         use std::io::Write;
         for response in [
             b"HTTP/1.1 302 Found\r\nLocation: https://other.example/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
             b"HTTP/1.1 200 OK\r\nContent-Length: 1048577\r\nConnection: close\r\n\r\n".to_vec(),
-            [b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".as_slice(), &vec![b'x'; MAX_METADATA + 1]].concat(),
+            [b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".as_slice(), &vec![b'x'; MAX_METADATA+1]].concat(),
         ] {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let url = format!("http://{}/", listener.local_addr().unwrap());
             let server = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-                let mut request = [0; 2048]; assert!(stream.read(&mut request).unwrap() > 0);
+                let mut request=[0;2048];
+                assert!(stream.read(&mut request).unwrap()>0);
                 let _ = stream.write_all(&response);
             });
-            let client = reqwest::blocking::Client::builder().no_proxy().timeout(Duration::from_secs(5))
-                .redirect(reqwest::redirect::Policy::none()).build().unwrap();
-            assert!(metadata(&client, &url).is_err()); server.join().unwrap();
+            let client = reqwest::blocking::Client::builder().no_proxy().timeout(Duration::from_secs(5)).redirect(reqwest::redirect::Policy::none()).build().unwrap();
+            assert!(metadata(&client,&url).is_err());
+            server.join().unwrap();
         }
     }
     #[test]
-    fn checks_do_not_block_the_ui_or_duplicate_requests_and_notify_only_when_available() {
+    fn checking_is_nonblocking_single_flight_and_recoverable() {
         let state = Arc::new(State::default());
         let (tx, rx) = std::sync::mpsc::channel();
-        state.check_with(true, move || {
+        state.check_with(move || {
             rx.recv().unwrap();
-            Ok(Some(Available {
-                version: "v0.9.3".into(),
-                notes: "Notes".into(),
-                download_url: "unused fixture".into(),
-            }))
+            Ok(CheckResult::NotPublished)
         });
         assert_eq!(state.view().phase, Phase::Checking);
-        state.check_with(false, || panic!("duplicate request"));
+        state.check_with(|| panic!("duplicate request"));
         tx.send(()).unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while state.view().phase == Phase::Checking && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
+        fn finish(state: &State) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while state.view().phase == Phase::Checking && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_ne!(state.view().phase, Phase::Checking);
         }
-        assert_eq!(state.view().phase, Phase::Available);
-        assert!(state.take_notification());
-        assert!(!state.take_notification());
-        state.check_with(true, || Err("Network unavailable"));
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while state.view().phase == Phase::Checking && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        finish(&state);
+        assert_eq!(state.view().phase, Phase::Current);
+        state.check_with(|| Err("Network unavailable"));
+        finish(&state);
         assert_eq!(state.view().phase, Phase::Error);
-        assert!(state.view().release.is_none());
-        assert!(!state.take_notification());
+        state.check_with(|| {
+            Ok(CheckResult::Available(Available {
+                version: "v1.0.0".into(),
+                notes: "Notes".into(),
+                download_url: format!(
+                    "{REPOSITORY}/releases/download/v1.0.0/EvoParseq-v1.0.0-win64.zip"
+                ),
+            }))
+        });
+        finish(&state);
+        assert_eq!(state.view().phase, Phase::Available);
+        assert!(content(Mode::Updates, &state.view())
+            .version
+            .contains("v1.0.0"));
+        let about = content(Mode::About, &state.view());
+        assert!(about.version.contains("Native Rust"));
+        assert!(!about.version.contains("WebAssembly"));
+        assert!(about.notes.contains("independent"));
     }
 }

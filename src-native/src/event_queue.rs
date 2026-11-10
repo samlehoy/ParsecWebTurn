@@ -1,29 +1,42 @@
 //! Bounded FIFO with event-driven waiting; the predicate and notification share
 //! one mutex so an event arriving just before sleep cannot be lost.
-use std::{
-    collections::VecDeque,
-    sync::{Condvar, Mutex},
-    time::Instant,
-};
+use std::{collections::VecDeque, sync::Mutex};
+#[cfg(test)]
+use std::{sync::Condvar, time::Instant};
 const CAPACITY: usize = 256;
+const MOTION_LIMIT: usize = CAPACITY - 64;
+
+struct Policy<T> {
+    merge: fn(&mut T, &T) -> bool,
+    motion: fn(&T) -> bool,
+    overflow: fn() -> T,
+}
 
 struct State<T> {
     events: VecDeque<T>,
     stopped: bool,
+
+    consumer: Option<std::thread::Thread>,
 }
 
 pub struct Queue<T> {
     state: Mutex<State<T>>,
+    policy: Option<Policy<T>>,
+    #[cfg(test)]
     changed: Condvar,
 }
 
 impl<T> Default for Queue<T> {
     fn default() -> Self {
         Self {
+            policy: None,
             state: Mutex::new(State {
                 events: VecDeque::with_capacity(CAPACITY),
                 stopped: false,
+
+                consumer: None,
             }),
+            #[cfg(test)]
             changed: Condvar::new(),
         }
     }
@@ -36,13 +49,67 @@ impl<T> Queue<T> {
 
     pub fn try_push(&self, event: T) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.stopped {
+            return false;
+        }
+        if let Some(policy) = &self.policy {
+            if state
+                .events
+                .back_mut()
+                .is_some_and(|tail| (policy.merge)(tail, &event))
+            {
+                return true;
+            }
+            let limit = if (policy.motion)(&event) {
+                MOTION_LIMIT
+            } else {
+                CAPACITY
+            };
+            if state.events.len() >= limit {
+                // No silent loss of input or releases. Invalidate stale work and
+                // ask the existing session consumer to release and disconnect.
+                state.events.clear();
+                state.events.push_back((policy.overflow)());
+                state.stopped = true;
+                if let Some(consumer) = &state.consumer {
+                    consumer.unpark();
+                }
+                drop(state);
+                #[cfg(test)]
+                self.changed.notify_one();
+                return false;
+            }
+        }
         if !state.stopped && state.events.len() < CAPACITY {
             state.events.push_back(event);
+
+            if let Some(consumer) = &state.consumer {
+                consumer.unpark();
+            }
             drop(state);
+            #[cfg(test)]
             self.changed.notify_one();
             true
         } else {
             false
+        }
+    }
+
+    pub fn set_consumer(&self, consumer: std::thread::Thread) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .consumer = Some(consumer);
+    }
+
+    pub fn wake_consumer(&self) {
+        if let Some(consumer) = &self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .consumer
+        {
+            consumer.unpark();
         }
     }
 
@@ -65,6 +132,7 @@ impl<T> Queue<T> {
         batch.into_iter().collect()
     }
 
+    #[cfg(test)]
     pub fn wait_until(&self, deadline: Instant) {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         drop(
@@ -80,7 +148,25 @@ impl<T> Queue<T> {
 
     pub fn stop(&self) {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).stopped = true;
+
+        self.wake_consumer();
+        #[cfg(test)]
         self.changed.notify_all();
+    }
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+impl Queue<crate::native_core::session_model::Event> {
+    pub fn input() -> Self {
+        use crate::native_core::session_model::Event;
+        Self {
+            policy: Some(Policy {
+                merge: Event::merge_motion,
+                motion: Event::is_motion,
+                overflow: || Event::InputOverflow,
+            }),
+            ..Self::default()
+        }
     }
 }
 
@@ -91,6 +177,156 @@ mod tests {
         sync::{mpsc, Arc},
         time::Duration,
     };
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn pointer_flood_keeps_latest_positions_and_all_drag_boundaries() {
+        use crate::native_core::session_model::Event;
+        let queue = Queue::input();
+        queue.push(Event::Key(true, "ShiftLeft", 1));
+        for x in 0..100_000 {
+            queue.push(Event::Motion(x, 10));
+        }
+        queue.push(Event::Button(true, 0, 99_999, 10));
+        for y in 0..100_000 {
+            queue.push(Event::Motion(99_999, y));
+        }
+        queue.push(Event::Button(false, 0, 99_999, 99_999));
+        queue.push(Event::Key(false, "ShiftLeft", 0));
+        let events = queue.drain();
+        assert_eq!(events.len(), 6, "obsolete positions accumulated");
+        assert!(matches!(events[0], Event::Key(true, "ShiftLeft", 1)));
+        assert!(matches!(events[1], Event::Motion(99_999, 10)));
+        assert!(matches!(events[2], Event::Button(true, 0, 99_999, 10)));
+        assert!(matches!(events[3], Event::Motion(99_999, 99_999)));
+        assert!(matches!(events[4], Event::Button(false, 0, 99_999, 99_999)));
+        assert!(matches!(events[5], Event::Key(false, "ShiftLeft", 0)));
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn camera_deltas_are_exact_and_never_cross_mode_focus_or_wheel_boundaries() {
+        use crate::native_core::session_model::Event;
+        let queue = Queue::input();
+        for _ in 0..100_000 {
+            queue.push(Event::RelativeMotion(3, -2));
+        }
+        queue.push(Event::Scroll(0, 120));
+        queue.push(Event::RelativeMotion(-4, 5));
+        queue.push(Event::RelativeMode(false));
+        queue.push(Event::Motion(10, 20));
+        queue.push(Event::Size(1920, 1080));
+        queue.push(Event::Motion(30, 40));
+        queue.push(Event::Focus(false));
+        queue.push(Event::RelativeMotion(1, 1));
+        let events = queue.drain();
+        assert_eq!(events.len(), 9);
+        assert!(matches!(
+            events[0],
+            Event::RelativeMotion(300_000, -200_000)
+        ));
+        assert!(matches!(events[1], Event::Scroll(0, 120)));
+        assert!(matches!(events[2], Event::RelativeMotion(-4, 5)));
+        assert!(matches!(events[3], Event::RelativeMode(false)));
+        assert!(matches!(events[4], Event::Motion(10, 20)));
+        assert!(matches!(events[5], Event::Size(1920, 1080)));
+        assert!(matches!(events[6], Event::Motion(30, 40)));
+        assert!(matches!(events[7], Event::Focus(false)));
+        assert!(matches!(events[8], Event::RelativeMotion(1, 1)));
+
+        // Overflow in either coordinate must not saturate or partly mutate it.
+        queue.push(Event::RelativeMotion(i32::MAX, 7));
+        queue.push(Event::RelativeMotion(1, i32::MIN));
+        let events = queue.drain();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], Event::RelativeMotion(i32::MAX, 7)));
+        assert!(matches!(events[1], Event::RelativeMotion(1, i32::MIN)));
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn reserved_input_capacity_and_overflow_release_barrier_are_bounded() {
+        use crate::native_core::session_model::Event;
+        let queue = Queue::input();
+        // Deliberately unmergeable modes model pathological producer pressure.
+        for i in 0..MOTION_LIMIT {
+            assert!(queue.try_push(if i % 2 == 0 {
+                Event::Motion(1, 2)
+            } else {
+                Event::RelativeMotion(1, 2)
+            }));
+        }
+        for _ in MOTION_LIMIT..CAPACITY {
+            assert!(queue.try_push(Event::Key(false, "KeyA", 0)));
+        }
+        assert_eq!(queue.drain().len(), CAPACITY);
+        for _ in 0..CAPACITY {
+            assert!(queue.try_push(Event::Key(true, "KeyA", 0)));
+        }
+        assert!(!queue.try_push(Event::Key(false, "KeyA", 0)));
+        assert!(!queue.try_push(Event::Motion(9, 9)));
+        assert!(matches!(queue.drain().as_slice(), [Event::InputOverflow]));
+        assert!(queue.drain().is_empty());
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn flood_while_consumer_is_blocked_keeps_owned_batch_and_next_sum() {
+        use crate::native_core::session_model::Event;
+        let queue = Arc::new(Queue::input());
+        queue.push(Event::Button(true, 0, 0, 0));
+        let q = queue.clone();
+        let (ready, started) = mpsc::channel();
+        let (resume, proceed) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut batch = VecDeque::new();
+            q.set_consumer(std::thread::current());
+            q.take_batch(&mut batch);
+            ready.send(()).unwrap();
+            proceed.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(matches!(
+                batch.pop_front(),
+                Some(Event::Button(true, 0, 0, 0))
+            ));
+            q.take_batch(&mut batch);
+            assert!(matches!(
+                batch.pop_front(),
+                Some(Event::RelativeMotion(100_000, -100_000))
+            ));
+            assert!(matches!(
+                batch.pop_front(),
+                Some(Event::Button(false, 0, 0, 0))
+            ));
+            assert!(batch.is_empty());
+        });
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        for _ in 0..100_000 {
+            queue.push(Event::RelativeMotion(1, -1));
+        }
+        queue.push(Event::Button(false, 0, 0, 0));
+        resume.send(()).unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn native_consumer_is_woken_for_input_and_stop_without_polling() {
+        let queue = Arc::new(Queue::<u8>::default());
+        let (ready, started) = mpsc::channel();
+        let q = queue.clone();
+        let worker = std::thread::spawn(move || {
+            q.set_consumer(std::thread::current());
+            ready.send(()).unwrap();
+            let started = Instant::now();
+            std::thread::park_timeout(Duration::from_secs(1));
+            assert!(started.elapsed() < Duration::from_millis(500));
+            q.drain()
+        });
+        started.recv_timeout(Duration::from_secs(1)).unwrap();
+        queue.push(7);
+        assert_eq!(worker.join().unwrap(), vec![7]);
+        queue.stop();
+        assert!(!queue.try_push(9));
+    }
 
     #[test]
     fn repeated_full_batches_reuse_two_allocations_and_preserve_fifo() {

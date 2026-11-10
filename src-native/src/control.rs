@@ -4,13 +4,15 @@ use anyhow::{bail, Context, Result};
 use bytes::Bytes;
 use serde_json::{json, Value};
 
-const LIMIT: usize = 1024 * 1024;
+pub(crate) const MAX_CHANNEL_MESSAGE: usize = 1024 * 1024;
+const LIMIT: usize = MAX_CHANNEL_MESSAGE;
 
 #[derive(Clone)]
 pub struct Config {
-    pub video_protocol: crate::backend::VideoProtocol,
+    pub video_protocol: crate::video_stream::VideoProtocol,
     pub allow_hevc: bool,
     pub ten_bit: bool,
+    pub chroma_444: bool,
 }
 
 impl Config {
@@ -21,10 +23,15 @@ impl Config {
             } else {
                 0
             }
+            | if self.allow_hevc && self.chroma_444 {
+                2
+            } else {
+                0
+            }
     }
 
     /// Keep the negotiated capabilities on later per-stream reconfigurations.
-    /// 4:4:4 is deliberately not supported, even if the guest asks for it.
+    /// Only native, capability-checked preferences can request full chroma.
     pub fn encoder_request(&self, bytes: Bytes) -> Bytes {
         if bytes.len() < 13 || bytes[12] != 13 || bytes[..4] != [0; 4] {
             return bytes;
@@ -40,7 +47,6 @@ impl Config {
     }
     /// Pinned private opcode, corroborated by lowlat's WebRTC client. Preserve
     /// the negotiated flags; the third argument requests an encoder refresh.
-    #[cfg(any(windows, target_os = "macos"))]
     pub fn keyframe_request(&self) -> Bytes {
         header(13, 0, self.video_flags() as i32, 1)
     }
@@ -79,12 +85,10 @@ pub fn text(kind: u8, id: i32, value: &str) -> Result<Bytes> {
 
 pub enum Message {
     Status(i32),
-    EncodeLatency(f32),
-    Event(Value),
-    HostMode(i32),
-    Guests {
-        list: Vec<Value>,
-        me: Value,
+    Rumble {
+        pad: u32,
+        low: u8,
+        high: u8,
     },
     Buffer {
         event: Value,
@@ -123,13 +127,22 @@ pub fn decode(bytes: &[u8]) -> Result<Message> {
         bail!("invalid control frame size");
     }
     let number = |offset| i32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap());
-    let (a, b, c) = (number(0), number(4), number(8));
+    let (a, b) = (number(0), number(4));
     Ok(match bytes[12] {
         10 => Message::Status(a),
-        21 => Message::EncodeLatency(b as f32 / 1000.0),
-        20 => Message::Event(json!({"type":2,"gamepadID":a,"motorBig":b,"motorSmall":c})),
-        16 => Message::Event(json!({"type":if a!=0 {4} else {5}})),
-        28 => Message::HostMode(a),
+        // Timing is collected by the transport. The native session does not
+        // consume the former web-core gamepad, host-mode or guest callbacks.
+        16 | 21 | 28 => Message::Ignored,
+        20 => {
+            if bytes.len() != 13 {
+                bail!("invalid controller feedback size");
+            }
+            Message::Rumble {
+                pad: a as u32,
+                low: b as u8,
+                high: number(8) as u8,
+            }
+        }
         25 => {
             let size = usize::try_from(a).context("negative guest list length")?;
             if size == 0 || size != bytes.len() - 13 || bytes.last() != Some(&0) {
@@ -139,13 +152,7 @@ pub fn decode(bytes: &[u8]) -> Result<Message> {
             if list.len() > 256 || list.iter().any(|v| !v.is_object()) {
                 bail!("invalid guest list");
             }
-            let me = list
-                .iter()
-                .rev()
-                .find(|v| v["id"].as_i64() == Some(i64::from(b)))
-                .cloned()
-                .unwrap_or_else(|| json!({}));
-            Message::Guests { list, me }
+            Message::Ignored
         }
         17 => {
             let size = usize::try_from(a).context("negative user-data length")?;
@@ -183,91 +190,48 @@ impl std::fmt::Display for AbsoluteMouseUnavailable {
 impl std::error::Error for AbsoluteMouseUnavailable {}
 
 #[cfg(test)]
-pub fn input(value: &Value) -> Result<Bytes> {
-    input_with_viewport(value, None)
-}
-
-pub fn input_with_viewport(
-    value: &Value,
-    viewport: Option<crate::viewport::Viewport>,
-) -> Result<Bytes> {
-    fn int(value: &Value, name: &str) -> Result<i32> {
-        i32::try_from(
-            value[name]
-                .as_i64()
-                .context("input integer field missing")?,
-        )
-        .context("input field out of range")
-    }
-    fn boolean(value: &Value, name: &str) -> Result<bool> {
-        value[name].as_bool().context("input boolean field missing")
-    }
-    Ok(match int(value, "type")? {
-        1 => header(
-            0,
-            int(value, "code")?,
-            int(value, "mod")?,
-            i32::from(boolean(value, "pressed")?),
-        ),
-        2 => header(
-            1,
-            int(value, "button")?,
-            i32::from(boolean(value, "pressed")?),
-            0,
-        ),
-        3 => header(2, int(value, "x")?, int(value, "y")?, 0),
-        4 => {
-            let (x, y) = (int(value, "x")?, int(value, "y")?);
-            if !boolean(value, "relative")? {
-                let (x, y) = viewport
-                    .and_then(|v| v.map(x, y))
-                    .ok_or(AbsoluteMouseUnavailable)?;
-                return Ok(header(3, 0, x, y));
-            }
-            header(3, 1, x, y)
-        }
-        5 => header(
-            4,
-            int(value, "button")?,
-            i32::from(boolean(value, "pressed")?),
-            int(value, "id")?,
-        ),
-        6 => header(
-            5,
-            int(value, "axis")?,
-            int(value, "value")?,
-            int(value, "id")?,
-        ),
-        7 => header(6, 0, 0, int(value, "id")?),
-        8 => {
-            let mut bytes = header(23, int(value, "id")?, 0, 0).to_vec();
-            bytes.resize(28, 0);
-            bytes[16..18].copy_from_slice(&u16::try_from(int(value, "buttons")?)?.to_be_bytes());
-            for (offset, name) in [
-                (18, "thumbLX"),
-                (20, "thumbLY"),
-                (22, "thumbRX"),
-                (24, "thumbRY"),
-            ] {
-                bytes[offset..offset + 2]
-                    .copy_from_slice(&i16::try_from(int(value, name)?)?.to_be_bytes());
-            }
-            bytes[26] = u8::try_from(int(value, "leftTrigger")?)?;
-            bytes[27] = u8::try_from(int(value, "rightTrigger")?)?;
-            Bytes::from(bytes)
-        }
-        9 => header(24, 0, 0, 0),
-        _ => bail!("input event is not supported by the native control adapter"),
-    })
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
+    fn controller_feedback_is_bounded_and_preserves_motor_byte_order() {
+        assert!(matches!(
+            decode(&header(20, 2, 17, 255)).unwrap(),
+            Message::Rumble {
+                pad: 2,
+                low: 17,
+                high: 255
+            }
+        ));
+        let mut oversized = header(20, 0, 0, 0).to_vec();
+        oversized.push(0);
+        assert!(decode(&oversized).is_err());
+        assert!(decode(&header(20, 0, 0, 0)[..12]).is_err());
+    }
+    #[test]
+    fn full_chroma_main10_request_is_preserved_on_refresh() {
+        let mut config = Config {
+            video_protocol: crate::video_stream::VideoProtocol {
+                version: 1,
+                message_size: 11,
+                version_offset: 0,
+                flag_offset: 4,
+            },
+            allow_hevc: true,
+            ten_bit: true,
+            chroma_444: true,
+        };
+        assert_eq!(config.video_flags(), 0x1b);
+        let refresh = config.encoder_request(header(13, 0, 0, 1));
+        assert_eq!(i32::from_be_bytes(refresh[4..8].try_into().unwrap()), 0x1b);
+        config.chroma_444 = false;
+        let refresh = config.encoder_request(header(13, 0, 0x1b, 1));
+        assert_eq!(i32::from_be_bytes(refresh[4..8].try_into().unwrap()), 0x19);
+        assert!(config.ten_bit && config.allow_hevc);
+    }
+    #[test]
     fn desktop_fullfps_settings_keep_the_pinned_userdata_envelope() {
         for full_fps in [false, true] {
-            let configuration = json!([{"encoderFPS":60,"fullFPS":full_fps}]).to_string();
+            let configuration = json!({"video":[{"encoderFPS":60,"fullFPS":full_fps}]}).to_string();
             let frame = text(17, 11, &configuration).unwrap();
             assert_eq!(frame[12], 17);
             assert_eq!(
@@ -280,12 +244,12 @@ mod tests {
             assert_eq!(frame.last(), Some(&0));
         }
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn refresh_request_preserves_startup_codec_flags_and_primary_stream() {
         for allow_hevc in [false, true] {
             let config = Config {
-                video_protocol: crate::backend::VideoProtocol {
+                video_protocol: crate::video_stream::VideoProtocol {
                     version: 0,
                     message_size: 11,
                     version_offset: 0,
@@ -293,6 +257,7 @@ mod tests {
                 },
                 allow_hevc,
                 ten_bit: false,
+                chroma_444: false,
             };
             assert_eq!(
                 config.keyframe_request(),
@@ -307,7 +272,7 @@ mod tests {
     #[test]
     fn hevc_changes_only_the_verified_init_capability_bit() {
         let mut config = Config {
-            video_protocol: crate::backend::VideoProtocol {
+            video_protocol: crate::video_stream::VideoProtocol {
                 version: 0,
                 message_size: 11,
                 version_offset: 0,
@@ -315,6 +280,7 @@ mod tests {
             },
             allow_hevc: false,
             ten_bit: false,
+            chroma_444: false,
         };
         let avc = config.startup().unwrap();
         config.allow_hevc = true;
@@ -335,9 +301,9 @@ mod tests {
         assert_eq!(avc, hevc);
     }
     #[test]
-    fn guest_reconfiguration_cannot_erase_main10_or_enable_444() {
+    fn stream_reconfiguration_preserves_main10_without_enabling_444() {
         let config = Config {
-            video_protocol: crate::backend::VideoProtocol {
+            video_protocol: crate::video_stream::VideoProtocol {
                 version: 0,
                 message_size: 11,
                 version_offset: 0,
@@ -345,6 +311,7 @@ mod tests {
             },
             allow_hevc: true,
             ten_bit: true,
+            chroma_444: false,
         };
         let init = config.startup().unwrap();
         let init: Value = serde_json::from_slice(&init[13..init.len() - 1]).unwrap();
@@ -362,28 +329,7 @@ mod tests {
             header(12, 0, 2, 1)
         );
     }
-    #[test]
-    fn absolute_motion_requires_a_real_viewport_and_preserves_control_framing() {
-        let event = json!({"type":4,"relative":false,"x":512,"y":384});
-        assert_eq!(
-            input_with_viewport(
-                &event,
-                Some(crate::viewport::Viewport {
-                    source: (1920, 1080),
-                    client: (1024, 768)
-                })
-            )
-            .unwrap(),
-            header(3, 0, 960, 540)
-        );
-        let state = json!({"type":8,"id":7,"buttons":65535,"thumbLX":-32768,"thumbLY":32767,"thumbRX":0,"thumbRY":-1,"leftTrigger":0,"rightTrigger":255});
-        let bytes = input(&state).unwrap();
-        assert_eq!(
-            &bytes[16..],
-            &[255, 255, 128, 0, 127, 255, 0, 0, 255, 255, 0, 255]
-        );
-        assert_eq!(bytes[12], 23);
-    }
+
     #[test]
     fn headers_use_big_endian_and_text_uses_utf8_byte_lengths() {
         assert_eq!(
@@ -391,7 +337,7 @@ mod tests {
             [255, 255, 255, 253, 1, 2, 3, 4, 0, 0, 0, 0, 10]
         );
         let frame = text(25, 42, "[]").unwrap();
-        assert!(matches!(decode(&frame).unwrap(),Message::Guests {list,..} if list.is_empty()));
+        assert!(matches!(decode(&frame).unwrap(), Message::Ignored));
         let frame = text(17, 42, "árvíz").unwrap();
         assert_eq!(
             i32::from_be_bytes(frame[..4].try_into().unwrap()),
@@ -399,7 +345,7 @@ mod tests {
         );
     }
     #[test]
-    fn malformed_frames_and_unsupported_viewport_mapping_fail() {
+    fn malformed_control_frames_fail() {
         for length in 0..13 {
             assert!(decode(&vec![0; length]).is_err());
         }
@@ -408,12 +354,6 @@ mod tests {
         frame.pop();
         assert!(decode(&frame).is_err());
         assert!(decode(&text(25, 0, "{}").unwrap()).is_err());
-        assert!(input(&json!({"type":4,"relative":false,"x":1,"y":2})).is_err());
-        assert!(input(&json!({"type":1,"code":1,"mod":0,"pressed":1})).is_err());
-        assert_eq!(
-            input(&json!({"type":1,"code":65,"mod":2,"pressed":true})).unwrap(),
-            header(0, 65, 2, 1)
-        );
     }
     #[test]
     fn cursor_and_user_data_ranges_validate_before_access() {

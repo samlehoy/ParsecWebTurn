@@ -1,7 +1,16 @@
 //! Bounded inspection of pinned Parsec video framing, not a decoder.
 //! Proprietary metadata is separate from H.264/HEVC Annex B byte-stream syntax.
-use crate::backend::VideoProtocol;
+// Parts of this shared model serve only the Windows decoder and controls.
+#![cfg_attr(not(windows), allow(dead_code))]
 use serde::Serialize;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct VideoProtocol {
+    pub version: u32,
+    pub message_size: u32,
+    pub version_offset: u32,
+    pub flag_offset: u32,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub enum Codec {
@@ -144,6 +153,7 @@ impl Inspector {
         Some(PacketInfo {
             codec,
             idr: summary.idr,
+            picture: summary.picture,
             parameters: summary.vps || summary.sps.is_some() || summary.pps,
         })
     }
@@ -151,6 +161,8 @@ impl Inspector {
 
 #[derive(Clone, Copy)]
 pub struct PacketInfo {
+    /// A supported VCL NAL was observed, not merely SEI/parameter metadata.
+    pub picture: bool,
     pub codec: Codec,
     pub idr: bool,
     pub parameters: bool,
@@ -217,6 +229,55 @@ impl ParameterCache {
             offset = end;
         }
     }
+    /// A restarted decoder must not see an older SPS geometry first. Keep
+    /// VPS/PPS dependencies by ID, but retire incompatible SPS configurations
+    /// and their orphaned PPS entries. Only used at a format boundary.
+    pub fn retain_hevc_configuration(&mut self, config: HevcConfiguration) {
+        self.units.retain(|unit| {
+            if (unit[0] >> 1) & 63 != 33 {
+                return true;
+            }
+            hevc_sps(unit).is_none_or(|previous| previous == config)
+        });
+        let sps_ids = self
+            .units
+            .iter()
+            .filter(|unit| (unit[0] >> 1) & 63 == 33)
+            .filter_map(|unit| hevc_sps_with_id(unit).map(|(id, _)| 1u16 << id))
+            .fold(0, |mask, bit| mask | bit);
+        self.units.retain(|unit| {
+            if (unit[0] >> 1) & 63 != 34 {
+                return true;
+            }
+            let mut bits = ParameterBits::new(&unit[2..]);
+            let referenced = bits.ue().and_then(|_| bits.ue());
+            referenced.is_none_or(|id| id < 16 && sps_ids & (1u16 << id) != 0)
+        });
+        // PPS parsing can reference SPS metadata even in a header-only packet.
+        self.units.sort_by_key(|unit| (unit[0] >> 1) & 63);
+        self.bytes = self.units.iter().map(|unit| unit.len() + 4).sum();
+    }
+    #[cfg(target_os = "android")]
+    pub fn decoder_initialization(
+        &mut self,
+        codec: Codec,
+    ) -> Option<crate::codec_initialization::Initialization> {
+        if self.overflowed {
+            return None;
+        }
+        if codec == Codec::Hevc {
+            let latest = self
+                .units
+                .iter()
+                .rev()
+                .find(|u| (u[0] >> 1) & 63 == 33)
+                .and_then(|u| hevc_sps(u));
+            if let Some(config) = latest {
+                self.retain_hevc_configuration(config);
+            }
+        }
+        crate::codec_initialization::initialize(&self.units, codec)
+    }
     pub fn bytes(&self) -> Option<Vec<u8>> {
         if self.overflowed || self.units.is_empty() {
             return None;
@@ -232,6 +293,7 @@ impl ParameterCache {
 
 #[derive(Default)]
 struct NalSummary {
+    picture: bool,
     vps: bool,
     sps: Option<[u8; 3]>,
     hevc_configuration: Option<HevcConfiguration>,
@@ -265,6 +327,9 @@ fn hevc_annex_b(bytes: &[u8], read_configuration: bool) -> Option<NalSummary> {
         if header & 0x81 != 0 || second & 0xf8 != 0 || second & 7 == 0 || nal.len() < 3 {
             return None;
         }
+        // Supported H.265 VCL types. Reserved types stay conservative. Reuse
+        // the existing scan; metadata cannot justify replacing a picture.
+        summary.picture |= matches!((header >> 1) & 63, 0..=9 | 16..=21);
         match (header >> 1) & 63 {
             32 => summary.vps = true,
             33 => {
@@ -293,82 +358,93 @@ fn hevc_annex_b(bytes: &[u8], read_configuration: bool) -> Option<NalSummary> {
 pub struct HevcConfiguration {
     pub width: u32,
     pub height: u32,
+    // Display dimensions after the SPS conformance window. Keep coded
+    // dimensions separate for decoder limits and format-change detection.
+    pub visible_width: u32,
+    pub visible_height: u32,
     pub profile: u32,
     pub chroma: u32,
     pub bit_depth: u32,
 }
 
-#[cfg(any(windows, test))]
 pub fn hevc_configuration(bytes: &[u8]) -> Option<HevcConfiguration> {
     hevc_annex_b(bytes, true)?.hevc_configuration
 }
 
 // H.265 SPS syntax through bit_depth_chroma_minus8. Read only bounded metadata;
 // emulation-prevention bytes are removed as bits are read, without copying NALs.
-fn hevc_sps(nal: &[u8]) -> Option<HevcConfiguration> {
-    struct Bits<'a> {
-        bytes: &'a [u8],
-        offset: usize,
-        zeros: u8,
-        byte: u8,
-        left: u8,
+pub(crate) struct ParameterBits<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+    zeros: u8,
+    byte: u8,
+    left: u8,
+}
+impl<'a> ParameterBits<'a> {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            bytes,
+            offset: 0,
+            zeros: 0,
+            byte: 0,
+            left: 0,
+        }
     }
-    impl Bits<'_> {
-        fn read(&mut self, count: u32) -> Option<u32> {
-            if count > 32 {
-                return None;
-            }
-            let mut value = 0;
-            for _ in 0..count {
-                if self.left == 0 {
+
+    pub(crate) fn read(&mut self, count: u32) -> Option<u32> {
+        if count > 32 {
+            return None;
+        }
+        let mut value = 0;
+        for _ in 0..count {
+            if self.left == 0 {
+                self.byte = *self.bytes.get(self.offset)?;
+                self.offset += 1;
+                if self.zeros == 2 && self.byte == 3 {
                     self.byte = *self.bytes.get(self.offset)?;
                     self.offset += 1;
-                    if self.zeros == 2 && self.byte == 3 {
-                        self.byte = *self.bytes.get(self.offset)?;
-                        self.offset += 1;
-                        if self.byte > 3 {
-                            return None;
-                        }
-                        self.zeros = 0;
+                    if self.byte > 3 {
+                        return None;
                     }
-                    self.zeros = if self.byte == 0 {
-                        (self.zeros + 1).min(2)
-                    } else {
-                        0
-                    };
-                    self.left = 8;
+                    self.zeros = 0;
                 }
-                self.left -= 1;
-                value = (value << 1) | u32::from((self.byte >> self.left) & 1);
+                self.zeros = if self.byte == 0 {
+                    (self.zeros + 1).min(2)
+                } else {
+                    0
+                };
+                self.left = 8;
             }
-            Some(value)
+            self.left -= 1;
+            value = (value << 1) | u32::from((self.byte >> self.left) & 1);
         }
-        fn skip(&mut self, mut count: u32) -> Option<()> {
-            while count != 0 {
-                let step = count.min(32);
-                self.read(step)?;
-                count -= step;
-            }
-            Some(())
-        }
-        fn ue(&mut self) -> Option<u32> {
-            let mut zeros = 0;
-            while self.read(1)? == 0 {
-                zeros += 1;
-                if zeros > 30 {
-                    return None;
-                }
-            }
-            Some(((1u32 << zeros) - 1) + self.read(zeros)?)
-        }
+        Some(value)
     }
-    let mut bits = Bits {
-        bytes: nal.get(2..)?,
-        offset: 0,
-        zeros: 0,
-        byte: 0,
-        left: 0,
-    };
+    pub(crate) fn skip(&mut self, mut count: u32) -> Option<()> {
+        while count != 0 {
+            let step = count.min(32);
+            self.read(step)?;
+            count -= step;
+        }
+        Some(())
+    }
+    pub(crate) fn ue(&mut self) -> Option<u32> {
+        let mut zeros = 0;
+        while self.read(1)? == 0 {
+            zeros += 1;
+            if zeros > 30 {
+                return None;
+            }
+        }
+        Some(((1u32 << zeros) - 1) + self.read(zeros)?)
+    }
+}
+fn hevc_sps(nal: &[u8]) -> Option<HevcConfiguration> {
+    hevc_sps_with_id(nal).map(|(_, config)| config)
+}
+
+fn hevc_sps_with_id(nal: &[u8]) -> Option<(u32, HevcConfiguration)> {
+    let mut bits = ParameterBits::new(nal.get(2..)?);
     bits.skip(4)?;
     let layers = bits.read(3)?;
     if layers > 6 {
@@ -392,7 +468,8 @@ fn hevc_sps(nal: &[u8]) -> Option<HevcConfiguration> {
             bits.skip(8)?;
         }
     }
-    if bits.ue()? > 15 {
+    let id = bits.ue()?;
+    if id > 15 {
         return None;
     }
     let chroma = bits.ue()?;
@@ -405,6 +482,7 @@ fn hevc_sps(nal: &[u8]) -> Option<HevcConfiguration> {
     if width == 0 || height == 0 || width > 16384 || height > 16384 {
         return None;
     }
+    let (mut visible_width, mut visible_height) = (width, height);
     if bits.read(1)? != 0 {
         let horizontal = bits.ue()?.checked_add(bits.ue()?)?;
         let vertical = bits.ue()?.checked_add(bits.ue()?)?;
@@ -414,9 +492,9 @@ fn hevc_sps(nal: &[u8]) -> Option<HevcConfiguration> {
             1
         };
         let sub_height = if !separate && chroma == 1 { 2 } else { 1 };
-        if horizontal.checked_mul(sub_width)? >= width
-            || vertical.checked_mul(sub_height)? >= height
-        {
+        visible_width = width.checked_sub(horizontal.checked_mul(sub_width)?)?;
+        visible_height = height.checked_sub(vertical.checked_mul(sub_height)?)?;
+        if visible_width == 0 || visible_height == 0 {
             return None;
         }
     }
@@ -425,13 +503,18 @@ fn hevc_sps(nal: &[u8]) -> Option<HevcConfiguration> {
     if bit_depth > 16 || bit_depth != chroma_depth {
         return None;
     }
-    Some(HevcConfiguration {
-        width,
-        height,
-        profile,
-        chroma,
-        bit_depth,
-    })
+    Some((
+        id,
+        HevcConfiguration {
+            width,
+            height,
+            visible_width,
+            visible_height,
+            profile,
+            chroma,
+            bit_depth,
+        },
+    ))
 }
 
 // No allocation or payload retention. A bounded linear scan accepts 3/4-byte
@@ -465,6 +548,9 @@ fn annex_b(bytes: &[u8]) -> Option<NalSummary> {
         if header & 128 != 0 || !(1..=23).contains(&kind) {
             return None;
         }
+        // H.264 coded slice and data-partition NALs. The additional flag
+        // does not change validation, decoder input or stream acceptance.
+        summary.picture |= (1..=5).contains(&kind);
         match kind {
             7 => summary.sps = Some(nal.get(1..4)?.try_into().ok()?),
             8 => {
@@ -494,6 +580,39 @@ fn annex_b(bytes: &[u8]) -> Option<NalSummary> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn metadata_alone_never_announces_a_replacement_picture() {
+        let mut avc = super::Inspector::default();
+        for bytes in [
+            &[0, 0, 1, 0x06, 0x80][..],
+            &[0, 0, 1, 0x09, 0x80],
+            &[0, 0, 1, 0x68, 0x80],
+        ] {
+            assert!(!avc.receive(bytes).unwrap().picture);
+        }
+        assert!(avc.receive(&[0, 0, 1, 0x41, 0x80]).unwrap().picture);
+        assert!(avc.receive(&[0, 0, 1, 0x65, 0x80]).unwrap().picture);
+
+        let mut hevc = super::Inspector::default();
+        hevc.enable_hevc(true);
+        assert!(!hevc.receive(&[0, 0, 1, 0x40, 1, 0x80]).unwrap().picture);
+        for kind in [34, 35, 39, 40, 22] {
+            assert!(
+                !hevc
+                    .receive(&[0, 0, 1, kind << 1, 1, 0x80])
+                    .unwrap()
+                    .picture
+            );
+        }
+        for kind in [0, 1, 16, 19, 21] {
+            assert!(
+                hevc.receive(&[0, 0, 1, kind << 1, 1, 0x80])
+                    .unwrap()
+                    .picture
+            );
+        }
+    }
+
     use super::*;
     #[test]
     fn recovery_cache_keeps_parameters_but_never_picture_payloads() {
@@ -515,7 +634,64 @@ mod tests {
         cache.observe(&huge, Codec::H264);
         assert!(cache.bytes().is_none());
     }
+    #[test]
+    fn format_restart_keeps_new_sps_and_parameter_dependencies() {
+        let old = sps_fixture(1920, 1200, 0, 8);
+        let next = sps_fixture(1920, 1080, 0, 8);
+        let vps = [0, 0, 1, 0x40, 1, 7];
+        let pps = [0, 0, 1, 0x44, 1, 0xc0];
+        let mut cache = ParameterCache::default();
+        for unit in [&vps[..], &old, &pps, &next] {
+            cache.observe(unit, Codec::Hevc);
+        }
+        cache.retain_hevc_configuration(hevc_configuration(&next).unwrap());
+        let bytes = cache.bytes().unwrap();
+        assert_eq!(hevc_configuration(&bytes), hevc_configuration(&next));
+        let mut expected = ParameterCache::default();
+        for unit in [&vps[..], &next, &pps] {
+            expected.observe(unit, Codec::Hevc);
+        }
+        assert_eq!(bytes, expected.bytes().unwrap());
+        // Repeated size changes cannot resurrect a retired SPS.
+        cache.observe(&old, Codec::Hevc);
+        cache.retain_hevc_configuration(hevc_configuration(&old).unwrap());
+        assert_eq!(
+            hevc_configuration(&cache.bytes().unwrap()),
+            hevc_configuration(&old)
+        );
+    }
+    #[test]
+    fn format_restart_retires_only_pps_referencing_retired_sps_ids() {
+        let old = sps_fixture_with_id(1920, 1200, 0, 8, 1);
+        let next = sps_fixture(1920, 1080, 0, 8);
+        let old_pps = [0, 0, 1, 0x44, 1, 0x4a]; // PPS 1 -> SPS 1
+        let next_pps = [0, 0, 1, 0x44, 1, 0xc0]; // PPS 0 -> SPS 0
+        let mut cache = ParameterCache::default();
+        for unit in [&old[..], &old_pps, &next, &next_pps] {
+            cache.observe(unit, Codec::Hevc);
+        }
+        cache.retain_hevc_configuration(hevc_configuration(&next).unwrap());
+        let mut expected = ParameterCache::default();
+        for unit in [&next[..], &next_pps] {
+            expected.observe(unit, Codec::Hevc);
+        }
+        assert_eq!(cache.bytes(), expected.bytes());
+    }
+
     fn sps_fixture(width: u32, height: u32, layers: u32, depth: u32) -> Vec<u8> {
+        sps_fixture_with_id(width, height, layers, depth, 0)
+    }
+    fn sps_fixture_with_id(width: u32, height: u32, layers: u32, depth: u32, id: u32) -> Vec<u8> {
+        sps_fixture_with_crop(width, height, layers, depth, id, None)
+    }
+    fn sps_fixture_with_crop(
+        width: u32,
+        height: u32,
+        layers: u32,
+        depth: u32,
+        id: u32,
+        crop: Option<[u32; 4]>,
+    ) -> Vec<u8> {
         fn put(bits: &mut Vec<u8>, value: u32, count: u32) {
             for shift in (0..count).rev() {
                 bits.push(((value >> shift) & 1) as u8);
@@ -543,11 +719,16 @@ mod tests {
         for _ in 0..layers {
             bits.extend([0; 96]);
         }
-        ue(&mut bits, 0);
+        ue(&mut bits, id);
         ue(&mut bits, 1); // SPS id, 4:2:0
         ue(&mut bits, width);
         ue(&mut bits, height);
-        put(&mut bits, 0, 1); // no conformance window
+        put(&mut bits, u32::from(crop.is_some()), 1);
+        if let Some(crop) = crop {
+            for offset in crop {
+                ue(&mut bits, offset);
+            }
+        }
         ue(&mut bits, depth - 8);
         ue(&mut bits, depth - 8);
         put(&mut bits, 1, 1);
@@ -601,6 +782,8 @@ mod tests {
                 Some(HevcConfiguration {
                     width: 1920,
                     height: 1080,
+                    visible_width: 1920,
+                    visible_height: 1080,
                     profile: 1,
                     chroma: 1,
                     bit_depth: 8,
@@ -614,6 +797,55 @@ mod tests {
             assert!(hevc_configuration(&sps_fixture(w, h, 0, 8)).is_none());
         }
         assert!(hevc_configuration(HEVC_KEY).is_none());
+    }
+    #[test]
+    fn hevc_crop_preserves_coded_size_and_changes_visible_configuration() {
+        let make =
+            |crop| hevc_configuration(&sps_fixture_with_crop(1920, 1088, 0, 8, 0, Some(crop)));
+        let cropped = make([0, 0, 0, 4]).unwrap();
+        assert_eq!((cropped.width, cropped.height), (1920, 1088));
+        assert_eq!(
+            (cropped.visible_width, cropped.visible_height),
+            (1920, 1080)
+        );
+        assert_eq!(Some(cropped), make([0, 0, 0, 4]));
+        let changed = make([0, 0, 0, 8]).unwrap();
+        assert_eq!((changed.width, changed.height), (1920, 1088));
+        assert_ne!(changed, cropped);
+        let offset = make([2, 2, 3, 1]).unwrap();
+        assert_eq!((offset.visible_width, offset.visible_height), (1912, 1080));
+        for bad in [
+            [960, 0, 0, 0],
+            [961, 0, 0, 0],
+            [0, 0, 544, 0],
+            [1 << 30, 1 << 30, 0, 0],
+        ] {
+            assert!(make(bad).is_none());
+        }
+        let old = sps_fixture_with_crop(1920, 1088, 0, 8, 1, Some([0, 0, 0, 4]));
+        let next = sps_fixture_with_crop(1920, 1088, 0, 8, 0, Some([0, 0, 0, 8]));
+        let mut cache = ParameterCache::default();
+        cache.observe(&old, Codec::Hevc);
+        cache.observe(&next, Codec::Hevc);
+        cache.retain_hevc_configuration(changed);
+        assert_eq!(cache.bytes().unwrap(), next);
+    }
+    #[test]
+    fn cropped_fixture_reports_visible_and_coded_dimensions_separately() {
+        let config =
+            hevc_configuration(include_bytes!("../crates/video/fixtures/hevc-crop.sps")).unwrap();
+        assert_eq!((config.width, config.height), (152, 152));
+        assert_eq!((config.visible_width, config.visible_height), (150, 146));
+    }
+    #[test]
+    fn full_chroma_main10_is_identified_from_actual_sps() {
+        let config =
+            hevc_configuration(include_bytes!("../crates/video/fixtures/hevc-444-10.sps")).unwrap();
+        assert_eq!(
+            (config.profile, config.chroma, config.bit_depth),
+            (4, 3, 10)
+        );
+        assert!(config.width > 0 && config.height > 0);
     }
     const HEVC_KEY: &[u8] = &[
         0, 0, 0, 1, 0x40, 1, 0x80, // VPS

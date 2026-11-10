@@ -72,7 +72,7 @@ unsafe extern "system" fn combo_proc(
 }
 
 pub unsafe fn multiline(edit: HWND) {
-    let name = wide("ParsecWebTurnTextScroll");
+    let name = wide("EvoParseqTextScroll");
     let instance = GetModuleHandleW(null());
     let class = WNDCLASSW {
         lpfnWndProc: Some(scroll_proc),

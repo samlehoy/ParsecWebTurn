@@ -1,7 +1,12 @@
 //! RFC 6716 reference decoder. The pinned Parsec channel carries raw Opus,
 //! 48 kHz stereo; containers/RTP headers must not be invented around it.
 use crate::audio_layout::Layout;
+#[cfg(not(windows))]
+#[path = "audio_callback.rs"]
+mod callback;
 use anyhow::{bail, Result};
+#[cfg(not(windows))]
+pub use callback::CallbackReader;
 use serde::Serialize;
 use std::{
     collections::VecDeque,
@@ -11,34 +16,73 @@ use std::{
 const MAX_SAMPLES: usize = 48_000; // 500 ms, interleaved stereo
 const PCM_SAMPLES: usize = 5760 * 2; // RFC maximum 120 ms, stereo
 const RECYCLED_BUFFERS: usize = 32;
+/// Common Windows/Android/Linux custom-buffer bounds, in milliseconds.
+pub fn validate_buffer_limits(minimum: u32, maximum: u32) -> Result<()> {
+    anyhow::ensure!(
+        maximum > 0 && maximum <= 500 && minimum <= maximum,
+        "Audio buffer must satisfy 0 <= minimum <= maximum <= 500 ms, with maximum above zero"
+    );
+    Ok(())
+}
+
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
     pub layout: Option<Layout>,
     pub queued_frames: usize,
     pub codec: Option<&'static str>,
-    pub poll_calls: u64,
     pub packets_decoded: u64,
     pub packets_dropped: u64,
     pub decode_errors: u64,
-    pub pcm_frames_polled: u64,
+    pub pcm_frames_consumed: u64,
     pub queued_samples: usize,
     pub worker_finished: bool,
 }
 #[derive(Default)]
 struct State {
+    #[cfg(not(windows))]
+    callback: Option<callback::Publisher>,
     report: Snapshot,
     pcm: VecDeque<Vec<i16>>,
     free_pcm: Vec<Vec<i16>>,
     free_packets: Vec<Vec<u8>>,
     stopped: bool,
-    pending: Option<Handoff>,
+    generation: u64,
+
+    native_consumer: Option<std::thread::Thread>,
 }
+impl State {
+    fn discard_pending(&mut self) {
+        #[cfg(not(windows))]
+        if let Some(callback) = &self.callback {
+            callback.discard();
+        }
+        self.generation = self.generation.wrapping_add(1);
+        while let Some(pcm) = self.pcm.pop_front() {
+            self.report.packets_dropped += 1;
+            if self.free_pcm.len() < RECYCLED_BUFFERS {
+                self.free_pcm.push(pcm);
+            }
+        }
+        self.report.queued_samples = 0;
+    }
+}
+
 pub struct Handoff {
-    pointer: u32,
     pub layout: Layout,
     pub pcm: Vec<i16>,
 }
 fn stage_pcm(state: &mut State, mut pcm: Vec<i16>, max_samples: usize) {
+    #[cfg(not(windows))]
+    if let Some(callback) = state.callback.as_mut() {
+        let layout = state.report.layout.unwrap_or(Layout::STEREO);
+        if let Err(pcm) = callback.push(pcm, layout, max_samples) {
+            state.report.packets_dropped += 1;
+            if state.free_pcm.len() < RECYCLED_BUFFERS {
+                state.free_pcm.push(pcm);
+            }
+        }
+        return;
+    }
     if pcm.len() > max_samples {
         pcm.drain(..pcm.len() - max_samples);
         state.report.packets_dropped += 1;
@@ -56,6 +100,10 @@ fn stage_pcm(state: &mut State, mut pcm: Vec<i16>, max_samples: usize) {
     }
     state.report.queued_samples += pcm.len();
     state.pcm.push_back(pcm);
+
+    if let Some(consumer) = &state.native_consumer {
+        consumer.unpark();
+    }
 }
 #[derive(Clone)]
 pub(crate) struct Sender {
@@ -92,17 +140,21 @@ impl Sender {
             }
             return false;
         }
-        let mut packet = {
+        let (mut packet, generation) = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.stopped || bytes.is_empty() || bytes.len() > 65_536 {
                 state.report.packets_dropped += 1;
                 return false;
             }
-            state.free_packets.pop().unwrap_or_default()
+            (
+                state.free_packets.pop().unwrap_or_default(),
+                state.generation,
+            )
         };
         packet.clear();
         packet.extend_from_slice(bytes);
         match self.tx.try_send(Packet {
+            generation,
             bytes: packet,
             raw,
             layout,
@@ -125,14 +177,84 @@ impl Sender {
     }
 }
 struct Packet {
+    generation: u64,
     bytes: Vec<u8>,
     raw: bool,
     layout: Layout,
 }
+
+#[derive(Clone)]
+pub struct NativeReceiver {
+    state: Arc<Mutex<State>>,
+}
+
+fn snapshot(shared: &Mutex<State>) -> Snapshot {
+    let state = shared.lock().unwrap_or_else(|e| e.into_inner());
+    let mut report = state.report.clone();
+    #[cfg(not(windows))]
+    if let Some(callback) = &state.callback {
+        callback.snapshot(&mut report);
+        return report;
+    }
+    report.queued_frames =
+        report.queued_samples / usize::from(report.layout.unwrap_or(Layout::STEREO).channels);
+    report
+}
+
+impl NativeReceiver {
+    #[cfg(not(windows))]
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub fn callback_reader(&self) -> Result<CallbackReader> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.callback.is_some() {
+            bail!("An audio callback consumer already exists");
+        }
+        let (publisher, reader) = callback::new();
+        state.callback = Some(publisher);
+        state.report.queued_samples = 0;
+        while let Some(pcm) = state.pcm.pop_front() {
+            stage_pcm(&mut state, pcm, MAX_SAMPLES);
+        }
+        Ok(reader)
+    }
+    #[cfg(not(windows))]
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub fn snapshot(&self) -> Snapshot {
+        snapshot(&self.state)
+    }
+    pub fn set_native_consumer(&self, thread: std::thread::Thread) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .native_consumer = Some(thread);
+    }
+    pub fn take_native_pcm(&self) -> Option<Handoff> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let pcm = state.pcm.pop_front()?;
+        let layout = state.report.layout.unwrap_or(Layout::STEREO);
+        state.report.queued_samples -= pcm.len();
+        state.report.pcm_frames_consumed += (pcm.len() / usize::from(layout.channels)) as u64;
+        Some(Handoff { layout, pcm })
+    }
+    pub fn recycle_handoff(&self, block: Handoff) {
+        recycle_pcm(&self.state, block);
+    }
+    /// Retire staged and in-flight old audio at an output-recovery boundary.
+    /// The decoder still consumes Opus packets in order to preserve its state.
+    pub fn discard_pending(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.discard_pending();
+    }
+}
+fn recycle_pcm(shared: &Mutex<State>, block: Handoff) {
+    let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+    if !state.stopped && state.free_pcm.len() < RECYCLED_BUFFERS {
+        state.free_pcm.push(block.pcm);
+    }
+}
 pub struct Pipeline {
     tx: Option<mpsc::SyncSender<Packet>>,
     state: Arc<Mutex<State>>,
-    poll_lock: Mutex<()>,
     worker: Option<JoinHandle<()>>,
     allowed: Layout,
 }
@@ -268,11 +390,16 @@ impl Pipeline {
                         Err(mpsc::RecvTimeoutError::Timeout) => continue,
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     };
-                    let recycled = shared
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .free_pcm
-                        .pop();
+                    let recycled = {
+                        let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+                        #[cfg(not(windows))]
+                        while let Some(pcm) = state.callback.as_mut().and_then(|c| c.recycled()) {
+                            if state.free_pcm.len() < RECYCLED_BUFFERS {
+                                state.free_pcm.push(pcm);
+                            }
+                        }
+                        state.free_pcm.pop()
+                    };
                     let mut pcm = recycled.unwrap_or_else(|| Vec::with_capacity(PCM_SAMPLES));
                     let decoded = if packet.raw {
                         pcm.clear();
@@ -319,8 +446,19 @@ impl Pipeline {
                         continue;
                     }
                     match decoded {
+                        Ok(()) if packet.generation != state.generation => {
+                            state.report.packets_decoded += 1;
+                            state.report.packets_dropped += 1;
+                            if state.free_pcm.len() < RECYCLED_BUFFERS {
+                                state.free_pcm.push(pcm);
+                            }
+                        }
                         Ok(()) => {
                             if state.report.layout != Some(packet.layout) {
+                                #[cfg(not(windows))]
+                                if let Some(callback) = &state.callback {
+                                    callback.discard();
+                                }
                                 state.pcm.clear();
                                 state.report.queued_samples = 0;
                                 state.report.layout = Some(packet.layout);
@@ -332,7 +470,7 @@ impl Pipeline {
                             });
                             state.report.packets_decoded += 1;
                             // PCM's wire ceiling exceeds Opus's maximum decoded
-                            // block. Preserve the existing guest buffer boundary.
+                            // block. Preserve the bounded PCM block boundary.
                             let limit = packet.layout.samples(5760);
                             let budget = max_samples / 2 * usize::from(packet.layout.channels);
                             if packet.raw && pcm.len() > limit {
@@ -374,14 +512,9 @@ impl Pipeline {
         Self {
             tx: Some(tx),
             state,
-            poll_lock: Mutex::new(()),
             worker: Some(worker),
             allowed,
         }
-    }
-    #[cfg(test)]
-    pub fn submit(&self, bytes: &[u8]) -> bool {
-        self.sender().is_some_and(|sender| sender.submit(bytes))
     }
     pub(crate) fn sender(&self) -> Option<Sender> {
         self.tx.as_ref().map(|tx| Sender {
@@ -390,83 +523,27 @@ impl Pipeline {
             allowed: self.allowed,
         })
     }
-    pub fn poll(
-        &self,
-        memory: &crate::memory::GuestMemory,
-        pointer: u32,
-        capacity: usize,
-    ) -> Result<usize> {
-        // Serialize guest writes while leaving the decoder's state lock free.
-        let _poll = self.poll_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.report.poll_calls += 1;
-        // A core poll with no intervening queue means the previous block was
-        // muted/discarded. Never replay it when sound is enabled again.
-        if let Some(block) = state.pending.take() {
-            if state.free_pcm.len() < RECYCLED_BUFFERS {
-                state.free_pcm.push(block.pcm);
-            }
-        }
-        let Some(pcm) = state.pcm.front() else {
-            return Ok(0);
-        };
-        let layout = state.report.layout.unwrap_or(Layout::STEREO);
-        let frames = pcm.len() / usize::from(layout.channels);
-        if frames * 2 > capacity {
-            bail!("guest audio buffer too small");
-        }
-        memory.range(pointer, frames * 4)?;
-        let samples = pcm.len();
-        let pcm = state.pcm.pop_front().unwrap();
-        state.report.queued_samples -= samples;
-        drop(state);
-        // Bounds were checked before dequeue; shared memory can only grow.
-        if layout == Layout::STEREO {
-            memory.write_i16_le(pointer, &pcm)?;
-        } else {
-            memory.write_i16_le(pointer, &layout.stereo_mix(&pcm))?;
-        }
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.report.pcm_frames_polled += frames as u64;
-        if layout != Layout::STEREO && !state.stopped {
-            state.pending = Some(Handoff {
-                pointer,
-                layout,
-                pcm,
-            });
-        } else if !state.stopped && state.free_pcm.len() < RECYCLED_BUFFERS {
-            state.free_pcm.push(pcm);
-        }
-        Ok(frames)
-    }
-    pub fn take_handoff(&self, pointer: u32, frames: usize) -> Option<Handoff> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state
-            .pending
-            .as_ref()
-            .is_some_and(|b| b.pointer == pointer && b.pcm.len() == b.layout.samples(frames))
-        {
-            state.pending.take()
-        } else {
-            None
-        }
-    }
+
+    #[cfg(test)]
     pub fn recycle_handoff(&self, block: Handoff) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if !state.stopped && state.free_pcm.len() < RECYCLED_BUFFERS {
-            state.free_pcm.push(block.pcm);
+        recycle_pcm(&self.state, block);
+    }
+
+    pub fn native_receiver(&self) -> NativeReceiver {
+        NativeReceiver {
+            state: self.state.clone(),
         }
+    }
+    #[cfg(test)]
+    pub fn set_native_consumer(&self, thread: std::thread::Thread) {
+        self.native_receiver().set_native_consumer(thread);
+    }
+    #[cfg(test)]
+    pub fn take_native_pcm(&self) -> Option<Handoff> {
+        self.native_receiver().take_native_pcm()
     }
     pub fn snapshot(&self) -> Snapshot {
-        let mut report = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .report
-            .clone();
-        report.queued_frames =
-            report.queued_samples / usize::from(report.layout.unwrap_or(Layout::STEREO).channels);
-        report
+        snapshot(&self.state)
     }
     pub fn stop(&mut self) {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).stopped = true;
@@ -479,7 +556,6 @@ impl Pipeline {
         state.free_pcm.clear();
         state.free_packets.clear();
         state.report.queued_samples = 0;
-        state.pending = None;
     }
 }
 impl Drop for Pipeline {
@@ -490,57 +566,88 @@ impl Drop for Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn shared_memory() -> crate::memory::GuestMemory {
-        let mut config = wasmtime::Config::new();
-        config.wasm_threads(true);
-        let engine = wasmtime::Engine::new(&config).unwrap();
-        crate::memory::GuestMemory(
-            wasmtime::SharedMemory::new(&engine, wasmtime::MemoryType::shared(2, 2)).unwrap(),
-        )
-    }
+
     #[test]
-    fn surround_handoff_preserves_channels_and_never_replays_muted_audio() {
-        for layout in [
-            Layout::new(6, 0x60f).unwrap(),
-            Layout::new(8, 0x63f).unwrap(),
-        ] {
-            let memory = shared_memory();
-            let mut pipeline = Pipeline::start_with_layout(Some(40), layout);
-            let input: Vec<i16> = (0..layout.channels).map(|v| i16::from(v) * 1000).collect();
-            let packet: Vec<u8> = input.iter().flat_map(|v| v.to_le_bytes()).collect();
-            let sender = pipeline.sender().unwrap();
-            assert!(sender.submit_layout(&packet, true, layout));
-            let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while pipeline.snapshot().packets_decoded == 0 && std::time::Instant::now() < until {
-                std::thread::yield_now();
-            }
-            assert_eq!(pipeline.snapshot().queued_frames, 1);
-            assert_eq!(pipeline.poll(&memory, 32, 2).unwrap(), 1);
-            assert!(pipeline.take_handoff(34, 1).is_none());
-            assert!(pipeline.take_handoff(32, 2).is_none());
-            let block = pipeline.take_handoff(32, 1).unwrap();
-            assert_eq!(block.pcm, input);
-            assert_eq!(block.layout, layout);
-            assert!(pipeline.take_handoff(32, 1).is_none());
-            pipeline.recycle_handoff(block);
-            assert!(sender.submit_layout(&packet, true, layout));
-            while pipeline.snapshot().packets_decoded < 2 && std::time::Instant::now() < until {
-                std::thread::yield_now();
-            }
-            assert_eq!(pipeline.poll(&memory, 32, 2).unwrap(), 1);
-            assert_eq!(pipeline.poll(&memory, 32, 2).unwrap(), 0);
-            assert!(pipeline.take_handoff(32, 1).is_none());
-            // The host may legitimately fall back to stereo.
-            assert!(sender.submit_pcm(&[0; 4]));
-            while pipeline.snapshot().packets_decoded < 3 && std::time::Instant::now() < until {
-                std::thread::yield_now();
-            }
-            assert_eq!(pipeline.snapshot().layout, Some(Layout::STEREO));
-            assert_eq!(pipeline.poll(&memory, 32, 2).unwrap(), 1);
-            assert!(pipeline.take_handoff(32, 1).is_none());
-            pipeline.stop();
+    fn recovery_barrier_retires_staged_and_inflight_audio_without_stopping_decoder() {
+        let pipeline = Pipeline::start_with_budget(Some(100));
+        let receiver = pipeline.native_receiver();
+        receiver.set_native_consumer(std::thread::current());
+        {
+            // Holding the existing state lock keeps the decoder from publishing
+            // this packet before the same retirement operation used by recovery.
+            let mut state = pipeline.state.lock().unwrap();
+            stage_pcm(&mut state, vec![90, -90], MAX_SAMPLES);
+            pipeline
+                .tx
+                .as_ref()
+                .unwrap()
+                .try_send(Packet {
+                    generation: state.generation,
+                    bytes: [111i16, -111]
+                        .iter()
+                        .flat_map(|v| v.to_le_bytes())
+                        .collect(),
+                    raw: true,
+                    layout: Layout::STEREO,
+                })
+                .unwrap_or_else(|_| panic!("Fixture audio channel rejected its first packet"));
+            state.discard_pending();
+            assert_eq!(state.report.queued_samples, 0);
         }
+        assert!(pipeline.sender().unwrap().submit_pcm(
+            &[222i16, -222]
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>()
+        ));
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let block = loop {
+            if let Some(block) = receiver.take_native_pcm() {
+                break block;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "Fresh PCM did not reach the consumer"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(20));
+        };
+        assert_eq!(block.pcm, [222, -222]);
+        assert_eq!(pipeline.snapshot().packets_decoded, 2);
+        assert_eq!(pipeline.snapshot().decode_errors, 0);
+        assert_eq!(pipeline.snapshot().packets_dropped, 2);
+        receiver.recycle_handoff(block);
+        assert!(receiver.take_native_pcm().is_none());
     }
+
+    #[test]
+    fn native_pcm_handoff_keeps_layout_and_recycles() {
+        let layout = Layout::new(6, 0x60f).unwrap();
+        let pipeline = Pipeline::start_with_layout(Some(100), layout);
+        pipeline.set_native_consumer(std::thread::current());
+        let samples: Vec<i16> = (0..60).collect();
+        let bytes: Vec<u8> = samples.iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert!(pipeline
+            .sender()
+            .unwrap()
+            .submit_layout(&bytes, true, layout));
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let block = loop {
+            if let Some(block) = pipeline.take_native_pcm() {
+                break block;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "PCM decoder did not wake its consumer"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(20));
+        };
+        assert_eq!(block.layout, layout);
+        assert_eq!(block.pcm, samples);
+        assert_eq!(pipeline.snapshot().queued_frames, 0);
+        pipeline.recycle_handoff(block);
+        assert!(pipeline.take_native_pcm().is_none());
+    }
+
     #[test]
     fn multistream_decode_preserves_distinct_channel_signals() {
         for layout in [
@@ -615,7 +722,7 @@ mod tests {
         }
     }
     #[test]
-    fn longest_raw_packet_is_split_at_the_existing_guest_pcm_capacity() {
+    fn longest_raw_packet_is_split_at_the_existing_bounded_pcm_capacity() {
         let mut pipeline = super::Pipeline::start();
         assert!(pipeline.sender().unwrap().submit_pcm(&vec![0; 32000]));
         let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -749,29 +856,5 @@ mod tests {
         decoder.decode(&packet).unwrap();
         decoder.reset().unwrap();
         assert_eq!(decoder.decode(&packet).unwrap(), pcm);
-    }
-    #[test]
-    fn decoded_audio_is_retained_until_a_valid_guest_copy_and_released_on_stop() {
-        let mut config = wasmtime::Config::new();
-        config.wasm_threads(true);
-        let engine = wasmtime::Engine::new(&config).unwrap();
-        let memory = crate::memory::GuestMemory(
-            wasmtime::SharedMemory::new(&engine, wasmtime::MemoryType::shared(1, 1)).unwrap(),
-        );
-        let mut pipeline = Pipeline::start();
-        assert!(pipeline.submit(&[0xf8, 0xff, 0xfe]));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while pipeline.snapshot().packets_decoded == 0 && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert_eq!(pipeline.snapshot().queued_samples, 1920);
-        assert!(pipeline.poll(&memory, 0, 1919).is_err());
-        assert!(pipeline.poll(&memory, u32::MAX, 1920).is_err());
-        assert_eq!(pipeline.snapshot().queued_samples, 1920);
-        assert_eq!(pipeline.poll(&memory, 0, 1920).unwrap(), 960);
-        assert_eq!(pipeline.poll(&memory, 0, 1920).unwrap(), 0);
-        pipeline.stop();
-        assert!(pipeline.snapshot().worker_finished);
-        assert_eq!(pipeline.snapshot().queued_samples, 0);
     }
 }

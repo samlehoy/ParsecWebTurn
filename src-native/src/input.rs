@@ -1,123 +1,92 @@
-//! PC scan codes -> UI Events code names registered by the pinned Matoya core.
-//! Printable text is delivered separately by Win32 WM_CHAR, preserving layout.
-pub fn code(vk: u32, scan: u8, extended: bool) -> Option<&'static str> {
-    let special = match vk {
-        0x08 => "Backspace",
-        0x09 => "Tab",
-        0x0D if extended => "NumpadEnter",
-        0x0D => "Enter",
-        0x10 if scan == 0x36 => "ShiftRight",
-        0x10 => "ShiftLeft",
-        0x11 if extended => "ControlRight",
-        0x11 => "ControlLeft",
-        0x12 if extended => "AltRight",
-        0x12 => "AltLeft",
-        0x14 => "CapsLock",
-        0x1B => "Escape",
-        0x20 => "Space",
-        0x21 if extended => "PageUp",
-        0x22 if extended => "PageDown",
-        0x23 if extended => "End",
-        0x24 if extended => "Home",
-        0x25 if extended => "ArrowLeft",
-        0x26 if extended => "ArrowUp",
-        0x27 if extended => "ArrowRight",
-        0x28 if extended => "ArrowDown",
-        0x2D if extended => "Insert",
-        0x2E if extended => "Delete",
-        0x5B => "MetaLeft",
-        0x5C => "MetaRight",
-        0x5D => "ContextMenu",
-        0x90 => "NumLock",
-        0x91 => "ScrollLock",
-        0x13 => "Pause",
-        0x2C => "PrintScreen",
-        0x6F => "NumpadDivide",
-        _ => "",
-    };
-    if !special.is_empty() {
-        return Some(special);
+//! Shared local shortcut policy and UTF-16 decoding; native events stay in adapters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shortcut {
+    Menu,
+    Statistics,
+    Fullscreen,
+    ReleaseInput,
+    Disconnect,
+    SecureAttention,
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn shortcut_binding(code: &str) -> Option<(i32, Shortcut)> {
+    match code {
+        "KeyM" | "KeyO" => Some((3, Shortcut::Menu)),
+        "KeyS" => Some((3, Shortcut::Statistics)),
+        "KeyW" => Some((3, Shortcut::Fullscreen)),
+        "KeyR" => Some((3, Shortcut::ReleaseInput)),
+        "KeyQ" => Some((3, Shortcut::Disconnect)),
+        "End" => Some((6, Shortcut::SecureAttention)),
+        _ => None,
     }
-    if (0x70..=0x87).contains(&vk) {
-        return Some(
-            [
-                "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13",
-                "F14", "F15", "F16", "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24",
-            ][(vk - 0x70) as usize],
-        );
+}
+#[cfg(not(target_os = "macos"))]
+pub fn shortcut(code: &str, modifiers: i32) -> Option<Shortcut> {
+    let (required, action) = shortcut_binding(code)?;
+    (modifiers & 15 == required).then_some(action)
+}
+/// Official Parsec macOS defaults (Shift 1, Control 2, Option 4, Command 8).
+/// Parsec's Command+Shift+S adds a screen; this client keeps S for stats.
+#[cfg(target_os = "macos")]
+pub fn shortcut(code: &str, modifiers: i32) -> Option<Shortcut> {
+    match (code, modifiers & 15) {
+        ("KeyM", 9) => Some(Shortcut::Menu),
+        ("KeyS", 9) => Some(Shortcut::Statistics),
+        ("KeyW", 9) => Some(Shortcut::Fullscreen),
+        ("KeyZ", 12) => Some(Shortcut::ReleaseInput),
+        ("Backquote", 12) | ("KeyQ" | "KeyW", 8) => Some(Shortcut::Disconnect),
+        ("Backspace", 6) => Some(Shortcut::SecureAttention),
+        _ => None,
     }
-    if extended {
-        return None;
-    }
-    Some(match scan {
-        0x02 => "Digit1",
-        0x03 => "Digit2",
-        0x04 => "Digit3",
-        0x05 => "Digit4",
-        0x06 => "Digit5",
-        0x07 => "Digit6",
-        0x08 => "Digit7",
-        0x09 => "Digit8",
-        0x0A => "Digit9",
-        0x0B => "Digit0",
-        0x0C => "Minus",
-        0x0D => "Equal",
-        0x10 => "KeyQ",
-        0x11 => "KeyW",
-        0x12 => "KeyE",
-        0x13 => "KeyR",
-        0x14 => "KeyT",
-        0x15 => "KeyY",
-        0x16 => "KeyU",
-        0x17 => "KeyI",
-        0x18 => "KeyO",
-        0x19 => "KeyP",
-        0x1A => "BracketLeft",
-        0x1B => "BracketRight",
-        0x1E => "KeyA",
-        0x1F => "KeyS",
-        0x20 => "KeyD",
-        0x21 => "KeyF",
-        0x22 => "KeyG",
-        0x23 => "KeyH",
-        0x24 => "KeyJ",
-        0x25 => "KeyK",
-        0x26 => "KeyL",
-        0x27 => "Semicolon",
-        0x28 => "Quote",
-        0x29 => "Backquote",
-        0x2B => "Backslash",
-        0x2C => "KeyZ",
-        0x2D => "KeyX",
-        0x2E => "KeyC",
-        0x2F => "KeyV",
-        0x30 => "KeyB",
-        0x31 => "KeyN",
-        0x32 => "KeyM",
-        0x33 => "Comma",
-        0x34 => "Period",
-        0x35 => "Slash",
-        0x37 => "NumpadMultiply",
-        0x47 => "Numpad7",
-        0x48 => "Numpad8",
-        0x49 => "Numpad9",
-        0x4A => "NumpadSubtract",
-        0x4B => "Numpad4",
-        0x4C => "Numpad5",
-        0x4D => "Numpad6",
-        0x4E => "NumpadAdd",
-        0x4F => "Numpad1",
-        0x50 => "Numpad2",
-        0x51 => "Numpad3",
-        0x52 => "Numpad0",
-        0x53 => "NumpadDecimal",
-        0x56 => "IntlBackslash",
-        _ => return None,
-    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ShortcutRoute {
+    Forward,
+    Consume,
+    Activate(Shortcut),
 }
 
 #[derive(Default)]
+pub struct Shortcuts(std::collections::BTreeSet<&'static str>);
+impl Shortcuts {
+    /// Consume the trigger's repeats and release even if modifiers change.
+    /// A key already held remotely must never become a local shortcut on repeat.
+    pub fn route(
+        &mut self,
+        code: &'static str,
+        down: bool,
+        repeated: bool,
+        action: Option<Shortcut>,
+    ) -> ShortcutRoute {
+        if !down {
+            return if self.0.remove(code) {
+                ShortcutRoute::Consume
+            } else {
+                ShortcutRoute::Forward
+            };
+        }
+        if self.0.contains(code) {
+            return ShortcutRoute::Consume;
+        }
+        if !repeated {
+            if let Some(action) = action {
+                self.0.insert(code);
+                return ShortcutRoute::Activate(action);
+            }
+        }
+        ShortcutRoute::Forward
+    }
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Default)]
 pub struct TextDecoder(Option<u16>);
+#[cfg_attr(not(windows), allow(dead_code))]
 impl TextDecoder {
     pub fn push(&mut self, unit: u16) -> Option<char> {
         if (0xD800..=0xDBFF).contains(&unit) {
@@ -138,16 +107,96 @@ impl TextDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
     #[test]
-    fn keys_preserve_physical_position_and_navigation() {
-        assert_eq!(code(0x09, 0x0F, false), Some("Tab"));
-        assert_eq!(code(0x5A, 0x15, false), Some("KeyY")); // Hungarian layout
-        assert_eq!(code(0x56, 0x2F, false), Some("KeyV"));
-        assert_eq!(code(0x11, 0x1D, true), Some("ControlRight"));
-        assert_eq!(code(0x0D, 0x1C, true), Some("NumpadEnter"));
-        assert_eq!(code(0x25, 0x4B, false), Some("Numpad4"));
-        assert_eq!(code(0x25, 0x4B, true), Some("ArrowLeft"));
-        assert_eq!(code(0, 0, false), None);
+    fn mac_shortcuts_follow_parsec_defaults_and_ignore_lock_toggles() {
+        for (key, mods, action) in [
+            ("KeyM", 9, Shortcut::Menu),
+            ("KeyS", 9, Shortcut::Statistics),
+            ("KeyW", 9, Shortcut::Fullscreen),
+            ("KeyZ", 12, Shortcut::ReleaseInput),
+            ("Backquote", 12, Shortcut::Disconnect),
+            ("KeyQ", 8, Shortcut::Disconnect),
+            ("KeyW", 8, Shortcut::Disconnect),
+            ("Backspace", 6, Shortcut::SecureAttention),
+        ] {
+            assert_eq!(shortcut(key, mods), Some(action));
+            assert_eq!(shortcut(key, mods | 48), Some(action));
+        }
+        // Former Ctrl+Shift chords and plain Command copy/paste reach the host.
+        for (key, mods) in [
+            ("KeyM", 3),
+            ("KeyQ", 3),
+            ("End", 6),
+            ("KeyC", 8),
+            ("KeyZ", 8),
+        ] {
+            assert_eq!(shortcut(key, mods), None);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn shortcuts_reserve_exact_chords_and_ignore_lock_toggles() {
+        for (key, mods, action) in [
+            ("KeyM", 3, Shortcut::Menu),
+            ("KeyO", 3, Shortcut::Menu),
+            ("KeyS", 3, Shortcut::Statistics),
+            ("KeyW", 3, Shortcut::Fullscreen),
+            ("KeyR", 3, Shortcut::ReleaseInput),
+            ("KeyQ", 3, Shortcut::Disconnect),
+            ("End", 6, Shortcut::SecureAttention),
+        ] {
+            assert_eq!(shortcut(key, mods), Some(action));
+            assert_eq!(shortcut(key, mods | 48), Some(action));
+            for extra in [4, 8] {
+                if mods & extra == 0 {
+                    assert_eq!(shortcut(key, mods | extra), None);
+                }
+            }
+        }
+        for (key, mods) in [
+            ("Delete", 6),
+            ("Tab", 4),
+            ("Enter", 4),
+            ("F8", 0),
+            ("F11", 0),
+            ("KeyE", 3),
+            ("KeyR", 8),
+        ] {
+            assert_eq!(shortcut(key, mods), None);
+        }
+    }
+    #[test]
+    fn shortcut_repeats_and_release_stay_local_without_stealing_held_remote_keys() {
+        let mut keys = Shortcuts::default();
+        let full = Some(Shortcut::Fullscreen);
+        assert_eq!(keys.route("KeyW", true, true, full), ShortcutRoute::Forward);
+        assert_eq!(
+            keys.route("KeyW", false, false, full),
+            ShortcutRoute::Forward
+        );
+        assert_eq!(
+            keys.route("KeyW", true, false, full),
+            ShortcutRoute::Activate(Shortcut::Fullscreen)
+        );
+        assert_eq!(keys.route("KeyW", true, true, None), ShortcutRoute::Consume);
+        assert_eq!(
+            keys.route("KeyW", false, false, None),
+            ShortcutRoute::Consume
+        );
+        assert_eq!(
+            keys.route("KeyW", false, false, None),
+            ShortcutRoute::Forward
+        );
+        assert_eq!(
+            keys.route("KeyW", true, false, full),
+            ShortcutRoute::Activate(Shortcut::Fullscreen)
+        );
+        keys.clear();
+        assert_eq!(
+            keys.route("KeyW", true, false, None),
+            ShortcutRoute::Forward
+        );
     }
     #[test]
     fn unicode_text_combines_surrogates_and_omits_control_duplicates() {

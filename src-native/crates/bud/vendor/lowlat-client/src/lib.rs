@@ -7,7 +7,7 @@
 //! on the control channel, and speaks the little a client has to say
 //! (docs/10-client.md).
 //!
-//! This transport-only copy exposes [`Client`] to ParsecWebTurn, without the SDK C ABI.
+//! This transport-only copy exposes [`Client`] to EvoParseq, without the SDK C ABI.
 
 #![deny(
     clippy::unwrap_used,
@@ -30,6 +30,8 @@
 )]
 
 pub mod config;
+#[cfg(feature = "cursor-cache")]
+pub mod cursor;
 pub mod driver;
 pub mod event;
 pub mod input;

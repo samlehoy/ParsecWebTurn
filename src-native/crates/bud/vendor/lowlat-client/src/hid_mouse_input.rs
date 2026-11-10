@@ -272,6 +272,31 @@ mod tests {
         assert_eq!(bytes(&mut i, 16), [3, 0, 0, 0, 0, 0, 0, 0]);
     }
     #[test]
+    fn hid_mouse_two_button_hold_survives_camera_changes_and_independent_releases() {
+        for (first, second, first_mask, remaining) in [(1, 3, 1, 2), (3, 1, 2, 1)] {
+            let mut i = ready();
+            i.command(1, first, 1, 0);
+            assert_eq!(bytes(&mut i, 4), [3, first_mask, 0, 0, 0, 0, 0, 0]);
+            i.command(1, second, 1, 0);
+            assert_eq!(bytes(&mut i, 8), [3, 3, 0, 0, 0, 0, 0, 0]);
+            i.command(3, 3, 1, 0);
+            i.command(3, 1, 20, (-10i32) as u32);
+            assert_eq!(bytes(&mut i, 12), [3, 3, 20, 0, 246, 255, 0, 0]);
+            // No repeated reports or synthetic releases just because a hold is long.
+            assert!(i.next(10_000).is_none());
+            i.command(3, 3, 0, 0);
+            i.command(3, 2, 100, 200);
+            assert_eq!(bytes(&mut i, 10_004), [1, 100, 0, 200, 0]);
+            i.command(1, first, 0, 0);
+            assert_eq!(bytes(&mut i, 10_008), [3, remaining, 0, 0, 0, 0, 0, 0]);
+            i.command(3, 3, 1, 0);
+            i.command(3, 1, 1, 0);
+            assert_eq!(bytes(&mut i, 10_012), [3, remaining, 1, 0, 0, 0, 0, 0]);
+            i.command(1, second, 0, 0);
+            assert_eq!(bytes(&mut i, 10_016), [3, 0, 0, 0, 0, 0, 0, 0]);
+        }
+    }
+    #[test]
     fn hid_mouse_wheel_target_and_focus_release_discard_stale_motion() {
         let mut i = ready();
         i.command(3, 2, 500, 600);

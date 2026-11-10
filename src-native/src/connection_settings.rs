@@ -1,22 +1,23 @@
-//! Tauri-compatible settings; native RTCIceServer configuration, never guest JS.
+//! Persisted native connection settings and RTCIceServer configuration.
+// Parts of this shared model serve only the Windows decoder and controls.
+#![cfg_attr(not(windows), allow(dead_code))]
+#[cfg(test)]
+use crate::turn_configuration::parse_cloudflare;
+use crate::turn_configuration::{cloudflare_request, validate_urls};
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    io::Write,
-    path::PathBuf,
-    sync::Mutex,
-    time::{Duration, Instant},
-};
-#[cfg(any(test, windows, not(feature = "diagnostics")))]
+use std::{collections::BTreeMap, io::Write, path::PathBuf, sync::Mutex, time::Instant};
+
 use std::{io::Read, sync::Arc};
-use webrtc::{
-    ice::url::{ProtoType, SchemeType, Url},
-    ice_transport::ice_server::RTCIceServer,
-};
+use webrtc::ice_transport::ice_server::RTCIceServer;
 
 pub const PARSEC_STUN: &str = "stun:stun.parsec.gg:3478";
+/// Eligibility policy only; actual profile/output support still requires
+/// the video worker's device capability checks.
+pub fn full_chroma_vendor_allowed(vendor: u32) -> bool {
+    matches!(vendor, 0x10de | 0x8086)
+}
 const MAX_FILE: usize = 65536;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +27,51 @@ pub enum PresentationMode {
     Automatic,
     LowLatency,
     Vsync,
+    Vrr,
+}
+
+impl PresentationMode {
+    pub const ALL: [Self; 4] = [Self::Automatic, Self::LowLatency, Self::Vsync, Self::Vrr];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Automatic => "Automatic (existing behavior)",
+            Self::LowLatency => "Low latency (one queued presentation)",
+            Self::Vsync => "VSync (synchronize to display refresh)",
+            Self::Vrr => "VRR (experimental; compatible display required)",
+        }
+    }
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or_default()
+    }
+    pub fn low_latency(self) -> bool {
+        matches!(self, Self::LowLatency | Self::Vrr)
+    }
+    pub fn timing_status(self, queue_control: bool, tearing: bool) -> &'static str {
+        match (self, queue_control, tearing) {
+            (Self::Automatic, _, _) => "Automatic",
+            (Self::LowLatency, true, _) => "Low latency; maximum queued presentations: 1",
+            (Self::LowLatency, false, _) => "Low latency unavailable; automatic timing",
+            (Self::Vsync, true, _) => "VSync; maximum queued presentations: 1",
+            (Self::Vsync, false, _) => "VSync; queue control unavailable",
+            (Self::Vrr, true, true) => {
+                "VRR path enabled; queue limit: 1; panel activation unverified"
+            }
+            (Self::Vrr, false, true) => {
+                "VRR path enabled; queue control unavailable; panel activation unverified"
+            }
+            (Self::Vrr, true, false) => "VRR unavailable; using low-latency timing",
+            (Self::Vrr, false, false) => "VRR unavailable; using automatic timing",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VsrRuntimeConsent {
+    #[default]
+    Ask,
+    Allowed,
+    Declined,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +103,7 @@ impl GpuPreference {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
+    pub native_core: crate::native_core::profile::Profile,
     #[cfg(feature = "bud")]
     #[serde(alias = "experimentalBud")]
     pub bud: bool,
@@ -66,8 +113,14 @@ pub struct Settings {
     pub experimental_hid_keyboard: bool,
     pub prefer_hevc: bool,
     pub presentation_mode: PresentationMode,
+    /// Optional RTX Video quality: 0 off, 1..=4 low through ultra.
+    pub nvidia_vsr: u8,
+    pub intel_ai_vsr: bool,
+    pub vsr_runtime_consent: VsrRuntimeConsent,
     pub experimental_ten_bit: bool,
+    pub experimental_chroma_444: bool,
     pub event_logging: bool,
+    pub experimental_tcp_qos: bool,
     #[serde(alias = "experimentalAudioBuffer")]
     pub custom_audio_buffer: bool,
     pub audio_min_buffer_ms: u32,
@@ -96,10 +149,32 @@ pub struct Settings {
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
+impl Settings {
+    pub fn ai_upscale_quality(&self, vendor: Option<u32>) -> u8 {
+        if cfg!(feature = "vendor-video")
+            && vendor == Some(0x8086)
+            && self.intel_ai_vsr
+            && !self.experimental_ten_bit
+            && !self.experimental_chroma_444
+        {
+            1
+        } else {
+            self.nvidia_vsr_quality(vendor)
+        }
+    }
+    pub fn nvidia_vsr_quality(&self, vendor: Option<u32>) -> u8 {
+        if cfg!(nvidia_vsr_sdk) && vendor == Some(0x10de) {
+            self.nvidia_vsr.min(4)
+        } else {
+            0
+        }
+    }
+}
 impl Default for Settings {
     // Legacy defaults apply to existing JSON; a new native installation uses fresh().
     fn default() -> Self {
         Self {
+            native_core: Default::default(),
             #[cfg(feature = "bud")]
             bud: false,
             #[cfg(feature = "bud")]
@@ -108,8 +183,13 @@ impl Default for Settings {
             experimental_hid_keyboard: false,
             prefer_hevc: false,
             presentation_mode: PresentationMode::Automatic,
+            nvidia_vsr: 0,
+            intel_ai_vsr: false,
+            vsr_runtime_consent: VsrRuntimeConsent::Ask,
             experimental_ten_bit: false,
+            experimental_chroma_444: false,
             event_logging: false,
+            experimental_tcp_qos: false,
             custom_audio_buffer: false,
             audio_min_buffer_ms: 75,
             audio_max_buffer_ms: 150,
@@ -145,7 +225,7 @@ impl Settings {
     pub fn hid_keyboard_enabled(&self) -> bool {
         self.bud && self.experimental_hid_keyboard
     }
-    #[cfg(any(test, windows, not(feature = "diagnostics")))]
+
     fn fresh() -> Self {
         Self {
             provider: "custom".into(),
@@ -181,12 +261,11 @@ impl Settings {
         })
     }
     pub fn validate(&self) -> Result<()> {
-        if self.custom_audio_buffer
-            && (self.audio_max_buffer_ms == 0
-                || self.audio_max_buffer_ms > 500
-                || self.audio_min_buffer_ms > self.audio_max_buffer_ms)
-        {
-            bail!("Audio buffer must satisfy 0 <= minimum <= maximum <= 500 ms, with maximum above zero");
+        if self.custom_audio_buffer {
+            crate::audio_stream::validate_buffer_limits(
+                self.audio_min_buffer_ms,
+                self.audio_max_buffer_ms,
+            )?;
         }
         if self.force_relay && self.stun_only {
             bail!("Force TURN relay cannot be combined with STUN only");
@@ -259,34 +338,6 @@ impl Settings {
     }
 }
 
-fn validate_urls(urls: &[String], turn: bool) -> Result<()> {
-    if urls.len() > 16 {
-        bail!("Use at most 16 URLs per field");
-    }
-    for raw in urls {
-        if raw.len() > 2048 || raw.chars().any(char::is_control) || raw.contains(['/', '#', '@']) {
-            bail!("Invalid STUN/TURN URL");
-        }
-        let url = Url::parse_url(raw).map_err(|_| anyhow::anyhow!("Invalid STUN/TURN URL"))?;
-        if url.port == 0
-            || if turn {
-                !matches!(url.scheme, SchemeType::Turn | SchemeType::Turns)
-            } else {
-                !matches!(url.scheme, SchemeType::Stun | SchemeType::Stuns)
-            }
-        {
-            bail!("Use stun: in the STUN field and turn: or turns: in the TURN field");
-        }
-        if url.scheme == SchemeType::Stuns {
-            bail!("Secure STUN (stuns:) is not supported; use stun: for discovery or turns: for TLS relay");
-        }
-        if url.scheme == SchemeType::Turns && url.proto != ProtoType::Tcp {
-            bail!("TURN over TLS requires transport=tcp (or no transport parameter)");
-        }
-    }
-    Ok(())
-}
-
 fn unprotect(value: &str) -> Result<String> {
     if value.is_empty() {
         return Ok(String::new());
@@ -295,7 +346,7 @@ fn unprotect(value: &str) -> Result<String> {
         .decode(value)
         .context("Invalid saved credential encoding")?;
     String::from_utf8(crate::secure_storage::protect(&bytes, false)?)
-        .context("Cannot read saved credential for this Windows user")
+        .context("Cannot read saved credential for this user account")
 }
 fn protect(value: &str) -> Result<String> {
     Ok(STANDARD.encode(crate::secure_storage::protect(value.as_bytes(), true)?))
@@ -313,7 +364,12 @@ struct Cached {
 }
 
 impl Manager {
-    #[cfg(any(test, windows, not(feature = "diagnostics")))]
+    pub fn directory(&self) -> PathBuf {
+        self.path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf()
+    }
     pub fn open(path: PathBuf) -> Arc<Self> {
         let loaded = (|| -> Result<Settings> {
             let file = match std::fs::File::open(&path) {
@@ -348,7 +404,17 @@ impl Manager {
         })
     }
     pub fn view(&self) -> (Settings, Option<String>) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        state
+    }
+
+    pub fn native_session_button_hidden(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .0
+            .native_core
+            .hide_session_button
     }
     pub fn save(
         &self,
@@ -372,16 +438,59 @@ impl Manager {
             settings.encrypted_api_token = protect(token)?;
         }
         settings.validate()?;
+
+        let mut current = self.state.lock().unwrap_or_else(|e| e.into_inner());
+
+        {
+            let hide_button = settings.native_core.hide_session_button;
+            settings.native_core = current.0.native_core.clone();
+            settings.native_core.hide_session_button = hide_button;
+        }
         let raw = serde_json::to_vec_pretty(&settings)?;
         if raw.len() > MAX_FILE {
             bail!("Settings exceed 64 KiB");
         }
         atomic_write(&self.path, &raw)?;
         let logging = settings.event_logging;
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = (settings, None);
+
+        {
+            *current = (settings, None);
+        }
+
         *self.cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
         crate::event_log::configure(logging)
             .context("Settings saved, but the event log could not be opened")?;
+        Ok(())
+    }
+
+    pub fn update_native(
+        &self,
+        update: impl FnOnce(&mut crate::native_core::profile::Profile),
+    ) -> Result<()> {
+        self.update_local(|settings| {
+            update(&mut settings.native_core);
+            settings.native_core.video.validate()
+        })
+    }
+    /// Local setup consent must be saveable before TURN credentials exist.
+    pub fn update_vsr_consent(&self, consent: VsrRuntimeConsent) -> Result<()> {
+        self.update_local(|settings| {
+            settings.vsr_runtime_consent = consent;
+            Ok(())
+        })
+    }
+    fn update_local(&self, update: impl FnOnce(&mut Settings) -> Result<()>) -> Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        anyhow::ensure!(
+            state.1.is_none(),
+            "Fix settings.json before saving local preferences"
+        );
+        let mut settings = state.0.clone();
+        update(&mut settings)?;
+        let raw = serde_json::to_vec_pretty(&settings)?;
+        anyhow::ensure!(raw.len() <= MAX_FILE, "Settings exceed 64 KiB");
+        atomic_write(&self.path, &raw)?;
+        state.0 = settings;
         Ok(())
     }
     #[cfg(test)]
@@ -480,95 +589,10 @@ impl Manager {
     }
 }
 
-async fn cloudflare_request(endpoint: &str, token: &str, ttl: u32) -> Result<Vec<RTCIceServer>> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent(concat!("ParsecWebTurn/", env!("CARGO_PKG_VERSION")))
-        .build()?;
-    let mut response = client
-        .post(endpoint)
-        .bearer_auth(token)
-        .header("Content-Type", "application/json")
-        .body(serde_json::to_vec(&serde_json::json!({"ttl":ttl}))?)
-        .send()
-        .await
-        .map_err(|_| anyhow::anyhow!("Cannot reach Cloudflare TURN credential service"))?;
-    if !response.status().is_success() {
-        bail!(
-            "Cloudflare TURN credentials could not be generated (HTTP {})",
-            response.status().as_u16()
-        );
-    }
-    let mut raw = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| anyhow::anyhow!("Cannot read Cloudflare response"))?
-    {
-        if raw.len() + chunk.len() > 1048576 {
-            bail!("Cloudflare response exceeds 1 MiB");
-        }
-        raw.extend_from_slice(&chunk);
-    }
-    parse_cloudflare(&raw)
-}
-
-fn parse_cloudflare(raw: &[u8]) -> Result<Vec<RTCIceServer>> {
-    let value: serde_json::Value =
-        serde_json::from_slice(raw).context("Invalid Cloudflare response")?;
-    let entries = value["iceServers"]
-        .as_array()
-        .filter(|a| a.len() <= 32)
-        .context("Invalid Cloudflare ICE servers")?;
-    let mut result = Vec::new();
-    for entry in entries {
-        let urls: Vec<String> = if let Some(url) = entry["urls"].as_str() {
-            vec![url.into()]
-        } else {
-            entry["urls"]
-                .as_array()
-                .context("Invalid Cloudflare ICE URLs")?
-                .iter()
-                .map(|u| {
-                    u.as_str()
-                        .map(str::to_owned)
-                        .context("Invalid Cloudflare ICE URL")
-                })
-                .collect::<Result<_>>()?
-        };
-        let turn: Vec<_> = urls
-            .into_iter()
-            .filter(|u| u.starts_with("turn:") || u.starts_with("turns:"))
-            .collect();
-        if turn.is_empty() {
-            continue;
-        }
-        validate_urls(&turn, true)?;
-        let username = entry["username"]
-            .as_str()
-            .context("Missing TURN username")?;
-        let credential = entry["credential"]
-            .as_str()
-            .context("Missing TURN password")?;
-        if username.is_empty() || credential.is_empty() {
-            bail!("Empty TURN credentials");
-        }
-        result.push(RTCIceServer {
-            urls: turn,
-            username: username.into(),
-            credential: credential.into(),
-        });
-    }
-    if result.is_empty() {
-        bail!("Cloudflare returned no TURN servers");
-    }
-    Ok(result)
-}
-
-#[cfg(windows)]
 fn atomic_write(path: &std::path::Path, raw: &[u8]) -> Result<()> {
+    #[cfg(windows)]
     use std::os::windows::ffi::OsStrExt;
+    #[cfg(windows)]
     use windows_sys::Win32::Storage::FileSystem::{
         MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
@@ -582,8 +606,15 @@ fn atomic_write(path: &std::path::Path, raw: &[u8]) -> Result<()> {
         file.write_all(raw)?;
         file.sync_all()?;
         drop(file);
+        // POSIX rename(2) atomically replaces the destination.
+        #[cfg(unix)]
+        std::fs::rename(&temporary, path)
+            .context("Cannot replace settings.json; existing settings were preserved")?;
+        #[cfg(windows)]
         let from: Vec<_> = temporary.as_os_str().encode_wide().chain([0]).collect();
+        #[cfg(windows)]
         let to: Vec<_> = path.as_os_str().encode_wide().chain([0]).collect();
+        #[cfg(windows)]
         if unsafe {
             MoveFileExW(
                 from.as_ptr(),
@@ -602,37 +633,9 @@ fn atomic_write(path: &std::path::Path, raw: &[u8]) -> Result<()> {
     result
 }
 
-#[cfg(not(windows))]
-fn atomic_write(path: &std::path::Path, raw: &[u8]) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut random = [0; 16];
-    getrandom::fill(&mut random)
-        .map_err(|_| anyhow::anyhow!("Cannot allocate settings transaction"))?;
-    let name: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    let temporary = path.with_file_name(format!("settings-{name}.tmp"));
-    let result = (|| -> Result<()> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-            .context("Cannot write settings beside the executable; use --data-dir with a writable folder")?;
-        let mut perms = file.metadata()?.permissions();
-        perms.set_mode(0o600);
-        let _ = file.set_permissions(perms);
-        file.write_all(raw)?;
-        file.sync_all()?;
-        drop(file);
-        std::fs::rename(&temporary, path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(temporary);
-    }
-    result
-}
-
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
     #[cfg(feature = "bud")]
     #[test]
     fn promoted_settings_accept_old_keys_and_save_current_names() {
@@ -706,11 +709,9 @@ mod tests {
                 .presentation_mode,
             PresentationMode::Automatic
         );
-        for mode in [
-            PresentationMode::Automatic,
-            PresentationMode::LowLatency,
-            PresentationMode::Vsync,
-        ] {
+        for (index, mode) in PresentationMode::ALL.into_iter().enumerate() {
+            assert_eq!(PresentationMode::from_index(index), mode);
+            assert!(!mode.label().is_empty());
             let settings = Settings {
                 presentation_mode: mode,
                 ..Default::default()
@@ -719,6 +720,17 @@ mod tests {
                 serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
             assert_eq!(restored.presentation_mode, mode);
         }
+        assert_eq!(
+            PresentationMode::from_index(usize::MAX),
+            PresentationMode::Automatic
+        );
+        assert!(PresentationMode::Vrr.low_latency());
+        assert!(PresentationMode::Vrr
+            .timing_status(true, true)
+            .contains("unverified"));
+        assert!(PresentationMode::Vrr
+            .timing_status(true, false)
+            .contains("unavailable"));
     }
     use super::*;
 
@@ -763,7 +775,7 @@ mod tests {
             let mut nonce = [0; 16];
             getrandom::fill(&mut nonce).unwrap();
             let name: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
-            let path = std::env::temp_dir().join(format!("parsec-settings-{name}"));
+            let path = std::env::temp_dir().join(format!("evoparseq-settings-{name}"));
             std::fs::create_dir(&path).unwrap();
             Self(path)
         }
@@ -967,5 +979,33 @@ mod tests {
             br#"{"iceServers":[{"urls":"turns:example.org","username":"fixture"}]}"#
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod runtime_consent_tests {
+    use super::*;
+    #[test]
+    fn consent_can_be_saved_before_network_configuration_without_losing_profile() {
+        let dir =
+            std::env::temp_dir().join(format!("evoparseq-vsr-consent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let mut settings = Settings::default();
+        settings.native_core.encrypted_session = "opaque-existing-protected-session".into();
+        std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
+        let manager = Manager::open(path.clone());
+        assert!(manager.view().0.validate().is_err());
+        manager
+            .update_vsr_consent(VsrRuntimeConsent::Allowed)
+            .unwrap();
+        let restored = Manager::open(path).view().0;
+        assert_eq!(restored.vsr_runtime_consent, VsrRuntimeConsent::Allowed);
+        assert_eq!(
+            restored.native_core.encrypted_session,
+            settings.native_core.encrypted_session
+        );
+        std::fs::remove_file(dir.join("settings.json")).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 }

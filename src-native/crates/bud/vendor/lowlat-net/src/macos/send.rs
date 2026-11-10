@@ -26,7 +26,7 @@ pub(crate) fn pinned_send(
     socket: &Socket,
     datagram: &[u8],
     to: SocketAddr,
-    _source: IpAddr,
+    source: IpAddr,
 ) -> io::Result<()> {
-    socket.send_to(datagram, to).map(|_| ())
+    socket.send_msg(datagram, to, Some(source)).map(|_| ())
 }

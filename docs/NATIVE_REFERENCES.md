@@ -1,133 +1,122 @@
-# Native development research references
+# EvoParseq development references
 
-These are research inputs, not compatibility guarantees. The native application
-now keeps its transport-only BUD adapter in `src-native/crates/bud` and GPU
-backends in `src-native/crates/video`. Both use pinned, trimmed lowlat components;
-there is no second SDK decoder/session/UI around WebRTC. BUD stays explicitly
-selected, and all live decoded pixels stay on the application's native GPU path.
-Historical measurements below should be read alongside the current root README.
+EvoParseq is an independent implementation for compatible Parsec hosts. External
+projects are research inputs, not compatibility guarantees.
 
 ## lowlat
 
-See [native clipboard synchronization](clipboard-sync.md) for the comparison of
-the unchanged WASM's clipboard event, the stock host's Windows notification,
-and lowlat's ID-7 application messages.
+[nomi-san/lowlat](https://github.com/nomi-san/lowlat), MIT, provides the pinned
+protocol, parser, GPU-driver and BUD transport components identified in the local
+`EVOPARSEQ.md` provenance notices. Original copyrights and licenses are retained.
+Only the components required by this application are included; no lowlat SDK,
+host, capture stack or second application/session implementation is embedded.
 
-The opcode-35 diagnostic flags and opcode-34 replies were compared against the
-pinned WASM and installed stock host on 2026-10-20. The second flag selects
-audio timing in the inspected host. See [frame timing diagnostics](frame-timing-diagnostics.md)
-for the static evidence, wire formats, limits and native diagnostic integration.
+The GPU driver/parser reference is revision
+`5f8db5689e55de0d396b0520824caa9fc053dd86`. TURN stream IO improvements also use
+reviewed upstream revisions `befd5a29c7a331111f11378c0b5623de788e9769`,
+`d5d8d9ed4b1208f00de9fe8f90286919b15a0240` and
+`b174dc6ac8d4923f45abe0c3a0a0a41fc0b76c49`. The receive-only cursor cache
+reference is `e548d48c81ae50937940b2b47f700557cd9d50a4`.
 
-[nomi-san/lowlat](https://github.com/nomi-san/lowlat) implements independent Parsec
-host and client components. The originally reviewed **main** revision below
-contains the Linux host only. The maintainer subsequently pointed out that the
-native client SDK and Windows work are on **feat/win-seams**; the main-only
-finding must not be generalized to the entire project.
+The AMF initialization guard follows the finding in
+[`565f375`](https://github.com/nomi-san/lowlat/commit/565f375136c7fe3da925ae8c4e9cbbba0b43b87e):
+AMF may accept dimensions that the decode engine cannot use. EvoParseq's own
+HEVC-only adapter checks the coded size and Main/NV12 or Main10/P010 profile
+with a temporary D3D11 decoder on that same device, releasing it before AMF
+initialization. AMF keeps its visible-size initialization. There is no frame
+submission, pixel copy, extra queue or per-frame probe; failure uses the existing
+logged Media Foundation fallback. This is a D3D11 configuration check, not proof
+that every compressed stream will decode successfully.
 
-Reviewed revision: `7b4dc4ae79990ea8c59a108c80b3c89b695c3cb4` (2026-10-11).
-Its MIT-licensed documentation is useful for future protocol investigations:
+## Native APIs and protocols
 
-- `docs/01-protocol.md`: control opcodes, HEVC flags, media framing, session
-  initialization and the separate WebRTC/SCTP path.
-- `docs/03-connectivity.md` and `docs/04-signaling.md`: connection/signaling
-  details to compare with our captured behavior.
-- `examples/web-client`: a small independent browser client for comparison.
-- Audio/clipboard, display changes, liveness and encoder generations are useful
-  follow-up topics. Native BUD packet descriptions must not be applied directly
-  to our WebRTC data channels: their media framing differs.
+- Microsoft documented D3D11 video, DXGI, Windows Presentation API, WASAPI,
+  Win32 input and CurrentUser DPAPI.
+- W3C/IETF WebRTC, ICE, STUN, TURN, DTLS and SCTP; local third-party patches
+  retain their upstream licenses and document changes in `EVOPARSEQ.md`.
+  The DTLS 0.13 patch upgrades its NIST curve dependencies without replacing
+  the protocol engine; see `src-native/vendor/dtls-0.13.0/EVOPARSEQ.md` for the
+  exact scope and omitted, unused binary state export/import. The pinned BUD
+  crypto subset retains its credentials and ring record code while omitting
+  lowlat's unrelated browser-certificate generator; see its `EVOPARSEQ.md`.
+- Vendor codec documentation and runtime capability queries. Device vendor
+  names alone never establish an implemented decoder/output format.
 
-The HEVC investigation uses it as independent corroboration of `_flags` bit 0;
-see [HEVC negotiation evidence and limitations](hevc-negotiation.md). The native build uses a pinned transport-only BUD subset and GPU driver/parser
-components; it does not replace WebRTC sockets/crypto or embed a lowlat host.
-See the vendored provenance documents for the retained subset.
+Refer to [native architecture](native-core.md) and the [root README](../README.md)
+for implemented behavior and the distinction between live and synthetic testing.
 
-TURN stream additions reviewed on 2026-10-16: [lowlat PR #2](https://github.com/nomi-san/lowlat/pull/2),
-revision `befd5a29c7a331111f11378c0b5623de788e9769`. Only native carrier IO,
-framing and reliable TURN transactions are ported onto the existing pinned
-protocol/client subset. No newer SDK, decoder or host is imported. See
-[BUD TURN TCP/TLS scope and validation](bud-turn-stream.md).
 
-Additional TURN stream correction reviewed and ported on 2026-10-17:
-[`d5d8d9ed4b1208f00de9fe8f90286919b15a0240`](https://github.com/nomi-san/lowlat/commit/d5d8d9ed4b1208f00de9fe8f90286919b15a0240).
-This keeps pending TLS ciphertext inside carrier backpressure and preserves
-output deadlines. The four corresponding regression tests are retained. No SDK,
-account API, decoder or unrelated upstream change is imported.
+## Stock Windows host display order
 
-Selected native TCP optimizations adapted from `feat/relay-tcp`, revision
-[`b174dc6`](https://github.com/nomi-san/lowlat/tree/b174dc6ac8d4923f45abe0c3a0a0a41fc0b76c49)
-(2026-10-17): in-place TURN receive framing, zero-byte Windows receive readiness,
-and bounded staging of already available output. Our rustls TCP/TLS carrier,
-owned asynchronous send storage, deadlines and fairness limits remain in place.
-No TLS removal, SDK/ABI, browser transport, host encoder or simulator is imported.
+Single-stream output selection follows lowlat's
+[owner configuration transaction](https://github.com/nomi-san/lowlat/blob/3a48023fc08492806fe10ea149f745a569599ff0/examples/client/session.cc#L147)
+(application query/reply pairs 10/12 for outputs and 9/11 for settings; write 11).
+No lowlat SDK/session/UI implementation or dependency was added.
 
-The client-side reuse/critical-section changes inspired by the IO design are
-documented in [native input and network hand-off](native-input-network-handoff.md).
-They do not implement BUD in the WebRTC client. The `pmtu` source explicitly says
-its probing mechanism has no callers in this revision; its presence alone is not
-evidence of an active optimization. Host encoder settings similarly do not prove
-the internal behavior of a stock client's decoder.
+Read-only inspection of stock `parsecd-150-105c.dll`, SHA-256
+`dbd59739cfb84a239860a30480b91281f0ebd316dfb5bf58bd4539e82c92c425`,
+corroborated the output reply at RVA `0x71988` and its enumerator `0x2a90`.
+The enumerator calls `IDXGIFactory1::EnumAdapters1` (vtable slot 12), then
+`IDXGIAdapter::EnumOutputs` (slot 7), appending outputs in that order. The reply
+serializes this array without sorting. The settings-query handler at `0x71926`
+passes `1` to the serializer at `0xa7c00`, which writes `hostOS` in each slot.
+No stock binary bytes or implementation were copied into the client.
 
-Additional reviewed revision on `feat/win-seams` (2026-10-14):
-`5f8db5689e55de0d396b0520824caa9fc053dd86`.
+Microsoft documents primary-first order for both
+[EnumAdapters1](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgifactory1-enumadapters1)
+and [EnumOutputs](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiadapter-enumoutputs).
+Together with the examined host enumeration, this supports interpreting its
+first listed output as primary. This is a Windows stock-host compatibility
+contract, not a general property of every remote JSON display list. Other host
+OS values do not enable HID primary selection. Live multi-output verification
+is still required, including virtual displays and primary/display hotplug changes.
 
-- `crates/client`, `crates/sdk`, `include/lowlat.h` and `docs/10-client.md`
-  implement/document the native client. Its session API resembles our private
-  web imports, but the client accepts BUD and refuses the web transport; this is
-  not a drop-in WebRTC replacement. Applications still supply signaling.
-- `crates/decode/src/amf.rs`, `nvdec.rs`, `vpl.rs`, and the Windows client seam
-  are concrete decoder references. AMF requests `ReorderMode` and
-  `LowLatencyDecode`, checks support, and uses the caller's D3D11 device. GPU
-  handle exports may still require plane splitting and GPU copies; CPU plane
-  output is not equivalent to a GPU-only path.
-- `docs/10-client.md` section 11 and `docs/03-connectivity.md` section 7 describe
-  BUD through a client-allocated UDP TURN relay, transparent to the host. This
-  has documented stock-host testing; our user also confirmed direct and TURN
-  playback with the optional BUD test client. TURN/TCP and TURN/TLS are not provided by this path.
+## Stock session option presets
 
-The next development scope and isolation requirements are recorded in
-[BUD and vendor decoder investigation](native-bud-vendor-decoders.md). The current integration and tested vendor decoder paths are described in the
-root README; the investigation document records earlier scope and limitations.
+The current stock Windows host output reply contains output identifiers, names
+and adapters; its settings reply reports configured values. Neither inspected
+reply declares supported resolution, encoder-rate or bandwidth option lists.
+A current setting is not treated as a capability limit. EvoParseq therefore uses
+stock-client presets, not invented capability fields or a local-monitor scan.
+The host still determines whether a requested mode can be fulfilled.
 
-## libparsec
+Read-only inspection of the same stock DLL and hash documented above found the
+public UI resolution labels at file offsets `0x334640..0x335a80` (client/host
+policies and 15 fixed sizes), and bandwidth labels at `0x336370..0x33715c`
+(3, 5, 7, 10, 15, 20, 25, 30, 35, 40, 45, 50 Mbps). The FPS selector builds
+six numeric choices, 30, 60, 100, 120, 144, 240, around RVA `0x15d2d..0x15fac`.
+Only these option values were recorded; no binary bytes or implementation were
+copied. The shared session model owns these presets; the Win32 view uses native
+selection-only combo boxes. A previously saved non-preset value is shown as a
+keep-current action and retained until the user explicitly selects a replacement;
+this preserves an existing value without allowing entry of a new custom preset.
 
-[nomi-san/libparsec](https://github.com/nomi-san/libparsec) is another useful
-research reference. At the 2026-10-11 review it contains a work-in-progress
-README and points to lowlat for the host implementation. Its planned native
-SDK, client and GPU/HEVC features are roadmap items, not evidence of an
-implemented decoder or a verified client negotiation contract. Revisit it for
-future protocol and integration ideas; it is not a runtime dependency.
+Parsec's [Windows documentation](https://support.parsec.app/hc/en-us/articles/32381199341716-Parsec-App-for-Windows)
+also explains that resolution requests depend on Windows display support, and
+that requesting an FPS does not establish support for that display refresh rate.
 
-## OpenParsec
+## Shared controller support
 
-[hugeBlack/OpenParsec](https://github.com/hugeBlack/OpenParsec) is a Swift/SwiftUI
-iOS/iPadOS client built around the separately supplied proprietary Parsec SDK.
-Its open application source does not implement the SDK's transport or decoder
-internals, and does not establish equivalent capabilities in our WASM core.
+The 16-button full-state framing follows lowlat main revision
+`b69a338db855ec6503090f5015e4f8019724e0d1`,
+[protocol section 11.1](https://github.com/nomi-san/lowlat/blob/b69a338db855ec6503090f5015e4f8019724e0d1/docs/01-protocol.md#111-control-messages)
+and `crates/client/src/input.rs`: opcode 23 names the pad in argument 0,
+then three initialized padding bytes, big-endian button bits/four signed sticks,
+and two byte triggers; vertical whole-state axes point up. Opcode 6 unplugs the
+pad in argument 2; opcode 20 returns pad/low/high motor bytes. EvoParseq owns
+its shared state, bounded event handoff, lifecycle and platform adapters; no
+lowlat SDL/demo/SDK input implementation or extra controller dependency is added.
 
-Reviewed revision: `b49c72014bddd915f5ed801e7ae9392bb330e913` (2026-10-11).
-Useful source paths at that revision:
+Parsec's [Setup Gamepad](https://support.parsec.app/hc/en-us/articles/32381705301908-Setup-Gamepad)
+documents client face-button activation and host-side virtual controllers.
+Read-only inspection of the stock Windows DLL with the hash above found an
+`XInputSetState` symbol; that is a research clue, not proof of every input API
+or of our wire compatibility. No stock binary code is copied or patched.
+The official Android app is closed source; its documented controller behavior,
+not unverified implementation details, is the comparison point.
 
-- `OpenParsec/ParsecSDKBridge.swift`: release pressed inputs before disconnect,
-  release again after a successful connection, separate audio/event polling,
-  and connection generations used to retire old polling loops. These are useful
-  lifecycle design references, not proof that its synchronization is suitable
-  for our implementation.
-- `OpenParsec/GameController.swift`, `TouchHandlingView.swift` and
-  `KeyCodeTranslators.swift`: mouse, keyboard, gamepad and touch interaction
-  ideas, especially for a future mobile client. Apple-specific APIs require
-  platform-appropriate replacements on Windows, Linux and Android.
-- `OpenParsec/ParsecUserData.swift` and the SDK bridge: video configuration and
-  display enumeration messages, including resolution, bitrate and constant
-  frame rate. Treat their SDK message IDs and JSON as research leads; verify
-  any corresponding WASM/data-channel contract separately before integration.
-- `OpenParsec/audio.c`: preallocated playback buffers and clearing queued audio
-  on pause/disconnect. Its Apple AudioQueue buffering and silence policy are
-  not a measured low-latency preset for our Windows audio path.
-
-HEVC selection uses the SDK's `decoderH265` configuration field. The Metal
-renderer source and Metal rendering bridge are commented out at this revision;
-their presence is not evidence of an active Metal or zero-copy pipeline.
-
-The repository declares GPL-3.0 licensing. Keep it as an external design
-reference; copying or integrating its code requires a separate license
-compatibility review. No OpenParsec source or SDK is included in our binary.
+Platform adapters use Microsoft's documented
+[XInput](https://learn.microsoft.com/en-us/windows/win32/xinput/getting-started-with-xinput)
+and Android's documented
+[controller events](https://developer.android.com/games/sdk/game-controller/controller-input).
+Synthetic wire/lifecycle tests do not establish stock-host live compatibility.

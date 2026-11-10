@@ -10,16 +10,16 @@ authors = ["Nguyen Duy"]
 
 [features]
 default = []
-turn-stream = ["dep:rustls", "dep:webpki-roots", "dep:rustls-native-certs"]
+turn-stream = ["dep:evoparseq-socket-qos", "dep:rustls", "dep:webpki-roots", "dep:rustls-native-certs"]
 
 [dependencies]
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"], optional = true }
-webpki-roots = { version = "1", optional = true }
+webpki-roots = { version = "1.0.11", optional = true }
 rustls-native-certs = { version = "0.8", optional = true }
 lowlat-common = { git = "https://github.com/nomi-san/lowlat", rev = "5f8db5689e55de0d396b0520824caa9fc053dd86" }
 lowlat-core = { path = "../lowlat-core" }
 
-[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))'.dependencies]
 libc = "0.2"
 
 # The system's own declarations for the socket, the completion port and the
@@ -53,3 +53,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 
+
+[dependencies.evoparseq-socket-qos]
+path = "../../../socket-qos"
+optional = true

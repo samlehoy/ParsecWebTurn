@@ -1,6 +1,6 @@
-//! Documented screen power request, confined to the window UI thread.
+//! Documented display-sleep request: Windows SetThreadExecutionState, or a
+//! macOS IOKit power assertion. Confined to the window UI thread.
 use serde::Serialize;
-
 #[cfg(windows)]
 use windows_sys::Win32::System::Power::{
     SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED,
@@ -20,19 +20,10 @@ impl State {
                 != 0
         });
     }
-
     #[cfg(target_os = "macos")]
     pub fn update(&mut self, requested: bool, visible: bool) {
-        self.update_with(requested, visible, |enable| {
-            macos_set_display_sleep_disabled(enable)
-        });
+        self.update_with(requested, visible, macos::apply);
     }
-
-    #[cfg(not(any(windows, target_os = "macos")))]
-    pub fn update(&mut self, requested: bool, visible: bool) {
-        self.update_with(requested, visible, |_| true);
-    }
-
     fn update_with(&mut self, requested: bool, visible: bool, mut apply: impl FnMut(bool) -> bool) {
         self.requested = requested;
         let desired = requested && visible;
@@ -48,85 +39,47 @@ impl State {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_set_display_sleep_disabled(disable: bool) -> bool {
-    use core_foundation::base::TCFType;
-    use core_foundation::string::CFString;
+mod macos {
+    use objc2_foundation::NSString;
     use std::sync::atomic::{AtomicU32, Ordering};
-
     #[link(name = "IOKit", kind = "framework")]
     extern "C" {
         fn IOPMAssertionCreateWithName(
-            assertion_type: *const std::ffi::c_void,
-            assertion_level: u32,
-            assertion_name: *const std::ffi::c_void,
-            assertion_id: *mut u32,
+            kind: &NSString,
+            level: u32,
+            name: &NSString,
+            id: *mut u32,
         ) -> i32;
-        fn IOPMAssertionRelease(assertion_id: u32) -> i32;
+        fn IOPMAssertionRelease(id: u32) -> i32;
     }
-
-    static ASSERTION_ID: AtomicU32 = AtomicU32::new(0);
-
-    let current = ASSERTION_ID.load(Ordering::SeqCst);
-    if disable && current == 0 {
-        let atype = CFString::new("PreventUserIdleDisplaySleep");
-        let aname = CFString::new("ParsecWebTurn Remote Session");
-        let mut id = 0u32;
-        let ret = unsafe {
+    const ON: u32 = 255;
+    // Zero is never a valid assertion ID.
+    static ASSERTION: AtomicU32 = AtomicU32::new(0);
+    pub fn apply(enable: bool) -> bool {
+        if !enable {
+            let id = ASSERTION.swap(0, Ordering::AcqRel);
+            return id == 0 || unsafe { IOPMAssertionRelease(id) } == 0;
+        }
+        let mut id = 0;
+        let status = unsafe {
             IOPMAssertionCreateWithName(
-                atype.as_concrete_TypeRef() as *const _,
-                255, // kIOPMAssertionLevelOn
-                aname.as_concrete_TypeRef() as *const _,
+                &NSString::from_str("PreventUserIdleDisplaySleep"),
+                ON,
+                &NSString::from_str("EvoParseq remote session"),
                 &mut id,
             )
         };
-        if ret == 0 {
-            ASSERTION_ID.store(id, Ordering::SeqCst);
-            true
-        } else {
-            false
+        if status == 0 {
+            ASSERTION.store(id, Ordering::Release);
         }
-    } else if !disable && current != 0 {
-        unsafe {
-            IOPMAssertionRelease(current);
-        }
-        ASSERTION_ID.store(0, Ordering::SeqCst);
-        true
-    } else {
-        true
+        status == 0
     }
-}
-
-#[cfg(any(test, feature = "diagnostics"))]
-pub fn probe() -> anyhow::Result<serde_json::Value> {
-    let mut config = wasmtime::Config::new();
-    config
-        .wasm_threads(true)
-        .consume_fuel(true)
-        .epoch_interruption(true);
-    let engine = wasmtime::Engine::new(&config)?;
-    let module = wasmtime::Module::new(
-        &engine,
-        r#"(module
-        (import "env" "memory" (memory 1 1 shared))
-        (import "env" "web_wake_lock" (func $set (param i32)))
-        (func (export "test") i32.const 1 call $set i32.const 0 call $set))"#,
-    )?;
-    let (mut store, instance) = crate::instantiate(&engine, &module)?;
-    instance
-        .get_typed_func::<(), ()>(&mut store, "test")?
-        .call(&mut store, ())?;
-    anyhow::ensure!(
-        store.data().boundary.is_none() && store.data().calls.get("env::web_wake_lock") == Some(&2),
-        "wake lock guest import failed"
-    );
-    Ok(
-        serde_json::json!({"guest_import_verified":true,"real_account_used":false,"power_request_without_window":false}),
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     #[test]
     fn native_request_and_release_share_one_thread() {
         std::thread::spawn(|| {
@@ -134,9 +87,8 @@ mod tests {
             state.update(true, true);
             assert!(state.applied || state.failed_requests == 1);
             state.update(false, false);
-            // A platform rejection is recorded, never converted to a WASM trap.
+            // A platform rejection is recorded without terminating playback.
             assert!(!state.requested);
-            #[cfg(windows)]
             unsafe {
                 SetThreadExecutionState(ES_CONTINUOUS);
             }
@@ -144,10 +96,7 @@ mod tests {
         .join()
         .unwrap();
     }
-    #[test]
-    fn guest_wake_lock_is_optional_without_window() {
-        probe().unwrap();
-    }
+
     #[test]
     fn visibility_and_release_are_idempotent() {
         let mut state = State::default();

@@ -1,339 +1,220 @@
-//! Native macOS Cocoa / AppKit window using objc2.
-pub use crate::window_event::Event;
+//! Native AppKit stream window. AppKit objects are created, used and released
+//! on the main thread; other threads post work to the main dispatch queue.
+pub use crate::native_core::session_model::Event;
 use anyhow::Result;
-use objc2::rc::Retained;
+use objc2::{rc::Retained, runtime::AnyObject, MainThreadMarker};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSOpenGLPixelFormat,
-    NSOpenGLView, NSView, NSWindow, NSWindowStyleMask,
+    NSAutoresizingMaskOptions, NSBackingStoreType, NSColor, NSEvent, NSEventModifierFlags,
+    NSEventType, NSPasteboard, NSView, NSWindow, NSWindowStyleMask,
 };
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
-    Arc, Mutex,
+    atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering},
+    Arc, Mutex, Weak,
 };
-
-pub struct Window {
-    pub stats: Arc<crate::stats::Shared>,
-    pub updates: Arc<crate::updater::State>,
-    pub core_version: Arc<crate::core_version::State>,
-    pub gui_visibility: crate::gui_visibility::State,
-    pub closing: AtomicBool,
-    pub active_contexts: AtomicUsize,
-    pub events: crate::event_queue::Queue<Event>,
-    pub dimensions: Mutex<(i32, i32)>,
-    pub overlay: Mutex<crate::overlay::Shared>,
-    pub software_overlay_enabled: AtomicBool,
-    pub graphics: Mutex<Option<crate::graphics::GraphicsReport>>,
-    pub audio_registry: Mutex<crate::audio_macos::Registry>,
-    pub video_report: Mutex<Option<crate::video_output::Snapshot>>,
-    video_ready: AtomicBool,
-    video_generation: Mutex<u64>,
-    pub live: bool,
-    pub online: bool,
-    pub run_seconds: u64,
-    pub stop: Arc<crate::lifecycle::StopSignal>,
-    connection_settings: Mutex<Option<Arc<crate::connection_settings::Manager>>>,
-    wake_lock: Mutex<crate::wake_lock::State>,
-    relative_mouse: AtomicBool,
-    pub has_focus: AtomicBool,
-    pub pressed_buttons: AtomicUsize,
-    #[cfg(feature = "bud")]
-    pub hid_mouse_active: AtomicBool,
-    #[cfg(feature = "bud")]
-    pub hid_keyboard_active: AtomicBool,
-    #[cfg(feature = "bud")]
-    pub hid_input_acquired: AtomicBool,
-    input_state: Mutex<crate::core_input::State>,
-    core_hotkeys: Mutex<Option<crate::core_hotkeys::Binding>>,
-    cursor: Mutex<crate::cursor::State>,
-    cursor_pending: Mutex<crate::cursor::Pending>,
-    #[cfg(any(test, feature = "diagnostics"))]
-    pub capture: Mutex<Option<std::path::PathBuf>>,
-    #[cfg(any(test, feature = "diagnostics"))]
-    pub synthetic_login: bool,
-    #[cfg(any(test, feature = "diagnostics"))]
-    pub script_steps: AtomicUsize,
-    #[cfg(any(test, feature = "diagnostics"))]
-    pub network_origin_audit: bool,
-    pub ns_window: usize,
-    pub ns_gl_context: usize,
-    pub ns_gl_view: usize,
-    pub cgl_context: usize,
-    ns_video_view: usize,
-    /// AVSampleBufferDisplayLayer, or 0 if AVFoundation could not create one.
-    video_layer: usize,
-}
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
-    fn CGAssociateMouseAndMouseCursorPosition(connected: bool) -> i32;
+    // Documented relative-pointer mode: the cursor stays put while deltas flow.
+    fn CGAssociateMouseAndMouseCursorPosition(connected: u8) -> i32;
+}
+
+pub struct Window {
+    pub(crate) session: crate::native_core::session_model::State,
+    pub stats: Arc<crate::stats::Shared>,
+    pub closing: AtomicBool,
+    pub events: crate::event_queue::Queue<Event>,
+    /// Content size in points; video and absolute input share this space.
+    pub dimensions: Mutex<(i32, i32)>,
+    pub video_report: Mutex<Option<crate::video_output::Snapshot>>,
+    pub stop: Arc<crate::lifecycle::StopSignal>,
+    pub has_focus: AtomicBool,
+    pub(crate) pasteboard_seen: AtomicIsize,
+    connection_settings: Mutex<Option<Arc<crate::connection_settings::Manager>>>,
+    video_ready: AtomicBool,
+    video_generation: Mutex<u64>,
+    relative_mouse: AtomicBool,
+    relative_requested: AtomicBool,
+    host_cursor: Mutex<Option<(i32, i32, bool)>>,
+    input_state: Mutex<crate::input_state::State>,
+    pressed_buttons: AtomicUsize,
+    local_shortcuts: Mutex<crate::input::Shortcuts>,
+    cursor_pending: Mutex<crate::cursor::Pending>,
+    fullscreen_active: AtomicBool,
+    wake_requested: AtomicBool,
+    wake_lock: Mutex<crate::wake_lock::State>,
+    #[cfg(feature = "bud")]
+    hid_mouse_active: AtomicBool,
+    #[cfg(feature = "bud")]
+    hid_keyboard_active: AtomicBool,
+    #[cfg(feature = "bud")]
+    hid_input_acquired: AtomicBool,
+    ns_window: usize,
+    video_layer: usize,
+}
+
+static ACTIVE: Mutex<Option<Weak<Window>>> = Mutex::new(None);
+thread_local! {
+    // Main thread only: NSCursor objects and fractional trackpad scrolling.
+    static CURSOR: std::cell::RefCell<crate::cursor::State> = Default::default();
+    static SCROLL: std::cell::Cell<(f64, f64)> = const { std::cell::Cell::new((0.0, 0.0)) };
+}
+
+pub fn active() -> Option<Arc<Window>> {
+    ACTIVE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(Weak::upgrade)
+}
+
+/// Runs on the main thread, synchronously when already there.
+pub(crate) fn on_main<R: Send>(f: impl FnOnce(MainThreadMarker) -> R + Send) -> R {
+    match MainThreadMarker::new() {
+        Some(mtm) => f(mtm),
+        None => {
+            let mut result = None;
+            dispatch2::DispatchQueue::main().exec_sync(|| {
+                result = Some(f(MainThreadMarker::new().expect("main dispatch queue")))
+            });
+            result.expect("main dispatch queue ran the work")
+        }
+    }
+}
+pub(crate) fn post(f: impl FnOnce(MainThreadMarker) + Send + 'static) {
+    dispatch2::DispatchQueue::main()
+        .exec_async(move || f(MainThreadMarker::new().expect("main dispatch queue")));
 }
 
 impl Window {
-    pub fn create(
-        synthetic_login: bool,
-        live: bool,
-        online: bool,
-        _network_origin_audit: bool,
-    ) -> Result<Arc<Self>> {
-        let (w, h) = (1024, 720);
-
-        let create_win = |mtm: MainThreadMarker| -> (usize, usize, usize, usize, usize, usize) {
-            let app = NSApplication::sharedApplication(mtm);
-            app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-            crate::connection_settings_ui_macos::install_menu(mtm, &app);
-
-            let rect = NSRect::new(NSPoint::new(100.0, 100.0), NSSize::new(w as f64, h as f64));
+    pub fn create_native() -> Result<Arc<Self>> {
+        let (ns_window, video_layer, size) = on_main(|mtm| {
+            let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1280.0, 720.0));
             let style = NSWindowStyleMask::Titled
                 | NSWindowStyleMask::Closable
                 | NSWindowStyleMask::Miniaturizable
                 | NSWindowStyleMask::Resizable;
-
-            unsafe {
-                let win = NSWindow::initWithContentRect_styleMask_backing_defer(
+            let window = unsafe {
+                NSWindow::initWithContentRect_styleMask_backing_defer(
                     mtm.alloc(),
                     rect,
                     style,
                     NSBackingStoreType::Buffered,
                     false,
-                );
-                win.setTitle(&NSString::from_str("ParsecWebTurn"));
-                win.setReleasedWhenClosed(false);
-
-                let attribs: [u32; 11] = [
-                    73, // NSOpenGLPFAAccelerated
-                    5,  // NSOpenGLPFADoubleBuffer
-                    8, 24, // NSOpenGLPFAColorSize, 24
-                    12, 8, // NSOpenGLPFAAlphaSize, 8
-                    99, 0x3200, // NSOpenGLPFAOpenGLProfile, 3.2 Core
-                    0, 0, 0,
-                ];
-                let pixel_format = NSOpenGLPixelFormat::initWithAttributes(
-                    mtm.alloc(),
-                    std::ptr::NonNull::new(attribs.as_ptr() as *mut _).unwrap(),
-                );
-
-                let view_rect =
-                    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(w as f64, h as f64));
-                let gl_view = NSOpenGLView::initWithFrame_pixelFormat(
-                    mtm.alloc(),
-                    view_rect,
-                    pixel_format.as_deref(),
                 )
-                .expect("Failed to create NSOpenGLView");
-
-                gl_view.setWantsBestResolutionOpenGLSurface(false);
-                // The video layer sits above the GL view, which is hidden while video
-                // shows: an NSOpenGLView surface would otherwise draw over its siblings.
-                let sizable = objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable
-                    | objc2_app_kit::NSAutoresizingMaskOptions::ViewHeightSizable;
-                let container = NSView::initWithFrame(mtm.alloc(), view_rect);
-                container.setAutoresizesSubviews(true);
-                gl_view.setAutoresizingMask(sizable);
-                container.addSubview(&gl_view);
-                let video_view = NSView::initWithFrame(mtm.alloc(), view_rect);
-                video_view.setAutoresizingMask(sizable);
-                video_view.setHidden(true);
-                let video_layer = crate::video_macos::create_layer();
-                if let Some(layer) = &video_layer {
-                    // Layer-hosting view: set the layer before enabling it.
-                    let _: () = objc2::msg_send![&*video_view, setLayer: &**layer];
-                    video_view.setWantsLayer(true);
-                }
-                container.addSubview(&video_view);
-                win.setBackgroundColor(Some(&objc2_app_kit::NSColor::blackColor()));
-                win.setContentView(Some(&container));
-
-                let gl_context = gl_view.openGLContext().expect("NSOpenGLContext missing");
-                gl_context.setView(Some(&gl_view), mtm);
-                gl_context.update(mtm);
-
-                win.setAcceptsMouseMovedEvents(true);
-                win.center();
-                win.setIsVisible(true);
-                win.orderFrontRegardless();
-                win.makeKeyAndOrderFront(None);
-                app.activateIgnoringOtherApps(true);
-
-                // No context is current on the main thread yet; make this one current
-                // briefly to read its CGL handle for the resize lock.
-                gl_context.makeCurrentContext();
-                let cgl_ctx = crate::graphics::cgl::CGLGetCurrentContext() as usize;
-                objc2_app_kit::NSOpenGLContext::clearCurrentContext();
-                (
-                    Retained::into_raw(win) as usize,
-                    Retained::into_raw(gl_context) as usize,
-                    Retained::into_raw(gl_view) as usize,
-                    cgl_ctx,
-                    Retained::into_raw(video_view) as usize,
-                    video_layer.map_or(0, |layer| Retained::into_raw(layer) as usize),
-                )
-            }
-        };
-
-        let (ns_win, ns_gl_ctx, ns_gl_view, cgl_ctx, ns_video_view, video_layer) =
-            if let Some(mtm) = MainThreadMarker::new() {
-                create_win(mtm)
-            } else {
-                let (tx, rx) = std::sync::mpsc::sync_channel(1);
-                dispatch2::DispatchQueue::main().exec_sync(move || {
-                    let mtm =
-                        MainThreadMarker::new().expect("Main queue must have MainThreadMarker");
-                    let _ = tx.send(create_win(mtm));
-                });
-                rx.recv().unwrap()
             };
-
-        let state = Arc::new(Self {
+            window.setTitle(&NSString::from_str(crate::APP_TITLE));
+            unsafe { window.setReleasedWhenClosed(false) };
+            window.setBackgroundColor(Some(&NSColor::blackColor()));
+            window.setAcceptsMouseMovedEvents(true);
+            let view = NSView::initWithFrame(mtm.alloc(), rect);
+            view.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewWidthSizable
+                    | NSAutoresizingMaskOptions::ViewHeightSizable,
+            );
+            let layer = crate::video_platform::create_layer();
+            if let Some(layer) = &layer {
+                // Layer-hosting view: assign the layer before enabling it.
+                let _: () = unsafe { objc2::msg_send![&*view, setLayer: &**layer] };
+                view.setWantsLayer(true);
+            }
+            window.setContentView(Some(&view));
+            window.center();
+            window.makeKeyAndOrderFront(None);
+            let size = window.contentRectForFrameRect(window.frame()).size;
+            (
+                Retained::into_raw(window) as usize,
+                layer.map_or(0, |l| Retained::into_raw(l) as usize),
+                (size.width as i32, size.height as i32),
+            )
+        });
+        let window = Arc::new(Self {
+            session: Default::default(),
             stats: Default::default(),
-            updates: Default::default(),
-            core_version: Default::default(),
-            gui_visibility: Default::default(),
             closing: AtomicBool::new(false),
-            active_contexts: AtomicUsize::new(0),
-            events: Default::default(),
-            dimensions: Mutex::new((w, h)),
-            overlay: Default::default(),
-            software_overlay_enabled: AtomicBool::new(true),
-            graphics: Default::default(),
-            audio_registry: Default::default(),
+            events: crate::event_queue::Queue::input(),
+            dimensions: Mutex::new(size),
             video_report: Default::default(),
+            stop: Default::default(),
+            has_focus: AtomicBool::new(false),
+            pasteboard_seen: AtomicIsize::new(on_main(|_| {
+                NSPasteboard::generalPasteboard().changeCount()
+            })),
+            connection_settings: Default::default(),
             video_ready: AtomicBool::new(false),
             video_generation: Mutex::new(0),
-            live,
-            online,
-            run_seconds: if synthetic_login { 20 } else { 8 },
-            stop: Default::default(),
-            connection_settings: Default::default(),
-            wake_lock: Default::default(),
             relative_mouse: AtomicBool::new(false),
-            has_focus: AtomicBool::new(true),
+            relative_requested: AtomicBool::new(false),
+            host_cursor: Default::default(),
+            input_state: Default::default(),
             pressed_buttons: AtomicUsize::new(0),
+            local_shortcuts: Default::default(),
+            cursor_pending: Default::default(),
+            fullscreen_active: AtomicBool::new(false),
+            wake_requested: AtomicBool::new(false),
+            wake_lock: Default::default(),
             #[cfg(feature = "bud")]
             hid_mouse_active: AtomicBool::new(false),
             #[cfg(feature = "bud")]
             hid_keyboard_active: AtomicBool::new(false),
             #[cfg(feature = "bud")]
             hid_input_acquired: AtomicBool::new(false),
-            input_state: Default::default(),
-            core_hotkeys: Default::default(),
-            cursor: Default::default(),
-            cursor_pending: Default::default(),
-            #[cfg(any(test, feature = "diagnostics"))]
-            capture: Default::default(),
-            #[cfg(any(test, feature = "diagnostics"))]
-            synthetic_login,
-            #[cfg(any(test, feature = "diagnostics"))]
-            script_steps: AtomicUsize::new(0),
-            #[cfg(any(test, feature = "diagnostics"))]
-            network_origin_audit: _network_origin_audit,
-            ns_window: ns_win,
-            ns_gl_context: ns_gl_ctx,
-            ns_gl_view,
-            cgl_context: cgl_ctx,
-            ns_video_view,
+            ns_window,
             video_layer,
         });
-
-        state.events.push(Event::Size(w, h));
-        state.events.push(Event::Focus(true));
-        *ACTIVE_WINDOW.lock().unwrap() = Some(Arc::downgrade(&state));
-
-        Ok(state)
+        window.events.push(Event::Size(size.0, size.1));
+        *ACTIVE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::downgrade(&window));
+        Ok(window)
     }
 
-    pub fn handle(&self) -> usize {
-        self.ns_window
+    /// Main thread only; the window retains its NSWindow until Drop.
+    fn ns_window(&self, _mtm: MainThreadMarker) -> &NSWindow {
+        unsafe { &*(self.ns_window as *const NSWindow) }
+    }
+    pub fn video_layer(&self) -> usize {
+        self.video_layer
     }
 
-    pub fn bind_core_hotkeys(&self, binding: crate::core_hotkeys::Binding) {
-        *self.core_hotkeys.lock().unwrap_or_else(|e| e.into_inner()) = Some(binding);
-    }
-
-    /// Settings is a separate window on macOS, so it never covers the stream and
-    /// presentation keeps running (on Windows it is a child over the client area).
-    pub fn settings_open(&self) -> bool {
-        false
-    }
-
-    pub fn connection_settings(&self) -> Option<Arc<crate::connection_settings::Manager>> {
+    fn manager(&self) -> Option<Arc<crate::connection_settings::Manager>> {
         self.connection_settings
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
-
-    pub fn open_settings(&self) {
-        if let Some(mgr) = self.connection_settings() {
-            crate::connection_settings_ui_macos::open(mgr);
-        }
-    }
-
-    pub fn repaint_settings_after_gl_pause(&self) {}
-
-    pub fn direct_presentation_allowed(&self) -> bool {
-        false
-    }
-
-    pub fn experimental_zero_copy(&self) -> bool {
-        false
-    }
-
-    pub fn video_gpu(&self) -> Option<crate::connection_settings::GpuPreference> {
-        let mgr = self
-            .connection_settings
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        mgr.as_ref().and_then(|m| m.view().0.video_gpu)
-    }
-
-    pub fn presentation_mode(&self) -> crate::connection_settings::PresentationMode {
-        crate::connection_settings::PresentationMode::Automatic
-    }
-
-    pub fn audio_buffer(&self) -> Option<(u32, u32)> {
-        let mgr = self
-            .connection_settings
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let s = &mgr.as_ref()?.view().0;
-        if s.custom_audio_buffer {
-            Some((s.audio_min_buffer_ms, s.audio_max_buffer_ms))
-        } else {
-            None
-        }
-    }
-
     pub fn install_connection_settings(&self, manager: Arc<crate::connection_settings::Manager>) {
         *self
             .connection_settings
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(manager);
     }
-
-    pub fn ensure_video_surface(&self) -> Result<usize> {
-        Ok(self.ns_window)
+    pub fn video_gpu(&self) -> Option<crate::connection_settings::GpuPreference> {
+        self.manager().and_then(|m| m.view().0.video_gpu)
+    }
+    pub fn audio_buffer(&self) -> Option<(u32, u32)> {
+        let s = self.manager()?.view().0;
+        (s.custom_audio_buffer
+            && s.audio_max_buffer_ms > 0
+            && s.audio_max_buffer_ms <= 500
+            && s.audio_min_buffer_ms <= s.audio_max_buffer_ms)
+            .then_some((s.audio_min_buffer_ms, s.audio_max_buffer_ms))
     }
 
-    pub fn video_layer(&self) -> usize {
-        self.video_layer
+    pub fn native_input_allowed(&self) -> bool {
+        self.has_focus.load(Ordering::Acquire)
+            && self.video_ready.load(Ordering::Acquire)
+            && !self.closing.load(Ordering::Acquire)
+            && !self
+                .input_state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .detached
     }
 
-    /// Shows the video layer and hides the GL view while video is ready, and back.
     fn set_video_ready(&self, ready: bool) {
-        if self.video_ready.swap(ready, Ordering::AcqRel) == ready {
-            return;
+        if self.video_ready.swap(ready, Ordering::AcqRel) != ready {
+            self.apply_capture();
         }
-        let (video_view, gl_view) = (self.ns_video_view, self.ns_gl_view);
-        dispatch2::DispatchQueue::main().exec_async(move || {
-            // Both views live as long as the Window, whose Drop also runs on main.
-            let video_view = unsafe { &*(video_view as *const NSView) };
-            let gl_view = unsafe { &*(gl_view as *const NSView) };
-            video_view.setHidden(!ready);
-            gl_view.setHidden(ready);
-        });
     }
-
     // Same generation rules as Windows: a retired pipeline cannot touch a newer one.
     pub fn begin_video(&self) -> u64 {
         let mut generation = self
@@ -341,10 +222,13 @@ impl Window {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         *generation = generation.wrapping_add(1);
+        #[cfg(feature = "bud")]
+        self.hid_mouse_active.store(false, Ordering::Release);
+        #[cfg(feature = "bud")]
+        self.hid_keyboard_active.store(false, Ordering::Release);
         self.set_video_ready(false);
         *generation
     }
-
     pub fn set_video_ready_for(&self, expected: u64, ready: bool) {
         let generation = self
             .video_generation
@@ -354,7 +238,6 @@ impl Window {
             self.set_video_ready(ready);
         }
     }
-
     pub fn finish_video(&self, expected: u64) {
         let mut generation = self
             .video_generation
@@ -362,9 +245,76 @@ impl Window {
             .unwrap_or_else(|e| e.into_inner());
         if *generation == expected {
             *generation = generation.wrapping_add(1);
+            #[cfg(feature = "bud")]
+            self.hid_mouse_active.store(false, Ordering::Release);
+            #[cfg(feature = "bud")]
+            self.hid_keyboard_active.store(false, Ordering::Release);
             self.set_video_ready(false);
         }
     }
+    pub fn end_session(&self) {
+        self.begin_video(); // Retire the old surface before a reconnect can own it.
+        *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.relative_requested.store(false, Ordering::Release);
+        self.set_input_state(Default::default());
+        self.apply_capture();
+    }
+
+    /// The layer letterboxes with resize-aspect, which Viewport::rect computes.
+    pub fn presented_viewport(&self) -> Option<crate::viewport::Viewport> {
+        if !self.video_ready.load(Ordering::Acquire) {
+            return None;
+        }
+        let report = self.video_report.lock().unwrap_or_else(|e| e.into_inner());
+        let v = report
+            .as_ref()
+            .filter(|v| v.frames_submitted > 0 && v.failure_stage.is_none())?;
+        let size = *self.dimensions.lock().unwrap_or_else(|e| e.into_inner());
+        let viewport = crate::viewport::Viewport {
+            source: (v.width?, v.height?),
+            client: (u32::try_from(size.0).ok()?, u32::try_from(size.1).ok()?),
+        };
+        viewport.rect()?;
+        Some(viewport)
+    }
+
+    pub fn set_host_cursor(&self, x: i32, y: i32, relative: bool, hidden: bool) {
+        let relative = crate::desktop_input::relative_capture(relative, hidden);
+        *self.host_cursor.lock().unwrap_or_else(|e| e.into_inner()) = Some((x, y, relative));
+        if self.relative_requested.swap(relative, Ordering::AcqRel) != relative {
+            self.apply_capture();
+        }
+    }
+    pub fn set_input_state(&self, state: crate::input_state::State) {
+        let mut current = self.input_state.lock().unwrap_or_else(|e| e.into_inner());
+        if *current != state {
+            *current = state;
+            drop(current);
+            self.apply_capture();
+        }
+    }
+
+    /// Acquire or release relative capture from the current focus/video state.
+    /// HID mouse keeps relative capture too, like Windows: the USB adapter
+    /// switches report mode on RelativeMode instead of receiving absolute moves.
+    fn apply_capture(&self) {
+        let enabled =
+            self.relative_requested.load(Ordering::Acquire) && self.native_input_allowed();
+        if self.relative_mouse.swap(enabled, Ordering::AcqRel) == enabled {
+            return;
+        }
+        post(move |_| unsafe {
+            CGAssociateMouseAndMouseCursorPosition(u8::from(!enabled));
+        });
+        self.select_cursor();
+        // Report the actual capture state to the input consumer.
+        self.events.push(Event::RelativeMode(enabled));
+    }
+
+    pub fn clipboard_allowed(&self) -> bool {
+        self.native_input_allowed()
+    }
+    pub fn take_clipboard_event(&self) {}
 
     #[cfg(feature = "bud")]
     pub fn hid_input_generation(&self) -> u64 {
@@ -373,7 +323,6 @@ impl Window {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
     }
-
     #[cfg(feature = "bud")]
     pub fn set_hid_input_active(&self, expected: u64, mouse: bool, keyboard: bool) {
         let generation = self
@@ -384,49 +333,19 @@ impl Window {
             return;
         }
         let mouse_changed = self.hid_mouse_active.swap(mouse, Ordering::AcqRel) != mouse;
-        let keyboard_changed =
-            self.hid_keyboard_active.swap(keyboard, Ordering::AcqRel) != keyboard;
-        let changed = mouse_changed || keyboard_changed;
+        self.hid_keyboard_active.store(keyboard, Ordering::Release);
         drop(generation);
-        if changed && mouse_changed && mouse {
-            self.set_relative_mouse(false);
+        if mouse_changed {
+            // Seed a new USB adapter with the current capture state.
             self.events.push(Event::RelativeMode(
                 self.relative_mouse.load(Ordering::Acquire),
             ));
         }
+        self.sync_hid_acquired();
     }
-
-    pub fn record_button(&self, button: usize, down: bool) {
-        if down {
-            self.pressed_buttons.fetch_or(1 << button, Ordering::AcqRel);
-        } else {
-            self.pressed_buttons
-                .fetch_and(!(1 << button), Ordering::AcqRel);
-        }
-    }
-
-    pub fn release_buttons(&self) {
-        let pressed = self.pressed_buttons.swap(0, Ordering::AcqRel);
-        for button in 0..5 {
-            if (pressed & (1 << button)) != 0 {
-                self.events.push(Event::Button(false, button, 0, 0));
-            }
-        }
-    }
-
-    pub fn sync_absolute_pointer(&self, x: i32, y: i32) {
-        #[cfg(feature = "bud")]
-        if self.hid_mouse_active.load(Ordering::Acquire)
-            && !self.relative_mouse.load(Ordering::Acquire)
-        {
-            self.events.push(Event::Motion(x, y));
-        }
-    }
-
     #[cfg(feature = "bud")]
-    pub fn sync_hid_input_acquired(&self, has_focus: bool) {
-        let acquired = has_focus
-            && !self.closing.load(Ordering::Acquire)
+    fn sync_hid_acquired(&self) {
+        let acquired = self.native_input_allowed()
             && (self.hid_mouse_active.load(Ordering::Acquire)
                 || self.hid_keyboard_active.load(Ordering::Acquire));
         if self.hid_input_acquired.swap(acquired, Ordering::AcqRel) && !acquired {
@@ -434,297 +353,274 @@ impl Window {
         }
     }
 
-    pub fn end_session(&self) {
-        if self.relative_mouse.load(Ordering::Acquire) {
-            self.set_relative_mouse(false);
-        }
-        self.release_buttons();
-        #[cfg(feature = "bud")]
-        {
-            self.hid_mouse_active.store(false, Ordering::Release);
-            self.hid_keyboard_active.store(false, Ordering::Release);
-            self.sync_hid_input_acquired(false);
-        }
-        self.events.push(Event::RelativeMode(false));
-    }
-
-    pub fn publish_software_overlay(&self, _frame: &crate::overlay::Frame) {}
-
-    /// The layer letterboxes with resize-aspect, which is what Viewport::rect computes.
-    pub fn presented_viewport(&self) -> Option<crate::viewport::Viewport> {
-        if !self.video_ready.load(Ordering::Acquire) {
-            return None;
-        }
-        let report = self.video_report.lock().unwrap_or_else(|e| e.into_inner());
-        let v = report.as_ref().filter(|v| v.failure_stage.is_none())?;
-        let size = *self.dimensions.lock().unwrap_or_else(|e| e.into_inner());
-        let viewport = crate::viewport::Viewport {
-            source: (v.width?, v.height?),
-            client: (u32::try_from(size.0).ok()?, u32::try_from(size.1).ok()?),
-        };
-        viewport.rect()?;
-        Some(viewport)
-    }
-
-    pub fn set_relative_mouse(&self, enabled: bool) {
-        let previous = self.relative_mouse.swap(enabled, Ordering::AcqRel);
-        if previous != enabled {
-            dispatch2::DispatchQueue::main().exec_async(move || unsafe {
-                if enabled {
-                    let _ = CGAssociateMouseAndMouseCursorPosition(false);
-                    objc2_app_kit::NSCursor::hide();
-                } else {
-                    let _ = CGAssociateMouseAndMouseCursorPosition(true);
-                    objc2_app_kit::NSCursor::unhide();
-                }
-            });
-            self.events.push(Event::RelativeMode(enabled));
-        }
-    }
-
-    pub fn host_cursor_event(&self, _event: &serde_json::Value) {}
-
-    pub fn set_keyboard_grab(&self, _enabled: bool) {}
-
-    pub fn set_input_state(&self, state: crate::core_input::State) {
-        *self.input_state.lock().unwrap_or_else(|e| e.into_inner()) = state;
-    }
-
-    pub fn clipboard_allowed(&self) -> bool {
-        true
-    }
-
-    pub fn take_clipboard_event(&self) {}
-
-    pub fn initial_geometry(&self) -> (i32, i32, i32, i32, bool) {
-        let (w, h) = *self.dimensions.lock().unwrap_or_else(|e| e.into_inner());
-        (100, 100, w, h, self.has_focus.load(Ordering::Acquire))
-    }
-
     pub fn close(&self) {
-        self.closing.store(true, Ordering::Release);
-        if self.relative_mouse.load(Ordering::Acquire) {
-            self.set_relative_mouse(false);
-        }
-        self.release_buttons();
-        #[cfg(feature = "bud")]
-        self.sync_hid_input_acquired(false);
-        self.stop.stop();
+        self.request_stop();
+        let window = self.ns_window;
+        post(move |_| unsafe { (*(window as *const NSWindow)).orderOut(None) });
     }
-
     pub fn request_stop(&self) {
         self.closing.store(true, Ordering::Release);
+        self.relative_requested.store(false, Ordering::Release);
+        self.apply_capture();
+        self.events.stop();
         self.stop.stop();
-    }
-
-    pub fn set_title(&self, title: &str) {
-        let title = title.to_string();
-        let win_ptr = self.ns_window;
-        dispatch2::DispatchQueue::main().exec_async(move || {
-            let win = unsafe { &*(win_ptr as *const NSWindow) };
-            win.setTitle(&NSString::from_str(&title));
-        });
     }
 
     pub fn set_cursor(&self, request: crate::cursor::Request) {
-        let mut cur = self.cursor.lock().unwrap_or_else(|e| e.into_inner());
-        let mut p = crate::cursor::Pending::default();
-        p.submit(request);
-        cur.apply(p);
+        if self.closing.load(Ordering::Acquire) {
+            return;
+        }
+        self.cursor_pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .submit(request);
+        self.select_cursor();
+    }
+    fn select_cursor(&self) {
+        let pending = std::mem::take(
+            &mut *self
+                .cursor_pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+        let hidden = self.relative_mouse.load(Ordering::Acquire);
+        let window = self.ns_window;
+        post(move |mtm| {
+            CURSOR.with_borrow_mut(|cursor| {
+                cursor.apply(pending, mtm);
+                // Only the stream window's pointer changes; menus keep theirs.
+                let window = unsafe { &*(window as *const NSWindow) };
+                if window.isKeyWindow() {
+                    cursor.select(hidden);
+                }
+            })
+        });
+    }
+
+    pub fn native_display_size(&self) -> (u32, u32) {
+        let window = self.ns_window;
+        on_main(move |mtm| {
+            let window = unsafe { &*(window as *const NSWindow) };
+            let screen = window
+                .screen()
+                .or_else(|| objc2_app_kit::NSScreen::mainScreen(mtm));
+            screen.map_or((1920, 1080), |screen| {
+                // Physical pixels, not the point size of the desktop.
+                let size = screen.convertRectToBacking(screen.frame()).size;
+                (size.width.max(1.0) as u32, size.height.max(1.0) as u32)
+            })
+        })
     }
 
     pub fn set_fullscreen(&self, enable: bool) {
-        self.events.push(Event::Fullscreen(enable));
+        if self.closing.load(Ordering::Acquire) {
+            return;
+        }
+        let window = self.ns_window;
+        post(move |_| {
+            let window = unsafe { &*(window as *const NSWindow) };
+            if window.styleMask().contains(NSWindowStyleMask::FullScreen) != enable {
+                window.toggleFullScreen(None);
+            }
+        });
     }
-
-    pub fn wake_lock_snapshot(&self) -> crate::wake_lock::State {
+    /// Applied by the main thread's next window sync.
+    pub fn set_wake_lock(&self, enable: bool) {
+        if !self.closing.load(Ordering::Acquire) {
+            self.wake_requested.store(enable, Ordering::Release);
+        }
+    }
+    fn apply_wake_lock(&self, mtm: MainThreadMarker) {
+        let visible =
+            !self.ns_window(mtm).isMiniaturized() && !self.closing.load(Ordering::Acquire);
         self.wake_lock
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone()
+            .update(self.wake_requested.load(Ordering::Acquire), visible);
     }
 
-    pub fn set_wake_lock(&self, enable: bool) {
-        let mut wl = self.wake_lock.lock().unwrap_or_else(|e| e.into_inner());
-        wl.update(enable, true);
+    pub fn open_stream_settings(&self) {
+        let window = active().filter(|w| std::ptr::eq(&**w, self));
+        if let (Some(window), Some(manager)) = (window, self.manager()) {
+            crate::native_core::open_stream_settings(window, manager);
+        }
+    }
+    pub fn open_stats(&self) {
+        crate::native_core::ui::open_stats(self.stats.clone());
+    }
+
+    fn release_buttons(&self) {
+        let pressed = self.pressed_buttons.swap(0, Ordering::AcqRel);
+        for button in 0..5 {
+            if pressed & (1 << button) != 0 {
+                self.events.push(Event::Button(false, button, 0, 0));
+            }
+        }
+        self.local_shortcuts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
+    /// Focus, size, fullscreen, visibility and pasteboard changes, observed on
+    /// the main thread whenever AppKit delivers an event.
+    fn sync(self: &Arc<Self>, mtm: MainThreadMarker) {
+        let window = self.ns_window(mtm);
+        if !window.isVisible() && !window.isMiniaturized() {
+            // The user closed the stream window: end the session.
+            if !self.closing.load(Ordering::Acquire) {
+                self.request_stop();
+            }
+            return;
+        }
+        let focus = window.isKeyWindow() && !window.isMiniaturized();
+        if self.has_focus.swap(focus, Ordering::AcqRel) != focus {
+            if !focus {
+                self.release_buttons();
+            }
+            self.events.push(Event::Focus(focus));
+            self.apply_capture();
+            #[cfg(feature = "bud")]
+            self.sync_hid_acquired();
+            if focus {
+                self.select_cursor();
+                // A local copy made while another app was active.
+                let count = NSPasteboard::generalPasteboard().changeCount();
+                if self.pasteboard_seen.swap(count, Ordering::AcqRel) != count {
+                    self.events.push(Event::Clipboard);
+                }
+            }
+        }
+        let size = window.contentRectForFrameRect(window.frame()).size;
+        let size = (size.width as i32, size.height as i32);
+        let mut dimensions = self.dimensions.lock().unwrap_or_else(|e| e.into_inner());
+        if size.0 > 0 && size.1 > 0 && *dimensions != size {
+            *dimensions = size;
+            drop(dimensions);
+            self.events.push(Event::Size(size.0, size.1));
+            CURSOR.with_borrow_mut(|cursor| cursor.refresh_size(mtm));
+        }
+        self.apply_wake_lock(mtm);
+        let fullscreen = window.styleMask().contains(NSWindowStyleMask::FullScreen);
+        if self.fullscreen_active.swap(fullscreen, Ordering::AcqRel) != fullscreen {
+            self.events.push(Event::Fullscreen(fullscreen));
+        }
+    }
+
+    fn shortcut(&self, code: &'static str, down: bool, repeated: bool, mods: i32) -> bool {
+        use crate::input::{Shortcut, ShortcutRoute};
+        let route = self
+            .local_shortcuts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .route(code, down, repeated, crate::input::shortcut(code, mods));
+        match route {
+            ShortcutRoute::Forward => return false,
+            ShortcutRoute::Consume => {}
+            ShortcutRoute::Activate(Shortcut::Menu) => self.open_stream_settings(),
+            ShortcutRoute::Activate(Shortcut::Statistics) => self.open_stats(),
+            ShortcutRoute::Activate(Shortcut::SecureAttention) => self.events.push(
+                Event::NativeSession(crate::native_core::session_model::Command::SecureAttention),
+            ),
+            ShortcutRoute::Activate(action) => self.events.push(Event::Shortcut(action)),
+        }
+        true
+    }
+
+    fn button(&self, down: bool, button: i32, x: i32, y: i32) {
+        let bit = 1usize << button;
+        if down {
+            self.pressed_buttons.fetch_or(bit, Ordering::AcqRel);
+            #[cfg(feature = "bud")]
+            if self.hid_mouse_active.load(Ordering::Acquire)
+                && !self.relative_mouse.load(Ordering::Acquire)
+            {
+                self.events.push(Event::Motion(x, y));
+            }
+        } else {
+            self.pressed_buttons.fetch_and(!bit, Ordering::AcqRel);
+        }
+        self.events.push(Event::Button(down, button, x, y));
     }
 }
 
 impl Drop for Window {
     fn drop(&mut self) {
-        let win_ptr = self.ns_window;
-        let gl_ctx_ptr = self.ns_gl_context;
-        let gl_view_ptr = self.ns_gl_view;
-        let (video_view_ptr, video_layer_ptr) = (self.ns_video_view, self.video_layer);
-        dispatch2::DispatchQueue::main().exec_async(move || unsafe {
-            let _win = Retained::from_raw(win_ptr as *mut NSWindow);
-            let _ctx = Retained::from_raw(gl_ctx_ptr as *mut objc2_app_kit::NSOpenGLContext);
-            let _view = Retained::from_raw(gl_view_ptr as *mut NSOpenGLView);
-            let _video_view = Retained::from_raw(video_view_ptr as *mut NSView);
-            let _video_layer =
-                Retained::from_raw(video_layer_ptr as *mut objc2::runtime::AnyObject);
+        let (window, layer) = (self.ns_window, self.video_layer);
+        let wake_lock =
+            std::mem::take(&mut *self.wake_lock.lock().unwrap_or_else(|e| e.into_inner()));
+        post(move |_| unsafe {
+            let mut wake_lock = wake_lock;
+            wake_lock.update(false, false);
+            let window = Retained::from_raw(window as *mut NSWindow);
+            if let Some(window) = &window {
+                window.orderOut(None);
+            }
+            drop(Retained::from_raw(layer as *mut AnyObject));
         });
     }
 }
 
-static ACTIVE_WINDOW: Mutex<Option<std::sync::Weak<Window>>> = Mutex::new(None);
-
-thread_local! {
-    static SCROLL_REMAINDER: std::cell::Cell<(f64, f64)> = const { std::cell::Cell::new((0.0, 0.0)) };
+/// Observes the active stream window once per main-loop iteration.
+pub fn sync_active(mtm: MainThreadMarker) {
+    if let Some(window) = active().filter(|w| !w.closing.load(Ordering::Acquire)) {
+        window.sync(mtm);
+    }
 }
 
-pub fn active_window() -> Option<Arc<Window>> {
-    ACTIVE_WINDOW
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .and_then(|w| w.upgrade())
+/// Compact modifier mask shared with the Windows adapter.
+fn modifiers(flags: NSEventModifierFlags) -> i32 {
+    [
+        (NSEventModifierFlags::Shift, 1),
+        (NSEventModifierFlags::Control, 2),
+        (NSEventModifierFlags::Option, 4),
+        (NSEventModifierFlags::Command, 8),
+        (NSEventModifierFlags::CapsLock, 16),
+    ]
+    .into_iter()
+    .filter(|(flag, _)| flags.contains(*flag))
+    .fold(0, |mods, (_, bit)| mods | bit)
 }
 
-fn cocoa_mods_to_matoya(flags: objc2_app_kit::NSEventModifierFlags) -> i32 {
-    let mut mods = 0;
-    if flags.contains(objc2_app_kit::NSEventModifierFlags::Shift) {
-        mods |= 1;
-    }
-    if flags.contains(objc2_app_kit::NSEventModifierFlags::Control) {
-        mods |= 2;
-    }
-    if flags.contains(objc2_app_kit::NSEventModifierFlags::Option) {
-        mods |= 4;
-    }
-    if flags.contains(objc2_app_kit::NSEventModifierFlags::Command) {
-        mods |= 8;
-    }
-    if flags.contains(objc2_app_kit::NSEventModifierFlags::CapsLock) {
-        mods |= 16;
-    }
-    mods
-}
-
-/// Returns true when the event was a main-window key event delivered to the host.
-/// The caller must then not pass it to AppKit: no view handles keyDown, so the
-/// responder chain would end in NSBeep on every key press.
-pub fn handle_cocoa_event(event: &objc2_app_kit::NSEvent) -> bool {
-    use objc2_app_kit::NSEventType;
-
-    let Some(window) = ACTIVE_WINDOW
-        .lock()
-        .unwrap()
-        .as_ref()
-        .and_then(|w| w.upgrade())
-    else {
+/// Handles one AppKit event for the stream window on the main thread. Returns
+/// true when the event was consumed and must not reach AppKit (which would
+/// otherwise beep for unhandled keys).
+pub fn handle_event(event: &NSEvent, mtm: MainThreadMarker) -> bool {
+    let Some(window) = active() else {
         return false;
     };
-
     if window.closing.load(Ordering::Acquire) {
         return false;
     }
-
-    let (mut w, mut h) = *window.dimensions.lock().unwrap_or_else(|e| e.into_inner());
-
-    if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
-        // The live Window keeps ns_window retained until Drop.
-        let win = unsafe { &*(window.ns_window as *const NSWindow) };
-        // Closing hides the main window; minimizing hides it too but keeps the session.
-        if !win.isVisible() && !win.isMiniaturized() {
-            window.close();
-            return false;
-        }
-        let is_key = win.isKeyWindow();
-        // Settings and alert windows handle their own input; it never reaches the host.
-        let foreign = match event.window(mtm) {
-            Some(target) => !std::ptr::eq(&*target, win),
-            None => !is_key,
-        };
-        let prev_focus = window.has_focus.swap(is_key, Ordering::AcqRel);
-        if prev_focus != is_key {
-            window.events.push(Event::Focus(is_key));
-            #[cfg(feature = "bud")]
-            window.sync_hid_input_acquired(is_key);
-            if !is_key {
-                window.release_buttons();
-                if window.relative_mouse.load(Ordering::Acquire) {
-                    window.set_relative_mouse(false);
-                }
-            }
-        }
-        let rect = win.contentRectForFrameRect(win.frame());
-        let nw = rect.size.width as i32;
-        let nh = rect.size.height as i32;
-        if nw > 0 && nh > 0 && (nw != w || nh != h) {
-            w = nw;
-            h = nh;
-            *window.dimensions.lock().unwrap_or_else(|e| e.into_inner()) = (w, h);
-            window.events.push(Event::Size(w, h));
-            let gl_ctx =
-                unsafe { &*(window.ns_gl_context as *const objc2_app_kit::NSOpenGLContext) };
-            let cgl = window.cgl_context as *mut std::ffi::c_void;
-            unsafe {
-                crate::graphics::cgl::CGLLockContext(cgl);
-                gl_ctx.update(mtm);
-                crate::graphics::cgl::CGLUnlockContext(cgl);
-            }
-        }
-        if foreign {
-            return false;
-        }
+    let ours = event
+        .window(mtm)
+        .is_some_and(|target| std::ptr::eq(&*target, window.ns_window(mtm)));
+    if !ours {
+        return false;
     }
-
-    let loc = event.locationInWindow();
-    let x = loc.x as i32;
-    let y = h - (loc.y as i32);
-
+    let (_, height) = *window.dimensions.lock().unwrap_or_else(|e| e.into_inner());
+    let location = event.locationInWindow();
+    let (x, y) = (location.x as i32, height - location.y as i32);
+    let mouse_button = |number: isize| match number {
+        0 => 0,
+        1 => 2,
+        2 => 1,
+        3 => 3,
+        _ => 4,
+    };
     match event.r#type() {
-        NSEventType::LeftMouseDown => {
-            window.sync_absolute_pointer(x, y);
-            window.record_button(0, true);
-            window.events.push(Event::Button(true, 0, x, y));
+        NSEventType::LeftMouseDown | NSEventType::RightMouseDown | NSEventType::OtherMouseDown => {
+            window.button(true, mouse_button(event.buttonNumber()), x, y);
         }
-        NSEventType::LeftMouseUp => {
-            window.record_button(0, false);
-            window.events.push(Event::Button(false, 0, x, y));
-        }
-        NSEventType::RightMouseDown => {
-            window.sync_absolute_pointer(x, y);
-            window.record_button(2, true);
-            window.events.push(Event::Button(true, 2, x, y));
-        }
-        NSEventType::RightMouseUp => {
-            window.record_button(2, false);
-            window.events.push(Event::Button(false, 2, x, y));
-        }
-        NSEventType::OtherMouseDown => {
-            let button = event.buttonNumber() as usize;
-            let matoya_btn = match button {
-                2 => 1,
-                b if b >= 3 => b,
-                _ => 1,
-            };
-            window.sync_absolute_pointer(x, y);
-            window.record_button(matoya_btn, true);
-            window
-                .events
-                .push(Event::Button(true, matoya_btn as i32, x, y));
-        }
-        NSEventType::OtherMouseUp => {
-            let button = event.buttonNumber() as usize;
-            let matoya_btn = match button {
-                2 => 1,
-                b if b >= 3 => b,
-                _ => 1,
-            };
-            window.record_button(matoya_btn, false);
-            window
-                .events
-                .push(Event::Button(false, matoya_btn as i32, x, y));
+        NSEventType::LeftMouseUp | NSEventType::RightMouseUp | NSEventType::OtherMouseUp => {
+            window.button(false, mouse_button(event.buttonNumber()), x, y);
         }
         NSEventType::MouseMoved
         | NSEventType::LeftMouseDragged
         | NSEventType::RightMouseDragged
         | NSEventType::OtherMouseDragged => {
             if window.relative_mouse.load(Ordering::Acquire) {
-                let dx = event.deltaX() as i32;
-                let dy = event.deltaY() as i32;
+                let (dx, dy) = (event.deltaX() as i32, event.deltaY() as i32);
                 if dx != 0 || dy != 0 {
                     window.events.push(Event::RelativeMotion(dx, dy));
                 }
@@ -733,92 +629,66 @@ pub fn handle_cocoa_event(event: &objc2_app_kit::NSEvent) -> bool {
             }
         }
         NSEventType::ScrollWheel => {
-            // Match Windows: 120 per wheel notch, +y scrolls down, +x scrolls right.
-            // AppKit's deltas are the opposite sign and already honour natural scrolling.
-            // ponytail: 1.2 per trackpad point (100 points = one notch) is a guess; tune if it feels off.
+            // Windows wheel units: 120 per notch, +y down and +x right.
+            // ponytail: 1.2 per trackpad point is a guess; tune if it feels off.
             let scale = if event.hasPreciseScrollingDeltas() {
                 1.2
             } else {
                 120.0
             };
-            let (x, y) = SCROLL_REMAINDER.with(|rem| {
-                let (rx, ry) = rem.get();
-                let x = rx - event.scrollingDeltaX() * scale;
-                let y = ry - event.scrollingDeltaY() * scale;
-                // Keep fractions so slow trackpad motion still adds up to a step.
-                rem.set((x.fract(), y.fract()));
-                (x as i32, y as i32)
+            let (dx, dy) = SCROLL.with(|remainder| {
+                let (rx, ry) = remainder.get();
+                let dx = rx - event.scrollingDeltaX() * scale;
+                let dy = ry - event.scrollingDeltaY() * scale;
+                // Keep fractions so slow trackpad motion still adds up.
+                remainder.set((dx.fract(), dy.fract()));
+                (dx as i32, dy as i32)
             });
-            if x != 0 || y != 0 {
-                window.events.push(Event::Scroll(x, y));
+            if dx != 0 || dy != 0 {
+                window.events.push(Event::Scroll(dx, dy));
             }
         }
-        NSEventType::KeyDown => {
-            let key_code = event.keyCode();
+        NSEventType::KeyDown | NSEventType::KeyUp => {
+            let down = event.r#type() == NSEventType::KeyDown;
             let flags = event.modifierFlags();
-            // Menu shortcuts (Cmd+, Cmd+I, Cmd+F, Cmd+Q) stay local; other Command
-            // combinations go to the host.
-            if flags.contains(objc2_app_kit::NSEventModifierFlags::Command)
-                && MainThreadMarker::new().is_some_and(|mtm| {
-                    NSApplication::sharedApplication(mtm)
-                        .mainMenu()
-                        .is_some_and(|menu| menu.performKeyEquivalent(event))
-                })
+            let mods = modifiers(flags);
+            let code = key_code(event.keyCode());
+            // Session shortcuts win over menu equivalents, so Command+Q
+            // disconnects like Parsec instead of quitting the app.
+            if code.is_some_and(|code| window.shortcut(code, down, down && event.isARepeat(), mods))
             {
                 return true;
             }
-            let mods = cocoa_mods_to_matoya(flags);
-            if let Some(code) = mac_key_to_str(key_code) {
-                window.events.push(Event::Key(true, code, mods));
+            // Command menu equivalents (Settings, Edit, ...) stay local; other
+            // Command chords reach the host.
+            if down
+                && flags.contains(NSEventModifierFlags::Command)
+                && objc2_app_kit::NSApplication::sharedApplication(mtm)
+                    .mainMenu()
+                    .is_some_and(|menu| menu.performKeyEquivalent(event))
+            {
+                return true;
             }
-            // Command shortcuts type nothing, matching Windows (no WM_CHAR for them).
-            let chars = if flags.contains(objc2_app_kit::NSEventModifierFlags::Command) {
-                None
-            } else {
-                event.characters()
-            };
-            if let Some(chars) = chars {
-                let s = chars.to_string();
-                for c in s.chars() {
-                    // U+F700..U+F8FF are AppKit's arrow/function-key codes, not text.
-                    if !c.is_control() && !('\u{F700}'..='\u{F8FF}').contains(&c) {
-                        window.events.push(Event::Text(c as u32));
-                    }
-                }
-            }
-            return true;
-        }
-        NSEventType::KeyUp => {
-            let key_code = event.keyCode();
-            let flags = event.modifierFlags();
-            let mods = cocoa_mods_to_matoya(flags);
-            if let Some(code) = mac_key_to_str(key_code) {
-                window.events.push(Event::Key(false, code, mods));
+            if let Some(code) = code {
+                window.events.push(Event::Key(down, code, mods));
             }
             return true;
         }
         NSEventType::FlagsChanged => {
-            let key_code = event.keyCode();
-            if let Some(code) = mac_key_to_str(key_code) {
+            if let Some(code) = key_code(event.keyCode()) {
                 let flags = event.modifierFlags();
-                let mods = cocoa_mods_to_matoya(flags);
-                let down = match code {
-                    "ShiftLeft" | "ShiftRight" => {
-                        flags.contains(objc2_app_kit::NSEventModifierFlags::Shift)
-                    }
-                    "ControlLeft" | "ControlRight" => {
-                        flags.contains(objc2_app_kit::NSEventModifierFlags::Control)
-                    }
-                    "AltLeft" | "AltRight" => {
-                        flags.contains(objc2_app_kit::NSEventModifierFlags::Option)
-                    }
-                    "MetaLeft" | "MetaRight" => {
-                        flags.contains(objc2_app_kit::NSEventModifierFlags::Command)
-                    }
-                    "CapsLock" => flags.contains(objc2_app_kit::NSEventModifierFlags::CapsLock),
-                    _ => false,
+                let flag = match code {
+                    "ShiftLeft" | "ShiftRight" => NSEventModifierFlags::Shift,
+                    "ControlLeft" | "ControlRight" => NSEventModifierFlags::Control,
+                    "AltLeft" | "AltRight" => NSEventModifierFlags::Option,
+                    "MetaLeft" | "MetaRight" => NSEventModifierFlags::Command,
+                    "CapsLock" => NSEventModifierFlags::CapsLock,
+                    _ => return false,
                 };
-                window.events.push(Event::Key(down, code, mods));
+                let down = flags.contains(flag);
+                if !window.shortcut(code, down, false, modifiers(flags)) {
+                    window.events.push(Event::Key(down, code, modifiers(flags)));
+                }
             }
         }
         _ => {}
@@ -826,8 +696,9 @@ pub fn handle_cocoa_event(event: &objc2_app_kit::NSEvent) -> bool {
     false
 }
 
-fn mac_key_to_str(kc: u16) -> Option<&'static str> {
-    Some(match kc {
+/// macOS virtual key codes (Carbon kVK_*) to the shared physical key names.
+fn key_code(code: u16) -> Option<&'static str> {
+    Some(match code {
         0 => "KeyA",
         1 => "KeyS",
         2 => "KeyD",
@@ -838,6 +709,7 @@ fn mac_key_to_str(kc: u16) -> Option<&'static str> {
         7 => "KeyX",
         8 => "KeyC",
         9 => "KeyV",
+        10 => "IntlBackslash",
         11 => "KeyB",
         12 => "KeyQ",
         13 => "KeyW",
@@ -880,6 +752,7 @@ fn mac_key_to_str(kc: u16) -> Option<&'static str> {
         50 => "Backquote",
         51 => "Backspace",
         53 => "Escape",
+        54 => "MetaRight",
         55 => "MetaLeft",
         56 => "ShiftLeft",
         57 => "CapsLock",
@@ -888,6 +761,7 @@ fn mac_key_to_str(kc: u16) -> Option<&'static str> {
         60 => "ShiftRight",
         61 => "AltRight",
         62 => "ControlRight",
+        64 => "F17",
         65 => "NumpadDecimal",
         67 => "NumpadMultiply",
         69 => "NumpadAdd",
@@ -895,7 +769,9 @@ fn mac_key_to_str(kc: u16) -> Option<&'static str> {
         75 => "NumpadDivide",
         76 => "NumpadEnter",
         78 => "NumpadSubtract",
-        81 => "Equal",
+        79 => "F18",
+        80 => "F19",
+        81 => "NumpadEqual",
         82 => "Numpad0",
         83 => "Numpad1",
         84 => "Numpad2",
@@ -904,6 +780,7 @@ fn mac_key_to_str(kc: u16) -> Option<&'static str> {
         87 => "Numpad5",
         88 => "Numpad6",
         89 => "Numpad7",
+        90 => "F20",
         91 => "Numpad8",
         92 => "Numpad9",
         96 => "F5",
@@ -914,8 +791,10 @@ fn mac_key_to_str(kc: u16) -> Option<&'static str> {
         101 => "F9",
         103 => "F11",
         105 => "F13",
+        106 => "F16",
         107 => "F14",
         109 => "F10",
+        110 => "ContextMenu",
         111 => "F12",
         113 => "F15",
         114 => "Insert",
@@ -938,119 +817,45 @@ fn mac_key_to_str(kc: u16) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn mac_keyboard_mapping_covers_core_functions_navigation_and_keypad() {
-        // Function keys
-        assert_eq!(mac_key_to_str(122), Some("F1"));
-        assert_eq!(mac_key_to_str(120), Some("F2"));
-        assert_eq!(mac_key_to_str(99), Some("F3"));
-        assert_eq!(mac_key_to_str(118), Some("F4"));
-        assert_eq!(mac_key_to_str(96), Some("F5"));
-        assert_eq!(mac_key_to_str(97), Some("F6"));
-        assert_eq!(mac_key_to_str(98), Some("F7"));
-        assert_eq!(mac_key_to_str(100), Some("F8"));
-        assert_eq!(mac_key_to_str(101), Some("F9"));
-        assert_eq!(mac_key_to_str(109), Some("F10"));
-        assert_eq!(mac_key_to_str(103), Some("F11"));
-        assert_eq!(mac_key_to_str(111), Some("F12"));
-
-        // Navigation
-        assert_eq!(mac_key_to_str(114), Some("Insert"));
-        assert_eq!(mac_key_to_str(115), Some("Home"));
-        assert_eq!(mac_key_to_str(119), Some("End"));
-        assert_eq!(mac_key_to_str(116), Some("PageUp"));
-        assert_eq!(mac_key_to_str(121), Some("PageDown"));
-        assert_eq!(mac_key_to_str(117), Some("Delete"));
-
-        // Keypad
-        assert_eq!(mac_key_to_str(82), Some("Numpad0"));
-        assert_eq!(mac_key_to_str(83), Some("Numpad1"));
-        assert_eq!(mac_key_to_str(84), Some("Numpad2"));
-        assert_eq!(mac_key_to_str(85), Some("Numpad3"));
-        assert_eq!(mac_key_to_str(86), Some("Numpad4"));
-        assert_eq!(mac_key_to_str(87), Some("Numpad5"));
-        assert_eq!(mac_key_to_str(88), Some("Numpad6"));
-        assert_eq!(mac_key_to_str(89), Some("Numpad7"));
-        assert_eq!(mac_key_to_str(91), Some("Numpad8"));
-        assert_eq!(mac_key_to_str(92), Some("Numpad9"));
-        assert_eq!(mac_key_to_str(65), Some("NumpadDecimal"));
-        assert_eq!(mac_key_to_str(67), Some("NumpadMultiply"));
-        assert_eq!(mac_key_to_str(69), Some("NumpadAdd"));
-        assert_eq!(mac_key_to_str(71), Some("NumLock"));
-        assert_eq!(mac_key_to_str(75), Some("NumpadDivide"));
-        assert_eq!(mac_key_to_str(76), Some("NumpadEnter"));
-        assert_eq!(mac_key_to_str(78), Some("NumpadSubtract"));
-
-        // Letters & Modifiers
-        assert_eq!(mac_key_to_str(0), Some("KeyA"));
-        assert_eq!(mac_key_to_str(55), Some("MetaLeft"));
-        assert_eq!(mac_key_to_str(56), Some("ShiftLeft"));
-        assert_eq!(mac_key_to_str(58), Some("AltLeft"));
-        assert_eq!(mac_key_to_str(59), Some("ControlLeft"));
-
-        // Unknown
-        assert_eq!(mac_key_to_str(999), None);
-    }
-
-    #[test]
-    fn cocoa_modifiers_translate_to_matoya_flags() {
-        use objc2_app_kit::NSEventModifierFlags;
-
-        assert_eq!(cocoa_mods_to_matoya(NSEventModifierFlags::empty()), 0);
-        assert_eq!(cocoa_mods_to_matoya(NSEventModifierFlags::Shift), 1);
-        assert_eq!(cocoa_mods_to_matoya(NSEventModifierFlags::Control), 2);
-        assert_eq!(cocoa_mods_to_matoya(NSEventModifierFlags::Option), 4);
-        assert_eq!(cocoa_mods_to_matoya(NSEventModifierFlags::Command), 8);
-        assert_eq!(cocoa_mods_to_matoya(NSEventModifierFlags::CapsLock), 16);
-        assert_eq!(
-            cocoa_mods_to_matoya(NSEventModifierFlags::Shift | NSEventModifierFlags::Command),
-            1 | 8
-        );
-    }
-
-    #[test]
-    fn button_tracking_releases_all_held_buttons_on_focus_loss() {
-        let pressed = AtomicUsize::new(0);
-        // Press button 0 and button 2
-        pressed.fetch_or(1 << 0, Ordering::AcqRel);
-        pressed.fetch_or(1 << 2, Ordering::AcqRel);
-        assert_eq!(pressed.load(Ordering::Acquire), 1 | 4);
-
-        // Release buttons
-        let held = pressed.swap(0, Ordering::AcqRel);
-        let mut released = Vec::new();
-        for button in 0..5 {
-            if (held & (1 << button)) != 0 {
-                released.push(button);
-            }
+    fn mac_keys_and_modifiers_use_shared_physical_names_and_mask() {
+        for (code, name) in [
+            (0, "KeyA"),
+            (18, "Digit1"),
+            (29, "Digit0"),
+            (36, "Enter"),
+            (55, "MetaLeft"),
+            (54, "MetaRight"),
+            (58, "AltLeft"),
+            (59, "ControlLeft"),
+            (82, "Numpad0"),
+            (92, "Numpad9"),
+            (115, "Home"),
+            (117, "Delete"),
+            (119, "End"),
+            (122, "F1"),
+            (111, "F12"),
+            (126, "ArrowUp"),
+        ] {
+            assert_eq!(key_code(code), Some(name));
         }
-        assert_eq!(released, vec![0, 2]);
-        assert_eq!(pressed.load(Ordering::Acquire), 0);
-    }
-
-    #[test]
-    #[cfg(feature = "bud")]
-    fn hid_input_lifecycle_and_acquired_synchronization() {
-        let hid_acquired = AtomicBool::new(false);
-        let hid_mouse = AtomicBool::new(true);
-        let hid_keyboard = AtomicBool::new(true);
-        let closing = AtomicBool::new(false);
-
-        // When focused, not closing, and HID active -> acquired = true
-        let has_focus = true;
-        let acquired = has_focus
-            && !closing.load(Ordering::Acquire)
-            && (hid_mouse.load(Ordering::Acquire) || hid_keyboard.load(Ordering::Acquire));
-        assert!(acquired);
-        assert!(!hid_acquired.swap(acquired, Ordering::AcqRel)); // transitioned false -> true
-
-        // Focus loss -> acquired = false
-        let has_focus = false;
-        let acquired = has_focus
-            && !closing.load(Ordering::Acquire)
-            && (hid_mouse.load(Ordering::Acquire) || hid_keyboard.load(Ordering::Acquire));
-        assert!(!acquired);
-        assert!(hid_acquired.swap(acquired, Ordering::AcqRel)); // transitioned true -> false
+        assert_eq!(key_code(52), None);
+        assert_eq!(modifiers(NSEventModifierFlags::empty()), 0);
+        assert_eq!(
+            modifiers(NSEventModifierFlags::Shift | NSEventModifierFlags::Control),
+            3
+        );
+        assert_eq!(
+            modifiers(NSEventModifierFlags::Option | NSEventModifierFlags::Command),
+            12
+        );
+        // Command+Option chords use the Parsec macOS shortcut mask.
+        assert_eq!(
+            crate::input::shortcut(
+                "Backquote",
+                modifiers(NSEventModifierFlags::Command | NSEventModifierFlags::Option)
+            ),
+            Some(crate::input::Shortcut::Disconnect)
+        );
     }
 }

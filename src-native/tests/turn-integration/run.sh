@@ -3,7 +3,7 @@ set -euo pipefail
 # Isolated loopback fixture. No user accounts, settings or external TURN service.
 fixture=$(mktemp -d)
 trap 'kill "${turn_pid:-}" 2>/dev/null || true; rm -rf "$fixture"' EXIT
-openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=ParsecWebTurn CI CA' -keyout "$fixture/ca.key" -out "$fixture/ca.crt" 2>/dev/null
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=EvoParseq CI CA' -keyout "$fixture/ca.key" -out "$fixture/ca.crt" 2>/dev/null
 openssl req -newkey rsa:2048 -nodes -subj '/CN=localhost' -keyout "$fixture/server.key" -out "$fixture/server.csr" 2>/dev/null
 printf 'subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\n' > "$fixture/extensions"
 openssl x509 -req -in "$fixture/server.csr" -CA "$fixture/ca.crt" -CAkey "$fixture/ca.key" -CAcreateserial -days 1 -extfile "$fixture/extensions" -out "$fixture/server.crt" 2>/dev/null

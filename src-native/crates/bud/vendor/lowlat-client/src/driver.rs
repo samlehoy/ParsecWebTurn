@@ -228,6 +228,7 @@ pub struct Telemetry {
     /// Set by the decoder's consumer when its feed asked for a keyframe; the
     /// loop sends the request on its next pass and clears it.
     pub request: AtomicBool,
+    pub fallback_420: AtomicBool,
     /// The declaration: what the application asked, and what went out after
     /// the mask; and the stream as decoded, the layout's code or zero.
     pub asked_flags: AtomicU32,
@@ -533,6 +534,12 @@ impl Driver {
             return Some(outcome);
         }
         if self.telemetry.request.swap(false, Ordering::AcqRel) {
+            if self.telemetry.fallback_420.load(Ordering::Acquire) {
+                self.init.flags &= !init::FLAG_COLOR444;
+                self.telemetry
+                    .declared_flags
+                    .store(self.init.flags, Ordering::Release);
+            }
             self.request_keyframe(endpoint.session());
         }
         if self.report_due_ms.is_some_and(|due| now_ms >= due) {
@@ -918,9 +925,12 @@ impl Driver {
                 }
             }
             op::ENCODE_LATENCY => {
-                // Zero carries no usable timing. Keep this connection's last
-                // real report instead of making the statistics flicker.
-                if message.a1 != 0
+                // Only kind 1 reports video encode time. Audio (kind 2) also
+                // names stream 0 and must not overwrite the video's figure.
+                // Zero carries no usable timing; retain this connection's
+                // last real video report instead of making it flicker.
+                if message.a0 == 1
+                    && message.a1 != 0
                     && let Some(slot) = self.encode_latency_us.get_mut(message.a2 as usize)
                 {
                     *slot = message.a1;
@@ -1204,7 +1214,9 @@ impl Driver {
 }
 
 fn negotiated_encoder_flags(external: u32, initial: u32) -> u32 {
-    (external & !0x1b) | (initial & 0x19)
+    const MASK: u32 =
+        init::FLAG_HEVC | init::FLAG_COLOR444 | init::FLAG_FULL_RANGE | init::FLAG_10BIT;
+    (external & !MASK) | (initial & MASK)
 }
 
 #[cfg(test)]
@@ -1309,16 +1321,18 @@ mod tests {
     }
 
     #[test]
-    fn external_encoder_requests_keep_initial_depth_and_range() {
-        for external in [0, 1, 2, 8, 16, 0x1b] {
-            assert_eq!(negotiated_encoder_flags(external, 0x19), 0x19);
-            assert_eq!(negotiated_encoder_flags(external, 8), 8);
+    fn external_encoder_requests_keep_negotiated_chroma_depth_and_range() {
+        for initial in [0, 8, 0x09, 0x0b, 0x19, 0x1b] {
+            for external in [0, 1, 2, 8, 16, 0x1b, 0x40, 0x5b] {
+                let flags = negotiated_encoder_flags(external, initial);
+                assert_eq!(flags & 0x1b, initial);
+                assert_eq!(flags & !0x1b, external & !0x1b);
+            }
         }
-        assert_eq!(negotiated_encoder_flags(0x40, 0x19), 0x59);
+        assert_eq!(negotiated_encoder_flags(0x1b, 0x19), 0x19);
     }
-
     #[test]
-    fn missing_encode_report_retains_last_value_only_for_current_connection() {
+    fn only_video_encode_reports_update_the_current_connections_timing() {
         let make = || {
             let (emit, _) = events::queue();
             Driver::new(
@@ -1331,11 +1345,22 @@ mod tests {
         };
         let mut driver = make();
         assert_eq!(driver.encode_latency_us(0), 0);
-        for (reported, expected) in [(3400, 3400), (0, 3400), (4200, 4200), (0, 4200)] {
+        for (kind, reported, stream, expected) in [
+            (2, 9000, 0, 0),
+            (0, 8000, 0, 0),
+            (1, 3400, 0, 3400),
+            (2, 19000, 0, 3400),
+            (1, 0, 0, 3400),
+            (1, 4200, 0, 4200),
+            (99, 7000, 0, 4200),
+            (1, 9000, u32::MAX, 4200),
+            (2, 0, 0, 4200),
+            (1, 0, 0, 4200),
+        ] {
             let _ = driver.on_control(&Control {
-                a0: 1,
+                a0: kind,
                 a1: reported,
-                a2: 0,
+                a2: stream,
                 opcode: op::ENCODE_LATENCY,
                 body: &[],
             });

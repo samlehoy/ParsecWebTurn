@@ -1,7 +1,12 @@
-//! Managed native offer creation behind parsec_web_new_attempt. The guest's
-//! private ABI is isolated; no account, signaling server or remote host is used.
+//! Native WebRTC offer creation and managed connection lifecycle.
+//! Host signaling translation is isolated from the ICE/DTLS/SCTP engine.
+#[cfg(target_os = "android")]
+use crate::video_android as native_video;
+#[cfg(target_os = "macos")]
+use crate::video_macos as native_video;
+#[cfg(windows)]
+use crate::video_windows as native_video;
 use crate::{
-    memory::GuestMemory,
     signaling::{Candidate, CandidateGate, Credentials, Description, LocalCandidateSync},
     transport::CHANNELS,
 };
@@ -15,12 +20,7 @@ use std::{
     },
     time::Duration,
 };
-
-#[cfg(target_os = "macos")]
-use crate::video_macos as video_backend;
-#[cfg(windows)]
-use crate::video_windows as video_backend;
-pub(crate) const MAX_CHANNEL_MESSAGE: usize = 1024 * 1024;
+pub(crate) const MAX_CHANNEL_MESSAGE: usize = crate::control::MAX_CHANNEL_MESSAGE;
 static ACTIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
 struct Permit;
 impl Drop for Permit {
@@ -41,13 +41,17 @@ use webrtc::{
     },
 };
 
+type Publish = dyn Fn(Option<&Description>) -> Result<bool> + Send + Sync;
+
 #[derive(Clone)]
-pub struct Output {
-    memory: GuestMemory,
-    strings: [u32; 3],
-    capacity: usize,
-    sync: u32,
-    error: u32,
+pub struct Output(Arc<Publish>);
+impl Output {
+    pub fn new(publish: Arc<Publish>) -> Self {
+        Self(publish)
+    }
+    pub fn finish(&self, credentials: Option<&Description>) -> Result<bool> {
+        (self.0)(credentials)
+    }
 }
 
 /// Static categories, never underlying errors, addresses or ICE credentials.
@@ -62,7 +66,6 @@ pub enum FailureStage {
     InboundQueueFull,
     ControlStartup,
     ChannelSend,
-    InboundControl,
     IceTransport,
     DtlsTransport,
     PeerTransport,
@@ -70,12 +73,7 @@ pub enum FailureStage {
     SetRemoteDescription,
     CandidateGate,
     AddIceCandidate,
-    RemoteBegin,
     AttemptMismatch,
-    RemoteCandidate,
-    CandidateAddress,
-    CandidatePort,
-    CandidateEndpoint,
     CommandQueueFull,
     CommandQueueClosed,
     Cancelled,
@@ -88,80 +86,13 @@ impl std::fmt::Display for FailureStage {
 }
 impl std::error::Error for FailureStage {}
 
-impl Output {
-    pub fn new(
-        memory: GuestMemory,
-        strings: [u32; 3],
-        capacity: usize,
-        sync: u32,
-        error: u32,
-    ) -> Result<Self> {
-        if !(2..=4096).contains(&capacity) {
-            bail!("invalid attempt output capacity");
-        }
-        memory.sync_word(sync)?;
-        let mut ranges = Vec::new();
-        for ptr in strings {
-            ranges.push(memory.range(ptr, capacity)?);
-        }
-        ranges.push(memory.range(sync, 4)?);
-        ranges.push(memory.range(error, 4)?);
-        for (i, a) in ranges.iter().enumerate() {
-            for b in &ranges[i + 1..] {
-                if a.start < b.end && b.start < a.end {
-                    bail!("overlapping attempt output buffers");
-                }
-            }
-        }
-        Ok(Self {
-            memory,
-            strings,
-            capacity,
-            sync,
-            error,
-        })
-    }
-    pub fn finish(&self, credentials: Option<&Description>) -> Result<bool> {
-        // Validate every size before writing any credential. Failure leaves the
-        // buffers empty, so stale credentials cannot look like a valid offer.
-        self.finish_values(credentials.map(|d| {
-            [
-                d.credentials.ufrag.as_str(),
-                d.credentials.password.as_str(),
-                d.credentials.fingerprint.as_str(),
-            ]
-        }))
-    }
-
-    /// Shared guest-memory completion only; does not construct an RTC description.
-    pub fn finish_values(&self, values: Option<[&str; 3]>) -> Result<bool> {
-        let fits = values
-            .as_ref()
-            .is_some_and(|values| values.iter().all(|v| v.len() < self.capacity));
-        for (i, ptr) in self.strings.iter().enumerate() {
-            self.memory.c_string(
-                *ptr,
-                self.capacity,
-                if fits {
-                    values.as_ref().unwrap()[i]
-                } else {
-                    ""
-                },
-            )?;
-        }
-        self.memory.set_u32(self.error, u32::from(!fits))?;
-        self.memory.signal(self.sync)?;
-        Ok(fits)
-    }
-}
-
 #[derive(Default)]
 struct Progress {
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     relay_only: bool,
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     relay_only_connectivity: bool,
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     resolved_ice_servers: Option<usize>,
     ready: bool,
     closed: bool,
@@ -180,7 +111,15 @@ struct Progress {
     channel_messages_received: [u64; 3],
     channel_bytes_received: [u64; 3],
     channel_max_message_bytes: [usize; 3],
+    #[cfg(any(target_os = "android", test))]
+    empty_channel_messages: [u64; 3],
+    #[cfg(any(target_os = "android", test))]
+    rtt_ms: Option<f64>,
+    #[cfg(any(target_os = "android", test))]
+    route: Option<&'static str>,
     failure_channel: Option<u16>,
+    #[cfg(any(target_os = "android", test))]
+    read_error: Option<&'static str>,
     failure_elapsed_ms: Option<u64>,
     last_send_elapsed_ms: Option<u64>,
     last_sent_control_kind: Option<u8>,
@@ -191,14 +130,13 @@ struct Progress {
     local_gathering_complete: bool,
     local_sync: LocalCandidateSync,
     local_sync_queued: bool,
-    #[cfg(feature = "diagnostics")]
-    ice_checks_before_close: serde_json::Value,
+
     transport_states: serde_json::Value,
     transport_states_before_close: serde_json::Value,
     transport_states_at_failure: serde_json::Value,
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     stun_provider: StunProvider,
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     legacy_rsa_1024: bool,
 }
 
@@ -220,25 +158,27 @@ struct Completion {
     media_ingress: crate::media_ingress::Ingress,
     video_stream: Arc<Mutex<crate::video_stream::Inspector>>,
     audio_stream: Option<crate::audio_stream::Pipeline>,
-    #[cfg(any(windows, target_os = "macos"))]
-    video_output: Option<Arc<video_backend::Pipeline>>,
+    #[cfg(any(windows, target_os = "macos", target_os = "android"))]
+    video_output: Option<Arc<native_video::Pipeline>>,
 }
 
 enum Delivery {
     Queued,
+    EmptyMessage,
     #[cfg(any(windows, target_os = "macos"))]
     Timing(Option<(Arc<crate::stats::Shared>, u64)>),
     Audio(Option<crate::audio_stream::Sender>),
     Video {
         inspector: Arc<Mutex<crate::video_stream::Inspector>>,
-        #[cfg(any(windows, target_os = "macos"))]
-        pipeline: Option<Arc<video_backend::Pipeline>>,
+        #[cfg(any(windows, target_os = "macos", target_os = "android"))]
+        pipeline: Option<Arc<native_video::Pipeline>>,
     },
 }
 impl Delivery {
     fn submit(self, bytes: &[u8]) -> Option<bool> {
         match self {
             Self::Queued => None,
+            Self::EmptyMessage => Some(false),
             #[cfg(any(windows, target_os = "macos"))]
             Self::Timing(link) => {
                 if let Some((bus, generation)) = link {
@@ -249,18 +189,18 @@ impl Delivery {
             Self::Audio(audio) => Some(!audio.is_some_and(|sender| sender.submit(bytes))),
             Self::Video {
                 inspector,
-                #[cfg(any(windows, target_os = "macos"))]
+                #[cfg(any(windows, target_os = "macos", target_os = "android"))]
                 pipeline,
             } => {
                 let info = inspector
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .receive(bytes);
-                #[cfg(any(windows, target_os = "macos"))]
+                #[cfg(any(windows, target_os = "macos", target_os = "android"))]
                 if let (Some(pipeline), Some(info)) = (pipeline, info) {
                     return Some(!pipeline.submit(bytes, info));
                 }
-                #[cfg(not(any(windows, target_os = "macos")))]
+                #[cfg(not(any(windows, target_os = "macos", target_os = "android")))]
                 let _ = info;
                 Some(true)
             }
@@ -270,13 +210,32 @@ impl Delivery {
 
 impl Drop for Completion {
     fn drop(&mut self) {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if let Some((bus, generation)) = &self.telemetry {
             bus.finish(*generation);
         }
     }
 }
 impl Completion {
+    #[cfg(any(target_os = "android", test))]
+    fn network_diagnostics(&self) -> serde_json::Value {
+        let p = &self.progress;
+        let states = if p.failed && p.transport_states_at_failure.is_object() {
+            &p.transport_states_at_failure
+        } else {
+            &p.transport_states
+        };
+        serde_json::json!({
+            "failure_stage":p.failed.then_some(p.failure_stage.unwrap_or(FailureStage::Worker)),
+            "failure_channel":p.failure_channel,"read_error":p.read_error,
+            "failure_elapsed_ms":p.failure_elapsed_ms,"states":states,
+            "received_bytes":p.channel_bytes_received,"received_messages":p.channel_messages_received,
+            "max_message_bytes":p.channel_max_message_bytes,
+            "empty_messages":p.empty_channel_messages,"rtt_ms":p.rtt_ms,
+            "route":p.route.unwrap_or("Unverified"),
+            "queued_control_messages":self.messages.len(),"queued_control_bytes":self.message_bytes,
+        })
+    }
     fn queue_local_sync(&mut self, marker: Option<serde_json::Value>) {
         if let Some(marker) = marker {
             if self.events.len() >= 64 {
@@ -313,6 +272,10 @@ impl Completion {
         }
         self.progress.failed = true;
         if self.progress.failure_stage.is_none() {
+            #[cfg(any(target_os = "android", test))]
+            {
+                self.progress.transport_states_at_failure = self.progress.transport_states.clone();
+            }
             self.progress.failure_stage = Some(stage);
             self.progress.failure_channel = Some(channel);
             self.progress.failure_elapsed_ms = Some(self.elapsed_ms());
@@ -338,6 +301,16 @@ impl Completion {
             self.progress.channel_bytes_received[i].saturating_add(bytes.len() as u64);
         self.progress.channel_max_message_bytes[i] =
             self.progress.channel_max_message_bytes[i].max(bytes.len());
+        if bytes.is_empty() {
+            #[cfg(any(target_os = "android", test))]
+            {
+                self.progress.empty_channel_messages[i] =
+                    self.progress.empty_channel_messages[i].saturating_add(1);
+            }
+            if self.discard_unavailable_media {
+                return Some(Delivery::EmptyMessage);
+            }
+        }
         #[cfg(any(windows, target_os = "macos"))]
         if channel == 0 && self.discard_unavailable_media && crate::frame_timing::is_report(bytes) {
             return Some(Delivery::Timing(self.telemetry.clone()));
@@ -346,7 +319,7 @@ impl Completion {
             if channel == 1 {
                 return Some(Delivery::Video {
                     inspector: self.video_stream.clone(),
-                    #[cfg(any(windows, target_os = "macos"))]
+                    #[cfg(any(windows, target_os = "macos", target_os = "android"))]
                     pipeline: self.video_output.clone(),
                 });
             }
@@ -395,32 +368,35 @@ impl Completion {
 // fixed 65,535-byte callback buffer. All three channels use the same API.
 async fn read_channel(
     shared: Arc<Mutex<Completion>>,
-    wake: Arc<Condvar>,
     id: u16,
     channel: Arc<webrtc::data::data_channel::DataChannel>,
 ) {
     let mut buffer = vec![0; MAX_CHANNEL_MESSAGE];
     // This session mode is immutable. Native media goes straight to its sink;
-    // only control/probe receipts need an owned copy for the guest queue.
+    // only control/probe receipts need an owned copy for the control queue.
     let native_mode = shared
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .discard_unavailable_media;
     let queue_receipts = id == 0 || !native_mode;
     loop {
-        let read = channel.read_data_channel(&mut buffer).await;
-        let len = read.as_ref().map_or(0, |(len, _)| *len);
+        let read = read_data_message(&channel, &mut buffer).await;
+        let len = read
+            .as_ref()
+            .ok()
+            .and_then(|m| *m)
+            .map_or(0, |(len, _)| len);
         let delivery = match read {
-            Ok((0, _)) => {
+            Ok(None) => {
                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                 state.fail_channel(FailureStage::DataChannelClosed, id);
                 None
             }
-            Ok((len, text)) => {
-                #[cfg(windows)]
+            Ok(Some((len, text))) => {
+                #[cfg(any(windows, target_os = "macos"))]
                 let timing =
                     native_mode && id == 0 && crate::frame_timing::is_report(&buffer[..len]);
-                #[cfg(not(windows))]
+                #[cfg(not(any(windows, target_os = "macos")))]
                 let timing = false;
                 let payload = (queue_receipts && !timing && !text && len <= MAX_CHANNEL_MESSAGE)
                     .then(|| Bytes::copy_from_slice(&buffer[..len]));
@@ -434,8 +410,12 @@ async fn read_channel(
                     delivery => delivery,
                 }
             }
-            Err(_) => {
+            Err(_error) => {
                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+                #[cfg(any(target_os = "android", test))]
+                if !state.cancelled && !state.closing && state.progress.failure_stage.is_none() {
+                    state.progress.read_error = Some(classify_channel_read_error(&_error));
+                }
                 state.fail_channel(FailureStage::DataChannelRead, id);
                 None
             }
@@ -451,10 +431,38 @@ async fn read_channel(
                 }
             }
         }
-        wake.notify_all();
         if !keep_reading {
             break;
         }
+    }
+}
+
+/// The detached API returns zero for both a valid empty message (RFC 8831)
+/// and a reset stream. Its public message counter advances only for a message.
+/// This channel has one reader, so an empty message is distinguishable from EOF
+/// without private SCTP state, extra buffering, retries or changing ordering.
+pub(crate) async fn read_data_message(
+    channel: &webrtc::data::data_channel::DataChannel,
+    buffer: &mut [u8],
+) -> std::result::Result<Option<(usize, bool)>, webrtc::data::Error> {
+    let before = channel.messages_received();
+    let message = channel.read_data_channel(buffer).await?;
+    Ok((message.0 != 0 || channel.messages_received() != before).then_some(message))
+}
+
+// Fixed categories only: library error strings can contain remote text or
+// addresses. Do not serialize those strings or private connection credentials.
+#[cfg(any(target_os = "android", test))]
+fn classify_channel_read_error(error: &webrtc::data::Error) -> &'static str {
+    use webrtc::{data::Error as D, sctp::Error as S};
+    match error {
+        D::Sctp(S::ErrShortBuffer { .. }) => "message-exceeds-read-buffer",
+        D::Sctp(S::ErrNetConnReadError) => "sctp-network-read",
+        D::Sctp(S::ErrEof) => "sctp-eof",
+        D::Sctp(S::ErrStreamClosed) | D::ErrStreamClosed => "stream-closed",
+        D::Sctp(_) => "sctp-error",
+        D::Util(_) => "transport-io",
+        _ => "datachannel-error",
     }
 }
 
@@ -472,9 +480,9 @@ enum Command {
 pub enum StunProvider {
     #[default]
     None,
-    #[cfg(any(test, not(feature = "diagnostics")))]
+
     Parsec,
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     Cloudflare,
 }
 impl StunProvider {
@@ -482,9 +490,8 @@ impl StunProvider {
         match self {
             Self::None => None,
             // Audited constructor in the pinned public parsec.js (150-104a).
-            #[cfg(any(test, not(feature = "diagnostics")))]
             Self::Parsec => Some(("parsec", "stun:stun.parsec.gg:3478")),
-            #[cfg(any(test, feature = "diagnostics"))]
+            #[cfg(test)]
             Self::Cloudflare => Some(("cloudflare", "stun:stun.cloudflare.com:3478")),
         }
     }
@@ -495,27 +502,16 @@ pub struct Attempt {
     id: String,
     completion: Arc<Mutex<Completion>>,
     finished: Arc<(Mutex<bool>, Condvar)>,
-    wake: Arc<Condvar>,
 }
 
 impl Attempt {
-    #[cfg(test)]
-    pub fn spawn(output: Output) -> Result<Self> {
-        Self::spawn_named("local-offer-test", output)
-    }
-
-    #[cfg(test)]
-    pub fn spawn_named(id: &str, output: Output) -> Result<Self> {
-        Self::spawn_configured(id, output, None, StunProvider::None, false, None)
-    }
-
     pub fn spawn_configured(
         id: &str,
         output: Output,
         config: Option<crate::control::Config>,
         stun_provider: StunProvider,
         legacy_rsa_1024: bool,
-        connection_settings: Option<Arc<crate::connection_settings::Manager>>,
+        connection_settings: Option<Arc<dyn crate::rtc_configuration::NetworkSettings>>,
     ) -> Result<Self> {
         CandidateGate::new(id)?;
         let mut active = ACTIVE_WORKERS.load(Ordering::SeqCst);
@@ -548,9 +544,9 @@ impl Attempt {
             closing: false,
             output: Some(output),
             progress: Progress {
-                #[cfg(any(test, feature = "diagnostics"))]
+                #[cfg(test)]
                 stun_provider,
-                #[cfg(any(test, feature = "diagnostics"))]
+                #[cfg(test)]
                 legacy_rsa_1024,
                 ..Default::default()
             },
@@ -561,23 +557,20 @@ impl Attempt {
             discard_unavailable_media: config.is_some(),
             media_ingress: Default::default(),
             video_stream: Arc::new(Mutex::new(video_stream)),
-            #[cfg(any(windows, target_os = "macos"))]
+            #[cfg(any(windows, target_os = "macos", target_os = "android"))]
             video_output: None,
             audio_stream: None,
         }));
         let finished = Arc::new((Mutex::new(false), Condvar::new()));
         let shared = completion.clone();
         let done = finished.clone();
-        let wake = Arc::new(Condvar::new());
-        let notify = wake.clone();
         let attempt_id = id.to_owned();
         std::thread::Builder::new()
-            .name("parsec-native-offer".into())
+            .name("evoparseq-offer".into())
             .spawn(move || {
                 let _permit = permit;
                 let result = worker(
                     &shared,
-                    &notify,
                     &attempt_id,
                     rx,
                     config,
@@ -588,7 +581,7 @@ impl Attempt {
                     },
                 );
                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "macos"))]
                 if let Some((bus, generation)) = &state.telemetry {
                     bus.finish(*generation);
                 }
@@ -610,7 +603,6 @@ impl Attempt {
                 }
                 *done.0.lock().unwrap_or_else(|e| e.into_inner()) = true;
                 done.1.notify_all();
-                notify.notify_all();
             })
             .context("starting native offer worker")?;
         Ok(Self {
@@ -618,7 +610,6 @@ impl Attempt {
             id: id.into(),
             completion,
             finished,
-            wake,
         })
     }
 
@@ -635,10 +626,10 @@ impl Attempt {
 
     pub fn cancel(&mut self) {
         // Serialize publication and cancellation. Taking the output lease
-        // prevents the old worker from writing into reused guest buffers.
+        // prevents the old worker from writing into retired output callbacks.
         let mut state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
         state.cancelled = true;
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos", target_os = "android"))]
         if let Some(pipeline) = &state.video_output {
             pipeline.stop();
         }
@@ -656,7 +647,6 @@ impl Attempt {
             audio.stop();
         }
         self.commands.take();
-        self.wake.notify_all();
     }
 
     pub fn failure_stage(&self) -> Option<FailureStage> {
@@ -667,37 +657,48 @@ impl Attempt {
             .then_some(state.progress.failure_stage.unwrap_or(FailureStage::Worker))
     }
 
+    #[cfg(target_os = "android")]
+    pub fn network_diagnostics(&self) -> serde_json::Value {
+        self.completion
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .network_diagnostics()
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    pub fn native_video_failure(&self) -> Option<&'static str> {
+        let pipeline = self
+            .completion
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .video_output
+            .clone();
+        pipeline.and_then(|v| v.native_failure())
+    }
+
+    pub fn host_status(&self) -> Option<i32> {
+        // A host status can precede SCTP closure in the same read batch. Keep
+        // its authenticated numeric reason available before a generic failure.
+        self.completion
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .messages
+            .iter()
+            .find_map(|(channel, text, bytes)| {
+                if *channel != 0 || *text || bytes.len() < 13 || bytes[12] != 10 {
+                    return None;
+                }
+                let status = i32::from_be_bytes(bytes[..4].try_into().ok()?);
+                (status != 0).then_some(status)
+            })
+    }
+
     pub fn control_ready(&self) -> bool {
         self.completion
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .progress
             .control_ready
-    }
-
-    pub fn media_ingress(&self) -> crate::media_ingress::Ingress {
-        let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
-        let mut ingress = state.media_ingress.clone();
-        let inspector = state.video_stream.clone();
-        if let Some(audio) = &state.audio_stream {
-            let report = audio.snapshot();
-            ingress.audio_decoder_available = report.packets_decoded > 0;
-            ingress.audio_output = Some(report);
-        }
-        #[cfg(windows)]
-        let video = state.video_output.clone();
-        drop(state);
-        ingress.video_stream = inspector
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .snapshot();
-        #[cfg(windows)]
-        if let Some(pipeline) = video {
-            let output = pipeline.snapshot();
-            ingress.video_decoder_available = output.frames_decoded > 0;
-            ingress.video_output = Some(output);
-        }
-        ingress
     }
 
     #[cfg(any(windows, target_os = "macos"))]
@@ -712,7 +713,10 @@ impl Attempt {
         let audio = crate::audio_stream::Pipeline::start_with_budget(
             window.audio_buffer().map(|(_, max)| max),
         );
-        let video = Arc::new(video_backend::Pipeline::start(window.clone()));
+        let video = Arc::new(crate::video_platform::Pipeline::start(
+            window.clone(),
+            crate::video_output::DisplayCatchUpPolicy::Adaptive,
+        ));
         let mut state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
         if state.cancelled || state.closing || state.video_output.is_some() {
             drop(state);
@@ -725,27 +729,23 @@ impl Attempt {
         state.video_output = Some(video);
     }
 
-    pub fn poll_audio(&self, memory: &GuestMemory, pointer: u32, capacity: usize) -> Result<usize> {
-        let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
-        match &state.audio_stream {
-            Some(audio) => audio.poll(memory, pointer, capacity),
-            None => Ok(0),
-        }
+    #[cfg(target_os = "android")]
+    pub fn start_native_media(&self, video: Arc<crate::video_android::Pipeline>, maximum_ms: u32) {
+        let mut state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
+        state.audio_stream = Some(crate::audio_stream::Pipeline::start_with_budget(Some(
+            maximum_ms,
+        )));
+        state.video_output = Some(video);
     }
 
-    pub fn configure_video_protocol(&self, protocol: crate::backend::VideoProtocol) {
-        let inspector = self
-            .completion
+    pub fn audio_receiver(&self) -> Option<crate::audio_stream::NativeReceiver> {
+        self.completion
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .video_stream
-            .clone();
-        inspector
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .configure(protocol);
+            .audio_stream
+            .as_ref()
+            .map(|audio| audio.native_receiver())
     }
-
     pub fn pop_binary(&self) -> Option<(u16, bool, Bytes)> {
         let mut state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
         let message = state.messages.pop_front()?;
@@ -753,7 +753,7 @@ impl Attempt {
         Some(message)
     }
 
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     pub fn snapshot(&self) -> serde_json::Value {
         let state = self.completion.lock().unwrap_or_else(|e| e.into_inner());
         let mut snapshot = serde_json::json!({ "offer_ready": state.progress.ready, "mid":state.progress.mid, "peer_closed": state.progress.closed, "failed": state.progress.failed, "failure_stage": state.progress.failure_stage, "negotiated_channels": state.progress.channels, "channels_open": state.progress.open_mask.count_ones(), "transport_connected":state.progress.transport_connected, "local_candidates":state.progress.local_candidates, "remote_candidates":state.progress.remote_candidates, "messages_received":state.progress.messages_received, "worker_finished": *self.finished.0.lock().unwrap_or_else(|e| e.into_inner()), "host_connected": false,
@@ -781,10 +781,7 @@ impl Attempt {
         snapshot["local_gathering_complete"] =
             serde_json::json!(state.progress.local_gathering_complete);
         snapshot["local_sync_queued"] = serde_json::json!(state.progress.local_sync_queued);
-        #[cfg(feature = "diagnostics")]
-        {
-            snapshot["ice_checks_before_close"] = state.progress.ice_checks_before_close.clone();
-        }
+
         snapshot["ice_servers_configured"] =
             serde_json::json!(state.progress.resolved_ice_servers.map(|count| count != 0));
         snapshot["resolved_ice_server_entries"] =
@@ -830,49 +827,6 @@ impl Attempt {
             .events
             .pop_front()
     }
-    #[cfg(any(test, feature = "diagnostics"))]
-    pub fn receive_binary(&self, duration: Duration) -> Result<(u16, bool, Bytes)> {
-        let state = self
-            .completion
-            .lock()
-            .map_err(|_| anyhow::anyhow!("native receipt lock poisoned"))?;
-        let (mut state, _) = self
-            .wake
-            .wait_timeout_while(state, duration, |s| {
-                s.messages.is_empty() && !s.progress.failed && !s.cancelled
-            })
-            .map_err(|_| anyhow::anyhow!("native receipt wait failed"))?;
-        let message = state
-            .messages
-            .pop_front()
-            .context("no native receipt before deadline")?;
-        state.message_bytes -= message.2.len();
-        Ok(message)
-    }
-    #[cfg(any(test, feature = "diagnostics"))]
-    pub fn wait_transport(&self, duration: Duration) -> Result<()> {
-        let state = self
-            .completion
-            .lock()
-            .map_err(|_| anyhow::anyhow!("native connection lock poisoned"))?;
-        let (state, _) = self
-            .wake
-            .wait_timeout_while(state, duration, |s| {
-                (s.progress.open_mask != 7 || !s.progress.transport_connected)
-                    && !s.progress.failed
-                    && !s.cancelled
-            })
-            .map_err(|_| anyhow::anyhow!("native connection wait failed"))?;
-        if state.progress.failed
-            || state.cancelled
-            || state.progress.open_mask != 7
-            || !state.progress.transport_connected
-        {
-            bail!("native channels did not connect before deadline");
-        }
-        Ok(())
-    }
-
     pub fn wait_finished(&self, duration: Duration) -> Result<()> {
         let done = self
             .finished
@@ -900,12 +854,11 @@ impl Drop for Attempt {
 struct NetworkOptions {
     stun_provider: StunProvider,
     legacy_rsa_1024: bool,
-    connection_settings: Option<Arc<crate::connection_settings::Manager>>,
+    connection_settings: Option<Arc<dyn crate::rtc_configuration::NetworkSettings>>,
 }
 
 fn worker(
     shared: &Arc<Mutex<Completion>>,
-    wake: &Arc<Condvar>,
     id: &str,
     commands: mpsc::Receiver<Command>,
     mut config: Option<crate::control::Config>,
@@ -917,18 +870,21 @@ fn worker(
         connection_settings,
     } = network;
     if let Some(config) = &mut config {
-        // Capability work stays on this worker, outside the WASM/backend lock.
+        let chroma_444_requested = config.chroma_444;
+        // Capability work stays on this worker, outside the connection lock.
         #[cfg(any(windows, target_os = "macos"))]
         {
-            let gpu = connection_settings
-                .as_ref()
-                .and_then(|m| m.view().0.video_gpu);
-            config.allow_hevc = config.allow_hevc && video_backend::hevc_available(gpu.as_ref());
+            let gpu = connection_settings.as_ref().and_then(|m| m.video_gpu());
+            config.allow_hevc =
+                config.allow_hevc && crate::video_platform::hevc_available(gpu.as_ref());
+            config.chroma_444 = config.allow_hevc
+                && config.chroma_444
+                && crate::video_platform::hevc_444_available(gpu.as_ref(), config.ten_bit);
             config.ten_bit = config.allow_hevc
                 && config.ten_bit
-                && video_backend::hevc_ten_bit_available(gpu.as_ref());
+                && crate::video_platform::hevc_ten_bit_available(gpu.as_ref());
         }
-        #[cfg(not(any(windows, target_os = "macos")))]
+        #[cfg(not(any(windows, target_os = "macos", target_os = "android")))]
         {
             config.allow_hevc = false;
         }
@@ -944,7 +900,7 @@ fn worker(
         crate::event_log::record(
             "INFO",
             "video_capabilities_declared",
-            serde_json::json!({"transport":"WebRTC","flags":config.video_flags(),"hevc":config.allow_hevc,"main10":config.ten_bit}),
+            serde_json::json!({"transport":"WebRTC","flags":config.video_flags(),"hevc":config.allow_hevc,"main10":config.ten_bit,"chroma_444":config.chroma_444,"chroma_444_requested":chroma_444_requested}),
         );
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -962,13 +918,14 @@ fn worker(
     // Explicit legacy key-size compatibility only. Signature and SDP fingerprint
     // verification remain enabled; insecure hashes are not enabled.
     settings.allow_insecure_verification_algorithm(legacy_rsa_1024);
-    // Resolve short-lived credentials on the async worker, never the UI/WASM
+    // Resolve short-lived credentials on the async worker, never the UI
     // thread. Snapshot settings once; a save affects only the next attempt.
     let mut ice = ice_configuration(stun_provider);
     if let Some(manager) = connection_settings {
+        settings.set_turn_tcp_qos(manager.tcp_qos());
         ice = runtime.block_on(async {
             tokio::select! {
-                result = manager.resolve_configuration() => result,
+                result = manager.resolve() => result,
                 _ = async {
                     loop {
                         if shared.lock().unwrap_or_else(|e| e.into_inner()).cancelled { break; }
@@ -988,7 +945,7 @@ fn worker(
         settings.set_relay_only_connectivity(true);
     }
     let api = APIBuilder::new().with_setting_engine(settings).build();
-    #[cfg(any(test, feature = "diagnostics"))]
+    #[cfg(test)]
     {
         let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
         state.progress.resolved_ice_servers = Some(ice.ice_servers.len());
@@ -996,13 +953,65 @@ fn worker(
             == webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy::Relay;
         state.progress.relay_only_connectivity = relay_only;
     }
-    #[cfg(feature = "diagnostics")]
-    let ice_trace = crate::transport_diagnostics::start_ice_window();
+
     let peer = Arc::new(runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(5), api.new_peer_connection(ice)).await
     })??);
+    #[cfg(target_os = "android")]
+    {
+        let state = shared.clone();
+        let weak = Arc::downgrade(&peer);
+        runtime.spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                {
+                    let s = state.lock().unwrap_or_else(|e| e.into_inner());
+                    if s.cancelled || s.closing {
+                        break;
+                    }
+                }
+                if !crate::overlay::REQUESTED.load(Ordering::Relaxed) {
+                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                    s.progress.rtt_ms = None;
+                    s.progress.route = None;
+                    continue;
+                }
+                let Some(peer) = weak.upgrade() else { break };
+                let dtls = peer.sctp().transport();
+                let ice = dtls.ice_transport();
+                let sample = async {
+                    let pair = ice.get_selected_candidate_pair().await?;
+                    let report = peer.get_stats().await;
+                    let active = ice.get_selected_candidate_pair().await?;
+                    if active.local().stats_id != pair.local().stats_id
+                        || active.remote().stats_id != pair.remote().stats_id
+                    {
+                        return None;
+                    }
+                    Some((
+                        crate::rtc_configuration::selected_rtt(
+                            &report,
+                            &pair.local().stats_id,
+                            &pair.remote().stats_id,
+                        ),
+                        crate::rtc_configuration::route(
+                            &pair.local().typ.to_string(),
+                            &pair.remote().typ.to_string(),
+                        ),
+                    ))
+                };
+                let sample = tokio::time::timeout(Duration::from_millis(750), sample)
+                    .await
+                    .ok()
+                    .flatten();
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                s.progress.rtt_ms = sample.and_then(|(rtt, _)| rtt);
+                s.progress.route = sample.map(|(_, route)| route);
+            }
+        });
+    }
     let callback_state = shared.clone();
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         let state = shared.clone();
         let weak = Arc::downgrade(&peer);
@@ -1029,18 +1038,12 @@ fn worker(
                     continue;
                 };
                 {
-                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                    let s = state.lock().unwrap_or_else(|e| e.into_inner());
                     if s.cancelled || s.closing {
                         break;
                     }
-                    s.media_ingress.network_rtt = if sample.state == "connected" {
-                        sample.rtt_ms.map(|ms| (sample.at, ms))
-                    } else {
-                        None
-                    };
                 }
-                // The guest overlay also needs RTT with the native stats window
-                // closed. Reuse this existing 1 Hz task, not the per-frame import.
+                // Reuse the existing 1 Hz statistics task.
                 if !bus.requested() {
                     continue;
                 }
@@ -1071,16 +1074,14 @@ fn worker(
             }
         });
     }
-    let callback_wake = wake.clone();
     let attempt_id = id.to_owned();
     peer.on_ice_candidate(Box::new(move |candidate| {
-        let shared=callback_state.clone(); let wake=callback_wake.clone(); let id=attempt_id.clone();
+        let shared=callback_state.clone(); let id=attempt_id.clone();
         Box::pin(async move {
             let Some(candidate)=candidate else {
                 let mut state=shared.lock().unwrap_or_else(|e|e.into_inner());
                 state.progress.local_gathering_complete=true;
                 if relay_only { state.relay_readiness_sync(&id); }
-                wake.notify_all();
                 return;
             };
             if candidate.protocol != RTCIceProtocol::Udp || candidate.component != 1 { return; }
@@ -1093,16 +1094,13 @@ fn worker(
                 state.events.push_back(serde_json::json!({"type":8,"attemptID":id,"ip":candidate.address,"port":candidate.port,"lan":candidate.typ==RTCIceCandidateType::Host,"fromStun":candidate.typ==RTCIceCandidateType::Srflx,"sync":false}));
                 if relay_only && candidate.typ==RTCIceCandidateType::Relay { state.relay_readiness_sync(&id); }
             }
-            wake.notify_all();
         })
     }));
     let callback_state = shared.clone();
-    let callback_wake = wake.clone();
     // A weak reference avoids a peer -> callback -> peer ownership cycle.
     let callback_peer = Arc::downgrade(&peer);
     peer.on_peer_connection_state_change(Box::new(move |connection_state| {
         let shared = callback_state.clone();
-        let wake = callback_wake.clone();
         let peer = callback_peer.upgrade();
         Box::pin(async move {
             let failure = if connection_state == RTCPeerConnectionState::Failed {
@@ -1131,7 +1129,6 @@ fn worker(
                     state.progress.failed = true;
                 }
             }
-            wake.notify_all();
         })
     }));
     let prepared = runtime.block_on(async {
@@ -1150,13 +1147,11 @@ fn worker(
                     )
                     .await?;
                 let callback_state = shared.clone();
-                let callback_wake = wake.clone();
                 let startup_config = if id == 0 { config.clone() } else { None };
                 let weak_channel = Arc::downgrade(&channel);
                 let attempt_id = control_attempt_id.clone();
                 channel.on_open(Box::new(move || {
                     let shared = callback_state.clone();
-                    let wake = callback_wake.clone();
                     Box::pin(async move {
                         if shared.lock().unwrap_or_else(|e| e.into_inner()).cancelled { return; }
                         let Some(channel) = weak_channel.upgrade() else { return; };
@@ -1164,11 +1159,10 @@ fn worker(
                             Ok(detached) => detached,
                             Err(_) => {
                                 shared.lock().unwrap_or_else(|e| e.into_inner()).fail_channel(FailureStage::DataChannelDetach, id);
-                                wake.notify_all();
                                 return;
                             }
                         };
-                        tokio::spawn(read_channel(shared.clone(), wake.clone(), id, detached));
+                        tokio::spawn(read_channel(shared.clone(), id, detached));
                         if let Some(config) = startup_config {
                             let sent = async {
                                 tokio::time::timeout(Duration::from_secs(5), channel.send(&config.startup()?)).await??;
@@ -1189,7 +1183,6 @@ fn worker(
                         if !state.cancelled && !state.closing && !state.progress.failed {
                             state.progress.open_mask |= 1 << id;
                         }
-                        wake.notify_all();
                     })
                 }));
                 channels.push(channel);
@@ -1224,10 +1217,10 @@ fn worker(
         if !ready {
             bail!("native offer publication failed or was cancelled");
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         let timing_task = runtime.spawn(collect_host_timing(shared.clone(), channels[0].clone()));
         let mut deadline = EstablishmentDeadline::new(std::time::Instant::now());
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         let mut next_video_recovery_check = std::time::Instant::now();
         loop {
             // Read only documented native state enums; never serialize SDP,
@@ -1242,7 +1235,7 @@ fn worker(
                     state.progress.connection_established,
                 )?
             };
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             if std::time::Instant::now() >= next_video_recovery_check {
                 next_video_recovery_check = std::time::Instant::now() + Duration::from_millis(50);
                 let video = {
@@ -1252,8 +1245,11 @@ fn worker(
                     }
                     state.video_output.clone()
                 };
-                if let (Some(video), Some(config)) = (video, &config) {
-                    if let Some(generation) = video.take_keyframe_request() {
+                if let (Some(video), Some(config)) = (video, &mut config) {
+                    if let Some((generation, fallback_420)) = video.take_keyframe_request() {
+                        if fallback_420 {
+                            config.chroma_444 = false;
+                        }
                         // A failed refresh disables video recovery, not audio or
                         // control. No change to SCTP reliability or ordering.
                         let channel = channels[0].clone();
@@ -1280,7 +1276,7 @@ fn worker(
                 break;
             }
             if matches!(command, Command::Disconnect) {
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "macos"))]
                 {
                     timing_task.abort();
                     runtime.block_on(stop_host_timing(shared, &channels[0]));
@@ -1318,7 +1314,6 @@ fn worker(
                                     .lock()
                                     .unwrap_or_else(|e| e.into_inner())
                                     .relay_readiness_sync(id);
-                                wake.notify_all();
                             }
                         }
                         Command::Candidate(candidate) => gate
@@ -1342,7 +1337,6 @@ fn worker(
                             {
                                 sync_ack_scheduled = true;
                                 let shared = shared.clone();
-                                let wake = wake.clone();
                                 let id = id.to_owned();
                                 tokio::spawn(async move {
                                     // ka() in the pinned JS returns this marker after 500 ms.
@@ -1352,7 +1346,6 @@ fn worker(
                                     if !state.cancelled && !state.closing {
                                         let marker = state.progress.local_sync.acknowledge(&id);
                                         state.queue_local_sync(marker);
-                                        wake.notify_all();
                                     }
                                 });
                             }
@@ -1399,7 +1392,7 @@ fn worker(
                 .await
             })??;
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             timing_task.abort();
             runtime.block_on(async {
@@ -1410,24 +1403,7 @@ fn worker(
         drop((offer, channels));
         Ok(())
     })();
-    #[cfg(feature = "diagnostics")]
-    {
-        let pairs = runtime.block_on(async {
-            tokio::time::timeout(
-                Duration::from_millis(500),
-                crate::transport_diagnostics::peer_ice_summary(&peer),
-            )
-            .await
-            .ok()
-        });
-        let trace = crate::transport_diagnostics::finish_ice_window(ice_trace);
-        shared
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .progress
-            .ice_checks_before_close =
-            serde_json::json!({"trace_window":trace,"candidate_pairs":pairs});
-    }
+
     {
         let states = transport_states(&peer);
         let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -1438,13 +1414,13 @@ fn worker(
                 .copied()
                 .unwrap_or(FailureStage::Worker);
             state.progress.failure_stage.get_or_insert(stage);
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             let logged_route = state
                 .telemetry
                 .as_ref()
                 .and_then(|(bus, _)| bus.read())
                 .map(|s| s.route);
-            #[cfg(not(windows))]
+            #[cfg(not(any(windows, target_os = "macos")))]
             let logged_route: Option<&str> = None;
             if !state.cancelled && !matches!(stage, FailureStage::Cancelled) {
                 crate::event_log::record(
@@ -1459,7 +1435,7 @@ fn worker(
         }
         state.progress.transport_states_before_close = states;
         state.closing = true;
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if let Some((bus, generation)) = &state.telemetry {
             bus.finish(*generation);
         }
@@ -1494,7 +1470,7 @@ fn worker(
     outcome
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 async fn stop_host_timing(
     state: &Mutex<Completion>,
     channel: &webrtc::data_channel::RTCDataChannel,
@@ -1520,7 +1496,7 @@ async fn stop_host_timing(
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 async fn collect_host_timing(
     state: Arc<Mutex<Completion>>,
     channel: Arc<webrtc::data_channel::RTCDataChannel>,
@@ -1747,8 +1723,7 @@ mod tests {
         );
     }
     use super::*;
-    use crate::signaling::Credentials;
-    use wasmtime::{Config, Engine, MemoryType, SharedMemory};
+
     #[test]
     fn relay_sync_remote_first_waits_for_relay_and_later_candidates_stay_after_marker() {
         let mut state = empty_completion();
@@ -1811,6 +1786,48 @@ mod tests {
         assert_eq!(full.events.len(), 64);
     }
 
+    #[test]
+    fn network_diagnostics_keep_first_failure_states_and_exclude_control_payloads() {
+        let mut state = empty_completion();
+        state.progress.transport_states = serde_json::json!({"ice":"connected","dtls":"connected"});
+        state.progress.channel_bytes_received = [10, 1_000_000, 50_000];
+        state.progress.channel_max_message_bytes = [10, 900_000, 200];
+        state.messages.push_back((
+            0,
+            false,
+            Bytes::from_static(b"private-fixture-control-text"),
+        ));
+        state.fail_channel(FailureStage::DataChannelRead, 1);
+        state.progress.read_error = Some("message-exceeds-read-buffer");
+        state.progress.transport_states = serde_json::json!({"ice":"closed","dtls":"closed"});
+        state.fail_channel(FailureStage::DataChannelClosed, 2);
+        let report = state.network_diagnostics();
+        assert_eq!(report["failure_stage"], "data-channel-read");
+        assert_eq!(report["failure_channel"], 1);
+        assert_eq!(report["states"]["ice"], "connected");
+        assert_eq!(report["max_message_bytes"][1], 900_000);
+        assert_eq!(report["queued_control_messages"], 1);
+        assert!(!report.to_string().contains("private-fixture-control-text"));
+    }
+
+    #[test]
+    fn channel_read_categories_do_not_expose_library_error_strings() {
+        use webrtc::{data::Error as D, sctp::Error as S};
+        assert_eq!(
+            classify_channel_read_error(&D::Sctp(S::ErrShortBuffer { size: 1_048_576 })),
+            "message-exceeds-read-buffer"
+        );
+        assert_eq!(
+            classify_channel_read_error(&D::Sctp(S::ErrNetConnReadError)),
+            "sctp-network-read"
+        );
+        assert_eq!(classify_channel_read_error(&D::Sctp(S::ErrEof)), "sctp-eof");
+        assert_eq!(
+            classify_channel_read_error(&D::new("private-fixture-error-text".into())),
+            "datachannel-error"
+        );
+    }
+
     fn empty_completion() -> Completion {
         Completion {
             #[cfg(any(windows, target_os = "macos"))]
@@ -1828,13 +1845,13 @@ mod tests {
             discard_unavailable_media: false,
             media_ingress: Default::default(),
             video_stream: Default::default(),
-            #[cfg(any(windows, target_os = "macos"))]
+            #[cfg(any(windows, target_os = "macos", target_os = "android"))]
             video_output: None,
             audio_stream: None,
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn host_timing_bursts_bypass_the_control_queue_without_changing_normal_delivery() {
         let bus = Arc::new(crate::stats::Shared::default());
@@ -2003,6 +2020,24 @@ mod tests {
     }
 
     #[test]
+    fn empty_native_media_messages_are_accounted_without_codec_submission_or_close() {
+        let mut state = empty_completion();
+        state.discard_unavailable_media = true;
+        for channel in [0, 1, 2] {
+            assert!(matches!(
+                state.prepare_receive(channel, false, &[]),
+                Some(Delivery::EmptyMessage)
+            ));
+        }
+        assert!(!state.progress.failed);
+        assert_eq!(state.progress.empty_channel_messages, [1, 1, 1]);
+        assert!(state.messages.is_empty());
+        assert!(state.receive(1, false, b"nonempty-media-after-empty"));
+        assert!(!state.progress.failed);
+        assert_eq!(state.progress.channel_messages_received, [1, 2, 1]);
+    }
+
+    #[test]
     fn first_channel_failure_survives_later_errors_and_local_shutdown_is_not_failure() {
         let mut state = empty_completion();
         state.fail_channel(FailureStage::DataChannelRead, 1);
@@ -2025,59 +2060,36 @@ mod tests {
         }
     }
 
-    fn memory() -> GuestMemory {
-        let mut config = Config::new();
-        config.wasm_threads(true);
-        GuestMemory(
-            SharedMemory::new(&Engine::new(&config).unwrap(), MemoryType::shared(1, 1)).unwrap(),
+    #[test]
+    fn native_offer_completion_needs_no_account_connection() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let output = Output::new(Arc::new(move |description| {
+            let Some(description) = description else {
+                return Ok(false);
+            };
+            Ok(sender
+                .try_send((
+                    description.credentials.validate().is_ok(),
+                    !description.mid.is_empty(),
+                ))
+                .is_ok())
+        }));
+        let mut attempt = Attempt::spawn_configured(
+            "native-offer-fixture",
+            output,
+            None,
+            StunProvider::None,
+            false,
+            None,
         )
-    }
-    #[test]
-    fn outputs_reject_aliases_and_incomplete_credentials_before_publication() {
-        let m = memory();
-        assert!(Output::new(m.clone(), [100, 200, 700], 256, 64, 80).is_err());
-        assert!(Output::new(m.clone(), [100, 400, 700], 256, 65, 80).is_err());
-        assert!(Output::new(m.clone(), [100, 400, 700], 256, 64, 702).is_err());
-        let output = Output::new(m.clone(), [100, 400, 700], 128, 64, 80).unwrap();
-        let d = Description {
-            credentials: Credentials {
-                ufrag: "abcd".into(),
-                password: "x".repeat(256),
-                fingerprint: format!("sha-256 {}", ["AB"; 32].join(":")),
-            },
-            mid: "0".into(),
-        };
-        assert!(!output.finish(Some(&d)).unwrap());
-        assert_eq!(m.u32(80).unwrap(), 1);
-        assert_eq!(m.string(100, 128).unwrap(), "");
-        assert_eq!(m.string(400, 128).unwrap(), "");
-        assert_eq!(m.string(700, 128).unwrap(), "");
-    }
-    #[test]
-    fn cancellation_prevents_writes_into_reused_guest_buffers() {
-        let m = memory();
-        let output = Output::new(m.clone(), [100, 400, 700], 256, 64, 80).unwrap();
-        let mut attempt = Attempt::spawn(output).unwrap();
-        assert!(attempt.sync("stale-attempt").is_err());
-        assert!(attempt
-            .candidate(
-                "stale-attempt",
-                Candidate::new("127.0.0.1", 1234, false).unwrap()
-            )
-            .is_err());
+        .unwrap();
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(12)).unwrap(),
+            (true, true)
+        );
+        assert!(attempt.snapshot()["offer_ready"].as_bool().unwrap());
+        assert_eq!(attempt.snapshot()["negotiated_channels"], 3);
         attempt.cancel();
-        assert!(attempt.sync("local-offer-test").is_err());
-        m.sync_word(64).unwrap().store(0, Ordering::SeqCst);
-        for ptr in [100, 400, 700] {
-            m.c_string(ptr, 256, "reused-buffer").unwrap();
-        }
-        m.set_u32(80, 12345).unwrap();
         attempt.wait_finished(Duration::from_secs(12)).unwrap();
-        for ptr in [100, 400, 700] {
-            assert_eq!(m.string(ptr, 256).unwrap(), "reused-buffer");
-        }
-        assert_eq!(m.u32(80).unwrap(), 12345);
-        assert_eq!(attempt.snapshot()["peer_closed"], true);
-        assert_eq!(attempt.snapshot()["host_connected"], false);
     }
 }

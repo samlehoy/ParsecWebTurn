@@ -30,17 +30,17 @@
 )]
 
 // The host candidates wait on the platform's interface walk.
-#[cfg_attr(not(any(target_os = "linux", target_os = "macos", windows)), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "android", target_os = "macos", windows)), allow(dead_code))]
 pub mod addrs;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos", windows))]
 mod carrier;
-#[cfg(all(feature = "turn-stream", any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(all(feature = "turn-stream", any(target_os = "linux", target_os = "android", target_os = "macos", windows)))]
 pub mod stream_io;
-#[cfg(all(feature = "turn-stream", any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(all(feature = "turn-stream", any(target_os = "linux", target_os = "android", target_os = "macos", windows)))]
 mod tcp;
 pub mod turn_stream;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 #[path = "linux/mod.rs"]
 mod sys;
 #[cfg(target_os = "macos")]
@@ -50,25 +50,25 @@ mod sys;
 #[path = "windows/mod.rs"]
 mod sys;
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos", windows))]
 pub mod guest;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos", windows))]
 mod send;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos", windows))]
 pub mod shell;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos", windows))]
 pub mod socket;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos", windows))]
 pub mod wake;
 
 pub use addrs::MAX_HOST_ADDRESSES;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos", windows))]
 pub use addrs::host_addresses;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos", windows))]
 pub use guest::{Guest, Running};
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos", windows))]
 pub use shell::{Shell, Stats, Turn, Woke};
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos", windows))]
 pub use socket::{DEFAULT_TTL, RECV_BATCH, RECV_SLOT, Socket};
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos", windows))]
 pub use wake::{Wake, WakeHandle};

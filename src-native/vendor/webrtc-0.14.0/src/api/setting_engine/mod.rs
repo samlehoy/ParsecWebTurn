@@ -101,6 +101,7 @@ pub struct SettingEngine {
     pub(crate) disable_media_engine_copy: bool,
     pub(crate) data_channel_only: bool,
     pub(crate) prefer_turn_udp: bool,
+    pub(crate) turn_tcp_qos: bool,
     pub(crate) relay_only_connectivity: bool,
     pub(crate) srtp_protection_profiles: Vec<SrtpProtectionProfile>,
     pub(crate) receive_mtu: usize,
@@ -111,6 +112,11 @@ pub struct SettingEngine {
 }
 
 impl SettingEngine {
+    /// Optional connected TURN TCP/TLS socket marking. Unsupported platforms send unmarked.
+    pub fn set_turn_tcp_qos(&mut self, enabled: bool) {
+        self.turn_tcp_qos = enabled;
+    }
+
     /// Local opt-in TURN gathering policy: UDP, then TLS, then plain TCP.
     /// Each available tier gets a three-second connectivity head start.
     pub fn set_prefer_turn_udp(&mut self, enabled: bool) {

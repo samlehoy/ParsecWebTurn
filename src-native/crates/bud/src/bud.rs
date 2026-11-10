@@ -1,9 +1,11 @@
-//! BUD lifecycle below account signaling, separate from the web WASM contract.
+//! BUD lifecycle below native account signaling.
 use std::net::SocketAddr;
 
 use anyhow::{Result, anyhow, ensure};
 pub use lowlat_client::config::RelayTransport;
 use lowlat_client::config::{Port, Relay};
+#[cfg(feature = "native-core")]
+pub use lowlat_client::cursor::{Cache as CursorCache, Shape as CursorShape};
 use lowlat_client::driver::Units;
 use lowlat_client::{Client, Config, Peer, Transport};
 pub use lowlat_client::{Event, Outcome};
@@ -66,6 +68,12 @@ impl Route {
         relay.transport = transport;
         Self::Turn(relay)
     }
+    pub fn with_tcp_qos(mut self, enabled: bool) -> Self {
+        if let Self::Turn(relay) = &mut self {
+            relay.tcp_qos = enabled;
+        }
+        self
+    }
     fn configure(self) -> Config {
         match self {
             Self::Direct { stun } => Config {
@@ -87,6 +95,7 @@ pub struct Session {
     external_units: Option<Units>,
     prefer_hevc: bool,
     ten_bit: bool,
+    chroma_444: bool,
     raw_audio: bool,
     audio_layout: Option<(u8, u32)>,
     hid_input: (bool, bool),
@@ -96,18 +105,26 @@ pub struct Session {
 impl Session {
     /// Native transport with application-owned video decode. The caller must
     /// have verified its existing MF decoder's HEVC support before setting it.
-    /// Only 8-bit 4:2:0 is advertised. No SDK video decoder is created.
+    /// This entry advertises 8-bit 4:2:0 only. No SDK video decoder is created.
     pub fn external_video(hevc_available: bool) -> Result<Self> {
         Self::external_video_depth(hevc_available, false)
     }
 
     pub fn external_video_depth(hevc_available: bool, ten_bit: bool) -> Result<Self> {
+        Self::external_video_format(hevc_available, ten_bit, false)
+    }
+    pub fn external_video_format(
+        hevc_available: bool,
+        ten_bit: bool,
+        chroma_444: bool,
+    ) -> Result<Self> {
         let client = Client::new_external_video(
             lowlat_client::config::Caps {
                 h264: true,
                 hevc: hevc_available,
                 hevc_10: hevc_available && ten_bit,
-                ..Default::default()
+                hevc_444: hevc_available && chroma_444,
+                hevc_444_10: hevc_available && chroma_444 && ten_bit,
             },
             Port::Any,
         )
@@ -119,6 +136,7 @@ impl Session {
             external_units: Some(units),
             prefer_hevc: hevc_available,
             ten_bit: hevc_available && ten_bit,
+            chroma_444: hevc_available && chroma_444,
             raw_audio: false,
             audio_layout: None,
             hid_input: (false, false),
@@ -126,8 +144,8 @@ impl Session {
         })
     }
 
-    pub fn request_keyframe(&self) -> bool {
-        self.client.request_external_keyframe()
+    pub fn request_keyframe_format(&self, fallback_420: bool) -> bool {
+        self.client.request_external_keyframe_format(fallback_420)
     }
     pub fn hid_input_state(&self) -> [(bool, u32); 2] {
         use std::sync::atomic::Ordering::Acquire;
@@ -183,6 +201,30 @@ impl Session {
         Ok(())
     }
 
+    /// Route application text through BUD's variable-size user-data queue,
+    /// preserving the short input/control queue and its existing size limit.
+    pub fn send_frame(&mut self, bytes: &[u8]) -> Result<()> {
+        use lowlat_core::control::{self, op};
+        if bytes.get(12) == Some(&op::USER_DATA) {
+            let message =
+                control::parse(bytes).map_err(|_| anyhow!("Invalid BUD control frame"))?;
+            ensure!(
+                message.body.len() <= control::USER_DATA_MAX,
+                "BUD user data exceeds limit"
+            );
+            let body = message
+                .body
+                .strip_suffix(&[0])
+                .ok_or_else(|| anyhow!("BUD user data lacks terminator"))?;
+            ensure!(
+                self.send_user_data(message.a1, body),
+                "BUD user data refused"
+            );
+            return Ok(());
+        }
+        self.send_control(bytes)
+    }
+
     pub fn send_user_data(&mut self, id: u32, text: &[u8]) -> bool {
         self.client.send_user_data(id, text)
     }
@@ -193,6 +235,7 @@ impl Session {
         let mut config = route.configure();
         config.video.hevc = self.prefer_hevc;
         config.video.ten_bit = self.ten_bit;
+        config.video.chroma_444 = self.chroma_444;
         config.video.full_range = true;
         config.raw_audio = self.raw_audio;
         config.audio_layout = self.audio_layout;
@@ -356,9 +399,83 @@ pub struct Snapshot {
     pub input_drops: u32,
 }
 
+#[cfg(feature = "native-core")]
+pub fn cursor_message(bytes: &[u8]) -> Result<lowlat_core::cursor::Message<'_>> {
+    let control =
+        lowlat_core::control::parse(bytes).map_err(|_| anyhow!("Invalid cursor control"))?;
+    lowlat_core::cursor::parse(&control).map_err(|_| anyhow!("Invalid host cursor"))
+}
+#[cfg(feature = "native-core")]
+pub use lowlat_core::cursor::Flags as CursorFlags;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn application_query_and_large_settings_use_user_data_not_the_short_input_queue() {
+        fn text(id: u32, body: &[u8]) -> Vec<u8> {
+            use lowlat_core::control::{CONTROL_HEADER_LEN, Control, encode_header, op};
+            let mut frame = vec![0; CONTROL_HEADER_LEN];
+            encode_header(
+                &mut frame,
+                &Control {
+                    a0: (body.len() + 1) as u32,
+                    a1: id,
+                    a2: 0,
+                    opcode: op::USER_DATA,
+                    body: &[],
+                },
+            )
+            .unwrap();
+            frame.extend_from_slice(body);
+            frame.push(0);
+            frame
+        }
+        let mut session = Session::external_video(false).unwrap();
+        session
+            .offer("user-data-routing", Route::Direct { stun: vec![] })
+            .unwrap();
+        let theirs = lowlat_crypto::credentials().unwrap();
+        session
+            .answer(
+                "user-data-routing",
+                Peer {
+                    ufrag: theirs.ufrag,
+                    pwd: theirs.pwd,
+                    fingerprint: theirs.fingerprint,
+                    aes256: Some(theirs.aes256),
+                },
+            )
+            .unwrap();
+        let query = text(9, b"");
+        assert!(session.send_frame(&query).is_ok());
+        let settings = text(
+            10,
+            serde_json::json!({"video":[{"output":"DISPLAY1"}],"fixture": "x".repeat(512)})
+                .to_string()
+                .as_bytes(),
+        );
+        assert!(settings.len() > 256);
+        assert!(session.send_control(&settings).is_err());
+        assert!(session.send_frame(&settings).is_ok());
+        let mut missing_terminator = query.clone();
+        missing_terminator.pop();
+        assert!(session.send_frame(&missing_terminator).is_err());
+        assert!(
+            session
+                .send_frame(&text(10, &vec![0; lowlat_core::control::USER_DATA_MAX]))
+                .is_err()
+        );
+        // Ordinary control and lifecycle restrictions stay in the old path.
+        let mut short = [0; 13];
+        short[12] = 28;
+        assert!(session.send_frame(&short).is_ok());
+        short[12] = 11;
+        assert!(session.send_frame(&short).is_err());
+        assert!(session.send_frame(&[0; 12]).is_err());
+        session.close();
+        assert!(session.send_frame(&query).is_err());
+    }
     #[test]
     fn answer_io_failure_exposes_only_safe_stage_kind_and_numeric_code() {
         let failure = AnswerFailure(lowlat_client::event::Error::Io {

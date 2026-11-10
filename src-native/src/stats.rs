@@ -8,15 +8,17 @@ use std::{
     time::Instant,
 };
 use webrtc::{peer_connection::RTCPeerConnection, stats::StatsReportType};
-
-#[cfg(target_os = "macos")]
-use crate::audio_macos as audio_backend;
-#[cfg(windows)]
-use crate::audio_windows as audio_backend;
+/// Existing resource sampler output, separate from platform query APIs.
+#[derive(Clone, Copy, Default, serde::Serialize)]
+pub struct MemoryUsage {
+    pub working_set_bytes: usize,
+    pub private_committed_bytes: usize,
+    pub private_working_set_bytes: Option<usize>,
+}
 #[derive(Clone)]
 pub struct Sample {
     #[cfg(feature = "bud")]
-    pub bud: Option<parsec_native_bud::bud::Snapshot>,
+    pub bud: Option<evoparseq_bud::bud::Snapshot>,
     pub at: Instant,
     pub generation: u64,
     pub state: String,
@@ -36,7 +38,7 @@ pub struct Sample {
     pub audio_layout: Option<crate::audio_layout::Layout>,
     pub audio_decoded_queue_ms: Option<f64>,
     #[cfg(any(windows, target_os = "macos"))]
-    pub audio_playback: Option<audio_backend::Snapshot>,
+    pub audio_playback: Option<crate::audio_platform::Snapshot>,
     pub video: Option<crate::video_output::Snapshot>,
     pub profile: Option<u8>,
     pub codec: Option<crate::video_stream::Codec>,
@@ -76,20 +78,27 @@ impl Default for Sample {
 }
 #[derive(Default)]
 pub struct Shared {
+    pub overlay_visible: AtomicBool,
     #[cfg(any(windows, target_os = "macos"))]
     pub host_timing: crate::frame_timing::Shared,
     #[cfg(any(windows, target_os = "macos"))]
-    audio: Mutex<Option<std::sync::Weak<audio_backend::Playback>>>,
+    audio: Mutex<Option<std::sync::Weak<crate::audio_platform::Playback>>>,
     pub visible: AtomicBool,
     latest: Mutex<(u64, Option<Sample>)>,
 }
 impl Shared {
     #[cfg(any(windows, target_os = "macos"))]
-    pub fn set_audio(&self, audio: std::sync::Weak<audio_backend::Playback>) {
+    pub fn set_audio(&self, audio: std::sync::Weak<crate::audio_platform::Playback>) {
         *self.audio.lock().unwrap_or_else(|e| e.into_inner()) = Some(audio);
     }
     pub fn requested(&self) -> bool {
         self.visible.load(Ordering::Acquire) || crate::event_log::enabled()
+    }
+    pub fn sample_requested(&self) -> bool {
+        if self.overlay_visible.load(Ordering::Acquire) {
+            return true;
+        }
+        self.requested()
     }
     pub fn begin(&self) -> u64 {
         let mut data = self.latest.lock().unwrap_or_else(|e| e.into_inner());
@@ -129,10 +138,14 @@ impl Shared {
                         .as_ref()
                         .and_then(|old| old.audio_playback.as_ref())
                         .is_none_or(|old| {
-                            old.underruns != audio.underruns
-                                || old.layout != audio.layout
-                                || old.frames_dropped != audio.frames_dropped
+                            old.layout != audio.layout
+                                || old.recovering != audio.recovering
+                                || old.recoveries != audio.recoveries
                                 || old.failure_hresult != audio.failure_hresult
+                                || old.last_device_error != audio.last_device_error
+                                || (!audio.recovering
+                                    && (old.underruns != audio.underruns
+                                        || old.frames_dropped != audio.frames_dropped))
                         })
                         || data
                             .1
@@ -151,7 +164,9 @@ impl Shared {
                         "minimum_ms":audio.minimum_ms,"maximum_ms":audio.maximum_ms,
                         "custom":audio.custom_buffer,"low_latency_device":audio.low_latency_device,
                         "underruns":audio.underruns,"dropped_frames":audio.frames_dropped,
-                        "hresult":audio.failure_hresult,"decoded_queue_ms":sample.audio_decoded_queue_ms
+                        "hresult":audio.failure_hresult,"decoded_queue_ms":sample.audio_decoded_queue_ms,
+                        "recovering":audio.recovering,"recoveries":audio.recoveries,"recovery_attempts":audio.recovery_attempts,
+                        "last_device_error":audio.last_device_error
                     }),
                 );
             }
@@ -179,6 +194,9 @@ impl Shared {
                         .and_then(|old| old.video.as_ref())
                         .is_none_or(|old| {
                             old.decoder != v.decoder
+                                || old.adapter != v.adapter
+                                || old.decoded_chroma != v.decoded_chroma
+                                || old.decoded_bit_depth != v.decoded_bit_depth
                                 || old.decoder_fallback != v.decoder_fallback
                                 || old.display_rgb_bit_depth != v.display_rgb_bit_depth
                                 || old.display_output_fallback != v.display_output_fallback
@@ -196,6 +214,8 @@ impl Shared {
                     "decoder_state_changed",
                     serde_json::json!({
                         "generation":generation,"decoder":v.decoder,"fallback":v.decoder_fallback.is_some(),
+                        "gpu_adapter":v.adapter,"decoded_chroma":v.decoded_chroma,
+                        "fallback_reason":v.decoder_fallback,
                         "stage":v.failure_stage,"hresult":v.failure_hresult,"decoded_bit_depth":v.decoded_bit_depth,
                         "display_rgb_bit_depth":v.display_rgb_bit_depth,"display_output_fallback":v.display_output_fallback,
                     }),
@@ -223,16 +243,7 @@ impl Shared {
         );
     }
 }
-/// Remote prflx cannot establish whether a remote TURN allocation is hidden.
-pub fn route(local: &str, remote: &str) -> &'static str {
-    if local == "relay" || remote == "relay" {
-        "Relay — TURN in use"
-    } else if matches!(local, "host" | "srflx" | "prflx") && matches!(remote, "host" | "srflx") {
-        "Direct — no TURN"
-    } else {
-        "Unverified"
-    }
-}
+use crate::rtc_configuration::route;
 pub async fn network(peer: &RTCPeerConnection) -> Sample {
     let dtls = peer.sctp().transport();
     let mut sample = Sample {
@@ -249,7 +260,6 @@ pub async fn network(peer: &RTCPeerConnection) -> Sample {
     sample.remote = remote.typ.to_string();
     sample.protocol = local.protocol.to_string();
     sample.route = route(&sample.local, &sample.remote);
-    let id = format!("{}-{}", local.stats_id, remote.stats_id);
     let report = peer.get_stats().await;
     // A route change during sampling must not label a previous pair as active.
     if dtls
@@ -267,13 +277,10 @@ pub async fn network(peer: &RTCPeerConnection) -> Sample {
             ..Default::default()
         };
     }
+    sample.rtt_ms =
+        crate::rtc_configuration::selected_rtt(&report, &local.stats_id, &remote.stats_id);
     for stats in report.reports.values() {
         match stats {
-            StatsReportType::CandidatePair(p) if p.id == id && p.responses_received > 0 => {
-                if p.current_round_trip_time.is_finite() && p.current_round_trip_time >= 0.0 {
-                    sample.rtt_ms = Some(p.current_round_trip_time * 1000.0);
-                }
-            }
             StatsReportType::SCTPTransport(t) => {
                 sample.received = Some(t.bytes_received as u64);
                 sample.sent = Some(t.bytes_sent as u64);
@@ -306,17 +313,26 @@ impl Sample {
 #[derive(Default)]
 pub struct Rates {
     previous: Option<Sample>,
+    recent: crate::stats_recent::Recent,
 }
 #[derive(Default)]
 pub struct Values {
     pub incoming: Option<f64>,
     pub outgoing: Option<f64>,
     pub fps: Option<f64>,
+    pub present_fps: Option<f64>,
+    pub recent_timing_ms: [Option<f64>; 8],
     pub audio: Option<f64>,
 }
 impl Rates {
     pub fn update(&mut self, sample: &Sample) -> Values {
-        let mut result = Values::default();
+        let mut result = Values {
+            recent_timing_ms: self.recent.update(
+                sample,
+                sample.connected() && sample.at.elapsed().as_secs() <= 4,
+            ),
+            ..Default::default()
+        };
         if let Some(old) = &self.previous {
             let seconds = sample.at.saturating_duration_since(old.at).as_secs_f64();
             if sample.generation == old.generation
@@ -348,10 +364,26 @@ impl Rates {
                         .map(|v| v.frames_decoded),
                     1.0,
                 );
+                result.present_fps = rate(
+                    sample
+                        .video
+                        .as_ref()
+                        .filter(|v| v.decoder_initialized)
+                        .map(|v| v.frames_presented),
+                    old.video
+                        .as_ref()
+                        .filter(|v| v.decoder_initialized)
+                        .map(|v| v.frames_presented),
+                    1.0,
+                );
             }
         }
         // Don't discard the baseline if the UI timer reads the same cached sample twice.
-        if self.previous.as_ref().is_none_or(|p| p.at != sample.at) {
+        if self
+            .previous
+            .as_ref()
+            .is_none_or(|p| p.at != sample.at || p.generation != sample.generation)
+        {
             self.previous = Some(sample.clone());
         }
         result
@@ -360,6 +392,41 @@ impl Rates {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn decode_and_submission_rates_are_distinct_and_reset_independently() {
+        let mut rates = Rates::default();
+        let mut sample = Sample {
+            generation: 1,
+            state: "connected".into(),
+            video: Some(crate::video_output::Snapshot {
+                decoder_initialized: true,
+                frames_decoded: 10,
+                frames_presented: 5,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(rates.update(&sample).present_fps.is_none());
+        sample.at += std::time::Duration::from_secs(1);
+        sample.video.as_mut().unwrap().frames_decoded += 60;
+        sample.video.as_mut().unwrap().frames_presented += 30;
+        let values = rates.update(&sample);
+        assert_eq!(values.fps, Some(60.0));
+        assert_eq!(values.present_fps, Some(30.0));
+        sample.at += std::time::Duration::from_secs(1);
+        sample.video.as_mut().unwrap().frames_presented = 0;
+        assert!(rates.update(&sample).present_fps.is_none());
+        sample.generation += 1;
+        assert!(rates.update(&sample).fps.is_none());
+        sample.at += std::time::Duration::from_secs(1);
+        sample.video.as_mut().unwrap().frames_decoded += 5;
+        assert_eq!(rates.update(&sample).fps, Some(5.0));
+        sample.state = "disconnected".into();
+        sample.at += std::time::Duration::from_secs(1);
+        let values = rates.update(&sample);
+        assert!(values.present_fps.is_none() && values.fps.is_none());
+        assert_eq!(values.recent_timing_ms, [None; 8]);
+    }
     #[test]
     fn routes_require_positive_evidence() {
         assert_eq!(route("relay", "prflx"), "Relay — TURN in use");
@@ -397,7 +464,7 @@ mod tests {
         let mut sample = Sample {
             generation: 1,
             state: "Connected (BUD)".into(),
-            bud: Some(parsec_native_bud::bud::Snapshot {
+            bud: Some(evoparseq_bud::bud::Snapshot {
                 connected: true,
                 ..Default::default()
             }),
