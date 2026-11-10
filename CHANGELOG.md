@@ -1,5 +1,290 @@
 # EvoParseq changelog
 
+## v0.9.6 - Controllers, Android TV and local audio controls (2026-11-07)
+
+This stable release adds shared controller support, Windows playback volume
+controls and the initial Android TV client. The changes below cover implemented
+features and fixes since the previous stable release, **EvoParseq v0.9.5**.
+Windows x64 packages and a distribution-signed Android TV APK are included.
+Linux alpha builds and the proposed macOS port are not part of this release.
+
+## What's new and improved
+
+- **Shared controller support:** one Rust state and protocol pipeline forwards
+  up to four controllers over WebRTC or BUD. Windows uses native XInput;
+  Android reads standard gamepad/joystick events. Forward buttons, D-pad,
+  sticks and analog triggers; preserve trigger precision and avoid duplicate
+  button mapping. Device-supported vibration uses the platform adapter.
+  Joining, focus changes, held-state release, unplug and disconnect are handled
+  explicitly; local menus release held controls without repeatedly removing
+  the host controller. Home/Guide remains owned by the operating system.
+- **Windows local audio controls:** the session overlay now has Mute audio and
+  a 0-100% volume slider for either transport. Muting preserves the chosen level;
+  moving the slider while muted keeps mute enabled. These controls affect only
+  client playback through WASAPI, not the host's volume, and reset when the
+  client restarts.
+- **Android TV interface:** add a Google TV / Android TV-style launcher and
+  computer picker, remote-friendly sign-in and two-factor-code entry, grouped
+  Network/Video/Audio/Diagnostics/Device/Updates settings and device capabilities.
+  Correct text contrast, focus indicators, IME actions and launcher artwork.
+  Keep focused cards within their bounds, prevent settings overlap and retain
+  readable category buttons in a bounded scrolling sidebar with Back accessible.
+- **Protected TV sign-in and settings:** remember only the session token using
+  AES-256-GCM and a non-exportable Android Keystore key in private no-backup
+  storage. Passwords and two-factor codes are never saved. Sign out clears local
+  credentials and requests server-side revocation. Relay credentials are
+  separately protected and excluded from backup and diagnostic output.
+- **Android video and audio:** H.264 and supported HEVC 8/10-bit 4:2:0 decode
+  through hardware MediaCodec to a Surface. Share codec initialization, geometry
+  validation, bounded queues and keyframe recovery. Decoded pixels do not cross
+  JNI as Bitmaps or undergo CPU readback. Shared Rust audio decoding feeds a
+  bounded nonblocking PCM handoff and 48 kHz AAudio pull output.
+- **WebRTC and BUD on TV:** reuse Rust authentication, discovery, signaling,
+  connection preferences, host settings and media handling. Support direct/STUN,
+  Cloudflare or custom TURN, and Force TURN. Preserve WebRTC ICE selection and
+  BUD direct UDP/configured UDP-TLS-TCP relay carriers. Transport selection stays
+  explicit, with no silent switch. Keep useful transport errors and stop reasons
+  visible after returning to the picker; distinguish empty WebRTC messages from
+  channel EOF and retain bounded codec/output recovery.
+- **Phone/computer relay setup:** the TV can open an opt-in HTTPS configuration
+  page on its private LAN. Verify the displayed certificate fingerprint, enter
+  the pairing code, submit STUN/Cloudflare/custom TURN settings, then approve
+  them on the TV. Preserve origin/Host checks, bounded submissions and expiry.
+  Setup stops on exit, stream start or the five-minute deadline. No external
+  provisioning service, public setup listener or port forwarding is required.
+- **TV remote mouse and physical input:** optionally move the pointer with
+  D-pad; short OK clicks, two short presses double-click, held OK right-clicks,
+  and OK plus direction drags on compatible remotes. Physical keyboards/mice use
+  normal Parsec input and optional mouse capture. Ctrl+Shift+M releases input
+  and opens controls. Correct cursor size, hotspot, edge mapping and input-device
+  ownership while keeping gamepad controls separate. Cursor and overlay changes
+  no longer rebuild the video Surface or terminate the session.
+- **Dismissible TV controls and cadence hints:** a compact overlay reports
+  available FPS, selected-pair RTT, incoming bitrate, actual codec/depth and
+  direct/relay routing. Auto-hide after five idle seconds; retain manual Hide,
+  Disconnect and Back/Menu access. Add fixed/dynamic FPS preferences. Hint the
+  Surface rate from the host-confirmed fixed cadence, clearing the hint when
+  dynamic or unknown. Display Android-reported Hz and decoded-output catch-up
+  skips without forcing HDMI modes or introducing another frame scheduler.
+- **Android audio recovery and buffering:** reopen a failed or disconnected
+  AAudio output using bounded retry policy while preserving video and transport.
+  Discard stale queued PCM before resuming; fold multichannel audio down when
+  recovery selects stereo. Settings offers shared validated minimum/maximum
+  buffering from 0-500 ms, with a positive maximum at least equal to the minimum.
+  Defaults remain a zero minimum and 100 ms queue ceiling; larger minima add
+  latency.
+- **BUD PCM and surround on TV:** optionally request raw PCM and verified
+  5.1/7.1 output layouts. Match explicit Android speaker positions to the actual
+  AAudio route and opened stream; unknown or unsupported layouts use stereo.
+  Resolve newer channel-mask APIs optionally so Android 10-12 still loads.
+  API 29-31 uses the stereo fallback. WebRTC remains stereo Opus.
+- **Signed Android updates:** Settings > Updates checks stable or optional dev
+  GitHub releases and downloads the newest compatible APK. Shared Rust verifies
+  bounded HTTPS downloads against published size and SHA-256; Android verifies
+  package ID, version, OS compatibility and the installed signing certificate.
+  Clear obsolete downloads when channels change and use the lifecycle-aware
+  system installer. Release APKs use the persistent distribution signing key;
+  Android still requires the user's installation confirmation.
+- **TV diagnostic export:** optional bounded JSONL operational logging and
+  Save/Share diagnostics export a ZIP through Android's document picker or
+  temporary read-only sharing. Include up to two rotated 5 MiB logs and basic
+  device information; exclude credentials, settings, clipboard, media and logcat.
+  Export work stays outside the audio/video callbacks.
+- **Shared core and dependency maintenance:** reuse Rust session, validation,
+  media ingress, desktop input gestures, controller and audio policy across
+  platforms, retaining explicit MediaCodec/AAudio/Keystore and D3D11/WASAPI
+  adapters. Use common bounded, video-first BUD batches and promptly drain bursts.
+  Remove unused nix AIO features and the resulting unmaintained pin-utils
+  dependency without changing upstream Rust implementation or unrelated versions.
+  Retain third-party licenses and local-change notices in Windows/Android packages.
+- **Quality checks and project documentation:** enforce Sonar Quality Gate
+  results with measured Rust and release-packaging coverage, alongside Clippy,
+  advisory/license/source checks and workflow lint. Pin the affected CI actions
+  to immutable commits and restrict tool downloads/redirects to HTTPS while
+  preserving SHA-256 checks. Add Android ARMv7/ARM64, lint and optional-AAudio-symbol
+  checks. Stabilize the Windows overlay drag regression fixture by waiting for
+  initial window placement before measuring movement, preserving its assertions.
+  Retire temporary TV test overlays while retaining useful errors and regression
+  tests. README now includes AI-development disclosure, main-branch quality badges
+  with dependency-scope context, and a live Star History chart.
+
+## Compatibility and validation
+
+**Windows 11 x64 with Direct3D feature level 11.0+ and compatible drivers** remains
+required. Existing Windows video capabilities and their experimental status
+remain as documented in v0.9.5; this release does not add another Windows decoder,
+HDR, GPU AI mode or verified driver/compositor zero-copy guarantee.
+
+The Android APK requires **Android 10 (API 29)+** and includes **ARMv7 and ARM64**.
+The initial TV client has live validation on Xiaomi TV Box S (3rd Gen) EU,
+Android 14 with 32-bit ARM userspace: H.264, HEVC 8-bit, NVIDIA-host Main10,
+remote mouse and GameSir controller forwarding. Windows wired controller
+forwarding is also live-tested. Other devices, audio routes, surround outputs
+and rumble combinations require their own testing. DirectInput-only Windows
+pads and Sony raw touch/gyro/adaptive-trigger passthrough are not implemented.
+The host's normal controller driver and permissions are still required.
+
+In the tested TV setup BUD at 50 Mbit/s was stable; sustained WebRTC 50 Mbit/s
+still caused delay/video-channel closure, while around 30 Mbit/s was stable.
+This is a transport-specific observation, not a universal hardware bitrate cap.
+The AMD-host TV test returned 8-bit. 10-bit remains SDR, not HDR. Android adds
+no 4:4:4, Windows BUD USB HID mode, VRR, AISR or Windows-equivalent Zero copy mode.
+Surface output avoids application CPU pixel readback; driver/compositor copies
+and physical scanout remain unverified. No quantified latency gain is claimed.
+Some remotes cannot report simultaneous OK and direction presses for dragging.
+Diagnostic export requires a compatible Android document-provider/sharing app.
+
+## Requirements and upgrading
+
+**Windows:** close the client and extract **EvoParseq-v0.9.6-win64.zip**, retaining
+settings.json under the same Windows account. Help > Check for updates offers
+this stable release. Native settings and protected remembered sessions are
+retained; protected credentials are not portable between accounts or machines.
+The legacy **ParsecWebTurn-v0.9.6-win64.zip** contains the identical executable
+under the old filename. Both ZIPs exclude user settings and the optional NVIDIA
+runtime. Older pre-rename updaters may need a one-time manual upgrade.
+
+**Android TV:** install **EvoParseq-TV.apk**, or use **Settings > Updates** in an
+existing distribution-signed installation. Stable v0.9.6 has versionCode 30,
+newer than the signed dev.5 build; Include prereleases is not required to receive
+this stable version. Android confirms installation and may first request install
+permission. Normal signed updates retain settings and remembered sign-in.
+**EvoParseq-TV-v0.9.6.zip** includes the same APK, setup guide and notices.
+
+Old debug-signed previews, including v0.9.6-dev.1, have a different certificate:
+uninstall once and install the distribution-signed APK if the signature is
+rejected. Uninstalling erases private settings and remembered sign-in. Already
+distribution-signed dev.2-dev.5 builds can update in place and should not be
+uninstalled for this upgrade.
+
+Verify downloaded assets with SHA256SUMS.txt. The Windows ZIP and TV APK are
+separate applications for their respective platforms. See README, MIGRATION.md
+and the Android TV README for setup and platform limits. EvoParseq remains
+independent of Parsec, Unity and lowlat; their applicable terms and licenses
+remain in force.
+
+## v0.9.6-dev.5 — Audio controls, Android TV updates and recovery (2026-11-06)
+
+This development preview builds on **EvoParseq v0.9.6-dev.1**. The changes below
+cover all implemented additions and fixes since that previous dev release.
+Internal Android test builds used dev.2-dev.4; this release aligns Windows and
+the published Android APK at dev.5 so those installations can update forward.
+
+**This is a development preview. EvoParseq v0.9.5 remains the stable Windows release.**
+
+## What's new and improved
+
+- **Windows local audio controls:** add Mute audio and a 0-100% volume slider
+  to the session overlay. Muting preserves the chosen level; changing volume
+  while muted keeps mute enabled. Controls affect client playback rather than
+  the host's system volume, and apply through the existing WASAPI output.
+- **Android TV in-app updates:** Settings > Updates can check stable or dev
+  GitHub releases, download a compatible APK and open Android's system installer.
+  Shared Rust selects the newest compatible release and verifies the bounded
+  HTTPS download against its published size and SHA-256 digest. Android checks
+  the package ID, version, compatibility and installed signing certificate.
+  Changing release channels clears obsolete prepared downloads; installation
+  follows the Activity lifecycle and still requires Android confirmation.
+- **Persistent Android release signing:** release APKs now use a protected,
+  persistent distribution key instead of temporary CI debug signing. Normal
+  updates between distribution-signed builds retain settings and remembered
+  sign-in. Older debug-signed installations require a one-time reinstall; see
+  Updating below before removing an existing installation.
+- **Android audio recovery:** reopen a disconnected or failed AAudio output
+  using the shared bounded retry policy while keeping the video/session alive.
+  Retire stale queued audio before resuming. A recovery onto a stereo output
+  explicitly folds multichannel audio down, with saturation and LFE omitted.
+  Native callbacks retain the shared nonblocking PCM handoff.
+- **Configurable TV audio buffering:** add an Audio settings group with optional
+  minimum/maximum buffer presets using the common Rust validation rules. The
+  maximum must be positive and at least the minimum, with a 500 ms ceiling.
+  Default behavior remains a zero minimum and 100 ms queue ceiling; increasing
+  the minimum adds latency and can help absorb jitter.
+- **BUD PCM and surround on Android:** optionally request uncompressed PCM and
+  the routed output's verified 5.1/7.1 speaker layout. Match explicit Android
+  speaker positions to the actual AAudio device and opened stream. Unknown or
+  unsupported layouts fall back to stereo. Newer channel-mask APIs are resolved
+  optionally so the APK still loads on Android 10-12. WebRTC remains stereo Opus.
+- **Shared BUD media processing:** replace Android's separate media parsing
+  with the shared Rust BUD ingress. Preserve bounded,
+  video-first media batches, prompt draining of queued bursts, codec/layout
+  validation, encoder-change handling and keyframe recovery. PCM and multistream
+  Opus use the common decoder/output queue instead of a separate Kotlin path.
+- **TV diagnostic export:** add opt-in, bounded operational logging and Save /
+  Share diagnostics actions. Export a ZIP containing up to two 5 MiB rotated
+  logs and basic device information through Android's document picker or
+  temporary read-only sharing. Exclude credentials, settings, clipboard, media
+  contents and logcat. ZIP work stays outside audio/video callbacks.
+- **TV settings navigation:** add Audio and Diagnostics categories, retain Back
+  above a bounded scrolling category list, and preserve readable button heights.
+  The Updates entry no longer collapses or loses its caption when the menu is
+  taller than the available screen area; focused categories can scroll into view.
+- **Dependency and quality maintenance:** remove the unused nix AIO feature
+  that brought in the unmaintained pin-utils dependency. Keep the existing
+  WebRTC helper version and upstream Rust sources, requesting only the Unix
+  network features actually used. Preserve advisory enforcement and unrelated
+  dependency versions. Add a blocking SonarQube Quality Gate on every active
+  branch except legacy, with measured Rust test coverage and real release-package
+  coverage. Instrumented binaries are never shipped. Extend Android CI to catch accidental strong links to newer AAudio
+  APIs that would prevent older Android versions from loading the client.
+
+## Compatibility and validation
+
+Windows x64 and Android TV remain the platforms included in this dev release.
+Linux development and its separate alpha release stay on the linux-flatpak
+branch and are not included in these packages.
+
+The Android APK includes **ARMv7 and ARM64** libraries and requires **Android 10
+(API 29) or newer**. The established Xiaomi TV Box S (3rd Gen) / Android 14
+streaming and controller observations still apply. Surround output and audio
+route/recovery behavior require live validation with the actual TV, receiver
+and connected audio devices; CI does not establish hardware compatibility.
+API 29-31 use the stereo fallback for optional channel-mask-based surround.
+Some TV systems need a document-provider or sharing app to export diagnostics.
+
+Android video remains H.264 / HEVC 8- or 10-bit **4:2:0 SDR** through the existing
+MediaCodec-to-Surface path. This release adds no Android 4:4:4, HDR, VRR, AISR or
+Windows-equivalent Zero copy mode. The related API research is documentation,
+not an implemented or validated capability. Driver/compositor work and physical
+scanout remain unverified; no universal performance or latency gain is claimed.
+The earlier transport-specific high-bitrate WebRTC limitation remains under
+investigation. Existing Windows experimental GPU, HID and audio limits remain
+as documented in the README.
+
+Existing host permissions and controller requirements still apply. Windows
+volume/mute controls do not change the host's system volume or other clients.
+EvoParseq remains independent of Parsec, Unity and lowlat.
+
+## Updating
+
+**Windows:** close the client and extract **EvoParseq-v0.9.6-dev.5-win64.zip**.
+Keep your existing settings.json under the same Windows account. The legacy
+**ParsecWebTurn-v0.9.6-dev.5-win64.zip** contains the identical executable under
+the old filename for existing shortcuts. ZIPs exclude user settings and the
+optional NVIDIA runtime. Protected credentials are not portable across machines
+or Windows accounts.
+
+**Android TV:** sideload **EvoParseq-TV.apk**, or, from an existing
+distribution-signed build, open **Settings > Updates**, choose **Include
+prereleases**, then Check / Download / Install update. Android asks you to
+confirm installation and may request permission to install apps first. Normal
+in-place updates retain settings and remembered sign-in. The accompanying
+**EvoParseq-TV-v0.9.6-dev.5.zip** contains the same APK, setup guide and notices.
+
+**Upgrading the old v0.9.6-dev.1 debug APK:** its signing certificate differs
+from this release's persistent distribution certificate. If Android rejects the
+update signature, remove that older preview and install the new APK. Removing
+an app erases its private settings and remembered sign-in; configure it again
+afterward. Already distribution-signed dev.2-dev.4 test builds can update
+normally and should not be uninstalled for this update.
+
+Use SHA256SUMS.txt to verify downloaded files. This is a **prerelease**, not the
+stable updater's latest release. Windows dev previews are installed manually;
+Android's updater must have Include prereleases selected to offer this build.
+The stable main branch is unchanged. See MIGRATION.md and the Android TV README
+for platform-specific setup and update details.
+
+
 ## v0.9.6-dev.1 — Android TV preview and shared controller support (2026-11-02)
 
 This development preview builds on the latest stable release, **EvoParseq

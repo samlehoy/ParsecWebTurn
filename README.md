@@ -1,3 +1,17 @@
+> [!WARNING]
+> **EvoParseq is developed with substantial AI assistance.** AI generates most of the
+> implementation code, while the project’s concept, architecture, scope, platform choices,
+> and development priorities are defined by its human maintainer.
+>
+> Development remains human-led. The maintainer directs the work, tests the application on
+> real hardware, investigates reported problems, and oversees patches and fixes.
+> Responsibility for reviewing and accepting changes stays with the maintainer.
+>
+> The project owner has a formal IT education and works in Kubernetes and DevOps. The
+> primary motivation for using AI is to save time and make effective use of LLM
+> capabilities, allowing more effort to go into design decisions, integration, and practical
+> testing.
+
 <p align="center">
   <img src="assets/evoparseq-wordmark.svg" width="360" alt="EvoParseq">
 </p>
@@ -12,14 +26,38 @@ requires no browser, WebView or helper executable.
 **This is an independent community project, not affiliated with or endorsed by
 Parsec, Unity or lowlat.** A Parsec account and a compatible host are required.
 
-**This is the development branch (0.9.6-dev.1): Windows plus an Android TV preview.**
-Download [**v0.9.6-dev.1**](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.6-dev.1)
-for Windows ZIPs and the Android TV APK. This prerelease is installed manually.
-The stable Windows client is [**EvoParseq v0.9.5**](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.5)
-on `main`. This branch adds controller support on Windows and Android TV;
-these additions are not included in the stable Windows release.
+The stable release is [**EvoParseq v0.9.6**](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.6),
+with Windows x64 packages and the signed Android TV APK. This is the `main`
+branch; ongoing development continues on `dev`. Linux remains a separate alpha
+on `codex/linux-flatpak` and is not included in this release.
 
-## Android TV preview
+## Code quality
+
+Live SonarQube results for `main`. Select a badge to open the dashboard.
+
+| Metric | `main` |
+| --- | --- |
+| Quality Gate | [![main: Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=alert_status)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) |
+| Coverage (overall code) | [![main: Coverage (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=coverage)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) |
+| Security (overall code) | [![main: Security (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=security_rating)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) |
+| Reliability (overall code) | [![main: Reliability (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=reliability_rating)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) |
+| Maintainability (overall code) | [![main: Maintainability (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=sqale_rating)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) |
+| Duplicated lines (overall code) | [![main: Duplicated lines (overall code)](https://sonarcloud.io/api/project_badges/measure?project=vampywiz17_EvoParseq&branch=main&metric=duplicated_lines_density)](https://sonarcloud.io/dashboard?id=vampywiz17_EvoParseq&branch=main) |
+
+The metric badges describe **overall code**, not just newly changed lines.
+The Quality Gate applies the configured **new-code** requirements; a passing
+gate does not mean that overall coverage is 100% or that all existing findings
+have been resolved. The dashboard shows both scopes. GitHub may briefly cache
+badge images after a new analysis.
+
+Sonar also analyzes checked-in dependencies, including upstream test fixtures
+and configuration files. Their findings count toward the overall results,
+especially the Security rating, so the badges are not a score of EvoParseq's
+own implementation alone and can give a misleading impression without that
+context. Dependency findings still require review; upstream origin does not
+automatically make a finding harmless or a false positive.
+
+## Android TV
 
 - Google TV / Android TV interface with D-pad navigation, 2FA, grouped settings
   and encrypted remembered sign-in using Android Keystore.
@@ -32,6 +70,9 @@ these additions are not included in the stable Windows release.
 - Standard gamepads; optional remote D-pad mouse, short/long OK clicks and
   supported OK + direction dragging. Physical mouse/keyboard use normal input
   with optional capture. Windows HID passthrough is not an Android feature.
+- AAudio device recovery, optional custom buffering, BUD PCM and capability-gated
+  5.1/7.1 output; diagnostic logging with save/share export. These additions need
+  live audio-device validation; WebRTC remains stereo Opus.
 
 Live-tested on Xiaomi TV Box S (3rd Gen), Android 14, including BUD at 50 Mbit/s,
 NVIDIA-encoded Main10, remote mouse and a GameSir controller. WebRTC at sustained
@@ -40,13 +81,16 @@ stable. This is a transport-specific observation, **not a universal hardware lim
 MediaCodec submits frames to Surface without CPU pixel readback; physical scanout
 and internal driver/compositor copies are not verified.
 
-Use the [preview release](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.6-dev.1)
-or successful [dev Android CI artifacts](https://github.com/vampywiz17/EvoParseq/actions/workflows/android-tv.yml?query=branch%3Adev)
-for previews; the stable Windows ZIP is not an Android package.
-[Android TV setup, build and limits](android-tv/README.md).
-The Windows features below remain available on this branch.
+Download **EvoParseq-TV.apk** from the
+[stable release](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.6), or
+use **Settings > Updates** in an existing distribution-signed Android build.
+The APK includes ARMv7 and ARM64 libraries and requires **Android 10 (API 29)+**.
+Android still asks for installation confirmation. Normal signed updates retain
+settings and remembered sign-in; old debug-signed previews need a one-time
+reinstall, which clears their private data. The Windows ZIP cannot run on TV.
+[Android TV setup, updates and compatibility limits](android-tv/README.md).
 
-## Features
+## Windows features
 
 - **Native account and sessions:** optional 2FA, encrypted remembered sign-in,
   background-refreshing computer picker and manual peer ID. Owner connections
@@ -66,7 +110,7 @@ The Windows features below remain available on this branch.
   On Windows, the Session overlay offers immediate local mute and 0–100% volume
   control for either transport, without changing the host's volume. Mute preserves
   the chosen level; these controls reset when the client is restarted.
-- **Controllers (development):** shared Rust gamepad state/protocol for up to
+- **Controllers:** shared Rust gamepad state/protocol for up to
   four controllers, Windows XInput and Android gamepad events. Wired Windows
   and GameSir Android forwarding are live-tested; device-specific rumble and
   disconnect behavior need broader validation.
@@ -109,10 +153,8 @@ adapters (AppKit, VideoToolbox, Core Audio, Keychain). See
 
 ## Windows download and run
 
-1. Download `EvoParseq-v0.9.5-win64.zip` from the
-   [stable release](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.5).
-   For this branch's Windows preview (including controllers), use artifacts from successful
-   [dev CI runs](https://github.com/vampywiz17/EvoParseq/actions/workflows/native-core.yml?query=branch%3Adev).
+1. Download `EvoParseq-v0.9.6-win64.zip` from the
+   [stable release](https://github.com/vampywiz17/EvoParseq/releases/tag/v0.9.6).
 2. Extract to a writable folder and run **EvoParseq.exe**. Settings and optional
    encrypted sessions are stored beside it in `settings.json`.
 3. Sign in with the host owner's account, choose a computer and connect.
@@ -311,3 +353,12 @@ Our code uses the [MIT license](LICENSE). Applicable Parsec service terms and
 third-party licenses still apply. Development did not use Parsec's proprietary
 source code, and EvoParseq does not patch the official host or client. Parsec and
 Unity names and marks belong to their owners; no affiliation is implied.
+
+## Star history
+
+<a href="https://www.star-history.com/#vampywiz17/EvoParseq&amp;Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=vampywiz17/EvoParseq&amp;type=Date&amp;theme=dark">
+    <img alt="EvoParseq GitHub star history" src="https://api.star-history.com/svg?repos=vampywiz17/EvoParseq&amp;type=Date" width="800">
+  </picture>
+</a>
