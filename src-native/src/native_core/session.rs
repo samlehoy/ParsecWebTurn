@@ -397,16 +397,7 @@ pub(super) fn run(
                 match action {
                     session_model::Command::Disconnect => platform.stop(),
                     session_model::Command::HideButton => {
-                        if manager
-                            .update_native(|p| p.hide_session_button = true)
-                            .is_err()
-                        {
-                            crate::event_log::record(
-                                "WARN",
-                                "native_session_button_save_failed",
-                                serde_json::json!({}),
-                            );
-                        }
+                        manager.set_native_session_button_hidden(true);
                         platform.refresh_overlay();
                     }
                     session_model::Command::SecureAttention => {

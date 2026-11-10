@@ -82,8 +82,6 @@ pub enum Command {
     SelectDisplay(String),
     RefreshDisplays,
     Disconnect,
-    // The floating session button exists only on Windows.
-    #[cfg_attr(not(windows), allow(dead_code))]
     HideButton,
     SecureAttention,
 }
