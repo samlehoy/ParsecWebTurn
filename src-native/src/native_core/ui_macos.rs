@@ -7,14 +7,22 @@ use super::sign_in::{Completion, SignIn};
 use crate::window_macos::on_main;
 use anyhow::Result;
 use objc2::{
-    define_class, msg_send, rc::Retained, runtime::NSObject, sel, MainThreadMarker, MainThreadOnly,
+    define_class, msg_send,
+    rc::Retained,
+    runtime::{AnyObject, NSObject},
+    sel, MainThreadMarker, MainThreadOnly,
 };
 use objc2_app_kit::{
-    NSAlert, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton,
-    NSEventMask, NSFont, NSMenu, NSMenuItem, NSPopUpButton, NSScrollView, NSSecureTextField,
-    NSTextField, NSTextView, NSView, NSWindow, NSWindowStyleMask,
+    NSAlert, NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSApplication,
+    NSApplicationActivationPolicy, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton,
+    NSCellImagePosition, NSColor, NSEventMask, NSEventModifierFlags, NSFont, NSFontAttributeName,
+    NSForegroundColorAttributeName, NSImage, NSImageScaling, NSMenu, NSMenuItem, NSPopUpButton,
+    NSScrollView, NSSecureTextField, NSTextField, NSTextView, NSView, NSWindow, NSWindowStyleMask,
 };
-use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    NSAttributedString, NSDate, NSDefaultRunLoopMode, NSDictionary, NSPoint, NSRect, NSSize,
+    NSString,
+};
 use std::{
     cell::RefCell,
     sync::{
@@ -94,6 +102,29 @@ define_class!(
             session(crate::window::Event::NativeSession(
                 super::session_model::Command::SecureAttention,
             ));
+        }
+        #[unsafe(method(sessionMenu:))]
+        fn session_menu(&self, sender: &NSView) {
+            let Some(window) = crate::window_macos::active() else { return };
+            let mtm = MainThreadMarker::from(self);
+            let menu = session_menu(mtm, &window);
+            let below = if sender.isFlipped() { sender.bounds().size.height + 4.0 } else { -4.0 };
+            window.release_for_menu();
+            menu.popUpMenuPositioningItem_atLocation_inView(None, NSPoint::new(0.0, below), Some(sender));
+            crate::window_macos::sync_active(mtm);
+        }
+        #[unsafe(method(hideButton:))]
+        fn hide_button(&self, _sender: &NSObject) {
+            session(crate::window::Event::NativeSession(
+                super::session_model::Command::HideButton,
+            ));
+        }
+        #[unsafe(method(sound:))]
+        fn sound(&self, _sender: &NSObject) {
+            if let Some(window) = crate::window_macos::active() {
+                let muted = window.audio_output.level().muted;
+                window.audio_output.set_muted(!muted);
+            }
         }
         #[unsafe(method(disconnect:))]
         fn disconnect(&self, _sender: &NSObject) {
@@ -278,6 +309,150 @@ fn install_menu(mtm: MainThreadMarker, app: &NSApplication) {
         vec![item(mtm, "Minimize", Some(sel!(performMiniaturize:)), "m")],
     ));
     app.setMainMenu(Some(&bar));
+}
+
+/// Floating session launcher, hidden until the saved preference is applied.
+/// Its title stays as the accessible name; only the application icon shows.
+pub(crate) fn session_button(mtm: MainThreadMarker, height: f64) -> Retained<NSButton> {
+    const SIZE: f64 = 40.0;
+    const MARGIN: f64 = 16.0;
+    let button = unsafe {
+        NSButton::buttonWithTitle_target_action(
+            &NSString::from_str("Session menu"),
+            Some(&actions(mtm)),
+            Some(sel!(sessionMenu:)),
+            mtm,
+        )
+    };
+    button.setImage(
+        NSApplication::sharedApplication(mtm)
+            .applicationIconImage()
+            .as_deref(),
+    );
+    button.setImagePosition(NSCellImagePosition::ImageOnly);
+    button.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
+    button.setBordered(false);
+    button.setAlphaValue(0.8);
+    button.setToolTip(Some(&NSString::from_str("Session menu")));
+    button.setFrame(NSRect::new(
+        NSPoint::new(MARGIN, height - MARGIN - SIZE),
+        NSSize::new(SIZE, SIZE),
+    ));
+    // Pinned to the top-left corner while the window resizes.
+    button.setAutoresizingMask(
+        NSAutoresizingMaskOptions::ViewMaxXMargin | NSAutoresizingMaskOptions::ViewMinYMargin,
+    );
+    button.setHidden(true);
+    button
+}
+
+/// Parsec-style overlay menu over the commands this client implements;
+/// rebuilt on each open so the fullscreen and sound titles are current.
+fn session_menu(mtm: MainThreadMarker, window: &crate::window::Window) -> Retained<NSMenu> {
+    use NSEventModifierFlags as M;
+    let entry = |title: &str, symbol: &str, action, key: &str, mods: M| {
+        let entry = item(mtm, title, Some(action), key);
+        entry.setKeyEquivalentModifierMask(mods);
+        entry.setImage(
+            NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                &NSString::from_str(symbol),
+                None,
+            )
+            .as_deref(),
+        );
+        entry
+    };
+    let none = M::empty();
+    let fullscreen = window.fullscreen_active();
+    let muted = window.audio_output.level().muted;
+    let hide = entry("Hide Button", "eye.slash", sel!(hideButton:), "", none);
+    hide.setToolTip(Some(&NSString::from_str("⇧⌘M shows it again.")));
+    let disconnect = entry(
+        "Disconnect",
+        "arrow.right.square",
+        sel!(disconnect:),
+        "`",
+        M::Command | M::Option,
+    );
+    // An attributed title needs the menu font to match the other entries.
+    let red = NSColor::systemRedColor();
+    let font = NSFont::menuFontOfSize(0.0);
+    let attributes = NSDictionary::from_slices(
+        &[unsafe { NSForegroundColorAttributeName }, unsafe {
+            NSFontAttributeName
+        }],
+        &[&*red as &AnyObject, &*font as &AnyObject],
+    );
+    let title = unsafe {
+        NSAttributedString::new_with_attributes(&NSString::from_str("Disconnect"), &attributes)
+    };
+    disconnect.setAttributedTitle(Some(&title));
+    let menu = NSMenu::new(mtm);
+    for entry in [
+        hide,
+        entry(
+            "Stream Settings…",
+            "slider.horizontal.3",
+            sel!(streamSettings:),
+            "m",
+            M::Command | M::Shift,
+        ),
+        entry(
+            if fullscreen {
+                "Exit Fullscreen"
+            } else {
+                "Fullscreen"
+            },
+            if fullscreen {
+                "arrow.down.right.and.arrow.up.left"
+            } else {
+                "arrow.up.left.and.arrow.down.right"
+            },
+            sel!(fullscreen:),
+            "w",
+            M::Command | M::Shift,
+        ),
+        entry(
+            if muted { "Sound OFF" } else { "Sound ON" },
+            if muted {
+                "speaker.slash.fill"
+            } else {
+                "speaker.wave.2.fill"
+            },
+            sel!(sound:),
+            "",
+            none,
+        ),
+        entry(
+            "Release Input",
+            "cursorarrow.rays",
+            sel!(release:),
+            "z",
+            M::Command | M::Option,
+        ),
+        entry(
+            "Connection Stats",
+            "waveform.path.ecg",
+            sel!(stats:),
+            "s",
+            M::Command | M::Shift,
+        ),
+        entry(
+            "Send Ctrl+Alt+Del",
+            "lock.shield",
+            sel!(attention:),
+            "\u{8}",
+            M::Control | M::Option,
+        ),
+        NSMenuItem::separatorItem(mtm),
+        disconnect,
+    ] {
+        menu.addItem(&entry);
+    }
+    menu.setAppearance(
+        NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }).as_deref(),
+    );
+    menu
 }
 
 /// Runs AppKit on the main thread and `run` on a separate account thread.

@@ -123,6 +123,8 @@ struct State {
     // Silence until the minimum buffer is queued again after an underrun.
     primed: bool,
     stopped: bool,
+    // The window's local output level; the queue keeps draining while muted.
+    output: Arc<crate::audio_output::Output>,
 }
 
 pub struct Playback {
@@ -162,6 +164,7 @@ impl Playback {
             },
             channels: usize::from(layout.channels),
             min_frames: min_buffer as usize * 48,
+            output: window.audio_output.clone(),
             ..Default::default()
         }));
         crate::event_log::record(
@@ -365,6 +368,9 @@ fn fill(s: &mut State, out: &mut [i16], frames: usize) {
         }
     }
     out[written..].fill(0);
+    if s.output.level().muted {
+        out[..written].fill(0);
+    }
     s.report.frames_written += (written / s.channels.max(1)) as u64;
     s.report.queued_frames = s.pcm.len() / s.channels.max(1);
 }
@@ -397,5 +403,11 @@ mod tests {
         assert_eq!(s.report.underruns, 1);
         assert!(!s.primed);
         assert_eq!(s.report.frames_written, 5);
+        s.output.set_muted(true);
+        s.primed = true;
+        s.pcm.extend([6, 6, 7, 7]);
+        fill(&mut s, &mut out, 2);
+        assert_eq!(out[..4], [0; 4], "muted output is silent");
+        assert!(s.pcm.is_empty(), "muted playback still drains the queue");
     }
 }

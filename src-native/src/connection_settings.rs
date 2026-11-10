@@ -417,6 +417,20 @@ impl Manager {
             .native_core
             .hide_session_button
     }
+    /// Saves the floating session button preference; a failure is logged,
+    /// and the live UI still follows the request.
+    pub fn set_native_session_button_hidden(&self, hidden: bool) {
+        if self
+            .update_native(|p| p.hide_session_button = hidden)
+            .is_err()
+        {
+            crate::event_log::record(
+                "WARN",
+                "native_session_button_save_failed",
+                serde_json::json!({}),
+            );
+        }
+    }
     pub fn save(
         &self,
         mut settings: Settings,

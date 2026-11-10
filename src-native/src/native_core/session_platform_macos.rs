@@ -77,7 +77,9 @@ impl Desktop for Platform {
     fn awake(&self) {
         self.window.set_wake_lock(true);
     }
-    fn refresh_overlay(&self) {}
+    fn refresh_overlay(&self) {
+        self.window.refresh_session_button();
+    }
     fn clipboard_allowed(&self) -> bool {
         self.window.clipboard_allowed()
     }

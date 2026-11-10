@@ -1109,16 +1109,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                     if wp & 0xffff == crate::native_core::session_ui::OPEN_SHORTCUT
                         && manager.native_session_button_hidden()
                     {
-                        if manager
-                            .update_native(|p| p.hide_session_button = false)
-                            .is_err()
-                        {
-                            crate::event_log::record(
-                                "WARN",
-                                "native_session_button_save_failed",
-                                serde_json::json!({}),
-                            );
-                        }
+                        manager.set_native_session_button_hidden(false);
                         crate::native_core::session_ui::raise(s);
                     }
                     crate::native_core::session_ui::toggle(s, manager);

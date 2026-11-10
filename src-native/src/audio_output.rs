@@ -18,6 +18,8 @@ pub struct Level {
 }
 
 impl Level {
+    // macOS applies mute only; gain and volume belong to the Windows panel.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn gain(self) -> f32 {
         if self.muted {
             0.0
@@ -36,6 +38,8 @@ impl Output {
         }
     }
 
+    // See Level::gain: macOS offers mute only.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn set_percent(&self, percent: u32) {
         let percent = percent.min(100);
         let mut value = self.0.load(Ordering::Relaxed);

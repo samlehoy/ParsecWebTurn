@@ -4,8 +4,8 @@ pub use crate::native_core::session_model::Event;
 use anyhow::Result;
 use objc2::{rc::Retained, runtime::AnyObject, MainThreadMarker};
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSBackingStoreType, NSColor, NSEvent, NSEventModifierFlags,
-    NSEventType, NSPasteboard, NSView, NSWindow, NSWindowStyleMask,
+    NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSColor, NSEvent,
+    NSEventModifierFlags, NSEventType, NSPasteboard, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use std::sync::{
@@ -30,6 +30,7 @@ pub struct Window {
     pub stop: Arc<crate::lifecycle::StopSignal>,
     pub has_focus: AtomicBool,
     pub(crate) pasteboard_seen: AtomicIsize,
+    pub(crate) audio_output: Arc<crate::audio_output::Output>,
     connection_settings: Mutex<Option<Arc<crate::connection_settings::Manager>>>,
     video_ready: AtomicBool,
     video_generation: Mutex<u64>,
@@ -51,6 +52,7 @@ pub struct Window {
     hid_input_acquired: AtomicBool,
     ns_window: usize,
     video_layer: usize,
+    session_button: usize,
 }
 
 static ACTIVE: Mutex<Option<Weak<Window>>> = Mutex::new(None);
@@ -88,7 +90,7 @@ pub(crate) fn post(f: impl FnOnce(MainThreadMarker) + Send + 'static) {
 
 impl Window {
     pub fn create_native() -> Result<Arc<Self>> {
-        let (ns_window, video_layer, size) = on_main(|mtm| {
+        let (ns_window, video_layer, session_button, size) = on_main(|mtm| {
             let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1280.0, 720.0));
             let style = NSWindowStyleMask::Titled
                 | NSWindowStyleMask::Closable
@@ -107,6 +109,10 @@ impl Window {
             unsafe { window.setReleasedWhenClosed(false) };
             window.setBackgroundColor(Some(&NSColor::blackColor()));
             window.setAcceptsMouseMovedEvents(true);
+            // A layer-hosting view must not have subviews, so the session
+            // button is the video view's sibling in a layer-backed container.
+            let container = NSView::initWithFrame(mtm.alloc(), rect);
+            container.setWantsLayer(true);
             let view = NSView::initWithFrame(mtm.alloc(), rect);
             view.setAutoresizingMask(
                 NSAutoresizingMaskOptions::ViewWidthSizable
@@ -118,13 +124,17 @@ impl Window {
                 let _: () = unsafe { objc2::msg_send![&*view, setLayer: &**layer] };
                 view.setWantsLayer(true);
             }
-            window.setContentView(Some(&view));
+            container.addSubview(&view);
+            let button = crate::native_core::ui::session_button(mtm, rect.size.height);
+            container.addSubview(&button);
+            window.setContentView(Some(&container));
             window.center();
             window.makeKeyAndOrderFront(None);
             let size = window.contentRectForFrameRect(window.frame()).size;
             (
                 Retained::into_raw(window) as usize,
                 layer.map_or(0, |l| Retained::into_raw(l) as usize),
+                Retained::into_raw(button) as usize,
                 (size.width as i32, size.height as i32),
             )
         });
@@ -140,6 +150,7 @@ impl Window {
             pasteboard_seen: AtomicIsize::new(on_main(|_| {
                 NSPasteboard::generalPasteboard().changeCount()
             })),
+            audio_output: Default::default(),
             connection_settings: Default::default(),
             video_ready: AtomicBool::new(false),
             video_generation: Mutex::new(0),
@@ -161,6 +172,7 @@ impl Window {
             hid_input_acquired: AtomicBool::new(false),
             ns_window,
             video_layer,
+            session_button,
         });
         window.events.push(Event::Size(size.0, size.1));
         *ACTIVE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::downgrade(&window));
@@ -186,6 +198,48 @@ impl Window {
             .connection_settings
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(manager);
+        self.refresh_session_button();
+    }
+    pub fn native_session_button_hidden(&self) -> bool {
+        self.manager()
+            .is_some_and(|m| m.native_session_button_hidden())
+    }
+    /// Shows or hides the floating session button from the saved preference.
+    /// Fullscreen hides it too, so nothing is composited over the video layer
+    /// there; ⇧⌘M and the menu bar stay available.
+    pub fn refresh_session_button(&self) {
+        let hidden = self.native_session_button_hidden() || self.fullscreen_active();
+        let button = self.session_button;
+        // Queued before Drop's release, so the button is still retained.
+        post(move |_| unsafe { (*(button as *const NSButton)).setHidden(hidden) });
+    }
+    pub fn fullscreen_active(&self) -> bool {
+        self.fullscreen_active.load(Ordering::Acquire)
+    }
+    /// Main thread: the overlay menu's modal tracking swallows key-ups while
+    /// the window stays key, so host input is released as on focus loss
+    /// first. The next window sync restores focus and capture.
+    pub fn release_for_menu(&self) {
+        if self.has_focus.swap(false, Ordering::AcqRel) {
+            self.release_buttons();
+            self.events.push(Event::Focus(false));
+            self.apply_capture();
+            #[cfg(feature = "bud")]
+            self.sync_hid_acquired();
+        }
+    }
+    /// Main thread only: a left click on the visible session button stays
+    /// local. An activating click is forwarded as before, because NSButton
+    /// does not accept the first mouse.
+    fn over_session_button(&self, event: &NSEvent, mtm: MainThreadMarker) -> bool {
+        let button = unsafe { &*(self.session_button as *const NSButton) };
+        self.ns_window(mtm).isKeyWindow()
+            && !button.isHidden()
+            && !self.relative_mouse.load(Ordering::Acquire)
+            && button.mouse_inRect(
+                button.convertPoint_fromView(event.locationInWindow(), None),
+                button.bounds(),
+            )
     }
     pub fn video_gpu(&self) -> Option<crate::connection_settings::GpuPreference> {
         self.manager().and_then(|m| m.view().0.video_gpu)
@@ -439,9 +493,15 @@ impl Window {
             .update(self.wake_requested.load(Ordering::Acquire), visible);
     }
 
+    /// Every route here (⇧⌘M, menu bar, overlay) restores a hidden session
+    /// button, as the Windows menu shortcut does.
     pub fn open_stream_settings(&self) {
         let window = active().filter(|w| std::ptr::eq(&**w, self));
         if let (Some(window), Some(manager)) = (window, self.manager()) {
+            if manager.native_session_button_hidden() {
+                manager.set_native_session_button_hidden(false);
+                self.refresh_session_button();
+            }
             crate::native_core::open_stream_settings(window, manager);
         }
     }
@@ -504,6 +564,7 @@ impl Window {
         let fullscreen = window.styleMask().contains(NSWindowStyleMask::FullScreen);
         if self.fullscreen_active.swap(fullscreen, Ordering::AcqRel) != fullscreen {
             self.events.push(Event::Fullscreen(fullscreen));
+            self.refresh_session_button();
         }
     }
 
@@ -546,7 +607,7 @@ impl Window {
 
 impl Drop for Window {
     fn drop(&mut self) {
-        let (window, layer) = (self.ns_window, self.video_layer);
+        let (window, layer, button) = (self.ns_window, self.video_layer, self.session_button);
         let wake_lock =
             std::mem::take(&mut *self.wake_lock.lock().unwrap_or_else(|e| e.into_inner()));
         post(move |_| unsafe {
@@ -557,6 +618,7 @@ impl Drop for Window {
                 window.orderOut(None);
             }
             drop(Retained::from_raw(layer as *mut AnyObject));
+            drop(Retained::from_raw(button as *mut NSButton));
         });
     }
 }
@@ -609,6 +671,7 @@ pub fn handle_event(event: &NSEvent, mtm: MainThreadMarker) -> bool {
         _ => 4,
     };
     match event.r#type() {
+        NSEventType::LeftMouseDown if window.over_session_button(event, mtm) => return false,
         NSEventType::LeftMouseDown | NSEventType::RightMouseDown | NSEventType::OtherMouseDown => {
             window.button(true, mouse_button(event.buttonNumber()), x, y);
         }

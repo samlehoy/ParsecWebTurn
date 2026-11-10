@@ -61,8 +61,8 @@ windows-sys = { version = "0.61", features = [ "Win32_Foundation", "Win32_Device
 [target.'cfg(target_os = "macos")'.dependencies]
 dispatch2 = "0.3"
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["std", "NSString", "NSArray", "NSData", "NSDate", "NSRunLoop", "NSThread", "NSGeometry", "NSObject", "NSURL", "NSValue"] }
-objc2-app-kit = { version = "0.3", features = ["std", "NSApplication", "NSWindow", "NSView", "NSResponder", "NSEvent", "NSMenu", "NSMenuItem", "NSColor", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSCursor", "NSPasteboard", "NSAlert", "NSButton", "NSButtonCell", "NSControl", "NSTextField", "NSSecureTextField", "NSPopUpButton", "NSScreen", "NSFont", "NSText", "NSTextView", "NSScrollView", "NSClipView", "NSRunningApplication", "NSGraphics", "NSCell", "NSActionCell", "NSTabView", "NSTabViewItem", "NSStackView", "NSLayoutConstraint", "NSWorkspace", "NSTextStorage", "NSAttributedString"] }
+objc2-foundation = { version = "0.3", features = ["std", "NSString", "NSArray", "NSData", "NSDate", "NSRunLoop", "NSThread", "NSGeometry", "NSObject", "NSURL", "NSValue", "NSAttributedString", "NSDictionary"] }
+objc2-app-kit = { version = "0.3", features = ["std", "NSApplication", "NSWindow", "NSView", "NSResponder", "NSEvent", "NSMenu", "NSMenuItem", "NSColor", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSCursor", "NSPasteboard", "NSAlert", "NSButton", "NSButtonCell", "NSControl", "NSTextField", "NSSecureTextField", "NSPopUpButton", "NSScreen", "NSFont", "NSText", "NSTextView", "NSScrollView", "NSClipView", "NSRunningApplication", "NSGraphics", "NSCell", "NSActionCell", "NSTabView", "NSTabViewItem", "NSStackView", "NSLayoutConstraint", "NSWorkspace", "NSTextStorage", "NSAttributedString", "NSAppearance"] }
 ring = "0.17"
 
 # Isolated DTLS curve upgrade and SCTP-only corrections; preserve upstream RTP behavior.

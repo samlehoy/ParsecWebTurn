@@ -11,7 +11,7 @@ mod audio_endpoint_windows;
 mod audio_layout;
 #[cfg(target_os = "macos")]
 mod audio_macos;
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 mod audio_output;
 #[cfg(any(windows, test))]
 mod audio_recovery;
