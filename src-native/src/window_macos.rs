@@ -9,7 +9,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use std::sync::{
-    atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicIsize, AtomicU8, AtomicUsize, Ordering},
     Arc, Mutex, Weak,
 };
 
@@ -39,6 +39,8 @@ pub struct Window {
     host_cursor: Mutex<Option<(i32, i32, bool)>>,
     input_state: Mutex<crate::input_state::State>,
     pressed_buttons: AtomicUsize,
+    /// Main thread only: MODIFIER_KEYS bits forwarded as down.
+    held_modifiers: AtomicU8,
     local_shortcuts: Mutex<crate::input::Shortcuts>,
     cursor_pending: Mutex<crate::cursor::Pending>,
     fullscreen_active: AtomicBool,
@@ -159,6 +161,7 @@ impl Window {
             host_cursor: Default::default(),
             input_state: Default::default(),
             pressed_buttons: AtomicUsize::new(0),
+            held_modifiers: AtomicU8::new(0),
             local_shortcuts: Default::default(),
             cursor_pending: Default::default(),
             fullscreen_active: AtomicBool::new(false),
@@ -516,10 +519,24 @@ impl Window {
                 self.events.push(Event::Button(false, button, 0, 0));
             }
         }
+        // Focus(false) releases host keys, so no key-ups are owed.
+        self.held_modifiers.store(0, Ordering::Release);
         self.local_shortcuts
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
+    }
+
+    /// Main thread only: forwards modifier transitions from reported flags.
+    fn modifier_keys(&self, code: Option<&'static str>, mods: i32) {
+        let mut held = self.held_modifiers.load(Ordering::Acquire);
+        let keys = flags_changed(&mut held, code, mods);
+        self.held_modifiers.store(held, Ordering::Release);
+        for (code, down) in keys {
+            if !self.shortcut(code, down, false, mods) {
+                self.events.push(Event::Key(down, code, mods));
+            }
+        }
     }
 
     /// Focus, size, fullscreen, visibility and pasteboard changes, observed on
@@ -644,6 +661,51 @@ fn modifiers(flags: NSEventModifierFlags) -> i32 {
     .fold(0, |mods, (_, bit)| mods | bit)
 }
 
+/// Side-specific modifier keys and their compact mask bit.
+const MODIFIER_KEYS: [(&str, i32); 8] = [
+    ("ShiftLeft", 1),
+    ("ShiftRight", 1),
+    ("ControlLeft", 2),
+    ("ControlRight", 2),
+    ("AltLeft", 4),
+    ("AltRight", 4),
+    ("MetaLeft", 8),
+    ("MetaRight", 8),
+];
+
+/// Key transitions for one event's modifier flags. A held modifier whose flag
+/// is gone is released even without its own event: system hotkeys can swallow
+/// key-ups while the window stays key (the Ctrl+Shift+S screenshot overlay
+/// reports only flags-changed keyCode 0 with no modifiers). The flags are not
+/// side-specific, so a held key whose flag remains toggles up.
+fn flags_changed(
+    held: &mut u8,
+    code: Option<&'static str>,
+    mods: i32,
+) -> Vec<(&'static str, bool)> {
+    let mut keys = Vec::new();
+    if code == Some("CapsLock") {
+        keys.push(("CapsLock", mods & 16 != 0));
+    }
+    for (i, (key, flag)) in MODIFIER_KEYS.into_iter().enumerate() {
+        let bit = 1 << i;
+        let down = if code == Some(key) {
+            mods & flag != 0 && *held & bit == 0
+        } else if *held & bit != 0 && mods & flag == 0 {
+            false
+        } else {
+            continue;
+        };
+        keys.push((key, down));
+        if down {
+            *held |= bit;
+        } else {
+            *held &= !bit;
+        }
+    }
+    keys
+}
+
 /// Handles one AppKit event for the stream window on the main thread. Returns
 /// true when the event was consumed and must not reach AppKit (which would
 /// otherwise beep for unhandled keys).
@@ -715,6 +777,7 @@ pub fn handle_event(event: &NSEvent, mtm: MainThreadMarker) -> bool {
             let down = event.r#type() == NSEventType::KeyDown;
             let flags = event.modifierFlags();
             let mods = modifiers(flags);
+            window.modifier_keys(None, mods);
             let code = key_code(event.keyCode());
             // Session shortcuts win over menu equivalents, so Command+Q
             // disconnects like Parsec instead of quitting the app.
@@ -738,21 +801,7 @@ pub fn handle_event(event: &NSEvent, mtm: MainThreadMarker) -> bool {
             return true;
         }
         NSEventType::FlagsChanged => {
-            if let Some(code) = key_code(event.keyCode()) {
-                let flags = event.modifierFlags();
-                let flag = match code {
-                    "ShiftLeft" | "ShiftRight" => NSEventModifierFlags::Shift,
-                    "ControlLeft" | "ControlRight" => NSEventModifierFlags::Control,
-                    "AltLeft" | "AltRight" => NSEventModifierFlags::Option,
-                    "MetaLeft" | "MetaRight" => NSEventModifierFlags::Command,
-                    "CapsLock" => NSEventModifierFlags::CapsLock,
-                    _ => return false,
-                };
-                let down = flags.contains(flag);
-                if !window.shortcut(code, down, false, modifiers(flags)) {
-                    window.events.push(Event::Key(down, code, modifiers(flags)));
-                }
-            }
+            window.modifier_keys(key_code(event.keyCode()), modifiers(event.modifierFlags()));
         }
         _ => {}
     }
@@ -880,6 +929,42 @@ fn key_code(code: u16) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Trace recorded from the Ctrl+Shift+S screenshot overlay: the real
+    /// Control/Shift key-ups never arrive, only flags-changed keyCode 0, mods 0.
+    #[test]
+    fn swallowed_modifier_ups_are_released_from_reported_flags() {
+        let mut held = 0;
+        let mut ups = Vec::new();
+        for (code, mods) in [(59, 2), (56, 3), (0, 0)] {
+            ups.extend(flags_changed(&mut held, key_code(code), mods));
+        }
+        assert_eq!(held, 0);
+        assert_eq!(
+            ups,
+            [
+                ("ControlLeft", true),
+                ("ShiftLeft", true),
+                ("ShiftLeft", false),
+                ("ControlLeft", false)
+            ]
+        );
+        // The other side keeps the shared flag, so it stays held.
+        let mut held = 0;
+        flags_changed(&mut held, Some("ShiftLeft"), 1);
+        flags_changed(&mut held, Some("ShiftRight"), 1);
+        assert_eq!(
+            flags_changed(&mut held, Some("ShiftLeft"), 1),
+            [("ShiftLeft", false)]
+        );
+        assert_eq!(flags_changed(&mut held, None, 1), []);
+        assert_eq!(flags_changed(&mut held, None, 0), [("ShiftRight", false)]);
+        // Caps Lock is a toggle, never a held key.
+        assert_eq!(
+            flags_changed(&mut held, Some("CapsLock"), 16),
+            [("CapsLock", true)]
+        );
+        assert_eq!(held, 0);
+    }
     #[test]
     fn mac_keys_and_modifiers_use_shared_physical_names_and_mask() {
         for (code, name) in [
